@@ -1547,20 +1547,13 @@
     <div class="form-row">
       <label>附加身分</label>
       <label class="form-check">
-        <input type="checkbox" id="modal-is-admin" onchange="onModalAdminChange()" />
+        <input type="checkbox" id="modal-is-admin" />
         管理者（可檢視所有個案、管理使用者）
       </label>
       <label class="form-check" style="margin-top:6px;">
-        <input type="checkbox" id="modal-is-case-manager" onchange="onModalCaseManagerChange()" />
-        個案管理員（僅可檢視指定個案）
+        <input type="checkbox" id="modal-is-case-manager" />
+        個案管理員（可被指派為特定個案的管理員）
       </label>
-    </div>
-    <div id="modal-allowed-cases-wrap" style="display:none;">
-      <div class="form-row">
-        <label>可存取個案</label>
-        <div id="modal-allowed-cases"
-          style="max-height:220px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:6px;padding:8px 12px;"></div>
-      </div>
     </div>
 
     <div id="modal-error" class="alert alert-error"></div>
@@ -1986,42 +1979,6 @@ function renderAdminUsers() {
 // ══════════════════════════════════════════════
 let _editingEmail = null;
 
-function onModalAdminChange() {
-  if (document.getElementById('modal-is-admin').checked) {
-    document.getElementById('modal-is-case-manager').checked = false;
-    document.getElementById('modal-allowed-cases-wrap').style.display = 'none';
-  }
-}
-
-function onModalCaseManagerChange() {
-  const checked = document.getElementById('modal-is-case-manager').checked;
-  if (checked) {
-    document.getElementById('modal-is-admin').checked = false;
-    document.getElementById('modal-allowed-cases-wrap').style.display = '';
-    const current = _editingEmail
-      ? (configData.users[_editingEmail]?.allowedCases || [])
-      : [];
-    renderAllowedCasesList(current);
-  } else {
-    document.getElementById('modal-allowed-cases-wrap').style.display = 'none';
-  }
-}
-
-function renderAllowedCasesList(selectedIds = []) {
-  const wrap = document.getElementById('modal-allowed-cases');
-  const list = casesData.filter(c => !c.deleted);
-  if (!list.length) {
-    wrap.innerHTML = '<p style="color:#718096;font-size:.85rem;margin:0;">目前無可指派個案</p>';
-    return;
-  }
-  wrap.innerHTML = list.map(c => `
-    <label style="display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer;font-size:.875rem;">
-      <input type="checkbox" value="${escHtml(c.id)}" ${selectedIds.includes(c.id) ? 'checked' : ''}>
-      <span>${escHtml(c.id)} ${escHtml(c.name)}
-        <span style="color:#718096;font-size:.8rem;">${c.status === 'closed' ? '（已結案）' : '（進行中）'}</span>
-      </span>
-    </label>`).join('');
-}
 
 function openUserModal(email) {
   _editingEmail = email || null;
@@ -2033,25 +1990,21 @@ function openUserModal(email) {
 
   if (_editingEmail) {
     const info = configData.users[_editingEmail] || {};
-    const isCaseMgr = info.extraRole === '個案管理員';
     document.getElementById('modal-title').textContent = '編輯使用者';
     document.getElementById('modal-email').value    = _editingEmail;
     document.getElementById('modal-email').disabled = true;
     document.getElementById('modal-name').value     = info.name  || '';
     document.getElementById('modal-role').value     = info.role  || '';
-    document.getElementById('modal-is-admin').checked = info.isAdmin === true || info.extraRole === '管理者';
-    document.getElementById('modal-is-case-manager').checked = isCaseMgr;
-    document.getElementById('modal-allowed-cases-wrap').style.display = isCaseMgr ? '' : 'none';
-    if (isCaseMgr) renderAllowedCasesList(info.allowedCases || []);
+    document.getElementById('modal-is-admin').checked       = info.isAdmin === true || info.extraRole === '管理者';
+    document.getElementById('modal-is-case-manager').checked = info.extraRole === '個案管理員';
   } else {
     document.getElementById('modal-title').textContent = '新增使用者';
     document.getElementById('modal-email').value    = '';
     document.getElementById('modal-email').disabled = false;
     document.getElementById('modal-name').value     = '';
     document.getElementById('modal-role').value     = '';
-    document.getElementById('modal-is-admin').checked = false;
+    document.getElementById('modal-is-admin').checked        = false;
     document.getElementById('modal-is-case-manager').checked = false;
-    document.getElementById('modal-allowed-cases-wrap').style.display = 'none';
   }
 
   document.getElementById('modal-error').style.display = 'none';
@@ -2093,17 +2046,10 @@ async function saveUser() {
     const entry = configData.users[email] || {};
     entry.name = name || entry.name || '';
     entry.role = role;
-    if (isAdmin) {
-      entry.isAdmin = true;
-      delete entry.extraRole;
-      delete entry.allowedCases;
-    } else if (isCaseMgr) {
-      delete entry.isAdmin;
+    if (isAdmin) { entry.isAdmin = true; } else { delete entry.isAdmin; }
+    if (isCaseMgr) {
       entry.extraRole = '個案管理員';
-      const checked = document.querySelectorAll('#modal-allowed-cases input[type=checkbox]:checked');
-      entry.allowedCases = [...checked].map(cb => cb.value);
-    } else {
-      delete entry.isAdmin;
+    } else if (entry.extraRole === '個案管理員') {
       delete entry.extraRole;
       delete entry.allowedCases;
     }
@@ -2329,9 +2275,76 @@ function showCaseDetail(caseId) {
       ${field('主訴問題', (c.topics || []).join('、') || '—')}
     </div>`) +
     evalHtml +
+    (isAdminUser ? mkSection('case-managers', '個案管理員', renderCaseManagersBody(c), false) : '') +
     recordsHtml;
 
   showPage('page-case-detail', null);
+}
+
+function renderCaseManagersBody(c) {
+  const allUsers = Object.entries(configData.users || {});
+  const managers = allUsers.filter(([, info]) => (info.allowedCases || []).includes(c.id));
+  const nonManagers = allUsers.filter(([, info]) => !(info.allowedCases || []).includes(c.id));
+
+  const chips = managers.length
+    ? managers.map(([email, info]) =>
+        `<span style="display:inline-flex;align-items:center;gap:4px;background:#ebf5fb;border:1px solid #aed6f1;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;">
+          ${escHtml(info.name || email)}
+          <button onclick="removeCaseManager('${escHtml(c.id)}','${escHtml(email)}')"
+            style="border:none;background:none;cursor:pointer;color:#718096;font-size:.9rem;padding:0 0 0 4px;line-height:1;">✕</button>
+        </span>`).join('')
+    : `<span style="color:#718096;font-size:.85rem;">尚未指定</span>`;
+
+  const options = nonManagers.map(([email, info]) =>
+    `<option value="${escHtml(email)}">${escHtml(info.name || email)}</option>`).join('');
+
+  return `
+    <div style="margin-bottom:12px;">${chips}</div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <select id="cm-add-select" style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;">
+        <option value="">— 選擇輔導人員 —</option>
+        ${options}
+      </select>
+      <button class="btn btn-secondary" style="font-size:.85rem;" onclick="addCaseManager('${escHtml(c.id)}')">新增</button>
+    </div>`;
+}
+
+async function addCaseManager(caseId) {
+  const email = document.getElementById('cm-add-select').value;
+  if (!email) return;
+  const entry = configData.users[email] || {};
+  entry.allowedCases = entry.allowedCases || [];
+  if (!entry.allowedCases.includes(caseId)) entry.allowedCases.push(caseId);
+  if (!entry.extraRole) entry.extraRole = '個案管理員';
+  configData.users[email] = entry;
+  showLoading('儲存個案管理員…');
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog(`新增個案管理員 ${email}`, caseId);
+    hideLoading();
+    showCaseDetail(caseId);
+  } catch (err) {
+    hideLoading();
+    alert('儲存失敗：' + err.message);
+  }
+}
+
+async function removeCaseManager(caseId, email) {
+  const name = configData.users[email]?.name || email;
+  if (!confirm(`確定移除「${name}」對此個案的管理員身分？`)) return;
+  const entry = configData.users[email];
+  if (!entry) return;
+  entry.allowedCases = (entry.allowedCases || []).filter(id => id !== caseId);
+  showLoading('移除個案管理員…');
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog(`移除個案管理員 ${email}`, caseId);
+    hideLoading();
+    showCaseDetail(caseId);
+  } catch (err) {
+    hideLoading();
+    alert('移除失敗：' + err.message);
+  }
 }
 
 // ══════════════════════════════════════════════
