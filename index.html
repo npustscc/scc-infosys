@@ -806,6 +806,34 @@
             <button class="btn btn-primary" id="btn-new-case" onclick="openNewCasePage()">＋ 新增個案</button>
           </div>
         </div>
+        <div id="cases-filter-bar" style="display:flex;flex-wrap:wrap;gap:8px;padding:12px 16px;border-bottom:1px solid #e2e8f0;align-items:center;">
+          <input id="cf-q" type="text" placeholder="搜尋姓名 / 學號 / 案號"
+            style="flex:1;min-width:160px;padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
+            oninput="caseFilters.q=this.value;renderCases()">
+          <select id="cf-status"
+            style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
+            onchange="caseFilters.status=this.value;renderCases()">
+            <option value="">全部狀態</option>
+            <option value="active">進行中</option>
+            <option value="closed">已結案</option>
+            <option value="deleted" id="cf-status-deleted" style="display:none;">已刪除</option>
+          </select>
+          <span id="cf-counselor-wrap" style="display:none;">
+            <select id="cf-counselor"
+              style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
+              onchange="caseFilters.counselor=this.value;renderCases()">
+              <option value="">全部人員</option>
+            </select>
+          </span>
+          <input id="cf-date-from" type="date"
+            style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
+            onchange="caseFilters.dateFrom=this.value;renderCases()">
+          <span style="color:#718096;font-size:.875rem;">至</span>
+          <input id="cf-date-to" type="date"
+            style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
+            onchange="caseFilters.dateTo=this.value;renderCases()">
+          <button class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="resetCaseFilters()">清除篩選</button>
+        </div>
         <div id="cases-table-wrap">
           <div class="empty-state">
             <div class="icon">📂</div>
@@ -1518,9 +1546,20 @@
     <div class="form-row">
       <label>附加身分</label>
       <label class="form-check">
-        <input type="checkbox" id="modal-is-admin" />
+        <input type="checkbox" id="modal-is-admin" onchange="onModalAdminChange()" />
         管理者（可檢視所有個案、管理使用者）
       </label>
+      <label class="form-check" style="margin-top:6px;">
+        <input type="checkbox" id="modal-is-case-manager" onchange="onModalCaseManagerChange()" />
+        個案管理員（僅可檢視指定個案）
+      </label>
+    </div>
+    <div id="modal-allowed-cases-wrap" style="display:none;">
+      <div class="form-row">
+        <label>可存取個案</label>
+        <div id="modal-allowed-cases"
+          style="max-height:220px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:6px;padding:8px 12px;"></div>
+      </div>
     </div>
 
     <div id="modal-error" class="alert alert-error"></div>
@@ -1582,6 +1621,7 @@ let currentRole  = null;   // 從 config.json 讀來
 let extraRole    = null;   // 管理者 / 個案管理員 / null
 let configData   = null;   // 完整 config.json 內容
 let casesData    = [];      // cases/index.json 內容
+let caseFilters  = { q: '', status: '', counselor: '', dateFrom: '', dateTo: '' };
 
 // ══════════════════════════════════════════════
 //  UI helpers
@@ -1797,6 +1837,40 @@ function renderCases() {
   // 非管理者看不到已刪除個案
   if (!isAdmin) visible = visible.filter(c => !c.deleted);
 
+  // ── 篩選列 UI 控制 ──
+  const cfStatusDeleted = document.getElementById('cf-status-deleted');
+  if (cfStatusDeleted) cfStatusDeleted.style.display = isAdmin ? '' : 'none';
+
+  const cfCounselorWrap = document.getElementById('cf-counselor-wrap');
+  const cfCounselor     = document.getElementById('cf-counselor');
+  if (cfCounselorWrap) cfCounselorWrap.style.display = isAdmin ? '' : 'none';
+  if (isAdmin && cfCounselor) {
+    const seen = new Map();
+    visible.forEach(c => { if (c.counselorEmail && !seen.has(c.counselorEmail)) seen.set(c.counselorEmail, c.counselorName || c.counselorEmail); });
+    const prev = cfCounselor.value;
+    cfCounselor.innerHTML = '<option value="">全部人員</option>' +
+      [...seen.entries()].map(([email, name]) => `<option value="${escHtml(email)}"${prev === email ? ' selected' : ''}>${escHtml(name)}</option>`).join('');
+  }
+
+  // ── 套用搜尋 / 篩選 ──
+  const { q, status, counselor, dateFrom, dateTo } = caseFilters;
+  if (q) {
+    const ql = q.toLowerCase();
+    visible = visible.filter(c =>
+      (c.name      || '').toLowerCase().includes(ql) ||
+      (c.studentId || '').toLowerCase().includes(ql) ||
+      (c.id        || '').toLowerCase().includes(ql)
+    );
+  }
+  if (status === 'deleted') {
+    visible = visible.filter(c => c.deleted);
+  } else if (status) {
+    visible = visible.filter(c => !c.deleted && c.status === status);
+  }
+  if (counselor) visible = visible.filter(c => c.counselorEmail === counselor);
+  if (dateFrom)  visible = visible.filter(c => (c.openDate || '') >= dateFrom);
+  if (dateTo)    visible = visible.filter(c => (c.openDate || '') <= dateTo);
+
   // 統計（排除已刪除）
   const nonDeleted = visible.filter(c => !c.deleted);
   document.getElementById('stat-total').textContent  = nonDeleted.length;
@@ -1853,6 +1927,13 @@ function renderCases() {
     </table>`;
 }
 
+function resetCaseFilters() {
+  caseFilters = { q: '', status: '', counselor: '', dateFrom: '', dateTo: '' };
+  const ids = ['cf-q', 'cf-status', 'cf-counselor', 'cf-date-from', 'cf-date-to'];
+  ids.forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  renderCases();
+}
+
 function statusBadge(status) {
   const map = { active: ['blue','進行中'], closed: ['gray','已結案'], pending: ['orange','待分配'] };
   const [cls, label] = map[status] || ['gray', status || '未知'];
@@ -1875,7 +1956,9 @@ function renderAdminUsers() {
     const isAdmin = info.isAdmin === true || info.extraRole === '管理者';
     const adminBadge = isAdmin
       ? `<span class="badge badge-orange">管理者</span>`
-      : (info.extraRole ? `<span class="badge badge-gray">${escHtml(info.extraRole)}</span>` : '—');
+      : (info.extraRole === '個案管理員'
+          ? `<span class="badge badge-gray">個案管理員</span> <span style="color:#718096;font-size:.8rem;">(${(info.allowedCases || []).length} 個案)</span>`
+          : (info.extraRole ? `<span class="badge badge-gray">${escHtml(info.extraRole)}</span>` : '—'));
     const isSelf = email === currentUser.email;
     return `
       <tr>
@@ -1902,6 +1985,43 @@ function renderAdminUsers() {
 // ══════════════════════════════════════════════
 let _editingEmail = null;
 
+function onModalAdminChange() {
+  if (document.getElementById('modal-is-admin').checked) {
+    document.getElementById('modal-is-case-manager').checked = false;
+    document.getElementById('modal-allowed-cases-wrap').style.display = 'none';
+  }
+}
+
+function onModalCaseManagerChange() {
+  const checked = document.getElementById('modal-is-case-manager').checked;
+  if (checked) {
+    document.getElementById('modal-is-admin').checked = false;
+    document.getElementById('modal-allowed-cases-wrap').style.display = '';
+    const current = _editingEmail
+      ? (configData.users[_editingEmail]?.allowedCases || [])
+      : [];
+    renderAllowedCasesList(current);
+  } else {
+    document.getElementById('modal-allowed-cases-wrap').style.display = 'none';
+  }
+}
+
+function renderAllowedCasesList(selectedIds = []) {
+  const wrap = document.getElementById('modal-allowed-cases');
+  const list = casesData.filter(c => !c.deleted);
+  if (!list.length) {
+    wrap.innerHTML = '<p style="color:#718096;font-size:.85rem;margin:0;">目前無可指派個案</p>';
+    return;
+  }
+  wrap.innerHTML = list.map(c => `
+    <label style="display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer;font-size:.875rem;">
+      <input type="checkbox" value="${escHtml(c.id)}" ${selectedIds.includes(c.id) ? 'checked' : ''}>
+      <span>${escHtml(c.id)} ${escHtml(c.name)}
+        <span style="color:#718096;font-size:.8rem;">${c.status === 'closed' ? '（已結案）' : '（進行中）'}</span>
+      </span>
+    </label>`).join('');
+}
+
 function openUserModal(email) {
   _editingEmail = email || null;
 
@@ -1912,13 +2032,16 @@ function openUserModal(email) {
 
   if (_editingEmail) {
     const info = configData.users[_editingEmail] || {};
+    const isCaseMgr = info.extraRole === '個案管理員';
     document.getElementById('modal-title').textContent = '編輯使用者';
     document.getElementById('modal-email').value    = _editingEmail;
     document.getElementById('modal-email').disabled = true;
     document.getElementById('modal-name').value     = info.name  || '';
     document.getElementById('modal-role').value     = info.role  || '';
-    document.getElementById('modal-is-admin').checked =
-      info.isAdmin === true || info.extraRole === '管理者';
+    document.getElementById('modal-is-admin').checked = info.isAdmin === true || info.extraRole === '管理者';
+    document.getElementById('modal-is-case-manager').checked = isCaseMgr;
+    document.getElementById('modal-allowed-cases-wrap').style.display = isCaseMgr ? '' : 'none';
+    if (isCaseMgr) renderAllowedCasesList(info.allowedCases || []);
   } else {
     document.getElementById('modal-title').textContent = '新增使用者';
     document.getElementById('modal-email').value    = '';
@@ -1926,6 +2049,8 @@ function openUserModal(email) {
     document.getElementById('modal-name').value     = '';
     document.getElementById('modal-role').value     = '';
     document.getElementById('modal-is-admin').checked = false;
+    document.getElementById('modal-is-case-manager').checked = false;
+    document.getElementById('modal-allowed-cases-wrap').style.display = 'none';
   }
 
   document.getElementById('modal-error').style.display = 'none';
@@ -1942,7 +2067,8 @@ async function saveUser() {
   const email   = _editingEmail || document.getElementById('modal-email').value.trim().toLowerCase();
   const name    = document.getElementById('modal-name').value.trim();
   const role    = document.getElementById('modal-role').value;
-  const isAdmin = document.getElementById('modal-is-admin').checked;
+  const isAdmin      = document.getElementById('modal-is-admin').checked;
+  const isCaseMgr    = document.getElementById('modal-is-case-manager').checked;
 
   const errEl = document.getElementById('modal-error');
   errEl.style.display = 'none';
@@ -1964,11 +2090,22 @@ async function saveUser() {
   try {
     configData.users = configData.users || {};
     const entry = configData.users[email] || {};
-    entry.name    = name || entry.name || '';
-    entry.role    = role;
-    entry.isAdmin = isAdmin || undefined;
-    if (!isAdmin) delete entry.isAdmin;
-    if (entry.extraRole === '管理者' && !isAdmin) delete entry.extraRole;
+    entry.name = name || entry.name || '';
+    entry.role = role;
+    if (isAdmin) {
+      entry.isAdmin = true;
+      delete entry.extraRole;
+      delete entry.allowedCases;
+    } else if (isCaseMgr) {
+      delete entry.isAdmin;
+      entry.extraRole = '個案管理員';
+      const checked = document.querySelectorAll('#modal-allowed-cases input[type=checkbox]:checked');
+      entry.allowedCases = [...checked].map(cb => cb.value);
+    } else {
+      delete entry.isAdmin;
+      delete entry.extraRole;
+      delete entry.allowedCases;
+    }
     configData.users[email] = entry;
 
     await driveUpdateJsonFile(CONFIG_FILE, configData);
@@ -2041,6 +2178,7 @@ function showCaseDetail(caseId) {
   if (caseIsDeleted) {
     if (isAdminUser) {
       actionsHtml += ` <button class="btn btn-secondary" onclick="restoreCaseAdmin('${cid}')">復原個案</button>`;
+      actionsHtml += ` <button class="btn btn-danger" onclick="hardDeleteCase('${cid}')">永久刪除</button>`;
     }
   } else {
     actionsHtml += ` <button class="btn btn-secondary" onclick="openEditCasePage('${cid}')">編輯</button>`;
@@ -2049,6 +2187,7 @@ function showCaseDetail(caseId) {
       : ` <button class="btn btn-secondary" onclick="reopenCase('${cid}')">重新開案</button>`;
     if (isAdminUser) {
       actionsHtml += ` <button class="btn btn-danger" onclick="deleteCase('${cid}')">刪除個案</button>`;
+      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【錯誤建案處理流程】\\n\\n若此個案為錯誤建立，請依下列步驟操作：\\n1. 點擊「刪除個案」，將個案標記為已刪除（可復原）\\n2. 確認無誤後，再由主任或管理者點擊「永久刪除」\\n   → 個案紀錄與身分資料將完全移除，無法復原')">？</button>`;
     }
   }
   document.getElementById('detail-actions').innerHTML = actionsHtml;
@@ -3143,6 +3282,31 @@ async function restoreCaseAdmin(caseId) {
   }
 }
 
+async function hardDeleteCase(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  if (!confirm(
+    `⚠️ 永久刪除確認\n\n` +
+    `案號：${c.id}\n學號：${c.studentId || '—'}\n身分證字號：${c.idNumber || '—'}\n\n` +
+    `此操作將完全移除個案紀錄（含所有晤談紀錄），無法復原。\n` +
+    `確定要永久刪除？`
+  )) return;
+  const idx = casesData.findIndex(x => x.id === caseId);
+  const removed = casesData.splice(idx, 1)[0];
+  showLoading('永久刪除中…');
+  try {
+    await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+    auditLog(`永久刪除個案 ${caseId}（${removed.name}）`);
+    hideLoading();
+    backToCaseList();
+    renderCases();
+  } catch (err) {
+    casesData.splice(idx, 0, removed);
+    hideLoading();
+    alert('永久刪除失敗：' + err.message);
+  }
+}
+
 // ══════════════════════════════════════════════
 //  案號管理
 // ══════════════════════════════════════════════
@@ -3310,8 +3474,15 @@ function generateCaseId() {
   const rocYear = now.getFullYear() - 1911;
   const month = now.getMonth() + 1;
   const semester = (month >= 8 || month === 1) ? 1 : 2;
-  const seq = String((casesData.length || 0) + 1).padStart(3, '0');
-  return `${rocYear}${semester}${seq}`;
+  const prefix = `${rocYear}${semester}`;
+  const maxSeq = casesData.reduce((max, c) => {
+    if (c.id && c.id.startsWith(prefix)) {
+      const n = parseInt(c.id.slice(prefix.length), 10);
+      if (!isNaN(n)) return Math.max(max, n);
+    }
+    return max;
+  }, 0);
+  return `${prefix}${String(maxSeq + 1).padStart(3, '0')}`;
 }
 
 function openNewCasePage() {
@@ -3898,8 +4069,29 @@ async function driveUpdateJsonFile(path, content) {
   return (await r.json()).id;
 }
 
+function refreshAccessToken() {
+  return new Promise((resolve, reject) => {
+    const tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: CLIENT_ID,
+      scope: SCOPES,
+      hint: currentUser?.email,
+      callback: (tokenResponse) => {
+        if (tokenResponse.error) { reject(new Error(tokenResponse.error)); return; }
+        gAccessToken = tokenResponse.access_token;
+        resolve();
+      },
+    });
+    tokenClient.requestAccessToken({ prompt: '' });
+  });
+}
+
 async function apiFetch(url) {
-  const r = await fetch(url, { headers: { Authorization: 'Bearer ' + gAccessToken } });
+  const doFetch = () => fetch(url, { headers: { Authorization: 'Bearer ' + gAccessToken } });
+  let r = await doFetch();
+  if (r.status === 401) {
+    await refreshAccessToken();
+    r = await doFetch();
+  }
   if (!r.ok) {
     const body = await r.text();
     throw new Error(`API 錯誤 ${r.status}: ${body.slice(0, 200)}`);
