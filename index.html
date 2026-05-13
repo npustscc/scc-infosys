@@ -1550,10 +1550,6 @@
         <input type="checkbox" id="modal-is-admin" />
         管理者（可檢視所有個案、管理使用者）
       </label>
-      <label class="form-check" style="margin-top:6px;">
-        <input type="checkbox" id="modal-is-case-manager" />
-        個案管理員（可被指派為特定個案的管理員）
-      </label>
     </div>
 
     <div id="modal-error" class="alert alert-error"></div>
@@ -1882,6 +1878,15 @@ function renderCases() {
     return;
   }
 
+  // 建立「個案ID → 管理員名單」反查表
+  const caseManagerMap = {};
+  Object.values(configData.users || {}).forEach(info => {
+    (info.allowedCases || []).forEach(id => {
+      if (!caseManagerMap[id]) caseManagerMap[id] = [];
+      caseManagerMap[id].push(info.name || info.email || '');
+    });
+  });
+
   const rows = visible.map(c => {
     const cid = escHtml(c.id);
     let actionBtn;
@@ -1902,7 +1907,14 @@ function renderCases() {
       <td>${escHtml(c.id    || '—')}</td>
       <td>${escHtml(c.name  || '—')}</td>
       <td>${escHtml(c.studentId || '—')}</td>
-      <td>${escHtml(c.counselorName || '—')}</td>
+      <td>${escHtml(c.counselorName || '—')}${
+        (caseManagerMap[c.id] || []).length
+          ? `<div style="font-size:.72rem;margin-top:2px;color:#2471a3;">
+               <span style="background:#d6eaf8;border-radius:3px;padding:0 4px;font-weight:700;letter-spacing:.02em;">管</span>
+               ${escHtml((caseManagerMap[c.id] || []).join('、'))}
+             </div>`
+          : ''
+      }</td>
       <td>${statusCell}</td>
       <td>${escHtml((c.updatedAt || '').slice(0,10) || '—')}</td>
       <td onclick="event.stopPropagation()">${actionBtn}</td>
@@ -1995,16 +2007,14 @@ function openUserModal(email) {
     document.getElementById('modal-email').disabled = true;
     document.getElementById('modal-name').value     = info.name  || '';
     document.getElementById('modal-role').value     = info.role  || '';
-    document.getElementById('modal-is-admin').checked       = info.isAdmin === true || info.extraRole === '管理者';
-    document.getElementById('modal-is-case-manager').checked = info.extraRole === '個案管理員';
+    document.getElementById('modal-is-admin').checked = info.isAdmin === true || info.extraRole === '管理者';
   } else {
     document.getElementById('modal-title').textContent = '新增使用者';
     document.getElementById('modal-email').value    = '';
     document.getElementById('modal-email').disabled = false;
     document.getElementById('modal-name').value     = '';
     document.getElementById('modal-role').value     = '';
-    document.getElementById('modal-is-admin').checked        = false;
-    document.getElementById('modal-is-case-manager').checked = false;
+    document.getElementById('modal-is-admin').checked = false;
   }
 
   document.getElementById('modal-error').style.display = 'none';
@@ -2021,8 +2031,7 @@ async function saveUser() {
   const email   = _editingEmail || document.getElementById('modal-email').value.trim().toLowerCase();
   const name    = document.getElementById('modal-name').value.trim();
   const role    = document.getElementById('modal-role').value;
-  const isAdmin      = document.getElementById('modal-is-admin').checked;
-  const isCaseMgr    = document.getElementById('modal-is-case-manager').checked;
+  const isAdmin = document.getElementById('modal-is-admin').checked;
 
   const errEl = document.getElementById('modal-error');
   errEl.style.display = 'none';
@@ -2047,12 +2056,6 @@ async function saveUser() {
     entry.name = name || entry.name || '';
     entry.role = role;
     if (isAdmin) { entry.isAdmin = true; } else { delete entry.isAdmin; }
-    if (isCaseMgr) {
-      entry.extraRole = '個案管理員';
-    } else if (entry.extraRole === '個案管理員') {
-      delete entry.extraRole;
-      delete entry.allowedCases;
-    }
     configData.users[email] = entry;
 
     await driveUpdateJsonFile(CONFIG_FILE, configData);
@@ -2335,6 +2338,7 @@ async function removeCaseManager(caseId, email) {
   const entry = configData.users[email];
   if (!entry) return;
   entry.allowedCases = (entry.allowedCases || []).filter(id => id !== caseId);
+  if (!entry.allowedCases.length) { delete entry.allowedCases; delete entry.extraRole; }
   showLoading('移除個案管理員…');
   try {
     await driveUpdateJsonFile(CONFIG_FILE, configData);
