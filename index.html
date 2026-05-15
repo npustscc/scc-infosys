@@ -1673,6 +1673,8 @@ function semesterLabel(prefix) {
   return `${prefix.slice(0, -1)}學年第${prefix.slice(-1)}學期`;
 }
 let sortStatusLocked = localStorage.getItem('scc_sort_status_locked') !== 'false';
+let _updateAvailable = false;
+let _versionEtag = null;
 let caseFilters = {
   q: '', status: '',
   semester: localStorage.getItem('scc_semester_pref') || currentSemesterPrefix(),
@@ -2095,7 +2097,7 @@ function addNotificationToUser(toEmail, type, caseId, caseName) {
 
 function renderNotifBell() {
   const notifs = configData?.users?.[currentUser?.email]?.notifications || [];
-  const unread = notifs.filter(n => !n.read).length;
+  const unread = notifs.filter(n => !n.read).length + (_updateAvailable ? 1 : 0);
   const badge = document.getElementById('notif-badge');
   if (!badge) return;
   badge.textContent = unread > 99 ? '99+' : (unread || '');
@@ -2114,11 +2116,16 @@ function renderNotifList() {
   const notifs = configData?.users?.[currentUser?.email]?.notifications || [];
   const list = document.getElementById('notif-list');
   if (!list) return;
-  if (!notifs.length) {
+  const updateBanner = _updateAvailable ? `
+    <div class="notif-item notif-unread" style="border-left:4px solid #dd6b20;background:#fffaf0;cursor:default;">
+      <div style="font-size:.875rem;color:#2d3748;line-height:1.5;">⚡ 系統已更新，建議重新整理頁面以取得最新版本</div>
+      <button onclick="location.reload()" style="margin-top:6px;padding:4px 14px;background:#dd6b20;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.8rem;">立即重新整理</button>
+    </div>` : '';
+  if (!notifs.length && !_updateAvailable) {
     list.innerHTML = '<div style="padding:24px;text-align:center;color:#718096;font-size:.875rem;">目前沒有通知</div>';
     return;
   }
-  list.innerHTML = notifs.map(n => `
+  list.innerHTML = updateBanner + notifs.map(n => `
     <div class="notif-item ${n.read ? 'notif-read' : 'notif-unread'}"
       onclick="notifClick('${escHtml(n.id)}','${escHtml(n.caseId || '')}')">
       <div style="font-size:.875rem;color:#2d3748;line-height:1.5;">${escHtml(n.message)}</div>
@@ -2148,6 +2155,21 @@ async function markAllNotifRead() {
   renderNotifBell();
   renderNotifList();
   await driveUpdateJsonFile(CONFIG_FILE, configData);
+}
+
+async function checkForUpdate() {
+  try {
+    const resp = await fetch(location.href, { method: 'HEAD', cache: 'no-store' });
+    const tag = resp.headers.get('etag') || resp.headers.get('last-modified');
+    if (_versionEtag === null) {
+      _versionEtag = tag;
+    } else if (tag && tag !== _versionEtag && !_updateAvailable) {
+      _updateAvailable = true;
+      renderNotifBell();
+      const panel = document.getElementById('notif-panel');
+      if (panel && panel.style.display !== 'none') renderNotifList();
+    }
+  } catch (_) {}
 }
 
 function toggleSortLock() {
@@ -4891,6 +4913,8 @@ document.addEventListener('DOMContentLoaded', () => {
       panel.style.display = 'none';
     }
   });
+  checkForUpdate();
+  setInterval(checkForUpdate, 5 * 60 * 1000);
 });
 </script>
 </body>
