@@ -1593,7 +1593,9 @@ const CLIENT_ID   = '68582831293-fecbka17adht886tm6oh18vrdsdg1hbj.apps.googleuse
 const SCOPES      = 'https://www.googleapis.com/auth/drive openid profile email';
 const DRIVE_FOLDER_ID = '16EqJzKyFW5Y6R1qgOt79dKiUY7IaYKpD'; // npust.scc 的 scc-infosys 資料夾
 const CONFIG_FILE     = 'config.json';
-const CASES_INDEX     = 'cases/index.json';
+const CASES_INDEX     = 'cases/index.json'; // 舊格式（升級後僅作備份）
+const CASES_MANIFEST  = 'cases/manifest.json';
+const CHUNK_SIZE      = 20;
 const AUDIT_LOG_FILE  = 'audit_log.json';
 
 // 角色常數
@@ -1634,7 +1636,8 @@ let currentUser  = null;   // { email, name, picture }
 let currentRole  = null;   // 從 config.json 讀來
 let extraRole    = null;   // 管理者 / 個案管理員 / null
 let configData   = null;   // 完整 config.json 內容
-let casesData    = [];      // cases/index.json 內容
+let casesData    = [];
+let casesManifest = { chunks: [] };
 function currentSemesterPrefix() {
   const now = new Date();
   const rocYear = now.getFullYear() - 1911;
@@ -1834,13 +1837,36 @@ async function loadCases() {
   setAlert('cases-alert', 'info', '');
   showLoading('載入個案資料…');
   try {
-    const raw = await driveReadJson(CASES_INDEX);
-    casesData = raw && Array.isArray(raw.cases) ? raw.cases : [];
+    let manifest = null;
+    try { manifest = await driveReadJson(CASES_MANIFEST); } catch { manifest = null; }
+
+    if (manifest && Array.isArray(manifest.chunks)) {
+      casesManifest = manifest;
+      const results = await Promise.all(
+        manifest.chunks.map(chunk =>
+          driveReadJson(`cases/${chunk}.json`).catch(() => ({ cases: [] }))
+        )
+      );
+      casesData = results.flatMap(r => r.cases || []);
+    } else {
+      // 舊格式 index.json → 自動升級
+      try {
+        const legacy = await driveReadJson(CASES_INDEX);
+        casesData = legacy.cases || [];
+        casesManifest = { chunks: [] };
+        if (casesData.length > 0) {
+          showLoading('首次升級資料結構，請稍候…');
+          await migrateToChunks();
+        }
+      } catch {
+        casesData = [];
+        casesManifest = { chunks: [] };
+      }
+    }
     renderCases();
   } catch (err) {
     casesData = [];
-    setAlert('cases-alert', 'warn',
-      `無法讀取 cases/index.json（${err.message}）。若檔案尚未建立，屬正常現象。`);
+    setAlert('cases-alert', 'warn', `無法載入個案（${err.message}）。`);
     renderCases();
   } finally {
     hideLoading();
@@ -2480,7 +2506,7 @@ async function deleteRecord(caseId, recordId) {
 
   showLoading('刪除紀錄…');
   try {
-    await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+    await saveCasesChunks(caseId);
     auditLog('刪除晤談紀錄', caseId, recordId);
     hideLoading();
     showCaseDetail(caseId);
@@ -2505,7 +2531,7 @@ async function restoreRecord(caseId, recordId) {
 
   showLoading('復原紀錄…');
   try {
-    await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+    await saveCasesChunks(caseId);
     auditLog('復原晤談紀錄', caseId, recordId);
     hideLoading();
     showCaseDetail(caseId);
@@ -3184,7 +3210,7 @@ async function saveRecord() {
     });
     casesData[cidx].updatedAt = new Date().toISOString();
     try {
-      await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+      await saveCasesChunks(_recordCaseId);
       auditLog('編輯晤談紀錄', _recordCaseId, _editingRecordId);
       hideLoading();
       showCaseDetail(_recordCaseId);
@@ -3205,7 +3231,7 @@ async function saveRecord() {
     casesData[cidx].records.push(newRecord);
     casesData[cidx].updatedAt = new Date().toISOString();
     try {
-      await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+      await saveCasesChunks(_recordCaseId);
       auditLog('新增晤談紀錄', _recordCaseId, newRecord.id);
       hideLoading();
       showCaseDetail(_recordCaseId);
@@ -3292,7 +3318,7 @@ async function saveClosureEval() {
   };
 
   try {
-    await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+    await saveCasesChunks(_closureCaseId);
     auditLog('執行結案', _closureCaseId);
     hideLoading();
     renderCases();
@@ -3327,7 +3353,7 @@ async function updateCaseStatus(caseId, status) {
   casesData[idx].updatedAt = new Date().toISOString();
   showLoading('更新狀態…');
   try {
-    await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+    await saveCasesChunks(caseId);
     auditLog(status === 'active' ? '重新開案' : '更新案件狀態', caseId);
     hideLoading();
     showCaseDetail(caseId);
@@ -3355,7 +3381,7 @@ async function deleteCase(caseId) {
   casesData[idx].updatedAt     = new Date().toISOString();
   showLoading('刪除個案…');
   try {
-    await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+    await saveCasesChunks(caseId);
     auditLog('刪除個案', caseId);
     hideLoading();
     backToCaseList();
@@ -3381,7 +3407,7 @@ async function restoreCaseAdmin(caseId) {
   casesData[idx].updatedAt = new Date().toISOString();
   showLoading('復原個案…');
   try {
-    await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+    await saveCasesChunks(caseId);
     auditLog('復原個案', caseId);
     hideLoading();
     showCaseDetail(caseId);
@@ -3406,7 +3432,7 @@ async function hardDeleteCase(caseId) {
   const removed = casesData.splice(idx, 1)[0];
   showLoading('永久刪除中…');
   try {
-    await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+    await saveCasesChunks(caseId);
     auditLog(`永久刪除個案 ${caseId}（${removed.name}）`);
     hideLoading();
     backToCaseList();
@@ -3484,7 +3510,7 @@ async function editCaseNum(oldId) {
   casesData[idx].updatedAt = new Date().toISOString();
   showLoading('更新案號…');
   try {
-    await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+    await saveCasesChunks(oldId, trimmed);
     auditLog('修改案號', trimmed);
     hideLoading();
     renderCaseNums();
@@ -3768,6 +3794,9 @@ function validateCaseIdFormat(el) {
   if (val.length !== 7) {
     hint.textContent = `⚠ 案號須為 7 碼（目前輸入 ${val.length} 碼）`;
     hint.style.display = '';
+  } else if (parseInt(val.slice(4), 10) === 0) {
+    hint.textContent = '⚠ 案號序號不可為 000，須從 001 起';
+    hint.style.display = '';
   } else {
     hint.style.display = 'none';
   }
@@ -3882,7 +3911,7 @@ async function quickEditCaseId(oldId, caseName) {
   casesData[idx].id = trimmed;
   casesData[idx].updatedAt = new Date().toISOString();
   try {
-    await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+    await saveCasesChunks(oldId, trimmed);
     hideLoading();
     setAlert('new-case-alert', 'info',
       `「${escHtml(caseName)}」的案號已更新為「${escHtml(trimmed)}」，現在可以繼續儲存新個案。`);
@@ -3977,6 +4006,11 @@ async function saveCase() {
     document.getElementById('nc-id').focus();
     return;
   }
+  if (parseInt(id.slice(4), 10) === 0) {
+    _caseAlert('案號序號不可為 000，須從 001 起。');
+    document.getElementById('nc-id').focus();
+    return;
+  }
 
   // 案號重複（編輯時排除自己）
   const duplicate = casesData.find(c => c.id === id && c.id !== _editingCaseId);
@@ -4019,7 +4053,7 @@ async function saveCase() {
       const idx = casesData.findIndex(x => x.id === _editingCaseId);
       const prev = casesData[idx];
       casesData[idx] = { ...prev, ...newCase };
-      await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+      await saveCasesChunks(_editingCaseId, newCase.id);
       if (syncManagersFromForm(newCase.id, _editingCaseId)) await driveUpdateJsonFile(CONFIG_FILE, configData);
       auditLog('編輯個案', newCase.id);
       hideLoading();
@@ -4027,7 +4061,7 @@ async function saveCase() {
       showCaseDetail(newCase.id);
     } else {
       casesData.push(newCase);
-      await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+      await saveCasesChunks(newCase.id);
       if (syncManagersFromForm(newCase.id, null)) await driveUpdateJsonFile(CONFIG_FILE, configData);
       auditLog('新增個案', newCase.id);
       hideLoading();
@@ -4267,6 +4301,63 @@ function signOut() {
  * 在 Drive 中搜尋指定路徑的檔案並回傳 fileId。
  * 支援 "folder/file.json" 格式（一層資料夾）。
  */
+// ── 分塊儲存 ──────────────────────────────────
+function getCaseChunkName(caseId) {
+  if (!caseId || caseId.length !== 7) return 'misc';
+  const prefix = caseId.slice(0, 4);
+  const seq    = parseInt(caseId.slice(4), 10);
+  if (isNaN(seq) || seq <= 0) return `${prefix}misc`;
+  const start = Math.floor((seq - 1) / CHUNK_SIZE) * CHUNK_SIZE + 1;
+  const end   = start + CHUNK_SIZE - 1;
+  return `${prefix}${String(start).padStart(3,'0')}-${prefix}${String(end).padStart(3,'0')}`;
+}
+
+async function driveSaveJsonInCases(fileName, content) {
+  const path = `cases/${fileName}`;
+  try {
+    await driveUpdateJsonFile(path, content);
+  } catch (e) {
+    if (!e.message.includes('找不到')) throw e;
+    const q = `name='cases' and mimeType='application/vnd.google-apps.folder' and '${DRIVE_FOLDER_ID}' in parents and trashed=false`;
+    const res = await driveQuery(q, 'id');
+    if (!res.files || !res.files.length) throw new Error('找不到 cases/ 資料夾');
+    await driveCreateJsonFile(fileName, content, res.files[0].id);
+  }
+}
+
+async function saveCasesChunks(...caseIds) {
+  const chunkNames = [...new Set(caseIds.filter(Boolean).map(getCaseChunkName))];
+  let manifestChanged = false;
+  for (const name of chunkNames) {
+    if (!casesManifest.chunks.includes(name)) {
+      casesManifest.chunks.push(name);
+      casesManifest.chunks.sort();
+      manifestChanged = true;
+    }
+  }
+  if (manifestChanged) await driveSaveJsonInCases('manifest.json', casesManifest);
+  await Promise.all(chunkNames.map(name => {
+    const chunkCases = casesData.filter(c => c.id && getCaseChunkName(c.id) === name);
+    return driveSaveJsonInCases(`${name}.json`, { cases: chunkCases });
+  }));
+}
+
+async function migrateToChunks() {
+  const chunkMap = {};
+  casesData.forEach(c => {
+    if (!c.id) return;
+    const chunk = getCaseChunkName(c.id);
+    if (!chunkMap[chunk]) chunkMap[chunk] = [];
+    chunkMap[chunk].push(c);
+  });
+  const chunks = Object.keys(chunkMap).sort();
+  await Promise.all(chunks.map(chunk =>
+    driveSaveJsonInCases(`${chunk}.json`, { cases: chunkMap[chunk] })
+  ));
+  casesManifest = { chunks };
+  await driveSaveJsonInCases('manifest.json', casesManifest);
+}
+
 async function driveFindFile(path) {
   const parts = path.split('/');
   // 從固定的 scc-infosys 資料夾開始，不再從 root 搜尋
