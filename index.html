@@ -29,6 +29,19 @@
     #app-header h1 { font-size: 1.05rem; font-weight: 600; letter-spacing: .03em; }
     #user-info { display: flex; align-items: center; gap: 12px; font-size: .875rem; }
     #user-info img { width: 32px; height: 32px; border-radius: 50%; border: 2px solid #fff; }
+    #notif-bell { position:relative; cursor:pointer; padding:4px 6px; border-radius:6px; transition:background .15s; }
+    #notif-bell:hover { background:rgba(255,255,255,.15); }
+    #notif-badge { position:absolute; top:-2px; right:-2px; background:#e53e3e; color:#fff;
+      border-radius:50%; min-width:16px; height:16px; font-size:.65rem; font-weight:700;
+      display:none; align-items:center; justify-content:center; padding:0 3px; line-height:1; }
+    #notif-panel { display:none; position:fixed; top:64px; right:16px; width:340px;
+      background:#fff; border:1px solid #e2e8f0; border-radius:8px;
+      box-shadow:0 4px 20px rgba(0,0,0,.18); z-index:2000; max-height:420px; overflow-y:auto; }
+    .notif-item { padding:12px 16px; border-bottom:1px solid #f7fafc; cursor:pointer; transition:background .12s; }
+    .notif-item:last-child { border-bottom:none; }
+    .notif-item:hover { background:#f0f9ff !important; }
+    .notif-unread { background:#ebf8ff; }
+    .notif-read   { background:#fff; }
     #btn-logout {
       background: transparent;
       border: 1px solid rgba(255,255,255,.6);
@@ -672,9 +685,20 @@
       <div style="font-size:.9rem;" id="user-name"></div>
       <div style="font-size:.75rem;opacity:.8;" id="user-role"></div>
     </div>
+    <div id="notif-bell" onclick="toggleNotifPanel()" title="通知">
+      <span style="font-size:1.25rem;line-height:1;">🔔</span>
+      <span id="notif-badge"></span>
+    </div>
     <button id="btn-logout" onclick="signOut()">登出</button>
   </div>
 </header>
+<div id="notif-panel">
+  <div style="padding:10px 16px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;">
+    <span style="font-weight:600;color:#2d3748;">通知</span>
+    <button onclick="markAllNotifRead()" style="font-size:.78rem;color:#2471a3;border:none;background:none;cursor:pointer;padding:0;">全部標為已讀</button>
+  </div>
+  <div id="notif-list"></div>
+</div>
 
 <!-- ── Login Screen ── -->
 <div id="login-screen">
@@ -1771,6 +1795,7 @@ async function afterLogin() {
     configData = await driveReadJson(CONFIG_FILE);
     hideLoading();
     resolveUserRole();
+    renderNotifBell();
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-layout').style.display  = 'flex';
     await loadCases();
@@ -2042,6 +2067,87 @@ function resetCaseFilters() {
   const cfSem = document.getElementById('cf-semester');
   if (cfSem) cfSem.value = sem;
   renderCases();
+}
+
+// ══════════════════════════════════════════════
+//  通知系統
+// ══════════════════════════════════════════════
+function addNotificationToUser(toEmail, type, caseId, caseName) {
+  if (!toEmail || !configData?.users?.[toEmail]) return false;
+  if (toEmail === currentUser?.email) return false;
+  const user = configData.users[toEmail];
+  if (!user.notifications) user.notifications = [];
+  const msgs = {
+    assigned_counselor: `您已被指派為個案「${caseName}（${caseId}）」的主責輔導人員`,
+    assigned_manager:   `您已被委任為個案「${caseName}（${caseId}）」的個案管理員`,
+    removed_manager:    `您已被移除個案「${caseName}（${caseId}）」的個案管理員身分`,
+  };
+  user.notifications.unshift({
+    id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+    type, caseId, caseName,
+    message: msgs[type] || type,
+    createdAt: new Date().toISOString(),
+    read: false,
+  });
+  if (user.notifications.length > 100) user.notifications = user.notifications.slice(0, 100);
+  return true;
+}
+
+function renderNotifBell() {
+  const notifs = configData?.users?.[currentUser?.email]?.notifications || [];
+  const unread = notifs.filter(n => !n.read).length;
+  const badge = document.getElementById('notif-badge');
+  if (!badge) return;
+  badge.textContent = unread > 99 ? '99+' : (unread || '');
+  badge.style.display = unread > 0 ? 'flex' : 'none';
+}
+
+function toggleNotifPanel() {
+  const panel = document.getElementById('notif-panel');
+  if (!panel) return;
+  const open = panel.style.display !== 'none';
+  panel.style.display = open ? 'none' : '';
+  if (!open) renderNotifList();
+}
+
+function renderNotifList() {
+  const notifs = configData?.users?.[currentUser?.email]?.notifications || [];
+  const list = document.getElementById('notif-list');
+  if (!list) return;
+  if (!notifs.length) {
+    list.innerHTML = '<div style="padding:24px;text-align:center;color:#718096;font-size:.875rem;">目前沒有通知</div>';
+    return;
+  }
+  list.innerHTML = notifs.map(n => `
+    <div class="notif-item ${n.read ? 'notif-read' : 'notif-unread'}"
+      onclick="notifClick('${escHtml(n.id)}','${escHtml(n.caseId || '')}')">
+      <div style="font-size:.875rem;color:#2d3748;line-height:1.5;">${escHtml(n.message)}</div>
+      <div style="font-size:.75rem;color:#a0aec0;margin-top:4px;">${escHtml((n.createdAt||'').slice(0,16).replace('T',' '))}</div>
+    </div>`).join('');
+}
+
+async function notifClick(notifId, caseId) {
+  const me = configData?.users?.[currentUser?.email];
+  if (me?.notifications) {
+    const n = me.notifications.find(x => x.id === notifId);
+    if (n && !n.read) {
+      n.read = true;
+      renderNotifBell();
+      renderNotifList();
+      driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    }
+  }
+  document.getElementById('notif-panel').style.display = 'none';
+  if (caseId) showCaseDetail(caseId);
+}
+
+async function markAllNotifRead() {
+  const me = configData?.users?.[currentUser?.email];
+  if (!me?.notifications?.length) return;
+  me.notifications.forEach(n => { n.read = true; });
+  renderNotifBell();
+  renderNotifList();
+  await driveUpdateJsonFile(CONFIG_FILE, configData);
 }
 
 function toggleSortLock() {
@@ -2439,9 +2545,12 @@ async function addCaseManager(caseId) {
   if (!entry.allowedCases.includes(caseId)) entry.allowedCases.push(caseId);
   if (!entry.extraRole) entry.extraRole = '個案管理員';
   configData.users[email] = entry;
+  const caseName = casesData.find(c => c.id === caseId)?.name || caseId;
+  addNotificationToUser(email, 'assigned_manager', caseId, caseName);
   showLoading('儲存個案管理員…');
   try {
     await driveUpdateJsonFile(CONFIG_FILE, configData);
+    renderNotifBell();
     auditLog(`新增個案管理員 ${email}`, caseId);
     hideLoading();
     showCaseDetail(caseId);
@@ -2458,6 +2567,8 @@ async function removeCaseManager(caseId, email) {
   if (!entry) return;
   entry.allowedCases = (entry.allowedCases || []).filter(id => id !== caseId);
   if (!entry.allowedCases.length) { delete entry.allowedCases; delete entry.extraRole; }
+  const removedCaseName = casesData.find(c => c.id === caseId)?.name || caseId;
+  addNotificationToUser(email, 'removed_manager', caseId, removedCaseName);
   showLoading('移除個案管理員…');
   try {
     await driveUpdateJsonFile(CONFIG_FILE, configData);
@@ -4052,9 +4163,13 @@ async function saveCase() {
     if (_editingCaseId) {
       const idx = casesData.findIndex(x => x.id === _editingCaseId);
       const prev = casesData[idx];
+      const oldCounselorEmail = prev.counselorEmail;
       casesData[idx] = { ...prev, ...newCase };
       await saveCasesChunks(_editingCaseId, newCase.id);
-      if (syncManagersFromForm(newCase.id, _editingCaseId)) await driveUpdateJsonFile(CONFIG_FILE, configData);
+      let cfgChanged = syncManagersFromForm(newCase.id, _editingCaseId);
+      if (counselorEmail && counselorEmail !== currentUser.email && counselorEmail !== oldCounselorEmail)
+        cfgChanged = addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name) || cfgChanged;
+      if (cfgChanged) { await driveUpdateJsonFile(CONFIG_FILE, configData); renderNotifBell(); }
       auditLog('編輯個案', newCase.id);
       hideLoading();
       renderCases();
@@ -4062,7 +4177,10 @@ async function saveCase() {
     } else {
       casesData.push(newCase);
       await saveCasesChunks(newCase.id);
-      if (syncManagersFromForm(newCase.id, null)) await driveUpdateJsonFile(CONFIG_FILE, configData);
+      let cfgChanged = syncManagersFromForm(newCase.id, null);
+      if (counselorEmail && counselorEmail !== currentUser.email)
+        cfgChanged = addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name) || cfgChanged;
+      if (cfgChanged) { await driveUpdateJsonFile(CONFIG_FILE, configData); renderNotifBell(); }
       auditLog('新增個案', newCase.id);
       hideLoading();
       showPage('page-cases', document.querySelector('.nav-item'));
@@ -4184,6 +4302,7 @@ function syncManagersFromForm(newCaseId, oldCaseId) {
   if (!section || section.style.display === 'none') return false;
   const selectedEmails = new Set([...document.querySelectorAll('input[name="nc-manager"]:checked')].map(el => el.value));
   const lookupId = oldCaseId || newCaseId;
+  const caseName = casesData.find(c => c.id === newCaseId)?.name || newCaseId;
   let changed = false;
   Object.entries(configData.users || {}).forEach(([email, info]) => {
     const wasManager = (info.allowedCases || []).includes(lookupId);
@@ -4191,12 +4310,14 @@ function syncManagersFromForm(newCaseId, oldCaseId) {
     if (wasManager && !willBeManager) {
       info.allowedCases = (info.allowedCases || []).filter(id => id !== lookupId && id !== newCaseId);
       if (!info.allowedCases.length) { delete info.allowedCases; delete info.extraRole; }
+      addNotificationToUser(email, 'removed_manager', newCaseId, caseName);
       changed = true;
     } else if (!wasManager && willBeManager) {
       info.allowedCases = info.allowedCases || [];
       if (!info.allowedCases.includes(newCaseId)) {
         info.allowedCases.push(newCaseId);
         if (!info.extraRole) info.extraRole = '個案管理員';
+        addNotificationToUser(email, 'assigned_manager', newCaseId, caseName);
         changed = true;
       }
     }
@@ -4761,6 +4882,14 @@ document.addEventListener('DOMContentLoaded', () => {
     else if (n === 'rec-social-report')     _validateSvcSocialReport();
     else if (id === 'rec-transfer-counselor') _validateTransferCounselor();
     else if (n === 'rec-transfer-type')       _validateTransferCounselor();
+  });
+  document.addEventListener('click', e => {
+    const panel = document.getElementById('notif-panel');
+    const bell  = document.getElementById('notif-bell');
+    if (panel && bell && panel.style.display !== 'none'
+        && !panel.contains(e.target) && !bell.contains(e.target)) {
+      panel.style.display = 'none';
+    }
   });
 });
 </script>
