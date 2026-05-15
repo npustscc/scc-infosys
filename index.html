@@ -1780,13 +1780,26 @@ function currentSemesterPrefix() {
   const now = new Date();
   const rocYear = now.getFullYear() - 1911;
   const month = now.getMonth() + 1;
-  return `${rocYear}${(month >= 8 || month === 1) ? 1 : 2}`;
+  if (month >= 8) return `${rocYear}1`;
+  if (month === 1) return `${rocYear - 1}1`;
+  return `${rocYear - 1}2`;
+}
+function openDateToSemPrefix(dateStr) {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + 'T00:00:00');
+  if (isNaN(d.getTime())) return '';
+  const rocYear = d.getFullYear() - 1911;
+  const month = d.getMonth() + 1;
+  if (month >= 8) return `${rocYear}1`;
+  if (month === 1) return `${rocYear - 1}1`;
+  return `${rocYear - 1}2`;
 }
 function semesterLabel(prefix) {
   if (!prefix || prefix.length < 4) return prefix || '—';
   return `${prefix.slice(0, -1)}學年第${prefix.slice(-1)}學期`;
 }
 let sortStatusLocked = localStorage.getItem('scc_sort_status_locked') !== 'false';
+let caseSort = { col: null, dir: 1 };
 let _updateAvailable = false;
 let _versionEtag = null;
 let caseFilters = {
@@ -2042,7 +2055,7 @@ function renderCases() {
   const cfSemester = document.getElementById('cf-semester');
   if (cfSemester) {
     const semesters = [...new Set(
-      visible.map(c => c.id && c.id.length >= 4 ? c.id.slice(0, 4) : '').filter(Boolean)
+      visible.map(c => openDateToSemPrefix(c.openDate)).filter(Boolean)
     )].sort().reverse();
     const prev = caseFilters.semester;
     cfSemester.innerHTML = '<option value="">全部學期</option>' +
@@ -2070,7 +2083,7 @@ function renderCases() {
 
   // ── 套用搜尋 / 篩選 ──
   const { q, status, semester, counselor, dateFrom, dateTo } = caseFilters;
-  if (semester) visible = visible.filter(c => c.id && c.id.startsWith(semester));
+  if (semester) visible = visible.filter(c => openDateToSemPrefix(c.openDate) === semester);
   if (q) {
     const ql = q.toLowerCase();
     visible = visible.filter(c =>
@@ -2119,6 +2132,13 @@ function renderCases() {
       const bOrd = (!b.deleted && b.status === 'active') ? 0 : 1;
       if (aOrd !== bOrd) return aOrd - bOrd;
     }
+    if (caseSort.col) {
+      const av = (a[caseSort.col] || '').toLowerCase();
+      const bv = (b[caseSort.col] || '').toLowerCase();
+      if (av < bv) return -1 * caseSort.dir;
+      if (av > bv) return  1 * caseSort.dir;
+      return 0;
+    }
     const roleScore = c => c.counselorEmail === myEmail ? 0 : myAllowedCases.has(c.id) ? 1 : 2;
     const rd = roleScore(a) - roleScore(b);
     if (rd !== 0) return rd;
@@ -2154,7 +2174,7 @@ function renderCases() {
       <td>${escHtml(c.id    || '—')}</td>
       <td>${escHtml(c.name  || '—')}</td>
       <td>${escHtml(c.studentId || '—')}</td>
-      <td style="font-size:.8rem;color:#718096;">${escHtml(c.id && c.id.length >= 4 ? semesterLabel(c.id.slice(0,4)) : '—')}</td>
+      <td style="font-size:.8rem;color:#718096;">${escHtml(semesterLabel(openDateToSemPrefix(c.openDate)) || '—')}</td>
       <td>${escHtml(c.counselorName || '—')}${
         (caseManagerMap[c.id] || []).length
           ? `<div style="font-size:.72rem;margin-top:2px;color:#2471a3;">
@@ -2173,7 +2193,10 @@ function renderCases() {
     <table>
       <thead>
         <tr>
-          <th>編號</th><th>個案姓名</th><th>學號</th><th>學期</th>
+          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('id')">案號 ${sortArrow('id')}</th>
+          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('name')">個案姓名 ${sortArrow('name')}</th>
+          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('studentId')">學號 ${sortArrow('studentId')}</th>
+          <th>開案學期</th>
           <th>主責人員</th><th>狀態</th><th>更新日期</th><th>操作</th>
         </tr>
       </thead>
@@ -2184,6 +2207,7 @@ function renderCases() {
 function resetCaseFilters() {
   const sem = currentSemesterPrefix();
   caseFilters = { q: '', status: '', semester: sem, counselor: '', dateFrom: '', dateTo: '' };
+  caseSort = { col: null, dir: 1 };
   localStorage.setItem('scc_semester_pref', sem);
   ['cf-q', 'cf-status', 'cf-counselor', 'cf-date-from', 'cf-date-to'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
@@ -2437,6 +2461,17 @@ function toggleSortLock() {
   sortStatusLocked = !sortStatusLocked;
   localStorage.setItem('scc_sort_status_locked', sortStatusLocked);
   renderCases();
+}
+function setCaseSort(col) {
+  if (caseSort.col === col) { caseSort.dir *= -1; }
+  else { caseSort.col = col; caseSort.dir = 1; }
+  renderCases();
+}
+function sortArrow(col) {
+  if (caseSort.col !== col) return '<span style="color:#c0cfe0;font-size:.75em;">↕</span>';
+  return caseSort.dir === 1
+    ? '<span style="color:#3182ce;font-size:.85em;">↑</span>'
+    : '<span style="color:#3182ce;font-size:.85em;">↓</span>';
 }
 
 function statusBadge(status) {
