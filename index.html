@@ -971,6 +971,17 @@
       <div class="page-title" id="new-case-page-title">新增個案</div>
       <div id="new-case-alert"></div>
 
+      <!-- 再次開案帶入 -->
+      <div id="nc-refill-section" class="form-section" style="background:#f0f9ff;border:1px solid #bee3f8;">
+        <div class="form-section-title" style="color:#2b6cb0;">再次開案？搜尋歷史個案自動帶入資料</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+          <input type="text" id="nc-refill-q" class="field-input" placeholder="輸入姓名、學號或身分證字號搜尋"
+            style="flex:1;" oninput="searchRefillCases()" />
+          <button class="btn btn-secondary" onclick="clearRefill()">清除</button>
+        </div>
+        <div id="nc-refill-results"></div>
+      </div>
+
       <!-- 基本資料 -->
       <div class="form-section">
         <div class="form-section-title">個案基本資料</div>
@@ -3576,6 +3587,7 @@ function openEditCasePage(caseId) {
     mgrSectionEdit.style.display = 'none';
   }
 
+  document.getElementById('nc-refill-section').style.display = 'none';
   document.getElementById('new-case-page-title').textContent = '編輯個案';
   document.getElementById('btn-save-case').textContent = '更新個案';
 }
@@ -3687,6 +3699,8 @@ function openNewCasePage() {
     mgrSection.style.display = 'none';
   }
 
+  clearRefill();
+  document.getElementById('nc-refill-section').style.display = '';
   _editingCaseId = null;
   document.getElementById('new-case-page-title').textContent = '新增個案';
   document.getElementById('btn-save-case').textContent = '儲存個案';
@@ -4027,6 +4041,86 @@ async function saveCase() {
     document.getElementById('btn-save-case').disabled = false;
     _caseAlert('儲存失敗：' + err.message);
   }
+}
+
+function searchRefillCases() {
+  const q = (document.getElementById('nc-refill-q').value || '').trim().toLowerCase();
+  const wrap = document.getElementById('nc-refill-results');
+  if (q.length < 2) { wrap.innerHTML = ''; return; }
+  const matches = casesData.filter(c => !c.deleted && (
+    (c.name      || '').toLowerCase().includes(q) ||
+    (c.studentId || '').toLowerCase().includes(q) ||
+    (c.idNumber  || '').toLowerCase().includes(q)
+  )).slice(0, 8);
+  if (!matches.length) {
+    wrap.innerHTML = '<div style="color:#718096;font-size:.875rem;">找不到符合的歷史個案</div>';
+    return;
+  }
+  wrap.innerHTML = matches.map(c => `
+    <div onclick="fillFromCase('${escHtml(c.id)}')"
+      style="padding:8px 12px;border:1px solid #bee3f8;border-radius:6px;margin-bottom:4px;cursor:pointer;background:#fff;
+             display:flex;gap:16px;align-items:center;font-size:.875rem;"
+      onmouseover="this.style.background='#ebf8ff'" onmouseout="this.style.background='#fff'">
+      <span style="font-weight:700;color:#1a5276;min-width:80px;">${escHtml(c.name || '—')}</span>
+      <span style="color:#718096;">${escHtml(c.studentId || '—')}</span>
+      <span style="color:#718096;">${escHtml(c.id || '—')}</span>
+      <span style="color:#a0aec0;font-size:.8rem;">${escHtml(c.openDate || '—')}</span>
+    </div>`).join('');
+}
+
+function fillFromCase(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  document.getElementById('nc-name').value       = c.name || '';
+  document.getElementById('nc-student-id').value = c.studentId || '';
+  document.getElementById('nc-id-number').value  = c.idNumber || '';
+  if (c.birthday) {
+    const [y, m, d] = c.birthday.split('-');
+    document.getElementById('nc-birth-year').value  = y || '';
+    document.getElementById('nc-birth-month').value = m || '';
+    document.getElementById('nc-birth-day').value   = d || '';
+  }
+  const setR = (name, val) => {
+    if (!val) return;
+    const el = document.querySelector(`input[name="${name}"][value="${val}"]`);
+    if (el) el.checked = true;
+  };
+  setR('nc-gender',    c.legalGender);
+  setR('nc-gender-id', c.genderIdentity);
+  setR('nc-type',      c.caseType);
+  setR('nc-residence', c.residence);
+  setR('nc-nationality', c.nationality || '');
+  toggleEthnicity();
+  document.getElementById('nc-foreign-country').value = c.foreignCountry || '';
+  if (c.ethnicity) {
+    setR('nc-ethnicity', c.ethnicity);
+    toggleEthnicityNote({ value: c.ethnicity });
+    const noteId = ETH_NOTE_IDS[c.ethnicity];
+    if (noteId && c.ethnicityNote) document.getElementById(noteId).value = c.ethnicityNote;
+  }
+  document.getElementById('nc-program').value       = c.program || '';
+  document.getElementById('nc-disability').value    = c.disability || '';
+  document.getElementById('nc-dept').value          = c.department || '';
+  document.getElementById('nc-grade').value         = c.grade || '';
+  document.getElementById('nc-class').value         = c.classNo || '';
+  document.getElementById('nc-phone').value         = c.phone || '';
+  document.getElementById('nc-address').value       = c.address || '';
+  document.getElementById('nc-emg-name').value      = c.emergencyName || '';
+  document.getElementById('nc-emg-phone').value     = c.emergencyPhone || '';
+  document.getElementById('nc-emg-relation').value  = c.emergencyRelation || '';
+  document.getElementById('nc-past-psych').checked   = (c.pastRecords||[]).includes('精神科就診');
+  document.getElementById('nc-past-med').checked     = (c.pastRecords||[]).includes('服用精神藥物');
+  document.getElementById('nc-past-counsel').checked = (c.pastRecords||[]).includes('心理諮商');
+  document.getElementById('nc-refill-q').value = '';
+  document.getElementById('nc-refill-results').innerHTML =
+    `<div style="color:#276749;background:#f0fff4;border:1px solid #9ae6b4;padding:8px 12px;border-radius:6px;font-size:.875rem;">
+      ✓ 已帶入「${escHtml(c.name || '—')}」的歷史資料，案號、開案日期、主責人員請重新填寫
+    </div>`;
+}
+
+function clearRefill() {
+  document.getElementById('nc-refill-q').value = '';
+  document.getElementById('nc-refill-results').innerHTML = '';
 }
 
 function renderNcManagersCheckboxes(selectedManagers) {
