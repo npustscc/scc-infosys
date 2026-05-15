@@ -945,12 +945,15 @@
       </div>
 
       <!-- 個案摘要 + 操作按鈕 -->
-      <div class="form-section" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;">
-        <div>
-          <div style="font-size:1.25rem;font-weight:700;color:#1a5276;" id="detail-name"></div>
-          <div style="color:#718096;font-size:.85rem;margin-top:6px;" id="detail-meta"></div>
+      <div class="form-section">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;">
+          <div>
+            <div style="font-size:1.25rem;font-weight:700;color:#1a5276;" id="detail-name"></div>
+            <div style="color:#718096;font-size:.85rem;margin-top:6px;" id="detail-meta"></div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;" id="detail-actions"></div>
         </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;" id="detail-actions"></div>
+        <div id="detail-managers" style="display:none;border-top:1px solid #e2e8f0;margin-top:14px;padding-top:12px;"></div>
       </div>
 
       <!-- 詳細資料區塊（動態產生） -->
@@ -1208,7 +1211,7 @@
         <div class="form-grid">
           <div>
             <label class="field-label">主責輔導人員<span class="req">*</span></label>
-            <select class="field-select" id="nc-counselor"></select>
+            <select class="field-select" id="nc-counselor" onchange="renderNcManagersCheckboxes()"></select>
           </div>
           <div>
             <label class="field-label">狀態<span class="req">*</span></label>
@@ -1218,6 +1221,12 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- 個案管理員（僅管理者可見） -->
+      <div class="form-section" id="nc-managers-section" style="display:none;">
+        <div class="form-section-title">個案管理員</div>
+        <div id="nc-managers-body" style="line-height:2;"></div>
       </div>
 
       <div class="form-actions">
@@ -2142,6 +2151,14 @@ function showCaseDetail(caseId) {
   }
   document.getElementById('detail-actions').innerHTML = actionsHtml;
 
+  const mgrsEl = document.getElementById('detail-managers');
+  if (isAdminUser) {
+    mgrsEl.innerHTML = `<div style="font-size:.76rem;color:#a0aec0;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">個案管理員</div>${renderCaseManagersBody(c)}`;
+    mgrsEl.style.display = '';
+  } else {
+    mgrsEl.style.display = 'none';
+  }
+
   const field = (label, val) => `
     <div>
       <div style="font-size:.76rem;color:#a0aec0;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;">${escHtml(label)}</div>
@@ -2278,7 +2295,6 @@ function showCaseDetail(caseId) {
       ${field('主訴問題', (c.topics || []).join('、') || '—')}
     </div>`) +
     evalHtml +
-    (isAdminUser ? mkSection('case-managers', '個案管理員', renderCaseManagersBody(c), false) : '') +
     recordsHtml;
 
   showPage('page-case-detail', null);
@@ -2287,7 +2303,9 @@ function showCaseDetail(caseId) {
 function renderCaseManagersBody(c) {
   const allUsers = Object.entries(configData.users || {});
   const managers = allUsers.filter(([, info]) => (info.allowedCases || []).includes(c.id));
-  const nonManagers = allUsers.filter(([, info]) => !(info.allowedCases || []).includes(c.id));
+  const nonManagers = allUsers.filter(([email, info]) =>
+    !(info.allowedCases || []).includes(c.id) && email !== c.counselorEmail
+  );
 
   const chips = managers.length
     ? managers.map(([email, info]) =>
@@ -3483,6 +3501,17 @@ function openEditCasePage(caseId) {
 
   document.getElementById('nc-counselor').value = c.counselorEmail || '';
 
+  const mgrSectionEdit = document.getElementById('nc-managers-section');
+  if (currentRole === '主任' || extraRole === '管理者') {
+    mgrSectionEdit.style.display = '';
+    const currentManagers = Object.entries(configData.users || {})
+      .filter(([, info]) => (info.allowedCases || []).includes(caseId))
+      .map(([email]) => email);
+    renderNcManagersCheckboxes(currentManagers);
+  } else {
+    mgrSectionEdit.style.display = 'none';
+  }
+
   document.getElementById('new-case-page-title').textContent = '編輯個案';
   document.getElementById('btn-save-case').textContent = '更新個案';
 }
@@ -3584,6 +3613,14 @@ function openNewCasePage() {
         sel.appendChild(opt);
       }
     });
+  }
+
+  const mgrSection = document.getElementById('nc-managers-section');
+  if (currentRole === '主任' || extraRole === '管理者') {
+    mgrSection.style.display = '';
+    renderNcManagersCheckboxes([]);
+  } else {
+    mgrSection.style.display = 'none';
   }
 
   _editingCaseId = null;
@@ -3906,6 +3943,7 @@ async function saveCase() {
       const prev = casesData[idx];
       casesData[idx] = { ...prev, ...newCase };
       await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+      if (syncManagersFromForm(newCase.id, _editingCaseId)) await driveUpdateJsonFile(CONFIG_FILE, configData);
       auditLog('編輯個案', newCase.id);
       hideLoading();
       renderCases();
@@ -3913,6 +3951,7 @@ async function saveCase() {
     } else {
       casesData.push(newCase);
       await driveUpdateJsonFile(CASES_INDEX, { cases: casesData });
+      if (syncManagersFromForm(newCase.id, null)) await driveUpdateJsonFile(CONFIG_FILE, configData);
       auditLog('新增個案', newCase.id);
       hideLoading();
       showPage('page-cases', document.querySelector('.nav-item'));
@@ -3925,6 +3964,53 @@ async function saveCase() {
     document.getElementById('btn-save-case').disabled = false;
     _caseAlert('儲存失敗：' + err.message);
   }
+}
+
+function renderNcManagersCheckboxes(selectedManagers) {
+  const body = document.getElementById('nc-managers-body');
+  if (!body || !configData || !configData.users) return;
+  const counselorEmail = document.getElementById('nc-counselor').value;
+  if (selectedManagers === undefined) {
+    selectedManagers = [...document.querySelectorAll('input[name="nc-manager"]:checked')].map(el => el.value);
+  }
+  const users = Object.entries(configData.users).filter(([email, info]) =>
+    info.role && info.role !== '系統管理者' && email !== counselorEmail
+  );
+  if (!users.length) {
+    body.innerHTML = '<span style="color:#718096;font-size:.85rem;">無可指派人員</span>';
+    return;
+  }
+  body.innerHTML = users.map(([email, info]) =>
+    `<label style="display:inline-flex;align-items:center;gap:6px;margin:4px 16px 4px 0;font-size:.875rem;cursor:pointer;">
+      <input type="checkbox" name="nc-manager" value="${escHtml(email)}" ${selectedManagers.includes(email) ? 'checked' : ''}>
+      ${escHtml(info.name || email)}（${escHtml(info.role)}）
+    </label>`
+  ).join('');
+}
+
+function syncManagersFromForm(newCaseId, oldCaseId) {
+  const section = document.getElementById('nc-managers-section');
+  if (!section || section.style.display === 'none') return false;
+  const selectedEmails = new Set([...document.querySelectorAll('input[name="nc-manager"]:checked')].map(el => el.value));
+  const lookupId = oldCaseId || newCaseId;
+  let changed = false;
+  Object.entries(configData.users || {}).forEach(([email, info]) => {
+    const wasManager = (info.allowedCases || []).includes(lookupId);
+    const willBeManager = selectedEmails.has(email);
+    if (wasManager && !willBeManager) {
+      info.allowedCases = (info.allowedCases || []).filter(id => id !== lookupId && id !== newCaseId);
+      if (!info.allowedCases.length) { delete info.allowedCases; delete info.extraRole; }
+      changed = true;
+    } else if (!wasManager && willBeManager) {
+      info.allowedCases = info.allowedCases || [];
+      if (!info.allowedCases.includes(newCaseId)) {
+        info.allowedCases.push(newCaseId);
+        if (!info.extraRole) info.extraRole = '個案管理員';
+        changed = true;
+      }
+    }
+  });
+  return changed;
 }
 
 // ══════════════════════════════════════════════
