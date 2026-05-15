@@ -1993,14 +1993,22 @@ async function loadCases() {
   showLoading('載入個案資料…');
   try {
     let manifest = null;
-    try { manifest = await driveReadJson(CASES_MANIFEST); } catch { manifest = null; }
+    let fileMap  = null;
+    try {
+      fileMap  = await getCasesFolderFileMap();
+      const manifestId = fileMap.get('manifest.json');
+      if (manifestId) manifest = await driveReadJsonById(manifestId);
+    } catch { manifest = null; }
 
     if (manifest && Array.isArray(manifest.chunks)) {
       casesManifest = manifest;
       const results = await Promise.all(
-        manifest.chunks.map(chunk =>
-          driveReadJson(`cases/${chunk}.json`).catch(() => ({ cases: [] }))
-        )
+        manifest.chunks.map(chunk => {
+          const chunkFile = `${chunk}.json`;
+          const fid = fileMap && fileMap.get(chunkFile);
+          return (fid ? driveReadJsonById(fid) : driveReadJson(`cases/${chunkFile}`))
+            .catch(() => ({ cases: [] }));
+        })
       );
       casesData = results.flatMap(r => r.cases || []);
     } else {
@@ -5148,6 +5156,30 @@ async function driveReadJson(path) {
   const r      = await fetch(url, { headers: { Authorization: 'Bearer ' + gAccessToken } });
   if (!r.ok) throw new Error(`Drive 讀取失敗 (${r.status})`);
   return r.json();
+}
+
+async function driveReadJsonById(fileId) {
+  const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+  const r   = await fetch(url, { headers: { Authorization: 'Bearer ' + gAccessToken } });
+  if (!r.ok) throw new Error(`Drive 讀取失敗 (${r.status})`);
+  return r.json();
+}
+
+let _casesFolderIdCache = null;
+async function getCasesFolderFileMap() {
+  if (!_casesFolderIdCache) {
+    const q = `name='cases' and mimeType='application/vnd.google-apps.folder' and '${DRIVE_FOLDER_ID}' in parents and trashed=false`;
+    const res = await driveQuery(q, 'id');
+    if (!res.files || !res.files.length) throw new Error('找不到 cases 資料夾');
+    _casesFolderIdCache = res.files[0].id;
+  }
+  const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+    `'${_casesFolderIdCache}' in parents and trashed=false`
+  )}&fields=files(id,name)&pageSize=200`;
+  const r = await apiFetch(url);
+  const map = new Map();
+  (r.files || []).forEach(f => map.set(f.name, f.id));
+  return map;
 }
 
 async function driveCreateFolder(name, parentId) {
