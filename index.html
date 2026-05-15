@@ -1310,14 +1310,18 @@
             <label class="field-label">5. 覺得比不上別人或自己沒有用</label>
             <div class="bsrs-btn-group" data-id="nc-bsrs5"><button type="button" class="bsrs-opt active" data-val="">未填</button><button type="button" class="bsrs-opt" data-val="0">0</button><button type="button" class="bsrs-opt" data-val="1">1</button><button type="button" class="bsrs-opt" data-val="2">2</button><button type="button" class="bsrs-opt" data-val="3">3</button><button type="button" class="bsrs-opt" data-val="4">4</button><input type="hidden" id="nc-bsrs5" value=""></div>
           </div>
-          <div class="full" style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid #edf2f7;border-bottom:1px solid #edf2f7;">
-            <span style="font-size:.9rem;color:#4a5568;">總困擾分數（第1–5題）：</span>
-            <strong id="nc-bsrs-total" style="font-size:1.05rem;color:#2b6cb0;">—</strong>
-            <span style="font-size:.8rem;color:#a0aec0;">/ 20 分</span>
+          <div class="full" style="padding:6px 0;border-top:1px solid #edf2f7;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="font-size:.9rem;color:#4a5568;">總困擾分數（第1–5題）：</span>
+              <strong id="nc-bsrs-total" style="font-size:1.05rem;color:#2b6cb0;">—</strong>
+              <span style="font-size:.8rem;color:#a0aec0;">/ 20 分</span>
+            </div>
+            <div id="nc-bsrs-total-alert" style="display:none;margin-top:6px;"></div>
           </div>
-          <div class="full" style="margin-top:4px;">
+          <div class="full" style="margin-top:4px;padding-bottom:6px;border-bottom:1px solid #edf2f7;">
             <label class="field-label" style="color:#c53030;">6. 有自殺的想法</label>
             <div class="bsrs-btn-group" data-id="nc-bsrs6"><button type="button" class="bsrs-opt active" data-val="">未填</button><button type="button" class="bsrs-opt" data-val="0">0</button><button type="button" class="bsrs-opt" data-val="1">1</button><button type="button" class="bsrs-opt" data-val="2">2</button><button type="button" class="bsrs-opt" data-val="3">3</button><button type="button" class="bsrs-opt" data-val="4">4</button><input type="hidden" id="nc-bsrs6" value=""></div>
+            <div id="nc-bsrs6-alert" style="display:none;margin-top:6px;"></div>
           </div>
         </div>
       </div>
@@ -2801,10 +2805,22 @@ function showCaseDetail(caseId) {
       if (!hasBsrs) return '';
       const scoreLabel = v => (['完全沒有','輕微','有時如此','常常如此','幾乎每天'][v] ?? '—');
       const qLabels = ['睡眠困擾','感覺緊張不安','覺得容易苦惱或動怒','感覺憂鬱、心情低落','覺得比不上別人或自己沒有用'];
+      const hasIndividual = (c.bsrs||[]).some(v=>v!==null&&v!==undefined);
+      const alertRow = (info) => `<div class="full"><div style="padding:7px 10px;border-left:3px solid ${info.border};background:${info.bg};color:${info.color};font-size:.84rem;border-radius:0 4px 4px 0;">${info.msg}</div></div>`;
+      const individualRows = hasIndividual
+        ? qLabels.map((lbl,i)=>{ const v=(c.bsrs||[])[i]; return field(`${i+1}. ${lbl}`, v!==null&&v!==undefined?`${v} ${scoreLabel(v)}`:'—'); }).join('')
+        : '';
+      const totalVal = c.bsrsTotal !== null && c.bsrsTotal !== undefined;
+      const totalRow = totalVal
+        ? field('總困擾分數（第1–5題）', c.bsrsTotal+' 分') + alertRow(bsrsLevelInfo(c.bsrsTotal))
+        : '';
+      const q6score = c.bsrs6 !== null && c.bsrs6 !== undefined ? c.bsrs6 : null;
+      const q6Row = field('6. 有自殺的想法', q6score !== null ? `${q6score} ${scoreLabel(q6score)}` : '未填')
+        + (q6score !== null && q6score > 0 ? alertRow(bsrs6AlertInfo(q6score)) : '');
       return mkSection('bsrs','BSRS-5 心理困擾量表',`<div class="form-grid">
-        ${qLabels.map((lbl,i)=>{ const v=(c.bsrs||[])[i]; return field(`${i+1}. ${lbl}`, v!==null&&v!==undefined?`${v} ${scoreLabel(v)}`:'—'); }).join('')}
-        ${field('總困擾分數（第1–5題）', c.bsrsTotal!==null&&c.bsrsTotal!==undefined ? c.bsrsTotal+' 分' : '—')}
-        ${field('6. 有自殺的想法', c.bsrs6!==null&&c.bsrs6!==undefined ? `${c.bsrs6} ${scoreLabel(c.bsrs6)}` : '—')}
+        ${individualRows}
+        ${totalRow}
+        ${q6Row}
       </div>`);
     })() +
     mkSection('intake', '來談資訊', `<div class="form-grid">
@@ -4245,6 +4261,22 @@ function updateBirthRoc() {
   } else { el.textContent = ''; }
 }
 
+function bsrsLevelInfo(score) {
+  if (score <= 5)  return { color:'#276749', bg:'#f0fff4', border:'#9ae6b4', msg:`【正常（${score} 分）】個案情緒狀態在正常範圍，建議定期關注。` };
+  if (score <= 9)  return { color:'#744210', bg:'#fffbeb', border:'#fbd38d', msg:`【輕度困擾（${score} 分）】建議鼓勵個案向家人或朋友傾訴，提供情緒支持，持續追蹤。` };
+  if (score <= 14) return { color:'#7b341e', bg:'#fff5f0', border:'#feb2b2', msg:`【中度困擾（${score} 分）】建議安排心理諮商，進行專業評估；視情況評估是否轉介精神科。` };
+  return { color:'#742a2a', bg:'#fff5f5', border:'#fc8181', msg:`【重度困擾（${score} 分）】建議優先安排深度評估，積極考慮轉介精神科，必要時啟動危機介入。` };
+}
+
+function bsrs6AlertInfo(score) {
+  if (score === 1) return { color:'#744210', bg:'#fffbeb', border:'#fbd38d', msg:'第6題有輕微自殺想法，建議深入評估自殺風險，保持密切關注。' };
+  return { color:'#742a2a', bg:'#fff5f5', border:'#fc8181', msg:'第6題有明顯自殺風險，建議立即進行自殺風險評估，必要時啟動危機介入程序並轉介精神科。' };
+}
+
+function _bsrsAlertHtml(info) {
+  return `<div style="padding:7px 10px;border-left:3px solid ${info.border};background:${info.bg};color:${info.color};font-size:.84rem;border-radius:0 4px 4px 0;">${info.msg}</div>`;
+}
+
 function setBsrsBtn(id, val) {
   const group = document.querySelector(`.bsrs-btn-group[data-id="${id}"]`);
   if (!group) return;
@@ -4265,13 +4297,28 @@ document.addEventListener('click', function(e) {
 
 function calcBsrsTotal() {
   const ids = ['nc-bsrs1','nc-bsrs2','nc-bsrs3','nc-bsrs4','nc-bsrs5'];
-  let total = 0, filled = false;
+  let total = 0, allFilled = true, hasSome = false;
   for (const id of ids) {
     const v = document.getElementById(id)?.value;
-    if (v !== '' && v !== undefined) { total += parseInt(v)||0; filled = true; }
+    if (v !== '' && v !== undefined) { total += parseInt(v)||0; hasSome = true; }
+    else { allFilled = false; }
   }
   const el = document.getElementById('nc-bsrs-total');
-  if (el) el.textContent = filled ? total : '—';
+  if (el) el.textContent = hasSome ? total : '—';
+
+  const alertEl = document.getElementById('nc-bsrs-total-alert');
+  if (alertEl) {
+    if (allFilled) { alertEl.innerHTML = _bsrsAlertHtml(bsrsLevelInfo(total)); alertEl.style.display = ''; }
+    else { alertEl.style.display = 'none'; }
+  }
+
+  const q6v = document.getElementById('nc-bsrs6')?.value;
+  const q6AlertEl = document.getElementById('nc-bsrs6-alert');
+  if (q6AlertEl) {
+    const q6score = q6v !== '' && q6v !== undefined ? parseInt(q6v) : null;
+    if (q6score !== null && q6score > 0) { q6AlertEl.innerHTML = _bsrsAlertHtml(bsrs6AlertInfo(q6score)); q6AlertEl.style.display = ''; }
+    else { q6AlertEl.style.display = 'none'; }
+  }
 }
 
 // ── 資料匯入 ──────────────────────────────────────
