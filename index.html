@@ -29,7 +29,7 @@
     #app-header h1 { font-size: 1.05rem; font-weight: 600; letter-spacing: .03em; }
     #user-info { display: flex; align-items: center; gap: 12px; font-size: .875rem; }
     #user-info img { width: 32px; height: 32px; border-radius: 50%; border: 2px solid #fff; }
-    #notif-bell { position:relative; cursor:pointer; padding:4px 6px; border-radius:6px; transition:background .15s; }
+    #notif-bell { position:relative; cursor:pointer; padding:4px 8px; border-radius:6px; transition:background .15s; display:flex; align-items:center; }
     #notif-bell:hover { background:rgba(255,255,255,.15); }
     #notif-badge { position:absolute; top:-2px; right:-2px; background:#e53e3e; color:#fff;
       border-radius:50%; min-width:16px; height:16px; font-size:.65rem; font-weight:700;
@@ -505,6 +505,42 @@
     .btn-rec-delete:hover { background: #f5c6cb; }
     .btn-rec-restore { background: #d5f5e3; color: #1d6a3a; }
     .btn-rec-restore:hover { background: #a9dfbf; }
+    /* ── 紀錄卡片 fold/expand ── */
+    .rec-full-view { display: none; }
+    .record-card.rec-expanded .rec-fold-view { display: none; }
+    .record-card.rec-expanded .rec-full-view { display: block; }
+    .rec-summary-clamp {
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+    }
+    .rec-nextplan-clamp {
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 1;
+      -webkit-box-orient: vertical;
+    }
+    .rec-section-label {
+      font-size: .7rem;
+      font-weight: 700;
+      color: #a0aec0;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin: 10px 0 3px;
+    }
+    .rec-toggle-btn {
+      background: none;
+      border: 1px solid #cbd5e0;
+      border-radius: 4px;
+      color: #718096;
+      cursor: pointer;
+      font-size: .72rem;
+      padding: 2px 9px;
+      line-height: 1.5;
+      white-space: nowrap;
+    }
+    .rec-toggle-btn:hover { background: #f0f4f8; color: #2d3748; }
     .record-card.deleted {
       opacity: .55; background: #f8f8f8; border-color: #e2e8f0;
     }
@@ -679,15 +715,15 @@
 <!-- ── App Header ── -->
 <header id="app-header">
   <h1>🏫 國立屏東科技大學學生諮商中心資訊系統</h1>
+  <div id="notif-bell" onclick="toggleNotifPanel()" title="通知" style="display:none;">
+    <span style="font-size:1.25rem;line-height:1;">🔔</span>
+    <span id="notif-badge"></span>
+  </div>
   <div id="user-info" style="display:none;">
     <img id="user-avatar" src="" alt="頭像" />
     <div style="text-align:right;line-height:1.4;">
       <div style="font-size:.9rem;" id="user-name"></div>
       <div style="font-size:.75rem;opacity:.8;" id="user-role"></div>
-    </div>
-    <div id="notif-bell" onclick="toggleNotifPanel()" title="通知">
-      <span style="font-size:1.25rem;line-height:1;">🔔</span>
-      <span id="notif-badge"></span>
     </div>
     <button id="btn-logout" onclick="signOut()">登出</button>
   </div>
@@ -1798,7 +1834,8 @@ async function afterLogin() {
   // 更新 header（無論成功失敗都先顯示使用者資訊）
   document.getElementById('user-avatar').src = currentUser.picture;
   document.getElementById('user-name').textContent = currentUser.name;
-  document.getElementById('user-info').style.display = 'flex';
+  document.getElementById('user-info').style.display  = 'flex';
+  document.getElementById('notif-bell').style.display = 'flex';
 
   try {
     configData = await driveReadJson(CONFIG_FILE);
@@ -2106,16 +2143,18 @@ function renderNotifBell() {
   const notifs = configData?.users?.[currentUser?.email]?.notifications || [];
   const unread = notifs.filter(n => !n.read).length + (_updateAvailable ? 1 : 0);
   const badge = document.getElementById('notif-badge');
+  const bell  = document.getElementById('notif-bell');
   if (!badge) return;
   badge.textContent = unread > 99 ? '99+' : (unread || '');
   badge.style.display = unread > 0 ? 'flex' : 'none';
+  if (bell) bell.style.display = 'flex';
 }
 
 function toggleNotifPanel() {
   const panel = document.getElementById('notif-panel');
   if (!panel) return;
-  const open = panel.style.display !== 'none';
-  panel.style.display = open ? 'none' : '';
+  const open = panel.style.display === 'block';
+  panel.style.display = open ? 'none' : 'block';
   if (!open) renderNotifList();
 }
 
@@ -2274,6 +2313,14 @@ async function checkForUpdate() {
       if (panel && panel.style.display !== 'none') renderNotifList();
     }
   } catch (_) {}
+}
+
+function toggleRecordExpand(rid) {
+  const card = document.getElementById('rec-card-' + rid);
+  if (!card) return;
+  const expanded = card.classList.toggle('rec-expanded');
+  const btn = card.querySelector('.rec-toggle-btn');
+  if (btn) btn.textContent = expanded ? '收合 ▲' : '展開 ▼';
 }
 
 function toggleSortLock() {
@@ -2537,22 +2584,47 @@ function showCaseDetail(caseId) {
       deletedLabel = `<span class="deleted-badge">已刪除（個案已刪除）</span>`;
     }
 
+    const timeDisplay = r.time ? ` ${escHtml(r.time.startsWith('其他：') ? r.time.slice(3) : r.time)}` : '';
+    const topicBadges = r.topics?.length
+      ? `<div style="margin-bottom:6px;">${r.topics.map(t=>`<span class="badge badge-gray" style="margin-right:4px;">${escHtml(t)}</span>`).join('')}</div>`
+      : '';
+    const svcBadges = r.serviceItems?.length
+      ? `<div class="record-tags">${r.serviceItems.map(s=>{const ci=s.indexOf('：');return ci>0?`<span class="svc-badge"><b class="svc-main">${escHtml(s.slice(0,ci))}</b><span class="svc-sep">：</span><span class="svc-sub">${escHtml(s.slice(ci+1))}</span></span>`:`<span class="svc-badge"><b class="svc-main">${escHtml(s)}</b></span>`;}).join('')}</div>`
+      : '';
+
+    const foldView = `<div class="rec-fold-view">
+      ${topicBadges}
+      ${r.summary ? `<div class="record-summary rec-summary-clamp">${escHtml(r.summary)}</div>` : ''}
+      ${svcBadges}
+      ${r.nextPlan ? `<div style="margin-top:6px;font-size:.82rem;color:#718096;" class="rec-nextplan-clamp">📌 ${escHtml(r.nextPlan)}</div>` : ''}
+    </div>`;
+
+    const fullView = `<div class="rec-full-view">
+      ${topicBadges}
+      ${r.summary ? `<div class="rec-section-label">主述與會談資料</div><div class="record-summary">${escHtml(r.summary)}</div>` : ''}
+      ${r.assessment ? `<div class="rec-section-label">問題評估</div><div class="record-summary">${escHtml(r.assessment)}</div>` : ''}
+      ${svcBadges}
+      ${r.nextPlan ? `<div class="rec-section-label">後續處遇計畫</div><div style="font-size:.87rem;color:#2d3748;white-space:pre-wrap;">${escHtml(r.nextPlan)}</div>` : ''}
+    </div>`;
+
+    const toggleBtn = !r.deleted
+      ? `<button class="rec-toggle-btn" onclick="toggleRecordExpand('${escHtml(r.id)}')">展開 ▼</button>`
+      : '';
+
     return `
-      <div class="record-card${showDeleted ? ' deleted' : ''}">
+      <div class="record-card${showDeleted ? ' deleted' : ''}" id="rec-card-${escHtml(r.id)}">
         <div class="record-card-header">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <span class="record-date">${escHtml(r.date)}${r.time ? ` ${escHtml(r.time.startsWith('其他：') ? r.time.slice(3) : r.time)}` : ''}</span>
+            <span class="record-date">${escHtml(r.date)}${timeDisplay}</span>
             ${deletedLabel}
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <span class="record-counselor">${escHtml(r.counselorName || r.counselorEmail)}</span>
             <div class="record-card-actions">${actions}</div>
+            ${toggleBtn}
           </div>
         </div>
-        ${r.topics?.length ? `<div style="margin-bottom:6px;">${r.topics.map(t=>`<span class="badge badge-gray" style="margin-right:4px;">${escHtml(t)}</span>`).join('')}</div>` : ''}
-        <div class="record-summary">${escHtml(r.summary)}</div>
-        ${r.serviceItems?.length ? `<div class="record-tags">${r.serviceItems.map(s=>{const ci=s.indexOf('：');return ci>0?`<span class="svc-badge"><b class="svc-main">${escHtml(s.slice(0,ci))}</b><span class="svc-sep">：</span><span class="svc-sub">${escHtml(s.slice(ci+1))}</span></span>`:`<span class="svc-badge"><b class="svc-main">${escHtml(s)}</b></span>`;}).join('')}</div>` : ''}
-        ${r.nextPlan ? `<div style="margin-top:6px;font-size:.82rem;color:#718096;">📌 下次計畫：${escHtml(r.nextPlan)}</div>` : ''}
+        ${foldView}${fullView}
       </div>`;
   };
 
@@ -4539,6 +4611,8 @@ function signOut() {
   casesData = [];
 
   document.getElementById('user-info').style.display   = 'none';
+  document.getElementById('notif-bell').style.display  = 'none';
+  document.getElementById('notif-panel').style.display = 'none';
   document.getElementById('main-layout').style.display = 'none';
   document.getElementById('init-screen').style.display = 'none';
   document.getElementById('login-screen').style.display = '';
@@ -5016,7 +5090,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('click', e => {
     const panel = document.getElementById('notif-panel');
     const bell  = document.getElementById('notif-bell');
-    if (panel && bell && panel.style.display !== 'none'
+    if (panel && bell && panel.style.display === 'block'
         && !panel.contains(e.target) && !bell.contains(e.target)) {
       panel.style.display = 'none';
     }
