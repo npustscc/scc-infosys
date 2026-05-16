@@ -946,6 +946,7 @@
           <p style="font-size:.88rem;color:#718096;margin-bottom:12px;">從服務總表 Excel（.xlsm / .xlsx）匯入個案基本資料。匯入前請先清空現有資料。</p>
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
             <button class="btn btn-danger" onclick="confirmClearAllCases()">清空所有個案</button>
+            <button class="btn btn-secondary" onclick="recoverCasesFromDrive()">從 Drive 恢復個案</button>
             <label class="btn btn-primary" style="cursor:pointer;margin:0;">匯入服務總表
               <input type="file" id="import-file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportFile(this)" />
             </label>
@@ -4403,6 +4404,41 @@ async function confirmClearAllCases() {
     hideLoading();
     alert('✓ 已清空所有個案資料。');
   } catch(e) { hideLoading(); alert('清空失敗：' + e.message); }
+}
+
+async function recoverCasesFromDrive() {
+  if (!confirm('嘗試從 Drive 上殘存的 chunk 檔案恢復個案資料？')) return;
+  showLoading('掃描 Drive chunk 檔案中…');
+  try {
+    const fileMap = await getCasesFolderFileMap();
+    const chunkEntries = [...fileMap.entries()].filter(
+      ([name]) => name !== 'manifest.json' && name !== 'index.json' && name.endsWith('.json')
+    );
+    if (chunkEntries.length === 0) {
+      hideLoading();
+      alert('Drive 上找不到任何 chunk 檔案，資料可能已完全遺失。');
+      return;
+    }
+    showLoading(`找到 ${chunkEntries.length} 個 chunk 檔，下載中…`);
+    const results = await Promise.all(
+      chunkEntries.map(([name, fid]) =>
+        driveReadJsonById(fid).catch(e => { console.warn('chunk 讀取失敗:', name, e.message); return { cases: [] }; })
+      )
+    );
+    const recovered = results.flatMap(r => r.cases || []);
+    if (recovered.length === 0) {
+      hideLoading();
+      alert('chunk 檔案存在但內容為空，資料可能已遺失。');
+      return;
+    }
+    casesData = recovered;
+    casesManifest = { chunks: [] };
+    showLoading(`找到 ${recovered.length} 筆個案，重建 manifest 中…`);
+    await migrateToChunks();
+    renderCases();
+    hideLoading();
+    alert(`✓ 成功恢復 ${recovered.length} 筆個案！`);
+  } catch(e) { hideLoading(); alert('恢復失敗：' + e.message); }
 }
 
 function handleImportFile(input) {
