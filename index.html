@@ -1994,13 +1994,20 @@ async function loadCases() {
   try {
     let manifest = null;
     let fileMap  = null;
+
+    // 嘗試批次取得 cases 資料夾所有檔案 ID（減少 API 呼叫次數）
     try {
-      fileMap  = await getCasesFolderFileMap();
+      fileMap = await getCasesFolderFileMap();
       const manifestId = fileMap.get('manifest.json');
       if (manifestId) manifest = await driveReadJsonById(manifestId);
-    } catch { /* getCasesFolderFileMap 失敗，下方 fallback */ }
+    } catch (e) {
+      console.warn('[loadCases] 批次載入失敗，改用路徑方式:', e.message);
+    }
+
+    // fallback：逐層路徑查詢
     if (!manifest) {
-      try { manifest = await driveReadJson(CASES_MANIFEST); } catch { manifest = null; }
+      try { manifest = await driveReadJson(CASES_MANIFEST); }
+      catch (e) { console.error('[loadCases] manifest 載入失敗:', e.message); manifest = null; }
     }
 
     if (manifest && Array.isArray(manifest.chunks)) {
@@ -2010,7 +2017,7 @@ async function loadCases() {
           const chunkFile = `${chunk}.json`;
           const fid = fileMap && fileMap.get(chunkFile);
           return (fid ? driveReadJsonById(fid) : driveReadJson(`cases/${chunkFile}`))
-            .catch(() => ({ cases: [] }));
+            .catch(e => { console.warn('[loadCases] chunk 載入失敗:', chunkFile, e.message); return { cases: [] }; });
         })
       );
       casesData = results.flatMap(r => r.cases || []);
@@ -5162,10 +5169,7 @@ async function driveReadJson(path) {
 }
 
 async function driveReadJsonById(fileId) {
-  const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
-  const r   = await fetch(url, { headers: { Authorization: 'Bearer ' + gAccessToken } });
-  if (!r.ok) throw new Error(`Drive 讀取失敗 (${r.status})`);
-  return r.json();
+  return apiFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
 }
 
 let _casesFolderIdCache = null;
