@@ -1967,6 +1967,7 @@ const CASES_INDEX     = 'cases/index.json'; // 舊格式（升級後僅作備份
 const CASES_MANIFEST  = 'cases/manifest.json';
 const CHUNK_SIZE      = 20;
 const AUDIT_LOG_FILE  = 'audit_log.json';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby9ZDT7NO7Jso3mbzbMaOzN0mdfgREbxoHRLC3NEbulGtKwp9eTibpD0XwKJCeC9wlh/exec';
 
 // 角色常數
 const ROLES = [
@@ -2012,6 +2013,7 @@ const CLOSURE_DIMS = [
 //  全域狀態
 // ══════════════════════════════════════════════
 let gAccessToken = null;
+let gIdToken     = null;   // Google ID token（傳給 Apps Script 驗證用）
 let currentUser  = null;   // { email, name, picture }
 let currentRole  = null;   // 從 config.json 讀來
 let extraRole    = null;   // 管理者 / 個案管理員 / null
@@ -2224,6 +2226,7 @@ function handleCredentialResponse(response) {
   ));
   currentUser = { email: payload.email, name: payload.name, picture: payload.picture };
   sessionStorage.setItem('scc_user', JSON.stringify(currentUser));
+  gIdToken = response.credential; // 保留 ID token 供 Apps Script 驗證用
 
   // 用 OAuth2 implicit flow 取得 Drive access_token
   const tokenClient = google.accounts.oauth2.initTokenClient({
@@ -7039,6 +7042,26 @@ function injectSharedDriveParams(url) {
   const add = extras.filter(p => !present.has(p.split('=')[0]));
   if (!add.length) return url;
   return url + sep + add.join('&');
+}
+
+// ══════════════════════════════════════════════
+//  Apps Script Proxy（所有 Drive 操作將透過此函式）
+// ══════════════════════════════════════════════
+async function proxyCall(action, params = {}) {
+  if (!gIdToken) throw new Error('尚未取得 ID token，請重新登入');
+  const payload = JSON.stringify({ idToken: gIdToken, action, ...params });
+  const form = new URLSearchParams();
+  form.append('payload', payload);
+  const r = await fetch(APPS_SCRIPT_URL, {
+    method: 'POST',
+    body: form,
+    redirect: 'follow',
+  });
+  if (!r.ok) throw new Error(`Apps Script 呼叫失敗 (${r.status})`);
+  const data = await r.json();
+  if (data.status === 401 || data.error === '身份驗證失敗') throw new Error('身份驗證失敗，請重新登入');
+  if (!data.success && data.pong === undefined) throw new Error(data.error || 'Apps Script 回應錯誤');
+  return data.data;
 }
 
 async function apiFetch(url, options = {}) {
