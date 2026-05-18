@@ -992,6 +992,7 @@
           <hr style="margin:18px 0;border:none;border-top:1px solid #e2e8f0;" />
           <p style="font-size:.88rem;color:#718096;margin-bottom:12px;">將 <code>cases/</code> 資料夾依學年分組（例：<code>cases/114/1141001-020.json</code>）。會把現有 chunk 檔移動到對應的學年子資料夾，並更新 manifest。</p>
           <button class="btn btn-primary" onclick="reorganizeCasesByYear()">依學年重組 cases 資料夾</button>
+          <button class="btn btn-secondary" onclick="consolidateYearFolders()">整合學年資料夾（同名合併）</button>
           <div id="reorg-result" style="margin-top:14px;"></div>
         </div>
       </div>
@@ -2334,6 +2335,7 @@ async function loadCases() {
 
     if (manifest && Array.isArray(manifest.chunks) && manifest.chunks.length > 0) {
       casesManifest = manifest;
+      const deletedSet = new Set(manifest.deletedIds || []);
       const results = await Promise.all(
         manifest.chunks.map(chunk => {
           // chunk 可能為 "1141001-020"（舊）或 "114/1141001-020"（新，依學年分資料夾）
@@ -2353,7 +2355,16 @@ async function loadCases() {
             .catch(e => { console.warn('[loadCases] chunk 載入失敗:', chunkFile, e.message); return { cases: [] }; });
         })
       );
-      casesData = results.flatMap(r => r.cases || []);
+      // 過濾「墓碑」與重複 ID（同一個案 ID 若在多個 chunk 殘存，僅取第一筆）
+      const seen = new Set();
+      casesData = results.flatMap(r => r.cases || [])
+        .filter(c => {
+          if (!c?.id) return false;
+          if (deletedSet.has(c.id)) return false; // 已永久刪除
+          if (seen.has(c.id)) return false;        // 同 ID 已收錄
+          seen.add(c.id);
+          return true;
+        });
     } else {
       // manifest 為空或不存在，先嘗試從殘存 chunk 檔自動恢復
       const chunkEntries = fileMap
@@ -2364,8 +2375,17 @@ async function loadCases() {
         const results = await Promise.all(
           chunkEntries.map(([, id]) => driveReadJsonById(id).then(r => r.cases || []).catch(() => []))
         );
-        casesData = results.flat();
-        casesManifest = { chunks: [] };
+        // 保留既有墓碑（若 manifest 已被刪掉就無法保留，但若還在就吃下來）
+        const deletedSet = new Set(manifest?.deletedIds || []);
+        const seen = new Set();
+        casesData = results.flat().filter(c => {
+          if (!c?.id) return false;
+          if (deletedSet.has(c.id)) return false;
+          if (seen.has(c.id)) return false;
+          seen.add(c.id);
+          return true;
+        });
+        casesManifest = { chunks: [], deletedIds: [...deletedSet] };
         if (casesData.length > 0) {
           await migrateToChunks();
           console.info('[loadCases] manifest 已自動重建，個案數:', casesData.length);
@@ -4625,8 +4645,13 @@ async function hardDeleteCase(caseId) {
   )) return;
   const idx = casesData.findIndex(x => x.id === caseId);
   const removed = casesData.splice(idx, 1)[0];
+  // 加入「墓碑」清單：即使其他殘存 chunk 還有此 ID，loadCases 也會過濾掉
+  if (!Array.isArray(casesManifest.deletedIds)) casesManifest.deletedIds = [];
+  if (!casesManifest.deletedIds.includes(caseId)) casesManifest.deletedIds.push(caseId);
   showLoading('永久刪除中…');
   try {
+    // 先寫入墓碑（讓 manifest 立即生效），再重寫 chunk
+    await driveSaveJsonInCases('manifest.json', casesManifest);
     await saveCasesChunks(caseId);
     auditLog(`永久刪除個案 ${caseId}（${removed.name}）`);
     hideLoading();
@@ -4634,6 +4659,9 @@ async function hardDeleteCase(caseId) {
     renderCases();
   } catch (err) {
     casesData.splice(idx, 0, removed);
+    // 還原墓碑
+    const di = casesManifest.deletedIds.indexOf(caseId);
+    if (di >= 0) casesManifest.deletedIds.splice(di, 1);
     hideLoading();
     alert('永久刪除失敗：' + err.message);
   }
@@ -6466,17 +6494,37 @@ function getCaseChunkName(caseId) {
 }
 
 // 取得 cases 子資料夾 ID（若不存在則建立）；name 為「相對於 cases/」的子資料夾名稱，如 "114"
+// 重要：使用 single-flight promise 避免平行呼叫（Promise.all）時各自建立資料夾造成重複。
 const _yearFolderIdCache = new Map();
+const _yearFolderPromises = new Map();
 async function getOrCreateCasesSubfolder(name) {
   if (_yearFolderIdCache.has(name)) return _yearFolderIdCache.get(name);
-  const casesId = await getCasesFolderId();
-  const q = `name='${name}' and mimeType='application/vnd.google-apps.folder' and '${casesId}' in parents and trashed=false`;
-  const res = await driveQuery(q, 'id');
-  let id;
-  if (res.files && res.files.length) id = res.files[0].id;
-  else id = await driveCreateFolder(name, casesId);
-  _yearFolderIdCache.set(name, id);
-  return id;
+  if (_yearFolderPromises.has(name)) return _yearFolderPromises.get(name);
+  const promise = (async () => {
+    const casesId = await getCasesFolderId();
+    const q = `name='${name}' and mimeType='application/vnd.google-apps.folder' and '${casesId}' in parents and trashed=false`;
+    const res = await driveQuery(q, 'id');
+    let id;
+    if (res.files && res.files.length) {
+      // 若已有多個同名資料夾，取最早建立的那個（id 字串排序近似建立順序）並提示
+      const ids = res.files.map(f => f.id).sort();
+      id = ids[0];
+      if (res.files.length > 1) {
+        console.warn(`[year folder] 偵測到 ${res.files.length} 個同名 "${name}" 子資料夾，採用 id=${id}；可至「整合學年資料夾」工具合併。`);
+      }
+    } else {
+      id = await driveCreateFolder(name, casesId);
+    }
+    _yearFolderIdCache.set(name, id);
+    return id;
+  })();
+  _yearFolderPromises.set(name, promise);
+  try {
+    return await promise;
+  } finally {
+    // 完成後保留結果在 idCache，但 promise map 可以清，避免長期累積
+    _yearFolderPromises.delete(name);
+  }
 }
 
 async function getCasesFolderId() {
@@ -6525,6 +6573,128 @@ async function saveCasesChunks(...caseIds) {
     const chunkCases = casesData.filter(c => c.id && getCaseChunkName(c.id) === name);
     return driveSaveJsonInCases(`${name}.json`, { cases: chunkCases });
   }));
+}
+
+// 整合 cases 下「同名的學年子資料夾」為一個
+// 對每組重複，挑選一個保留，將其他資料夾內的檔案搬到保留的，最後把空資料夾移到垃圾桶
+async function consolidateYearFolders() {
+  const out = document.getElementById('reorg-result');
+  if (!confirm('將把 cases 下所有「同名」的學年子資料夾（如有多個 114）合併為一個，並將檔案搬移整合。\n如果不同資料夾內存在同名 chunk 檔，會保留最新修改的版本，其他會移至垃圾桶。\n確定執行？')) return;
+  out.innerHTML = '<span style="color:#718096;">掃描學年子資料夾…</span>';
+  try {
+    const casesId = await getCasesFolderId();
+    // 列出 cases 下所有子資料夾
+    const folderUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+      `'${casesId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`
+    )}&fields=files(id,name,createdTime)&pageSize=400`;
+    const fr = await apiFetch(folderUrl);
+    const folders = fr.files || [];
+    const byName = new Map();
+    folders.forEach(f => {
+      if (!byName.has(f.name)) byName.set(f.name, []);
+      byName.get(f.name).push(f);
+    });
+
+    let mergedGroups = 0, movedFiles = 0, trashedDupes = 0, trashedStaleFiles = 0;
+    const lines = [];
+
+    for (const [name, arr] of byName) {
+      if (arr.length < 2) continue;
+      mergedGroups++;
+      // 依 createdTime 升冪：最早建立的當保留
+      arr.sort((a, b) => (a.createdTime || '').localeCompare(b.createdTime || ''));
+      const keep = arr[0];
+      const dupes = arr.slice(1);
+      lines.push(`「${name}」共 ${arr.length} 個資料夾，保留最早建立的 (id=${keep.id})。`);
+
+      // 先把 keep 內現有檔案列出來，避免重複檔名
+      const keepFilesUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+        `'${keep.id}' in parents and trashed=false`
+      )}&fields=files(id,name,modifiedTime)&pageSize=400`;
+      const keepRes = await apiFetch(keepFilesUrl);
+      const keepFiles = new Map();
+      (keepRes.files || []).forEach(f => keepFiles.set(f.name, f));
+
+      for (const dup of dupes) {
+        const filesUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
+          `'${dup.id}' in parents and trashed=false`
+        )}&fields=files(id,name,modifiedTime)&pageSize=400`;
+        const dr = await apiFetch(filesUrl);
+        const dupFiles = dr.files || [];
+
+        for (const f of dupFiles) {
+          const collision = keepFiles.get(f.name);
+          if (collision) {
+            // 比較 modifiedTime：較舊者移到垃圾桶；較新者保留
+            const fTime = f.modifiedTime || '';
+            const cTime = collision.modifiedTime || '';
+            if (fTime > cTime) {
+              // 新的在 dup → 移過去取代舊的：先把舊的丟到垃圾桶，再把新的搬過來
+              try {
+                await apiFetch(`https://www.googleapis.com/drive/v3/files/${collision.id}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ trashed: true }),
+                });
+                trashedStaleFiles++;
+              } catch (e) { console.warn('trash failed', collision.id, e); }
+              try {
+                await apiFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?addParents=${keep.id}&removeParents=${dup.id}&fields=id`, {
+                  method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}',
+                });
+                movedFiles++;
+                keepFiles.set(f.name, { id: f.id, name: f.name, modifiedTime: fTime });
+              } catch (e) { console.warn('move failed', f.id, e); }
+            } else {
+              // dup 中的較舊 → 直接丟到垃圾桶
+              try {
+                await apiFetch(`https://www.googleapis.com/drive/v3/files/${f.id}`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ trashed: true }),
+                });
+                trashedStaleFiles++;
+              } catch (e) { console.warn('trash failed', f.id, e); }
+            }
+          } else {
+            // 沒有衝突，直接搬移
+            try {
+              await apiFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?addParents=${keep.id}&removeParents=${dup.id}&fields=id`, {
+                method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}',
+              });
+              movedFiles++;
+              keepFiles.set(f.name, { id: f.id, name: f.name, modifiedTime: f.modifiedTime || '' });
+            } catch (e) { console.warn('move failed', f.id, e); }
+          }
+        }
+
+        // 把 dup 資料夾丟到垃圾桶
+        try {
+          await apiFetch(`https://www.googleapis.com/drive/v3/files/${dup.id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ trashed: true }),
+          });
+          trashedDupes++;
+        } catch (e) { console.warn('trash folder failed', dup.id, e); }
+      }
+      // 更新 cache
+      _yearFolderIdCache.set(name, keep.id);
+    }
+
+    if (mergedGroups === 0) {
+      out.innerHTML = '<span style="color:#276749;">✓ 沒有偵測到同名的學年子資料夾，無需整合。</span>';
+      return;
+    }
+
+    out.innerHTML = `
+      <div style="color:#276749;font-weight:600;">✓ 完成：合併 ${mergedGroups} 組同名資料夾，搬移 ${movedFiles} 個檔案，刪除 ${trashedDupes} 個空資料夾，丟棄 ${trashedStaleFiles} 個舊版檔案。</div>
+      <ul style="margin-top:8px;font-size:.85rem;color:#4a5568;">${lines.map(l => `<li>${escHtml(l)}</li>`).join('')}</ul>
+      <div style="margin-top:8px;color:#718096;font-size:.85rem;">建議：執行完此工具後請重新整理頁面，再次按下「依學年重組 cases 資料夾」確認 manifest 與新結構一致。</div>
+    `;
+    auditLog('整合學年資料夾', `${mergedGroups} 組合併，搬移 ${movedFiles} 檔案，刪除 ${trashedDupes} 空資料夾，丟棄 ${trashedStaleFiles} 舊檔`);
+  } catch (e) {
+    out.innerHTML = `<span style="color:#c53030;">✗ 失敗：${escHtml(e.message)}</span>`;
+  }
 }
 
 // 將 Drive 既有的 chunk 檔依學年搬移到 cases/<year>/，並更新 manifest
@@ -6594,7 +6764,9 @@ async function migrateToChunks() {
   await Promise.all(chunks.map(chunk =>
     driveSaveJsonInCases(`${chunk}.json`, { cases: chunkMap[chunk] })
   ));
-  casesManifest = { chunks };
+  // 保留既有墓碑（避免被遺忘的永久刪除復活）
+  const prevDeletedIds = Array.isArray(casesManifest?.deletedIds) ? casesManifest.deletedIds : [];
+  casesManifest = { chunks, deletedIds: prevDeletedIds };
   await driveSaveJsonInCases('manifest.json', casesManifest);
 }
 
@@ -6645,25 +6817,35 @@ async function getCasesFolderFileMap() {
   // 同時取得 cases 直接子項目（檔案 + 子資料夾）
   const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
     `'${casesId}' in parents and trashed=false`
-  )}&fields=files(id,name,mimeType)&pageSize=400`;
+  )}&fields=files(id,name,mimeType,modifiedTime)&pageSize=400`;
   const r = await apiFetch(url);
-  const map = new Map();
+  const map = new Map();         // path → fileId
+  const fileTimes = new Map();   // path → modifiedTime（用於解決同名衝突）
   const subfolders = [];
   (r.files || []).forEach(f => {
     if (f.mimeType === 'application/vnd.google-apps.folder') {
       subfolders.push(f);
-      _yearFolderIdCache.set(f.name, f.id);
+      if (!_yearFolderIdCache.has(f.name)) _yearFolderIdCache.set(f.name, f.id);
     } else {
-      map.set(f.name, f.id);
+      const t = f.modifiedTime || '';
+      if (!map.has(f.name) || (fileTimes.get(f.name) || '') < t) {
+        map.set(f.name, f.id); fileTimes.set(f.name, t);
+      }
     }
   });
-  // 平行讀取每個子資料夾內的檔案，以 "<sub>/<filename>" 作為 key
+  // 同名子資料夾（如多個 "114"）：讀取每一個並合併內容，遇到同檔名取較新者
   await Promise.all(subfolders.map(async sub => {
     const subUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
       `'${sub.id}' in parents and trashed=false`
-    )}&fields=files(id,name)&pageSize=400`;
+    )}&fields=files(id,name,modifiedTime)&pageSize=400`;
     const subRes = await apiFetch(subUrl);
-    (subRes.files || []).forEach(f => map.set(`${sub.name}/${f.name}`, f.id));
+    (subRes.files || []).forEach(f => {
+      const key = `${sub.name}/${f.name}`;
+      const t = f.modifiedTime || '';
+      if (!map.has(key) || (fileTimes.get(key) || '') < t) {
+        map.set(key, f.id); fileTimes.set(key, t);
+      }
+    });
   }));
   return map;
 }
