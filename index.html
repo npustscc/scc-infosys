@@ -1847,6 +1847,15 @@ const ROLES = [
 ];
 const EXTRA_ROLES = ['管理者', '個案管理員'];
 
+// 輔導人員顯示名稱：名字＋角色（例：陳錦錫專任諮商心理師）
+function formatCounselorLabel(key) {
+  if (!key || !configData?.users?.[key]) return key || '';
+  const { name, role } = configData.users[key];
+  if (!name) return key;
+  if (!role || role === '系統管理者') return name;
+  return name + role;
+}
+
 const SERVICE_ITEMS = [
   '諮商輔導／諮詢','心理測驗','與個案相關資源或關係人聯繫','性平行為人',
   '轉介相關資源','責任通報','陪同服務','內部轉案','一次性服務','其他',
@@ -2206,7 +2215,9 @@ function renderCases() {
     const seen = new Map();
     visible.forEach(c => {
       const key   = c.counselorEmail || c.counselorName || c.counselorText || '';
-      const label = c.counselorName  || c.counselorEmail || '';
+      const label = c.counselorEmail
+        ? formatCounselorLabel(c.counselorEmail) || c.counselorName || c.counselorEmail
+        : (c.counselorText || c.counselorName || '');
       if (key && !seen.has(key)) seen.set(key, label);
     });
     const prev = cfCounselor.value;
@@ -2280,10 +2291,10 @@ function renderCases() {
 
   // 建立「個案ID → 管理員名單」反查表
   const caseManagerMap = {};
-  Object.values(configData.users || {}).forEach(info => {
+  Object.entries(configData.users || {}).forEach(([key, info]) => {
     (info.allowedCases || []).forEach(id => {
       if (!caseManagerMap[id]) caseManagerMap[id] = [];
-      caseManagerMap[id].push(info.name || info.email || '');
+      caseManagerMap[id].push(formatCounselorLabel(key));
     });
   });
 
@@ -2838,7 +2849,7 @@ function showCaseDetail(caseId) {
 
   const mgrsEl = document.getElementById('detail-managers');
   if (isAdminUser) {
-    mgrsEl.innerHTML = `<div style="font-size:.76rem;color:#a0aec0;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;">個案管理員</div>${renderCaseManagersBody(c)}`;
+    mgrsEl.innerHTML = `<div style="font-size:.95rem;font-weight:700;color:#2d3748;margin-bottom:4px;">個案管理員</div><div style="font-size:.78rem;color:#718096;margin-bottom:10px;">可閱讀此個案紀錄的輔導人員（主責以外）</div>${renderCaseManagersBody(c)}`;
     mgrsEl.style.display = '';
   } else {
     mgrsEl.style.display = 'none';
@@ -3045,19 +3056,20 @@ function renderCaseManagersBody(c) {
   );
 
   const chips = managers.length
-    ? managers.map(([email, info]) =>
+    ? managers.map(([email]) =>
         `<span style="display:inline-flex;align-items:center;gap:4px;background:#ebf5fb;border:1px solid #aed6f1;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;">
-          ${escHtml(info.name || email)}
+          ${escHtml(formatCounselorLabel(email))}
           <button onclick="removeCaseManager('${escHtml(c.id)}','${escHtml(email)}')"
             style="border:none;background:none;cursor:pointer;color:#718096;font-size:.9rem;padding:0 0 0 4px;line-height:1;">✕</button>
         </span>`).join('')
     : `<span style="color:#718096;font-size:.85rem;">尚未指定</span>`;
 
-  const options = nonManagers.map(([email, info]) =>
-    `<option value="${escHtml(email)}">${escHtml(info.name || email)}</option>`).join('');
+  const options = nonManagers.map(([email]) =>
+    `<option value="${escHtml(email)}">${escHtml(formatCounselorLabel(email))}</option>`).join('');
 
   return `
-    <div style="margin-bottom:12px;">${chips}</div>
+    <div style="margin-bottom:10px;">${chips}</div>
+    <div style="font-size:.78rem;color:#718096;margin-bottom:6px;">新增個案管理員：</div>
     <div style="display:flex;gap:8px;align-items:center;">
       <select id="cm-add-select" style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;">
         <option value="">— 選擇輔導人員 —</option>
@@ -3236,7 +3248,7 @@ function openNewRecordPage(caseId, recordId = null) {
       if (_COUNSELING_ROLES.has(info.role) && email !== currentUser.email) {
         const opt = document.createElement('option');
         opt.value = email;
-        opt.textContent = `${info.name || email}（${info.role}）`;
+        opt.textContent = formatCounselorLabel(email);
         sel.appendChild(opt);
       }
     });
@@ -4370,7 +4382,7 @@ function openNewCasePage() {
       if (info.role && info.role !== '系統管理者') {
         const opt = document.createElement('option');
         opt.value = key;
-        opt.textContent = `${info.name || key}（${info.role}）`;
+        opt.textContent = formatCounselorLabel(key);
         if (key === currentUser.email) opt.selected = true;
         sel.appendChild(opt);
       }
@@ -4677,7 +4689,7 @@ async function importCasesFromExcel(file) {
       const bsrsTotalRaw = r[16];
       const [emgName, emgRelation] = parseEmg(r[18]);
       const counselorEmail = findCounselorEmail(counselorText);
-      const counselorName  = counselorEmail ? (configData?.users?.[counselorEmail]?.name || counselorEmail) : counselorText;
+      const counselorName  = counselorEmail ? (formatCounselorLabel(counselorEmail) || counselorEmail) : counselorText;
 
       const closeDateRaw = String(r[27]||'').trim();
       const closeDate    = closeDateRaw ? rocToAD(closeDateRaw) : '';
@@ -4985,7 +4997,7 @@ async function saveCase() {
   document.getElementById('btn-save-case').disabled = true;
   showLoading('儲存個案…');
 
-  const counselorName = counselorEmail ? (configData?.users?.[counselorEmail]?.name || counselorEmail) : '未選擇';
+  const counselorName = counselorEmail ? (formatCounselorLabel(counselorEmail) || counselorEmail) : '未選擇';
   const now = new Date().toISOString();
 
   const newCase = {
@@ -5137,7 +5149,7 @@ function renderNcManagersCheckboxes(selectedManagers) {
   body.innerHTML = users.map(([email, info]) =>
     `<label style="display:inline-flex;align-items:center;gap:6px;margin:4px 16px 4px 0;font-size:.875rem;cursor:pointer;">
       <input type="checkbox" name="nc-manager" value="${escHtml(email)}" ${selectedManagers.includes(email) ? 'checked' : ''}>
-      ${escHtml(info.name || email)}（${escHtml(info.role)}）
+      ${escHtml(formatCounselorLabel(email))}
     </label>`
   ).join('');
 }
@@ -6006,7 +6018,7 @@ async function importCounselingRecords(file) {
 
       const counselorText  = String(r[6]||'').trim();
       const counselorKey   = findCounselorKey(counselorText);
-      const counselorName  = counselorKey ? (configData?.users?.[counselorKey]?.name || counselorText) : counselorText;
+      const counselorName  = counselorKey ? (formatCounselorLabel(counselorKey) || counselorText) : counselorText;
       const topic1 = topicClean(r[9]);
       const topic2 = topicClean(r[10]);
       const topics = [topic1, topic2].filter(Boolean);
