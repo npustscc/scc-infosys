@@ -845,6 +845,9 @@
       <div class="nav-item" onclick="showPage('page-pending', this); renderPendingList()">
         <span class="icon">📁</span> 不開案個案
       </div>
+      <div class="nav-item" onclick="showPage('page-bookings', this); renderBookingsPage()">
+        <span class="icon">📅</span> 空間預約
+      </div>
       <div class="nav-item" onclick="showPage('page-casenums', this); renderCaseNums()">
         <span class="icon">🔢</span> 案號管理
       </div>
@@ -1084,6 +1087,24 @@
             oninput="renderPendingList()" />
         </div>
         <div id="pending-list-body" style="padding:8px 0;min-height:60px;"></div>
+      </div>
+    </div>
+
+    <!-- 空間預約 -->
+    <div id="page-bookings" class="page">
+      <div class="page-title">空間預約</div>
+      <div id="bookings-alert"></div>
+      <div class="card">
+        <div class="card-header">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" onclick="shiftBookingDate(-1)" style="font-size:1.1rem;padding:3px 10px;">‹</button>
+            <input type="date" id="booking-date" style="padding:5px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;" onchange="renderBookingsPage()">
+            <button class="btn btn-secondary btn-sm" onclick="shiftBookingDate(1)" style="font-size:1.1rem;padding:3px 10px;">›</button>
+            <button class="btn btn-secondary btn-sm" onclick="setBookingDateToday()">今天</button>
+          </div>
+          <button class="btn btn-primary" onclick="openBookingModal()">＋ 新增預約</button>
+        </div>
+        <div id="bookings-body" style="padding:0;min-height:60px;"></div>
       </div>
     </div>
 
@@ -1967,6 +1988,8 @@ const CASES_INDEX     = 'cases/index.json'; // 舊格式（升級後僅作備份
 const CASES_MANIFEST  = 'cases/manifest.json';
 const CHUNK_SIZE      = 20;
 const AUDIT_LOG_FILE  = 'audit_log.json';
+const BOOKINGS_FILE   = 'bookings.json';
+const ROOMS = ['玉山', '雪山', '中央山脈', '阿里山', '海岸山脈', '團體諮商室', '其他'];
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby9ZDT7NO7Jso3mbzbMaOzN0mdfgREbxoHRLC3NEbulGtKwp9eTibpD0XwKJCeC9wlh/exec';
 
 // 角色常數
@@ -2084,7 +2107,7 @@ function updateFloatingBackBtn(pageId) {
     fab.onclick = () => handleFloatingBack();
     document.body.appendChild(fab);
   }
-  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview'];
+  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings'];
   fab.style.display = showOn.includes(pageId) ? 'inline-block' : 'none';
   fab.dataset.fromPage = pageId;
 }
@@ -2266,7 +2289,7 @@ async function afterLogin() {
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-layout').style.display  = 'flex';
     checkPinSetup();
-    await Promise.all([loadCases(), loadPendingCases()]);
+    await Promise.all([loadCases(), loadPendingCases(), loadBookings()]);
   } catch (err) {
     hideLoading();
     // 找不到設定檔 → 顯示初始化畫面
@@ -7842,6 +7865,220 @@ async function savePendingCases() {
   }
 }
 
+// ══════════════════════════════════════════════
+//  空間預約
+// ══════════════════════════════════════════════
+let bookingsData = [];
+let _editingBookingId = null;
+
+async function loadBookings() {
+  try {
+    const data = await driveReadJson(BOOKINGS_FILE);
+    bookingsData = Array.isArray(data?.bookings) ? data.bookings : [];
+  } catch (e) {
+    bookingsData = [];
+  }
+}
+
+async function saveBookings() {
+  try {
+    await driveUpdateJsonFile(BOOKINGS_FILE, { bookings: bookingsData });
+  } catch (e) {
+    if (e.message.includes('找不到')) {
+      await driveCreateJsonFile(BOOKINGS_FILE, { bookings: bookingsData }, DRIVE_FOLDER_ID);
+    } else throw e;
+  }
+}
+
+function renderBookingsPage() {
+  const dateEl = document.getElementById('booking-date');
+  if (!dateEl) return;
+  if (!dateEl.value) dateEl.value = new Date().toISOString().slice(0, 10);
+  const date = dateEl.value;
+  const dayBookings = bookingsData.filter(b => b.date === date);
+  const body = document.getElementById('bookings-body');
+  if (!body) return;
+
+  const fmtT = t => (t || '').slice(0, 5);
+  let html = '';
+  for (const room of ROOMS) {
+    const rb = dayBookings.filter(b => b.room === room).sort((a, b) => (a.startTime || '') < (b.startTime || '') ? -1 : 1);
+    html += `<div style="border-bottom:1px solid #e2e8f0;padding:10px 16px;">
+      <div style="font-weight:600;color:#2d3748;margin-bottom:6px;font-size:.9rem;">${escHtml(room)}</div>`;
+    if (rb.length === 0) {
+      html += `<div style="color:#a0aec0;font-size:.85rem;padding:2px 0;">（無預約）</div>`;
+    } else {
+      rb.forEach(b => {
+        const caseTag = b.caseId ? `<span style="font-size:.8rem;color:#2471a3;margin-left:6px;">個案 ${escHtml(b.caseId)}${b.caseName ? ' ' + escHtml(b.caseName) : ''}</span>` : '';
+        const noteTag = b.notes ? `<span style="font-size:.8rem;color:#718096;margin-left:6px;">${escHtml(b.notes.slice(0,30))}${b.notes.length > 30 ? '…' : ''}</span>` : '';
+        html += `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 8px;background:#edf2f7;border-radius:6px;margin-bottom:4px;">
+          <span style="font-size:.85rem;font-weight:600;color:#2d3748;min-width:105px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</span>
+          <span style="font-size:.875rem;color:#4a5568;">${escHtml(b.counselorName || '—')}</span>
+          ${caseTag}${noteTag}
+          <span style="margin-left:auto;display:flex;gap:4px;">
+            <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="editBooking('${escHtml(b.id)}')">編輯</button>
+            <button class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="deleteBooking('${escHtml(b.id)}')">刪除</button>
+          </span>
+        </div>`;
+      });
+    }
+    html += '</div>';
+  }
+  body.innerHTML = html;
+}
+
+function shiftBookingDate(delta) {
+  const el = document.getElementById('booking-date');
+  if (!el) return;
+  const d = new Date(el.value || new Date());
+  d.setDate(d.getDate() + delta);
+  el.value = d.toISOString().slice(0, 10);
+  renderBookingsPage();
+}
+
+function setBookingDateToday() {
+  const el = document.getElementById('booking-date');
+  if (el) el.value = new Date().toISOString().slice(0, 10);
+  renderBookingsPage();
+}
+
+function _populateBookingRoomSelect() {
+  document.getElementById('bk-room').innerHTML =
+    '<option value="">請選擇空間</option>' +
+    ROOMS.map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
+}
+
+function _populateBookingCounselorSelect() {
+  const users = configData?.users || {};
+  const opts = Object.entries(users)
+    .filter(([, u]) => u.role)
+    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}</option>`);
+  const sel = document.getElementById('bk-counselor');
+  sel.innerHTML = '<option value="">（請選擇）</option>' + opts.join('');
+  if (currentUser?.email && users[currentUser.email]) sel.value = currentUser.email;
+}
+
+function _populateBookingCaseDatalist() {
+  document.getElementById('bk-case-list').innerHTML =
+    casesData.filter(c => !c.deleted && c.status === 'active')
+      .map(c => `<option value="${escHtml(c.id)}">${escHtml(c.id + (c.name ? ' ' + c.name : ''))}</option>`)
+      .join('');
+}
+
+function openBookingModal(prefillCaseId) {
+  _editingBookingId = null;
+  document.getElementById('booking-modal-title').textContent = '新增預約';
+  _populateBookingRoomSelect();
+  _populateBookingCounselorSelect();
+  _populateBookingCaseDatalist();
+  document.getElementById('bk-date').value = document.getElementById('booking-date')?.value || new Date().toISOString().slice(0,10);
+  document.getElementById('bk-start').value = '';
+  document.getElementById('bk-end').value = '';
+  document.getElementById('bk-notes').value = '';
+  document.getElementById('bk-case-id').value = prefillCaseId || '';
+  document.getElementById('bk-room').value = '';
+  document.getElementById('booking-conflict-warn').style.display = 'none';
+  document.getElementById('booking-modal').style.display = 'flex';
+}
+
+function editBooking(id) {
+  const b = bookingsData.find(x => x.id === id);
+  if (!b) return;
+  _editingBookingId = id;
+  document.getElementById('booking-modal-title').textContent = '編輯預約';
+  _populateBookingRoomSelect();
+  _populateBookingCounselorSelect();
+  _populateBookingCaseDatalist();
+  document.getElementById('bk-room').value = b.room || '';
+  document.getElementById('bk-date').value = b.date || '';
+  document.getElementById('bk-start').value = b.startTime || '';
+  document.getElementById('bk-end').value = b.endTime || '';
+  document.getElementById('bk-counselor').value = b.counselorEmail || '';
+  document.getElementById('bk-case-id').value = b.caseId || '';
+  document.getElementById('bk-notes').value = b.notes || '';
+  document.getElementById('booking-conflict-warn').style.display = 'none';
+  document.getElementById('booking-modal').style.display = 'flex';
+}
+
+function closeBookingModal() {
+  document.getElementById('booking-modal').style.display = 'none';
+}
+
+async function saveBooking() {
+  const room  = document.getElementById('bk-room').value;
+  const date  = document.getElementById('bk-date').value;
+  const start = document.getElementById('bk-start').value;
+  const end   = document.getElementById('bk-end').value;
+  const counselorEmail = document.getElementById('bk-counselor').value;
+  const caseId = document.getElementById('bk-case-id').value.trim();
+  const notes  = document.getElementById('bk-notes').value.trim();
+
+  if (!room || !date || !start || !end) {
+    document.getElementById('booking-conflict-warn').style.display = '';
+    document.getElementById('booking-conflict-warn').textContent = '請填寫空間、日期、開始與結束時間。';
+    return;
+  }
+  if (start >= end) {
+    document.getElementById('booking-conflict-warn').style.display = '';
+    document.getElementById('booking-conflict-warn').textContent = '結束時間必須晚於開始時間。';
+    return;
+  }
+
+  const conflict = bookingsData.find(b =>
+    b.id !== _editingBookingId && b.room === room && b.date === date &&
+    b.startTime < end && b.endTime > start
+  );
+  if (conflict) {
+    document.getElementById('booking-conflict-warn').style.display = '';
+    document.getElementById('booking-conflict-warn').textContent =
+      `時間衝突：${room} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已由 ${conflict.counselorName || '—'} 預約。`;
+    return;
+  }
+
+  const counselorName = configData?.users?.[counselorEmail]?.name || counselorEmail || '';
+  const caseObj = caseId ? casesData.find(c => c.id === caseId) : null;
+  const now = new Date().toISOString();
+
+  if (_editingBookingId) {
+    const idx = bookingsData.findIndex(x => x.id === _editingBookingId);
+    if (idx >= 0) bookingsData[idx] = { ...bookingsData[idx],
+      room, date, startTime: start, endTime: end,
+      counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
+      notes, updatedAt: now };
+  } else {
+    bookingsData.push({ id: `bk_${Date.now()}`, room, date, startTime: start, endTime: end,
+      counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
+      notes, createdAt: now, updatedAt: now });
+  }
+
+  closeBookingModal();
+  showLoading('儲存預約中…');
+  try {
+    await saveBookings();
+    auditLog(_editingBookingId ? '編輯空間預約' : '新增空間預約', caseId || null);
+  } catch (e) {
+    setAlert('bookings-alert', 'warn', '儲存失敗：' + e.message);
+  }
+  hideLoading();
+  renderBookingsPage();
+}
+
+async function deleteBooking(id) {
+  const b = bookingsData.find(x => x.id === id);
+  if (!b) return;
+  if (!confirm(`確定刪除 ${b.room} ${b.date} ${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)} 的預約？`)) return;
+  bookingsData = bookingsData.filter(x => x.id !== id);
+  showLoading('刪除中…');
+  try {
+    await saveBookings();
+    auditLog('刪除空間預約', b.caseId || null);
+  } catch (e) {
+    setAlert('bookings-alert', 'warn', '刪除失敗：' + e.message);
+  }
+  hideLoading();
+  renderBookingsPage();
+}
+
 function renderPendingList() {
   const body = document.getElementById('pending-list-body');
   if (!body) return;
@@ -8133,6 +8370,52 @@ async function importPsychTestCSV(file) {
     <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
       <button class="btn btn-secondary" onclick="closePendingModal()">取消</button>
       <button class="btn btn-primary" onclick="savePendingCase()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 空間預約 Modal -->
+<div id="booking-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:500;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:12px;padding:28px 28px 20px;width:90%;max-width:520px;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.2);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
+      <h3 id="booking-modal-title" style="font-size:1.1rem;color:#1a202c;">新增預約</h3>
+      <button onclick="closeBookingModal()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div>
+        <label class="field-label">空間<span class="req">*</span></label>
+        <select class="field-input" id="bk-room"></select>
+      </div>
+      <div>
+        <label class="field-label">日期<span class="req">*</span></label>
+        <input type="date" class="field-input" id="bk-date">
+      </div>
+      <div>
+        <label class="field-label">開始時間<span class="req">*</span></label>
+        <input type="time" class="field-input" id="bk-start" step="1800">
+      </div>
+      <div>
+        <label class="field-label">結束時間<span class="req">*</span></label>
+        <input type="time" class="field-input" id="bk-end" step="1800">
+      </div>
+      <div style="grid-column:1/-1;">
+        <label class="field-label">諮商師</label>
+        <select class="field-input" id="bk-counselor"></select>
+      </div>
+      <div style="grid-column:1/-1;">
+        <label class="field-label">連結個案（選填，輸入案號）</label>
+        <input type="text" class="field-input" id="bk-case-id" placeholder="例：1141001" list="bk-case-list">
+        <datalist id="bk-case-list"></datalist>
+      </div>
+      <div style="grid-column:1/-1;">
+        <label class="field-label">備註</label>
+        <textarea class="field-input" id="bk-notes" rows="2" style="resize:vertical;"></textarea>
+      </div>
+    </div>
+    <div id="booking-conflict-warn" style="display:none;margin-top:10px;" class="alert alert-warn"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
+      <button class="btn btn-secondary" onclick="closeBookingModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveBooking()">儲存</button>
     </div>
   </div>
 </div>
