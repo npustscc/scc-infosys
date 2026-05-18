@@ -735,7 +735,7 @@
       <span style="font-size:1.25rem;line-height:1;">🔔</span>
       <span id="notif-badge"></span>
     </div>
-    <img id="user-avatar" src="" alt="頭像" />
+    <img id="user-avatar" src="" alt="頭像" title="偏好設定" style="cursor:pointer;" onclick="showPage('page-prefs', null); renderPrefsPage()" />
     <div style="text-align:right;line-height:1.4;">
       <div style="font-size:.9rem;" id="user-name"></div>
       <div style="font-size:.75rem;opacity:.8;" id="user-role"></div>
@@ -847,6 +847,13 @@
         <span class="icon">📜</span> 稽核日誌
       </div>
     </div>
+
+    <div class="sidebar-section">
+      <h3>個人</h3>
+      <div class="nav-item" onclick="showPage('page-prefs', this); renderPrefsPage()">
+        <span class="icon">🔧</span> 偏好設定
+      </div>
+    </div>
   </nav>
 
   <!-- Content -->
@@ -947,8 +954,11 @@
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
             <button class="btn btn-danger" onclick="confirmClearAllCases()">清空所有個案</button>
             <button class="btn btn-secondary" onclick="recoverCasesFromDrive()">從 Drive 恢復個案</button>
-            <label class="btn btn-primary" style="cursor:pointer;margin:0;">匯入服務總表
+            <label class="btn btn-primary" style="cursor:pointer;margin:0;">匯入服務總表（個案）
               <input type="file" id="import-file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportFile(this)" />
+            </label>
+            <label class="btn btn-secondary" style="cursor:pointer;margin:0;">匯入輔導服務記錄
+              <input type="file" id="import-records-file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportRecordsFile(this)" />
             </label>
           </div>
           <div id="import-progress" style="margin-top:14px;display:none;font-size:.88rem;"></div>
@@ -969,6 +979,45 @@
       <div class="page-title">稽核日誌</div>
       <div id="audit-body">
         <div class="empty-state"><div class="icon">📜</div><p>點選「重新整理」以載入記錄</p></div>
+      </div>
+    </div>
+
+    <!-- 偏好設定 -->
+    <div id="page-prefs" class="page">
+      <div class="page-title">偏好設定</div>
+      <div class="card">
+        <div class="card-header"><h3>畫面鎖定（AFK）</h3></div>
+        <div style="padding:16px 20px;display:flex;flex-direction:column;gap:14px;max-width:480px;">
+          <div>
+            <label class="field-label">閒置後自動鎖定畫面</label>
+            <select id="pref-timeout" class="field-input" onchange="toggleCustomTimeout(this)" style="width:auto;min-width:160px;">
+              <option value="0">不鎖定</option>
+              <option value="1">1 分鐘</option>
+              <option value="3">3 分鐘</option>
+              <option value="5">5 分鐘</option>
+              <option value="10" selected>10 分鐘</option>
+              <option value="20">20 分鐘</option>
+              <option value="30">30 分鐘</option>
+              <option value="custom">自訂…</option>
+            </select>
+            <input type="number" id="pref-timeout-custom" min="1" max="999" placeholder="分鐘" class="field-input" style="display:none;width:80px;margin-left:8px;" />
+          </div>
+          <div>
+            <label class="field-label">PIN 碼（用於解鎖畫面）</label>
+            <input type="password" id="pref-pin" class="field-input" placeholder="輸入新 PIN 碼（留空不變更）" maxlength="12" autocomplete="new-password" />
+          </div>
+          <div>
+            <label class="field-label">確認 PIN 碼</label>
+            <input type="password" id="pref-pin-confirm" class="field-input" placeholder="再次輸入 PIN 碼" maxlength="12" autocomplete="new-password" />
+          </div>
+          <div id="pref-current-pin-status" style="font-size:.82rem;color:#718096;"></div>
+          <div id="pref-error" class="alert alert-error" style="display:none;margin:0;"></div>
+          <div id="pref-success" class="alert" style="display:none;margin:0;background:#f0fff4;border:1px solid #c6f6d5;color:#276749;"></div>
+          <div>
+            <button class="btn btn-primary" onclick="savePrefs()">儲存偏好設定</button>
+            <button class="btn btn-secondary" style="margin-left:8px;" onclick="lockScreen()">立即鎖定</button>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1698,8 +1747,9 @@
     <h3 id="modal-title">新增使用者</h3>
 
     <div class="form-row">
-      <label for="modal-email">電子郵件</label>
-      <input type="email" id="modal-email" placeholder="user@example.com" />
+      <label for="modal-email">電子郵件（選填）</label>
+      <input type="email" id="modal-email" placeholder="無 Gmail 帳號者可留空" />
+      <div id="modal-email-hint" style="font-size:.78rem;color:#718096;margin-top:3px;">無 Gmail 帳號者可留空，仍可指派為主責或個管。</div>
     </div>
     <div class="form-row">
       <label for="modal-name">姓名</label>
@@ -1751,6 +1801,7 @@ const ROLES = [
   '兼任諮商心理師',
   '兼任臨床心理師',
   '實習諮商心理師',
+  '義務輔導老師',
   '駐校精神科醫師',
 ];
 const EXTRA_ROLES = ['管理者', '個案管理員'];
@@ -1933,6 +1984,7 @@ async function afterLogin() {
     renderNotifBell();
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-layout').style.display  = 'flex';
+    checkPinSetup();
     await loadCases();
   } catch (err) {
     hideLoading();
@@ -2535,30 +2587,34 @@ function renderAdminUsers() {
     return;
   }
 
-  const rows = users.map(([email, info]) => {
+  const rows = users.map(([key, info]) => {
     const isAdmin = info.isAdmin === true || info.extraRole === '管理者';
     const adminBadge = isAdmin
       ? `<span class="badge badge-orange">管理者</span>`
       : (info.extraRole === '個案管理員'
           ? `<span class="badge badge-gray">個案管理員</span> <span style="color:#718096;font-size:.8rem;">(${(info.allowedCases || []).length} 個案)</span>`
           : (info.extraRole ? `<span class="badge badge-gray">${escHtml(info.extraRole)}</span>` : '—'));
-    const isSelf = email === currentUser.email;
+    const isSelf = key === currentUser.email;
+    const isNomail = key.startsWith('nomail_');
+    const displayKey = isNomail
+      ? `<span style="color:#a0aec0;font-size:.82em;">（無 Gmail 帳號）</span>`
+      : escHtml(key);
     return `
       <tr>
-        <td>${escHtml(email)}${isSelf ? ' <span class="badge badge-blue">本帳號</span>' : ''}</td>
+        <td>${displayKey}${isSelf ? ' <span class="badge badge-blue">本帳號</span>' : ''}</td>
         <td>${escHtml(info.name || '—')}</td>
         <td>${escHtml(info.role || '—')}</td>
         <td>${adminBadge}</td>
         <td>
-          <button class="btn btn-secondary btn-sm" onclick="openUserModal('${escHtml(email)}')">編輯</button>
-          ${isSelf ? '' : `<button class="btn btn-danger btn-sm" style="margin-left:6px;" onclick="deleteUser('${escHtml(email)}')">刪除</button>`}
+          <button class="btn btn-secondary btn-sm" onclick="openUserModal('${escHtml(key)}')">編輯</button>
+          ${isSelf ? '' : `<button class="btn btn-danger btn-sm" style="margin-left:6px;" onclick="deleteUser('${escHtml(key)}')">刪除</button>`}
         </td>
       </tr>`;
   }).join('');
 
   document.getElementById('admin-users-wrap').innerHTML = `
     <table>
-      <thead><tr><th>電子郵件</th><th>姓名</th><th>角色</th><th>附加身分</th><th>操作</th></tr></thead>
+      <thead><tr><th>帳號 / 識別碼</th><th>姓名</th><th>角色</th><th>附加身分</th><th>操作</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
 }
@@ -2569,28 +2625,34 @@ function renderAdminUsers() {
 let _editingEmail = null;
 
 
-function openUserModal(email) {
-  _editingEmail = email || null;
+function openUserModal(key) {
+  _editingEmail = key || null;
 
-  // 填充角色選項
   const sel = document.getElementById('modal-role');
   sel.innerHTML = '<option value="">— 請選擇 —</option>' +
     ROLES.map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
 
+  const emailEl   = document.getElementById('modal-email');
+  const hintEl    = document.getElementById('modal-email-hint');
   if (_editingEmail) {
     const info = configData.users[_editingEmail] || {};
+    const isNomail = _editingEmail.startsWith('nomail_');
     document.getElementById('modal-title').textContent = '編輯使用者';
-    document.getElementById('modal-email').value    = _editingEmail;
-    document.getElementById('modal-email').disabled = true;
+    emailEl.value    = isNomail ? '' : _editingEmail;
+    emailEl.disabled = true;
+    emailEl.placeholder = isNomail ? '（無 Gmail 帳號）' : '';
+    hintEl.textContent = isNomail ? '此使用者無 Gmail 帳號，識別碼：' + _editingEmail : '帳號建立後無法更改電子郵件。';
     document.getElementById('modal-name').value     = info.name  || '';
-    document.getElementById('modal-role').value     = info.role  || '';
+    sel.value = info.role || '';
     document.getElementById('modal-is-admin').checked = info.isAdmin === true || info.extraRole === '管理者';
   } else {
     document.getElementById('modal-title').textContent = '新增使用者';
-    document.getElementById('modal-email').value    = '';
-    document.getElementById('modal-email').disabled = false;
+    emailEl.value    = '';
+    emailEl.disabled = false;
+    emailEl.placeholder = '無 Gmail 帳號者可留空';
+    hintEl.textContent = '無 Gmail 帳號者可留空，仍可指派為主責或個管。';
     document.getElementById('modal-name').value     = '';
-    document.getElementById('modal-role').value     = '';
+    sel.value = '';
     document.getElementById('modal-is-admin').checked = false;
   }
 
@@ -2605,16 +2667,25 @@ function closeUserModal(e) {
 }
 
 async function saveUser() {
-  const email   = _editingEmail || document.getElementById('modal-email').value.trim().toLowerCase();
-  const name    = document.getElementById('modal-name').value.trim();
-  const role    = document.getElementById('modal-role').value;
-  const isAdmin = document.getElementById('modal-is-admin').checked;
+  const rawEmail = document.getElementById('modal-email').value.trim().toLowerCase();
+  const name     = document.getElementById('modal-name').value.trim();
+  const role     = document.getElementById('modal-role').value;
+  const isAdmin  = document.getElementById('modal-is-admin').checked;
 
   const errEl = document.getElementById('modal-error');
   errEl.style.display = 'none';
 
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    errEl.textContent = '請輸入有效的電子郵件地址。';
+  // 編輯模式：key 已確定
+  const key = _editingEmail || (rawEmail || `nomail_${Date.now()}`);
+
+  // 新增模式：若有 email 則驗證格式
+  if (!_editingEmail && rawEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)) {
+    errEl.textContent = '電子郵件格式不正確。';
+    errEl.style.display = '';
+    return;
+  }
+  if (!name) {
+    errEl.textContent = '請輸入姓名。';
     errEl.style.display = '';
     return;
   }
@@ -2629,16 +2700,17 @@ async function saveUser() {
 
   try {
     configData.users = configData.users || {};
-    const entry = configData.users[email] || {};
-    entry.name = name || entry.name || '';
+    const entry = configData.users[key] || {};
+    entry.name = name;
     entry.role = role;
     if (isAdmin) { entry.isAdmin = true; } else { delete entry.isAdmin; }
-    configData.users[email] = entry;
+    configData.users[key] = entry;
 
     await driveUpdateJsonFile(CONFIG_FILE, configData);
     hideLoading();
     document.getElementById('user-modal').style.display = 'none';
-    setAlert('admin-alert', 'info', `使用者 ${escHtml(email)} 已儲存。`);
+    const displayLabel = key.startsWith('nomail_') ? `${name}（無 Gmail）` : key;
+    setAlert('admin-alert', 'info', `使用者 ${escHtml(displayLabel)} 已儲存。`);
     renderAdminUsers();
   } catch (err) {
     hideLoading();
@@ -2648,15 +2720,17 @@ async function saveUser() {
   }
 }
 
-async function deleteUser(email) {
-  if (!confirm(`確定要刪除使用者 ${email} 嗎？此操作無法復原。`)) return;
+async function deleteUser(key) {
+  const info = configData.users?.[key] || {};
+  const label = key.startsWith('nomail_') ? (info.name || key) : key;
+  if (!confirm(`確定要刪除使用者「${label}」嗎？此操作無法復原。`)) return;
 
   showLoading('刪除使用者…');
   try {
-    delete configData.users[email];
+    delete configData.users[key];
     await driveUpdateJsonFile(CONFIG_FILE, configData);
     hideLoading();
-    setAlert('admin-alert', 'info', `使用者 ${escHtml(email)} 已刪除。`);
+    setAlert('admin-alert', 'info', `使用者 ${escHtml(label)} 已刪除。`);
     renderAdminUsers();
   } catch (err) {
     hideLoading();
@@ -4246,12 +4320,12 @@ function openNewCasePage() {
   const sel = document.getElementById('nc-counselor');
   sel.innerHTML = '<option value="">未選擇</option>';
   if (configData && configData.users) {
-    Object.entries(configData.users).forEach(([email, info]) => {
+    Object.entries(configData.users).forEach(([key, info]) => {
       if (info.role && info.role !== '系統管理者') {
         const opt = document.createElement('option');
-        opt.value = email;
-        opt.textContent = `${info.name || email}（${info.role}）`;
-        if (email === currentUser.email) opt.selected = true;
+        opt.value = key;
+        opt.textContent = `${info.name || key}（${info.role}）`;
+        if (key === currentUser.email) opt.selected = true;
         sel.appendChild(opt);
       }
     });
@@ -5642,7 +5716,346 @@ document.addEventListener('DOMContentLoaded', () => {
   checkForUpdate();
   setInterval(checkForUpdate, 5 * 60 * 1000);
   setInterval(pollNotifications, 15 * 60 * 1000);
+
+  // AFK 偵測：任意操作重設計時器
+  ['mousemove','keydown','click','scroll','touchstart'].forEach(evt =>
+    document.addEventListener(evt, resetAfkTimer, { passive: true })
+  );
 });
+
+// ══════════════════════════════════════════════
+//  PIN 鎖定系統
+// ══════════════════════════════════════════════
+let _afkTimer = null;
+let _isLocked = false;
+
+const pinKey     = () => `scc_pin_${currentUser?.email || ''}`;
+const pinTmoKey  = () => `scc_pin_tmo_${currentUser?.email || ''}`;
+
+function getAfkMinutes() {
+  return parseInt(localStorage.getItem(pinTmoKey()) ?? '10');
+}
+
+function resetAfkTimer() {
+  if (_isLocked) return;
+  clearTimeout(_afkTimer);
+  const stored = localStorage.getItem(pinKey());
+  const mins   = getAfkMinutes();
+  if (stored && stored.length > 0 && mins > 0) {
+    _afkTimer = setTimeout(lockScreen, mins * 60 * 1000);
+  }
+}
+
+function lockScreen() {
+  _isLocked = true;
+  clearTimeout(_afkTimer);
+  document.getElementById('lock-overlay').style.display = 'flex';
+  const disp = document.getElementById('lock-user-display');
+  if (disp) disp.textContent = currentUser?.name ? `${currentUser.name}，請輸入 PIN 碼解鎖。` : '請輸入 PIN 碼解鎖。';
+  const inp = document.getElementById('lock-pin-input');
+  if (inp) { inp.value = ''; inp.focus(); }
+  document.getElementById('lock-pin-error').style.display = 'none';
+}
+
+function tryUnlock() {
+  const inp    = document.getElementById('lock-pin-input');
+  const stored = localStorage.getItem(pinKey());
+  if (inp.value === stored) {
+    _isLocked = false;
+    document.getElementById('lock-overlay').style.display = 'none';
+    inp.value = '';
+    resetAfkTimer();
+  } else {
+    document.getElementById('lock-pin-error').style.display = '';
+    inp.value = '';
+    inp.focus();
+  }
+}
+
+// 首次登入後檢查是否已設定 PIN
+function checkPinSetup() {
+  const stored = localStorage.getItem(pinKey());
+  if (stored === null) {
+    // 從未設定過 → 顯示設定 Modal
+    document.getElementById('pin-setup-modal').style.display = 'flex';
+  } else {
+    resetAfkTimer();
+  }
+}
+
+function savePinSetup() {
+  const pinVal  = document.getElementById('pin-setup-value').value.trim();
+  const tmoSel  = document.getElementById('pin-setup-timeout').value;
+  const tmoMins = tmoSel === 'custom'
+    ? (parseInt(document.getElementById('pin-setup-custom').value) || 10)
+    : parseInt(tmoSel);
+
+  // 儲存（空字串代表使用者選擇不設定 PIN）
+  localStorage.setItem(pinKey(),    pinVal);
+  localStorage.setItem(pinTmoKey(), String(tmoMins));
+  document.getElementById('pin-setup-modal').style.display = 'none';
+  resetAfkTimer();
+}
+
+function toggleSetupCustom(sel) {
+  document.getElementById('pin-setup-custom').style.display = sel.value === 'custom' ? '' : 'none';
+}
+
+// ── 偏好設定頁面 ────────────────────────────
+function renderPrefsPage() {
+  const stored  = localStorage.getItem(pinKey());
+  const tmo     = localStorage.getItem(pinTmoKey()) ?? '10';
+  const hasPIN  = stored !== null && stored.length > 0;
+
+  const statusEl = document.getElementById('pref-current-pin-status');
+  statusEl.textContent = hasPIN ? `目前 PIN 碼：已設定（${stored.length} 位）` : '目前 PIN 碼：未設定（畫面不會自動鎖定）';
+
+  const selEl = document.getElementById('pref-timeout');
+  const stdVals = ['0','1','3','5','10','20','30'];
+  if (stdVals.includes(tmo)) {
+    selEl.value = tmo;
+    document.getElementById('pref-timeout-custom').style.display = 'none';
+  } else {
+    selEl.value = 'custom';
+    const customEl = document.getElementById('pref-timeout-custom');
+    customEl.style.display = '';
+    customEl.value = tmo;
+  }
+
+  document.getElementById('pref-pin').value         = '';
+  document.getElementById('pref-pin-confirm').value = '';
+  document.getElementById('pref-error').style.display   = 'none';
+  document.getElementById('pref-success').style.display = 'none';
+}
+
+function toggleCustomTimeout(sel) {
+  document.getElementById('pref-timeout-custom').style.display = sel.value === 'custom' ? '' : 'none';
+}
+
+function savePrefs() {
+  const errEl = document.getElementById('pref-error');
+  const okEl  = document.getElementById('pref-success');
+  errEl.style.display = 'none';
+  okEl.style.display  = 'none';
+
+  const pinVal     = document.getElementById('pref-pin').value;
+  const pinConfirm = document.getElementById('pref-pin-confirm').value;
+  const tmoSel     = document.getElementById('pref-timeout').value;
+  const tmoMins    = tmoSel === 'custom'
+    ? (parseInt(document.getElementById('pref-timeout-custom').value) || 10)
+    : parseInt(tmoSel);
+
+  if (pinVal && pinVal !== pinConfirm) {
+    errEl.textContent = 'PIN 碼與確認 PIN 碼不一致。';
+    errEl.style.display = '';
+    return;
+  }
+
+  if (pinVal) localStorage.setItem(pinKey(), pinVal);
+  // 若留空：保留舊 PIN（不變更）
+  localStorage.setItem(pinTmoKey(), String(tmoMins));
+
+  resetAfkTimer();
+  renderPrefsPage();
+  okEl.textContent = '偏好設定已儲存。';
+  okEl.style.display = '';
+}
+
+// ══════════════════════════════════════════════
+//  匯入輔導服務記錄
+// ══════════════════════════════════════════════
+function handleImportRecordsFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+  importCounselingRecords(file);
+}
+
+async function importCounselingRecords(file) {
+  const prog = document.getElementById('import-progress');
+  prog.style.display = '';
+  prog.innerHTML = '<span style="color:#718096;">載入 SheetJS 中…</span>';
+
+  await new Promise((resolve, reject) => {
+    if (window.XLSX) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+    s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
+    document.head.appendChild(s);
+  });
+
+  prog.innerHTML = '<span style="color:#718096;">讀取檔案中…</span>';
+  try {
+    const buf = await file.arrayBuffer();
+    let wb;
+    try { wb = XLSX.read(buf, { type:'array', password:'7617' }); }
+    catch { wb = XLSX.read(buf, { type:'array' }); }
+
+    // 嘗試兩種 sheet 名稱（記錄 vs 紀錄）
+    const ws = wb.Sheets['輔導服務紀錄'] || wb.Sheets['輔導服務記錄'];
+    if (!ws) throw new Error('找不到「輔導服務紀錄」工作表，請確認檔案格式。');
+
+    const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' });
+    prog.innerHTML = `<span style="color:#718096;">解析 ${rows.length - 1} 筆記錄…</span>`;
+
+    const rocToAD = (raw) => {
+      const s = String(raw).replace(/\D/g,'');
+      if (s.length === 7) { const y = parseInt(s.slice(0,3)) + 1911; return `${y}-${s.slice(3,5)}-${s.slice(5,7)}`; }
+      return '';
+    };
+
+    // 建立姓名 → 個案陣列 Map（含 semester 範圍）
+    const nameMap = new Map();
+    casesData.forEach(c => {
+      if (!c.name) return;
+      if (!nameMap.has(c.name)) nameMap.set(c.name, []);
+      nameMap.get(c.name).push(c);
+    });
+
+    const findCounselorKey = (nameText) => {
+      for (const [key, info] of Object.entries(configData?.users || {})) {
+        if (info.name && nameText.includes(info.name)) return key;
+      }
+      return '';
+    };
+
+    const topicClean = (raw) => {
+      const s = String(raw).trim();
+      // 移除開頭數字和點，例如 "1.自我探索" → "自我探索"
+      return s.replace(/^\d+\.?\s*/, '');
+    };
+
+    let matched = 0, unmatched = 0, added = 0;
+    const modifiedCaseIds = new Set();
+
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i];
+      const dateRaw     = String(r[0]||'').trim();
+      const studentName = String(r[2]||'').trim();
+      if (!studentName || !dateRaw) continue;
+
+      const date = rocToAD(dateRaw);
+      if (!date) continue;
+
+      // 找對應個案
+      const candidates = nameMap.get(studentName) || [];
+      let targetCase = null;
+      if (candidates.length === 1) {
+        targetCase = candidates[0];
+      } else if (candidates.length > 1) {
+        // 選日期最接近且開案日期 ≤ 記錄日期的個案
+        const sorted = candidates
+          .filter(c => c.openDate && c.openDate <= date)
+          .sort((a, b) => b.openDate.localeCompare(a.openDate));
+        targetCase = sorted[0] || candidates[0];
+      }
+
+      if (!targetCase) { unmatched++; continue; }
+      matched++;
+
+      const counselorText  = String(r[6]||'').trim();
+      const counselorKey   = findCounselorKey(counselorText);
+      const counselorName  = counselorKey ? (configData?.users?.[counselorKey]?.name || counselorText) : counselorText;
+      const topic1 = topicClean(r[9]);
+      const topic2 = topicClean(r[10]);
+      const topics = [topic1, topic2].filter(Boolean);
+
+      const svcPurpose1 = String(r[12]||'').trim();
+      const svcPurpose2 = String(r[13]||'').trim();
+      const serviceItems = [svcPurpose1, svcPurpose2].filter(Boolean);
+
+      const mode          = String(r[7]||'').trim();
+      const interviewee   = String(r[8]||'').trim();
+      const remark        = String(r[14]||'').trim();
+      const crossUnit     = String(r[15]||'').trim();
+      const crossUnitOther= String(r[16]||'').trim();
+      const summary = [
+        mode ? `輔導方式：${mode}` : '',
+        interviewee ? `受訪對象：${interviewee}` : '',
+        remark,
+        crossUnit ? `跨單位聯繫：${crossUnit}${crossUnitOther ? '（'+crossUnitOther+'）' : ''}` : '',
+      ].filter(Boolean).join('\n');
+
+      const newRec = {
+        id: `REC-IMP-${i}-${Date.now()}`,
+        date,
+        time: String(r[1]||'').trim(),
+        counselorEmail: counselorKey,
+        counselorName,
+        topics,
+        serviceItems,
+        summary,
+        assessment: '',
+        nextPlan: '',
+        isImported: true,
+        createdAt: new Date().toISOString(),
+      };
+
+      const idx = casesData.findIndex(c => c.id === targetCase.id);
+      if (idx < 0) continue;
+      if (!casesData[idx].records) casesData[idx].records = [];
+      casesData[idx].records.push(newRec);
+      casesData[idx].updatedAt = new Date().toISOString();
+      modifiedCaseIds.add(targetCase.id);
+      added++;
+    }
+
+    if (modifiedCaseIds.size > 0) {
+      prog.innerHTML = `<span style="color:#718096;">寫入 ${modifiedCaseIds.size} 個個案的記錄至 Drive…</span>`;
+      await saveCasesChunks(...modifiedCaseIds);
+    }
+
+    prog.innerHTML = `<span style="color:#276749;font-weight:600;">✓ 成功匯入 ${added} 筆輔導記錄（比對到 ${matched} 筆，無法比對 ${unmatched} 筆）。</span>`;
+    auditLog(`批次匯入輔導服務記錄 ${added} 筆`);
+  } catch(e) {
+    prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span>`;
+  }
+}
 </script>
+
+<!-- 畫面鎖定遮罩 -->
+<div id="lock-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.93);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:#fff;padding:40px 36px;border-radius:14px;text-align:center;min-width:300px;box-shadow:0 8px 32px rgba(0,0,0,.3);">
+    <div style="font-size:2.4rem;margin-bottom:12px;">🔒</div>
+    <h2 style="margin-bottom:6px;color:#1a202c;">畫面已鎖定</h2>
+    <p id="lock-user-display" style="color:#718096;font-size:.9rem;margin-bottom:20px;"></p>
+    <input type="password" id="lock-pin-input" placeholder="輸入 PIN 碼"
+      style="width:100%;padding:10px 14px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:1.1rem;text-align:center;letter-spacing:.2em;margin-bottom:10px;"
+      maxlength="12" autocomplete="off"
+      onkeydown="if(event.key==='Enter')tryUnlock()" />
+    <p id="lock-pin-error" style="display:none;color:#c53030;font-size:.85rem;margin-bottom:10px;">PIN 碼錯誤，請再試一次。</p>
+    <button onclick="tryUnlock()" style="width:100%;padding:10px;background:#2471a3;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer;">解鎖</button>
+  </div>
+</div>
+
+<!-- 首次設定 PIN Modal -->
+<div id="pin-setup-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.7);z-index:9998;align-items:center;justify-content:center;">
+  <div style="background:#fff;padding:32px 28px;border-radius:14px;min-width:320px;max-width:420px;box-shadow:0 8px 32px rgba(0,0,0,.25);">
+    <h3 style="margin-bottom:8px;color:#1a202c;">設定畫面鎖定</h3>
+    <p style="color:#718096;font-size:.88rem;margin-bottom:20px;">首次使用請設定 PIN 碼與閒置鎖定時間。若不需要鎖定功能，可留空並選擇「不鎖定」。</p>
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div>
+        <label class="field-label">PIN 碼（選填）</label>
+        <input type="password" id="pin-setup-value" class="field-input" placeholder="留空則不啟用鎖定" maxlength="12" autocomplete="new-password" />
+      </div>
+      <div>
+        <label class="field-label">閒置後自動鎖定</label>
+        <select id="pin-setup-timeout" class="field-input" style="width:auto;" onchange="toggleSetupCustom(this)">
+          <option value="0">不鎖定</option>
+          <option value="1">1 分鐘</option>
+          <option value="3">3 分鐘</option>
+          <option value="5">5 分鐘</option>
+          <option value="10" selected>10 分鐘</option>
+          <option value="20">20 分鐘</option>
+          <option value="30">30 分鐘</option>
+          <option value="custom">自訂…</option>
+        </select>
+        <input type="number" id="pin-setup-custom" min="1" max="999" placeholder="分鐘" class="field-input" style="display:none;width:80px;margin-left:8px;" />
+      </div>
+      <button class="btn btn-primary" onclick="savePinSetup()">確認設定</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
