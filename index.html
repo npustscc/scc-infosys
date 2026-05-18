@@ -830,6 +830,9 @@
       <div class="nav-item active" onclick="showPage('page-cases', this)">
         <span class="icon">📋</span> 個案列表
       </div>
+      <div class="nav-item" onclick="showPage('page-pending', this); renderPendingList()">
+        <span class="icon">📁</span> 不開案個案
+      </div>
       <div class="nav-item" onclick="showPage('page-casenums', this); renderCaseNums()">
         <span class="icon">🔢</span> 案號管理
       </div>
@@ -884,6 +887,7 @@
         <div class="card-header">
           <h3>個案列表</h3>
           <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary" onclick="exportCasesCSV()">⬇ 匯出 CSV</button>
             <button class="btn btn-secondary" onclick="loadCases()">🔄 重新整理</button>
             <button class="btn btn-primary" id="btn-new-case" onclick="openNewCasePage()">＋ 新增個案</button>
           </div>
@@ -960,6 +964,9 @@
             <label class="btn btn-secondary" style="cursor:pointer;margin:0;">匯入輔導服務記錄
               <input type="file" id="import-records-file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportRecordsFile(this)" />
             </label>
+            <label class="btn btn-secondary" style="cursor:pointer;margin:0;">匯入心理測驗 CSV
+              <input type="file" id="import-psych-file" accept=".csv" style="display:none" onchange="handleImportPsychCSV(this)" />
+            </label>
           </div>
           <div id="import-progress" style="margin-top:14px;display:none;font-size:.88rem;"></div>
         </div>
@@ -1025,6 +1032,24 @@
     <div id="page-stats" class="page">
       <div class="page-title">統計分析</div>
       <div id="stats-body"></div>
+    </div>
+
+    <!-- 不開案個案 -->
+    <div id="page-pending" class="page">
+      <div class="page-title">不開案個案</div>
+      <div id="pending-alert"></div>
+      <div class="card">
+        <div class="card-header">
+          <h3>不開案個案列表</h3>
+          <button class="btn btn-primary" onclick="openPendingModal()">＋ 新增不開案個案</button>
+        </div>
+        <div style="padding:12px 16px;border-bottom:1px solid #e2e8f0;">
+          <input id="pending-q" type="text" placeholder="搜尋姓名 / 學號 / 身分證字號"
+            style="width:100%;max-width:360px;padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
+            oninput="renderPendingList()" />
+        </div>
+        <div id="pending-list-body" style="padding:8px 0;min-height:60px;"></div>
+      </div>
     </div>
 
     <!-- 結案評估表 -->
@@ -1120,6 +1145,12 @@
         <div id="nc-refill-results"></div>
       </div>
 
+      <!-- 不開案個案比對提示 -->
+      <div id="nc-pending-match" style="display:none;margin-bottom:12px;padding:12px 16px;background:#fffbeb;border:1px solid #f6e05e;border-radius:8px;">
+        <div style="font-size:.85rem;font-weight:700;color:#744210;margin-bottom:8px;">⚠ 發現相符的不開案個案，請確認是否為同一人：</div>
+        <div id="nc-pending-match-list"></div>
+      </div>
+
       <!-- 基本資料 -->
       <div class="form-section">
         <div class="form-section-title">個案基本資料</div>
@@ -1141,11 +1172,11 @@
           </div>
           <div>
             <label class="field-label">姓名<span class="req">*</span></label>
-            <input type="text" class="field-input" id="nc-name" placeholder="王小明" />
+            <input type="text" class="field-input" id="nc-name" placeholder="王小明" oninput="checkPendingMatch()" />
           </div>
           <div>
             <label class="field-label">學號<span class="req">*</span></label>
-            <input type="text" class="field-input" id="nc-student-id" placeholder="學號" maxlength="20" />
+            <input type="text" class="field-input" id="nc-student-id" placeholder="學號" maxlength="20" oninput="checkPendingMatch()" />
           </div>
           <div>
             <label class="field-label">生日<span class="req">*</span></label>
@@ -1166,7 +1197,7 @@
           </div>
           <div>
             <label class="field-label">身分證字號／居留證號<span class="req">*</span></label>
-            <input type="text" class="field-input" id="nc-id-number" placeholder="A123456789" />
+            <input type="text" class="field-input" id="nc-id-number" placeholder="A123456789" oninput="checkPendingMatch()" />
           </div>
           <div class="full">
             <label class="field-label">法定性別<span class="req">*</span></label>
@@ -1985,7 +2016,7 @@ async function afterLogin() {
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-layout').style.display  = 'flex';
     checkPinSetup();
-    await loadCases();
+    await Promise.all([loadCases(), loadPendingCases()]);
   } catch (err) {
     hideLoading();
     // 找不到設定檔 → 顯示初始化畫面
@@ -2777,6 +2808,7 @@ function showCaseDetail(caseId) {
   const cid = escHtml(c.id);
 
   let actionsHtml = `<button class="btn btn-secondary" onclick="window.print()">列印</button>`;
+  actionsHtml += ` <button class="btn btn-secondary" onclick="printAllRecords('${cid}')">列印晤談彙整</button>`;
   if (caseIsDeleted) {
     if (isAdminUser) {
       actionsHtml += ` <button class="btn btn-secondary" onclick="restoreCaseAdmin('${cid}')">復原個案</button>`;
@@ -6011,7 +6043,514 @@ async function importCounselingRecords(file) {
     prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span>`;
   }
 }
+
+// ══════════════════════════════════════════════
+//  匯出個案 CSV
+// ══════════════════════════════════════════════
+function exportCasesCSV() {
+  const semesterOf = dateStr => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr + 'T00:00:00');
+    const y = d.getFullYear(), m = d.getMonth() + 1;
+    const roc = y - 1911;
+    if (m >= 8) return `${roc}-1`;
+    if (m === 1) return `${roc - 1}-1`;
+    return `${roc}-2`;
+  };
+  const adToRocStr = d => {
+    if (!d) return '';
+    const parts = d.split('-');
+    if (parts.length < 3) return d;
+    return `${parseInt(parts[0]) - 1911}/${parts[1]}/${parts[2]}`;
+  };
+
+  const qEl = document.getElementById('cf-q');
+  const semEl = document.getElementById('cf-semester');
+  const counselorEl = document.getElementById('cf-counselor');
+  const statusEl = document.getElementById('cf-status');
+  const q = qEl?.value.trim().toLowerCase() || '';
+  const semFilter = semEl?.value || '';
+  const counselorFilter = counselorEl?.value || '';
+  const statusFilter = statusEl?.value || '';
+
+  const filtered = casesData.filter(c => {
+    if (c.deleted) return false;
+    if (semFilter && semesterOf(c.openDate) !== semFilter) return false;
+    if (statusFilter && c.status !== statusFilter) return false;
+    if (counselorFilter) {
+      const emails = [c.counselorEmail, ...(c.managers || [])];
+      if (!emails.includes(counselorFilter)) return false;
+    }
+    if (q) {
+      const hay = [c.name, c.studentId, c.id, c.counselorText, c.counselorName].join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const headers = ['案號','姓名','學號','身分證字號','生日(民國)','法定性別','系所','年級','班別','開案日期','開案學期','主責人員','狀態','結案日期','聯絡電話','電子郵件','來源','BSRS總分'];
+  const rows = filtered.map(c => [
+    c.id,
+    c.name,
+    c.studentId,
+    c.idNumber,
+    adToRocStr(c.birthday),
+    c.legalGender || '',
+    c.department || '',
+    c.grade || '',
+    c.classNo || '',
+    c.openDate || '',
+    semesterOf(c.openDate),
+    c.counselorText || c.counselorName || c.counselorEmail || '',
+    c.status === 'closed' ? '已結案' : '進行中',
+    c.closeDate || '',
+    c.phone || '',
+    c.email || '',
+    c.source || '',
+    c.bsrsTotal != null ? String(c.bsrsTotal) : '',
+  ]);
+
+  const escape = v => {
+    const s = String(v == null ? '' : v);
+    if (s.includes(',') || s.includes('"') || s.includes('\n')) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const csv = [headers, ...rows].map(r => r.map(escape).join(',')).join('\r\n');
+  const bom = '﻿';
+  const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `個案列表_${new Date().toISOString().slice(0,10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ══════════════════════════════════════════════
+//  列印晤談彙整
+// ══════════════════════════════════════════════
+function printAllRecords(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const records = (c.records || []).filter(r => !r.deleted).sort((a, b) => (a.date || '') < (b.date || '') ? -1 : 1);
+  if (!records.length) { alert('此個案尚無晤談紀錄。'); return; }
+
+  const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const weekdays = ['日','一','二','三','四','五','六'];
+  const bdDisp = (c.birthday || '').replace(/-/g, '/');
+  const deptDisp = [c.department, c.grade, c.classNo].filter(Boolean).join(' ');
+  const printTime = new Date().toLocaleString('zh-TW',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+  const printerName = configData?.users?.[currentUser?.email]?.name || currentUser?.name || '';
+
+  const topicAliasMap = { '家庭問題':'家庭關係','人際互動':'人際關係','學業與學習':'學習與課業','生涯發展與規劃':'生涯探索','網路成癮':'網路沉迷' };
+  const officialTopics = ['自我探索','情感困擾','心理疾患或傾向','情緒困擾','家庭關係','人際關係','學習與課業','生涯探索','生活適應','網路沉迷','生理健康','性別議題','其他'];
+
+  const renderOneRecord = (r, idx) => {
+    const dateObj = r.date ? new Date(r.date + 'T00:00:00') : null;
+    const weekday = dateObj ? `（${weekdays[dateObj.getDay()]}）` : '';
+    const timeDisp = (r.time || '').startsWith('其他：') ? r.time.slice(3) : (r.time || '');
+    const normalizedTopics = new Set((r.topics || []).map(t => topicAliasMap[t] || t));
+    const topicCbs = officialTopics.map((t, i) => {
+      const chk = normalizedTopics.has(t) || (t === '其他' && [...normalizedTopics].some(x => x.startsWith('其他')));
+      const note = (t === '其他' && chk) ? ([...normalizedTopics].find(x => x.startsWith('其他：')) || '').slice(3) : '';
+      return `<div class="cb-item"><div class="cb-row"><span style="font-size:2em;line-height:1;">${chk?'■':'□'}</span> ${i+1}. ${esc(t)}${note?'：'+esc(note):''}</div></div>`;
+    }).join('');
+    const svcItems = r.serviceItems || [];
+    const hasSvc = (...kws) => svcItems.some(s => kws.some(k => s.includes(k)));
+    const formSvcs = [
+      { label:'諮商輔導/諮詢', star:false, checked:hasSvc('諮商輔導') },
+      { label:'心理測驗', star:true, checked:hasSvc('心理測驗') },
+      { label:'與個案相關資源或關係人聯繫', star:true, checked:hasSvc('與個案相關資源') },
+      { label:'轉介至外部相關資源，持續諮商或治療', star:false, checked:hasSvc('持續諮商') },
+      { label:'轉介至外部相關資源，資源連結', star:true, checked:hasSvc('資源連結') },
+      { label:'轉介校內精神科醫師', star:false, checked:hasSvc('校內精神科醫師') },
+      { label:'轉介校外精神科醫師', star:false, checked:hasSvc('校外精神科醫師') },
+      { label:'責任通報', star:true, checked:hasSvc('責任通報') },
+      { label:'陪同服務', star:true, checked:hasSvc('陪同服務') },
+      { label:'內部轉案', star:true, checked:hasSvc('內部轉案') },
+      { label:'結案', star:false, checked:hasSvc('結案') },
+      { label:'其他', star:true, checked:hasSvc('其他') },
+    ];
+    const getDetail = (...kws) => { const m = svcItems.find(s => kws.some(k => s.includes(k))); if (!m) return ''; const ci = m.indexOf('：'); return ci >= 0 ? m.slice(ci + 1) : ''; };
+    const detailMap = ['',getDetail('心理測驗'),'','','','','',getDetail('責任通報'),getDetail('陪同服務'),getDetail('內部轉案'),'',getDetail('其他')];
+    const svcCbs = formSvcs.map((sv, i) => {
+      const det = detailMap[i] ? `<div class="cb-det">${esc(detailMap[i])}</div>` : '';
+      return `<div class="cb-item"><div class="cb-row"><span style="font-size:2em;line-height:1;">${sv.checked?'■':'□'}</span> ${i+1}. ${sv.star?'*':''}${esc(sv.label)}</div>${det}</div>`;
+    }).join('');
+    return `
+<div class="rec-page" style="page-break-before:${idx===0?'auto':'always'};">
+<div class="title">個　案　紀　錄　表</div>
+<table style="table-layout:fixed">
+  <tr><td>姓名：${esc(c.name)}</td><td>出生年月日：${esc(bdDisp)}</td><td>系級：${esc(deptDisp)}</td></tr>
+  <tr><td>案號：${esc(c.id)}</td><td>身分證／居留證：${esc(c.idNumber)}</td><td>電話：${esc(c.phone)}</td></tr>
+  <tr><td>學號：${esc(c.studentId)}</td><td colspan="2">晤談日期：${esc(r.date)}${weekday}　${esc(timeDisp)}</td></tr>
+</table>
+<div class="sec"><div class="sh">一、會談主題</div><div class="topic-grid">${topicCbs}</div></div>
+<div class="sec"><div class="sh">二、主述與會談資料</div><div class="box">${esc(r.summary)}</div></div>
+<div class="sec"><div class="sh">三、問題評估</div><div class="box sm">${esc(r.assessment)}</div></div>
+<div class="sec"><div class="sh">四、當次介入處遇</div><div class="svc-grid">${svcCbs}</div></div>
+<div class="sec"><div class="sh">五、後續處遇計畫</div><div class="box sm">${esc(r.nextPlan)}</div></div>
+<div class="sig"><div class="sig-f">晤談人員：<div class="sig-l">${esc(r.counselorName||r.counselorEmail||'')}</div></div></div>
+</div>`;
+  };
+
+  const html = `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
+<title>晤談彙整 ${esc(c.name)} ${esc(c.id)}</title>
+<style>
+@page{size:A4 portrait;margin:0}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'微軟正黑體','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:11pt;color:#000}
+.rec-page{padding:16mm 15mm}
+.title{text-align:center;font-size:15pt;font-weight:bold;letter-spacing:2pt;margin-bottom:10pt;padding-bottom:6pt;border-bottom:1.5pt solid #000}
+table{width:100%;border-collapse:collapse;margin-bottom:8pt;font-size:10pt}
+td{padding:3pt 0;border:none}
+td+td{padding-left:12pt}
+.sec{margin-bottom:8pt}
+.sh{font-size:10.5pt;font-weight:bold;margin-bottom:3pt;border-bottom:.8pt solid #999;padding-bottom:2pt}
+.box{min-height:60pt;padding:4pt 0;white-space:pre-wrap;font-size:10pt;line-height:1.7;word-break:break-all;border-bottom:.5pt solid #ccc}
+.box.sm{min-height:36pt}
+.topic-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:3pt 6pt;margin:3pt 0}
+.svc-grid{display:grid;grid-template-columns:1fr 1fr;gap:4pt 8pt;margin:3pt 0;align-items:start}
+.cb-item{display:flex;flex-direction:column;font-size:9.5pt;line-height:1.6}
+.cb-row{display:flex;align-items:baseline;gap:3pt}
+.cb-det{font-size:8.5pt;color:#333;padding-left:30pt;margin-top:1pt}
+.sig{display:flex;justify-content:flex-end;margin-top:14pt}
+.sig-f{display:flex;align-items:flex-end;gap:6pt;font-size:10.5pt}
+.sig-l{border-bottom:.8pt solid #000;width:120pt;padding-bottom:2pt;text-align:center;font-size:10pt}
+.foot{font-size:7.5pt;color:#888;text-align:right;margin-top:10pt;border-top:.5pt solid #ccc;padding-top:4pt}
+</style></head><body>
+${records.map((r, i) => renderOneRecord(r, i)).join('\n')}
+<div class="foot" style="padding:0 15mm 8mm;">${printerName ? esc(printerName)+' 於 ' : ''}${esc(printTime)} 列印　共 ${records.length} 筆晤談紀錄　國立屏東科技大學學生諮商中心資訊系統</div>
+<script>window.addEventListener('load',()=>window.print());<\/script>
+</body></html>`;
+
+  const w = window.open('', '_blank');
+  if (!w) { alert('請允許彈出視窗以列印紀錄。'); return; }
+  w.document.write(html);
+  w.document.close();
+}
+
+// ══════════════════════════════════════════════
+//  不開案個案
+// ══════════════════════════════════════════════
+const PENDING_CASES_FILE = 'pending_cases.json';
+let pendingCasesData = [];
+
+async function loadPendingCases() {
+  try {
+    const data = await driveReadJson(PENDING_CASES_FILE);
+    pendingCasesData = Array.isArray(data?.cases) ? data.cases : [];
+  } catch (e) {
+    pendingCasesData = [];
+  }
+}
+
+async function savePendingCases() {
+  try {
+    await driveUpdateJsonFile(PENDING_CASES_FILE, { cases: pendingCasesData });
+  } catch(e) {
+    if (e.message.includes('找不到')) {
+      await driveCreateJsonFile(PENDING_CASES_FILE, { cases: pendingCasesData }, DRIVE_FOLDER_ID);
+    } else throw e;
+  }
+}
+
+function renderPendingList() {
+  const body = document.getElementById('pending-list-body');
+  if (!body) return;
+  const q = (document.getElementById('pending-q')?.value || '').trim().toLowerCase();
+  const filtered = pendingCasesData.filter(p => {
+    if (!q) return true;
+    return [p.name, p.studentId, p.idNumber].join(' ').toLowerCase().includes(q);
+  });
+  if (!filtered.length) {
+    body.innerHTML = `<div class="empty-state" style="padding:30px 0;"><div class="icon">📁</div><p>${q ? '查無結果' : '尚無不開案個案'}</p></div>`;
+    return;
+  }
+  body.innerHTML = filtered.map(p => `
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;padding:12px 20px;border-bottom:1px solid #f0f4f8;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;color:#1a202c;font-size:.95rem;">${escHtml(p.name)}</div>
+        <div style="font-size:.8rem;color:#718096;margin-top:3px;">
+          ${p.studentId ? '學號：' + escHtml(p.studentId) + '　' : ''}
+          ${p.idNumber ? '身分證：' + escHtml(p.idNumber) + '　' : ''}
+          ${p.department ? escHtml(p.department) : ''}${p.grade ? ' ' + escHtml(p.grade) + '年級' : ''}
+        </div>
+        ${p.notes ? `<div style="font-size:.82rem;color:#4a5568;margin-top:4px;white-space:pre-wrap;">${escHtml(p.notes)}</div>` : ''}
+        <div style="font-size:.75rem;color:#a0aec0;margin-top:3px;">建立：${(p.createdAt||'').slice(0,10)}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;margin-left:12px;">
+        <button class="btn btn-secondary" style="font-size:.8rem;padding:4px 10px;" onclick="openPendingModal('${escHtml(p.id)}')">編輯</button>
+        <button class="btn btn-danger" style="font-size:.8rem;padding:4px 10px;" onclick="deletePendingCase('${escHtml(p.id)}')">刪除</button>
+      </div>
+    </div>`).join('');
+}
+
+let _editingPendingId = null;
+function openPendingModal(id) {
+  _editingPendingId = id || null;
+  const p = id ? pendingCasesData.find(x => x.id === id) : null;
+  document.getElementById('pending-modal-title').textContent = p ? '編輯不開案個案' : '新增不開案個案';
+  document.getElementById('pnd-name').value = p?.name || '';
+  document.getElementById('pnd-student-id').value = p?.studentId || '';
+  document.getElementById('pnd-id-number').value = p?.idNumber || '';
+  document.getElementById('pnd-birthday').value = p?.birthday || '';
+  document.getElementById('pnd-dept').value = p?.department || '';
+  document.getElementById('pnd-grade').value = p?.grade || '';
+  document.getElementById('pnd-phone').value = p?.phone || '';
+  document.getElementById('pnd-notes').value = p?.notes || '';
+  document.getElementById('pending-modal-alert').innerHTML = '';
+  const modal = document.getElementById('pending-modal');
+  modal.style.display = 'flex';
+}
+
+function closePendingModal() {
+  document.getElementById('pending-modal').style.display = 'none';
+}
+
+async function savePendingCase() {
+  const name = document.getElementById('pnd-name').value.trim();
+  if (!name) {
+    document.getElementById('pending-modal-alert').innerHTML = '<div class="alert alert-error">姓名為必填。</div>';
+    return;
+  }
+  const btn = document.querySelector('#pending-modal .btn-primary');
+  btn.disabled = true;
+  btn.textContent = '儲存中…';
+  try {
+    const now = new Date().toISOString();
+    if (_editingPendingId) {
+      const idx = pendingCasesData.findIndex(x => x.id === _editingPendingId);
+      if (idx >= 0) {
+        pendingCasesData[idx] = { ...pendingCasesData[idx],
+          name, studentId: document.getElementById('pnd-student-id').value.trim(),
+          idNumber: document.getElementById('pnd-id-number').value.trim(),
+          birthday: document.getElementById('pnd-birthday').value,
+          department: document.getElementById('pnd-dept').value.trim(),
+          grade: document.getElementById('pnd-grade').value,
+          phone: document.getElementById('pnd-phone').value.trim(),
+          notes: document.getElementById('pnd-notes').value.trim(),
+          updatedAt: now };
+      }
+    } else {
+      pendingCasesData.push({ id: 'PND-' + Date.now(), name,
+        studentId: document.getElementById('pnd-student-id').value.trim(),
+        idNumber: document.getElementById('pnd-id-number').value.trim(),
+        birthday: document.getElementById('pnd-birthday').value,
+        department: document.getElementById('pnd-dept').value.trim(),
+        grade: document.getElementById('pnd-grade').value,
+        phone: document.getElementById('pnd-phone').value.trim(),
+        notes: document.getElementById('pnd-notes').value.trim(),
+        createdAt: now, updatedAt: now });
+    }
+    await savePendingCases();
+    closePendingModal();
+    renderPendingList();
+  } catch(e) {
+    document.getElementById('pending-modal-alert').innerHTML = `<div class="alert alert-error">儲存失敗：${escHtml(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '儲存';
+  }
+}
+
+async function deletePendingCase(id) {
+  const p = pendingCasesData.find(x => x.id === id);
+  if (!p) return;
+  if (!confirm(`確定要刪除不開案個案「${p.name}」？`)) return;
+  pendingCasesData = pendingCasesData.filter(x => x.id !== id);
+  await savePendingCases();
+  renderPendingList();
+}
+
+function checkPendingMatch() {
+  const name = document.getElementById('nc-name')?.value.trim() || '';
+  const sid = document.getElementById('nc-student-id')?.value.trim() || '';
+  const idn = document.getElementById('nc-id-number')?.value.trim() || '';
+  const banner = document.getElementById('nc-pending-match');
+  const list = document.getElementById('nc-pending-match-list');
+  if (!banner || !list) return;
+  if (!pendingCasesData.length) { banner.style.display = 'none'; return; }
+  const matches = pendingCasesData.filter(p => {
+    if (sid && p.studentId && sid === p.studentId) return true;
+    if (idn && p.idNumber && idn === p.idNumber) return true;
+    if (name.length >= 2 && p.name.includes(name)) return true;
+    return false;
+  });
+  if (!matches.length) { banner.style.display = 'none'; return; }
+  banner.style.display = '';
+  list.innerHTML = matches.map(p => `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:#fff;border:1px solid #f6e05e;border-radius:6px;margin-bottom:6px;">
+      <div>
+        <span style="font-weight:600;color:#744210;">${escHtml(p.name)}</span>
+        <span style="font-size:.8rem;color:#92400e;margin-left:8px;">
+          ${p.studentId ? '學號：' + escHtml(p.studentId) : ''}
+          ${p.idNumber ? '　身分證：' + escHtml(p.idNumber) : ''}
+          ${p.department ? '　' + escHtml(p.department) : ''}
+        </span>
+        ${p.notes ? `<div style="font-size:.8rem;color:#78350f;margin-top:2px;">${escHtml(p.notes.slice(0,80))}${p.notes.length>80?'…':''}</div>` : ''}
+        <div style="font-size:.75rem;color:#a0aec0;margin-top:1px;">[不開案個案] 建立於 ${(p.createdAt||'').slice(0,10)}</div>
+      </div>
+      <button class="btn btn-secondary" style="font-size:.8rem;padding:4px 10px;flex-shrink:0;margin-left:12px;" onclick="fillFromPending('${escHtml(p.id)}')">帶入資料</button>
+    </div>`).join('');
+}
+
+function fillFromPending(id) {
+  const p = pendingCasesData.find(x => x.id === id);
+  if (!p) return;
+  if (p.name) document.getElementById('nc-name').value = p.name;
+  if (p.studentId) document.getElementById('nc-student-id').value = p.studentId;
+  if (p.idNumber) document.getElementById('nc-id-number').value = p.idNumber;
+  if (p.department) { document.getElementById('nc-dept').value = p.department; }
+  if (p.grade) document.getElementById('nc-grade').value = p.grade;
+  if (p.phone) document.getElementById('nc-phone').value = p.phone;
+  if (p.birthday) {
+    const parts = p.birthday.split('-');
+    if (parts.length === 3) {
+      document.getElementById('nc-birth-year').value = parts[0];
+      document.getElementById('nc-birth-month').value = parts[1];
+      document.getElementById('nc-birth-day').value = parts[2];
+      if (typeof updateBirthRoc === 'function') updateBirthRoc();
+    }
+  }
+  document.getElementById('nc-pending-match').style.display = 'none';
+}
+
+// ══════════════════════════════════════════════
+//  心理測驗 CSV 匯入
+// ══════════════════════════════════════════════
+function handleImportPsychCSV(input) {
+  const file = input.files[0];
+  if (!file) return;
+  input.value = '';
+  importPsychTestCSV(file);
+}
+
+async function importPsychTestCSV(file) {
+  const prog = document.getElementById('import-progress');
+  prog.style.display = '';
+  prog.innerHTML = '<span style="color:#718096;">解析 CSV 中…</span>';
+  try {
+    const text = await file.text();
+    const parseCSV = raw => {
+      const lines = raw.split(/\r?\n/);
+      return lines.map(line => {
+        const fields = [];
+        let cur = '', inQ = false;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if (ch === '"') {
+            if (inQ && line[i+1] === '"') { cur += '"'; i++; }
+            else inQ = !inQ;
+          } else if (ch === ',' && !inQ) {
+            fields.push(cur); cur = '';
+          } else cur += ch;
+        }
+        fields.push(cur);
+        return fields;
+      });
+    };
+
+    const rows = parseCSV(text);
+    if (rows.length < 2) throw new Error('CSV 格式錯誤或無資料列');
+    const headers = rows[0].map(h => h.trim());
+    const FIELDS = ['學號','姓名','受測學期','班級','AL','D1','D2','F1','F2','F3','F4','S01','S02','S03','S04','S05','S06','S07','S08','S09','S10','S11','S12','同意導師知情','是否為高關懷','問卷有效性'];
+    const idx = {};
+    FIELDS.forEach(f => { idx[f] = headers.indexOf(f); });
+    if (idx['學號'] < 0) throw new Error('找不到「學號」欄位，請確認 CSV 第一列為欄位名稱');
+
+    let matched = 0, updated = 0, notFound = 0;
+    const dataRows = rows.slice(1).filter(r => r.some(c => c.trim()));
+    for (const row of dataRows) {
+      const get = f => (idx[f] >= 0 ? (row[idx[f]] || '').trim() : '');
+      const sid = get('學號');
+      if (!sid) continue;
+      const c = casesData.find(x => x.studentId === sid && !x.deleted);
+      if (!c) { notFound++; continue; }
+      matched++;
+      const semester = get('受測學期');
+      if (!c.psychTestResults) c.psychTestResults = [];
+      const existIdx = semester ? c.psychTestResults.findIndex(t => t.testSemester === semester) : -1;
+      const result = {
+        testSemester: semester,
+        className: get('班級'),
+        AL: get('AL'), D1: get('D1'), D2: get('D2'), F1: get('F1'), F2: get('F2'), F3: get('F3'), F4: get('F4'),
+        S01: get('S01'), S02: get('S02'), S03: get('S03'), S04: get('S04'), S05: get('S05'), S06: get('S06'),
+        S07: get('S07'), S08: get('S08'), S09: get('S09'), S10: get('S10'), S11: get('S11'), S12: get('S12'),
+        teacherConsent: get('同意導師知情'),
+        highConcern: get('是否為高關懷'),
+        validity: get('問卷有效性'),
+        importedAt: new Date().toISOString(),
+      };
+      if (existIdx >= 0) c.psychTestResults[existIdx] = result;
+      else c.psychTestResults.push(result);
+      updated++;
+    }
+
+    prog.innerHTML = '<span style="color:#718096;">儲存中…</span>';
+    await migrateToChunks();
+    prog.innerHTML = `<span style="color:#276749;font-weight:600;">✓ 心理測驗資料匯入完成：比對到 ${matched} 筆（更新 ${updated} 筆），${notFound} 筆找不到對應學號。</span>`;
+    auditLog(`批次匯入心理測驗結果 ${updated} 筆`);
+  } catch(e) {
+    prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span>`;
+  }
+}
 </script>
+
+<!-- 不開案個案 Modal -->
+<div id="pending-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:500;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:12px;padding:28px 28px 20px;width:90%;max-width:500px;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.2);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
+      <h3 id="pending-modal-title" style="font-size:1.1rem;color:#1a202c;">新增不開案個案</h3>
+      <button onclick="closePendingModal()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div class="full" style="grid-column:1/-1;">
+        <label class="field-label">姓名<span class="req">*</span></label>
+        <input type="text" class="field-input" id="pnd-name" placeholder="王小明" />
+      </div>
+      <div>
+        <label class="field-label">學號</label>
+        <input type="text" class="field-input" id="pnd-student-id" placeholder="學號" maxlength="20" />
+      </div>
+      <div>
+        <label class="field-label">身分證字號</label>
+        <input type="text" class="field-input" id="pnd-id-number" placeholder="A123456789" />
+      </div>
+      <div>
+        <label class="field-label">生日（西元年，選填）</label>
+        <input type="date" class="field-input" id="pnd-birthday" />
+      </div>
+      <div>
+        <label class="field-label">系所（選填）</label>
+        <input type="text" class="field-input" id="pnd-dept" placeholder="系所" />
+      </div>
+      <div>
+        <label class="field-label">年級（選填）</label>
+        <select class="field-select" id="pnd-grade">
+          <option value="">—</option>
+          <option>1</option><option>2</option><option>3</option>
+          <option>4</option><option>5</option><option>6</option><option>7+</option>
+        </select>
+      </div>
+      <div>
+        <label class="field-label">電話（選填）</label>
+        <input type="text" class="field-input" id="pnd-phone" placeholder="手機號碼" />
+      </div>
+      <div class="full" style="grid-column:1/-1;">
+        <label class="field-label">備註（選填）</label>
+        <textarea class="field-input" id="pnd-notes" rows="3" style="resize:vertical;" placeholder="間接服務內容、轉介來源等說明…"></textarea>
+      </div>
+    </div>
+    <div id="pending-modal-alert" style="margin-top:12px;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
+      <button class="btn btn-secondary" onclick="closePendingModal()">取消</button>
+      <button class="btn btn-primary" onclick="savePendingCase()">儲存</button>
+    </div>
+  </div>
+</div>
 
 <!-- 畫面鎖定遮罩 -->
 <div id="lock-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.93);z-index:9999;align-items:center;justify-content:center;">
