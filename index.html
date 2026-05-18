@@ -2192,6 +2192,7 @@ window.addEventListener('load', () => {
   if (stored) {
     try {
       currentUser = JSON.parse(stored);
+      gIdToken = sessionStorage.getItem('scc_idtoken') || null;
       showLoading('自動登入中…');
       const tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: CLIENT_ID,
@@ -2227,6 +2228,7 @@ function handleCredentialResponse(response) {
   currentUser = { email: payload.email, name: payload.name, picture: payload.picture };
   sessionStorage.setItem('scc_user', JSON.stringify(currentUser));
   gIdToken = response.credential; // 保留 ID token 供 Apps Script 驗證用
+  sessionStorage.setItem('scc_idtoken', response.credential);
 
   // 用 OAuth2 implicit flow 取得 Drive access_token
   const tokenClient = google.accounts.oauth2.initTokenClient({
@@ -5140,10 +5142,7 @@ async function confirmClearAllCases() {
     if (chunkIds.length > 0) {
       showLoading(`刪除 ${chunkIds.length} 個 chunk 檔…`);
       await Promise.all(chunkIds.map(id =>
-        fetch(injectSharedDriveParams(`https://www.googleapis.com/drive/v3/files/${id}`), {
-          method: 'DELETE',
-          headers: { Authorization: 'Bearer ' + gAccessToken },
-        }).catch(() => {})
+        proxyCall('trashFile', { fileId: id }).catch(() => {})
       ));
     }
     casesData = [];
@@ -6412,7 +6411,7 @@ async function runInitialization() {
   try {
     // 步驟 1：確認 scc-infosys 資料夾（已固定，直接標記完成）
     setStepStatus('step-folder-status', 'doing', '確認中…');
-    await apiFetch(`https://www.googleapis.com/drive/v3/files/${DRIVE_FOLDER_ID}?fields=id`);
+    await proxyCall('getMetadata', { fileId: DRIVE_FOLDER_ID, fields: 'id' });
     setStepStatus('step-folder-status', 'ok', '✓ 已存在');
 
     // 步驟 2：建立 config.json
@@ -6475,6 +6474,8 @@ function signOut() {
     gAccessToken = null;
   }
   sessionStorage.removeItem('scc_user');
+  sessionStorage.removeItem('scc_idtoken');
+  gIdToken = null;
   currentUser = currentRole = extraRole = configData = null;
   casesData = [];
 
@@ -6607,7 +6608,7 @@ async function migrateAllToSharedDrive() {
   out.innerHTML = '<span style="color:#718096;">正在驗證目標資料夾…</span>';
   try {
     // 確認目標資料夾存在且可寫
-    await apiFetch(`https://www.googleapis.com/drive/v3/files/${target}?fields=id,name,mimeType,driveId`);
+    await proxyCall('getMetadata', { fileId: target, fields: 'id,name,mimeType' });
   } catch (e) {
     out.innerHTML = `<span style="color:#c53030;">目標資料夾無法存取：${escHtml(e.message)}</span>`;
     return;
@@ -6618,22 +6619,19 @@ async function migrateAllToSharedDrive() {
   let stats = { folders: 0, files: 0, failed: 0 };
 
   async function listChildren(folderId) {
-    const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${folderId}' in parents and trashed=false`)}&fields=files(id,name,mimeType)&pageSize=1000`;
-    const r = await apiFetch(url);
+    const r = await proxyCall('query', { q: `'${folderId}' in parents and trashed=false`, fields: 'id,name,mimeType', pageSize: 1000 });
     return r.files || [];
   }
 
   async function getOrCreateChildFolder(parentId, name) {
     const q = `name='${name.replace(/'/g, "\\'")}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`;
-    const r = await apiFetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`);
+    const r = await driveQuery(q, 'id');
     if (r.files && r.files.length) return r.files[0].id;
     return await driveCreateFolder(name, parentId);
   }
 
-  // 為了支援取消多個 parents（檔案可能掛在多個父資料夾下），先取 file.parents
   async function moveFile(fileId, oldParentId, newParentId) {
-    const url = `https://www.googleapis.com/drive/v3/files/${fileId}?addParents=${newParentId}&removeParents=${oldParentId}&fields=id,parents`;
-    return apiFetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    return proxyCall('moveFile', { fileId, addParents: newParentId, removeParents: oldParentId });
   }
 
   async function migrateRecurse(srcFolderId, dstFolderId) {
@@ -6647,10 +6645,7 @@ async function migrateAllToSharedDrive() {
         await migrateRecurse(it.id, newSubId);
         // 子資料夾搬空後刪除來源資料夾（移到垃圾桶）
         try {
-          await apiFetch(`https://www.googleapis.com/drive/v3/files/${it.id}`, {
-            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ trashed: true }),
-          });
+          await proxyCall('trashFile', { fileId: it.id });
         } catch (e) { /* 忽略：可能還有不可見內容 */ }
       } else {
         try {
@@ -6689,10 +6684,10 @@ async function consolidateYearFolders() {
   try {
     const casesId = await getCasesFolderId();
     // 列出 cases 下所有子資料夾
-    const folderUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-      `'${casesId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`
-    )}&fields=files(id,name,createdTime)&pageSize=400`;
-    const fr = await apiFetch(folderUrl);
+    const fr = await proxyCall('query', {
+      q: `'${casesId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+      fields: 'id,name,createdTime', pageSize: 400,
+    });
     const folders = fr.files || [];
     const byName = new Map();
     folders.forEach(f => {
@@ -6713,18 +6708,12 @@ async function consolidateYearFolders() {
       lines.push(`「${name}」共 ${arr.length} 個資料夾，保留最早建立的 (id=${keep.id})。`);
 
       // 先把 keep 內現有檔案列出來，避免重複檔名
-      const keepFilesUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-        `'${keep.id}' in parents and trashed=false`
-      )}&fields=files(id,name,modifiedTime)&pageSize=400`;
-      const keepRes = await apiFetch(keepFilesUrl);
+      const keepRes = await proxyCall('listFolder', { folderId: keep.id, fields: 'id,name,modifiedTime', pageSize: 400 });
       const keepFiles = new Map();
       (keepRes.files || []).forEach(f => keepFiles.set(f.name, f));
 
       for (const dup of dupes) {
-        const filesUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-          `'${dup.id}' in parents and trashed=false`
-        )}&fields=files(id,name,modifiedTime)&pageSize=400`;
-        const dr = await apiFetch(filesUrl);
+        const dr = await proxyCall('listFolder', { folderId: dup.id, fields: 'id,name,modifiedTime', pageSize: 400 });
         const dupFiles = dr.files || [];
 
         for (const f of dupFiles) {
@@ -6736,37 +6725,25 @@ async function consolidateYearFolders() {
             if (fTime > cTime) {
               // 新的在 dup → 移過去取代舊的：先把舊的丟到垃圾桶，再把新的搬過來
               try {
-                await apiFetch(`https://www.googleapis.com/drive/v3/files/${collision.id}`, {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ trashed: true }),
-                });
+                await proxyCall('trashFile', { fileId: collision.id });
                 trashedStaleFiles++;
               } catch (e) { console.warn('trash failed', collision.id, e); }
               try {
-                await apiFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?addParents=${keep.id}&removeParents=${dup.id}&fields=id`, {
-                  method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}',
-                });
+                await proxyCall('moveFile', { fileId: f.id, addParents: keep.id, removeParents: dup.id });
                 movedFiles++;
                 keepFiles.set(f.name, { id: f.id, name: f.name, modifiedTime: fTime });
               } catch (e) { console.warn('move failed', f.id, e); }
             } else {
               // dup 中的較舊 → 直接丟到垃圾桶
               try {
-                await apiFetch(`https://www.googleapis.com/drive/v3/files/${f.id}`, {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ trashed: true }),
-                });
+                await proxyCall('trashFile', { fileId: f.id });
                 trashedStaleFiles++;
               } catch (e) { console.warn('trash failed', f.id, e); }
             }
           } else {
             // 沒有衝突，直接搬移
             try {
-              await apiFetch(`https://www.googleapis.com/drive/v3/files/${f.id}?addParents=${keep.id}&removeParents=${dup.id}&fields=id`, {
-                method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}',
-              });
+              await proxyCall('moveFile', { fileId: f.id, addParents: keep.id, removeParents: dup.id });
               movedFiles++;
               keepFiles.set(f.name, { id: f.id, name: f.name, modifiedTime: f.modifiedTime || '' });
             } catch (e) { console.warn('move failed', f.id, e); }
@@ -6775,10 +6752,7 @@ async function consolidateYearFolders() {
 
         // 把 dup 資料夾丟到垃圾桶
         try {
-          await apiFetch(`https://www.googleapis.com/drive/v3/files/${dup.id}`, {
-            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ trashed: true }),
-          });
+          await proxyCall('trashFile', { fileId: dup.id });
           trashedDupes++;
         } catch (e) { console.warn('trash folder failed', dup.id, e); }
       }
@@ -6809,10 +6783,7 @@ async function reorganizeCasesByYear() {
   out.innerHTML = '<span style="color:#718096;">掃描 cases 資料夾…</span>';
   try {
     const casesId = await getCasesFolderId();
-    const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-      `'${casesId}' in parents and trashed=false`
-    )}&fields=files(id,name,mimeType)&pageSize=400`;
-    const r = await apiFetch(url);
+    const r = await proxyCall('query', { q: `'${casesId}' in parents and trashed=false`, fields: 'id,name,mimeType', pageSize: 400 });
     const flatChunks = (r.files || []).filter(f =>
       f.mimeType !== 'application/vnd.google-apps.folder' &&
       f.name !== 'manifest.json' &&
@@ -6835,11 +6806,8 @@ async function reorganizeCasesByYear() {
       if (!/^\d{3}$/.test(yearPrefix)) continue;
       try {
         const targetFolderId = await getOrCreateCasesSubfolder(yearPrefix);
-        // 使用 Drive API 將檔案的 parents 從 casesId 改為 targetFolderId
-        const moveUrl = `https://www.googleapis.com/drive/v3/files/${f.id}?addParents=${targetFolderId}&removeParents=${casesId}&fields=id,parents`;
-        const resp = await apiFetch(moveUrl, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
-        if (resp?.id) moved++;
-        else failed++;
+        await proxyCall('moveFile', { fileId: f.id, addParents: targetFolderId, removeParents: casesId });
+        moved++;
       } catch (e) {
         console.warn('move failed', f.name, e);
         failed++;
@@ -6899,33 +6867,23 @@ async function driveFindFile(path) {
 }
 
 async function driveQuery(q, fields = 'id,name') {
-  const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(${fields})`;
-  const r = await apiFetch(url);
-  return r;
+  return proxyCall('query', { q, fields });
 }
 
 async function driveReadJson(path) {
-  const fileId = await driveFindFile(path);
-  const url    = injectSharedDriveParams(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
-  const r      = await fetch(url, { headers: { Authorization: 'Bearer ' + gAccessToken } });
-  if (!r.ok) throw new Error(`Drive 讀取失敗 (${r.status})`);
-  return r.json();
+  return proxyCall('readJson', { path });
 }
 
 async function driveReadJsonById(fileId) {
-  return apiFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+  return proxyCall('readJsonById', { fileId });
 }
 
 let _casesFolderIdCache = null;
 async function getCasesFolderFileMap() {
   const casesId = await getCasesFolderId();
-  // 同時取得 cases 直接子項目（檔案 + 子資料夾）
-  const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-    `'${casesId}' in parents and trashed=false`
-  )}&fields=files(id,name,mimeType,modifiedTime)&pageSize=400`;
-  const r = await apiFetch(url);
-  const map = new Map();         // path → fileId
-  const fileTimes = new Map();   // path → modifiedTime（用於解決同名衝突）
+  const r = await proxyCall('listFolder', { folderId: casesId, fields: 'id,name,mimeType,modifiedTime', pageSize: 400 });
+  const map = new Map();
+  const fileTimes = new Map();
   const subfolders = [];
   (r.files || []).forEach(f => {
     if (f.mimeType === 'application/vnd.google-apps.folder') {
@@ -6938,12 +6896,8 @@ async function getCasesFolderFileMap() {
       }
     }
   });
-  // 同名子資料夾（如多個 "114"）：讀取每一個並合併內容，遇到同檔名取較新者
   await Promise.all(subfolders.map(async sub => {
-    const subUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(
-      `'${sub.id}' in parents and trashed=false`
-    )}&fields=files(id,name,modifiedTime)&pageSize=400`;
-    const subRes = await apiFetch(subUrl);
+    const subRes = await proxyCall('listFolder', { folderId: sub.id, fields: 'id,name,modifiedTime', pageSize: 400 });
     (subRes.files || []).forEach(f => {
       const key = `${sub.name}/${f.name}`;
       const t = f.modifiedTime || '';
@@ -6956,59 +6910,15 @@ async function getCasesFolderFileMap() {
 }
 
 async function driveCreateFolder(name, parentId) {
-  const meta = { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] };
-  const url = injectSharedDriveParams('https://www.googleapis.com/drive/v3/files');
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + gAccessToken, 'Content-Type': 'application/json' },
-    body: JSON.stringify(meta),
-  });
-  if (!r.ok) throw new Error(`建立資料夾失敗 (${r.status}): ${name}`);
-  const data = await r.json();
-  return data.id;
+  return proxyCall('createFolder', { name, parentId });
 }
 
 async function driveCreateJsonFile(name, content, parentId) {
-  const boundary = 'scc_boundary_' + Date.now();
-  const metaPart = JSON.stringify({ name, mimeType: 'application/json', parents: [parentId] });
-  const bodyPart = JSON.stringify(content, null, 2);
-  const body =
-    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${metaPart}\r\n` +
-    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${bodyPart}\r\n` +
-    `--${boundary}--`;
-  const url = injectSharedDriveParams('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart');
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: 'Bearer ' + gAccessToken,
-      'Content-Type': `multipart/related; boundary=${boundary}`,
-    },
-    body,
-  });
-  if (!r.ok) throw new Error(`建立檔案失敗 (${r.status}): ${name}`);
-  return (await r.json()).id;
+  return proxyCall('createJson', { name, content, parentId });
 }
 
 async function driveUpdateJsonFile(path, content) {
-  const fileId  = await driveFindFile(path);
-  const boundary = 'scc_boundary_' + Date.now();
-  const metaPart = JSON.stringify({ mimeType: 'application/json' });
-  const bodyPart = JSON.stringify(content, null, 2);
-  const body =
-    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${metaPart}\r\n` +
-    `--${boundary}\r\nContent-Type: application/json\r\n\r\n${bodyPart}\r\n` +
-    `--${boundary}--`;
-  const url = injectSharedDriveParams(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`);
-  const r = await fetch(url, {
-    method: 'PATCH',
-    headers: {
-      Authorization: 'Bearer ' + gAccessToken,
-      'Content-Type': `multipart/related; boundary=${boundary}`,
-    },
-    body,
-  });
-  if (!r.ok) throw new Error(`更新檔案失敗 (${r.status}): ${path}`);
-  return (await r.json()).id;
+  return proxyCall('updateJson', { path, content });
 }
 
 function refreshAccessToken() {
