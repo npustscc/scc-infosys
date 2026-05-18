@@ -1009,6 +1009,15 @@
           <div id="migrate-result" style="margin-top:14px;"></div>
         </div>
       </div>
+
+      <div class="card" style="margin-top:20px;">
+        <div class="card-header"><h3>主責人員帳號連結</h3></div>
+        <div style="padding:16px 20px;">
+          <p style="font-size:.88rem;color:#718096;margin-bottom:12px;">將匯入個案的「主責人員」文字名稱連結至系統帳號，連結後將自動移除「未連結帳號」標示。</p>
+          <button class="btn btn-primary" onclick="renderCounselorLinkTool()">掃描未連結個案</button>
+          <div id="counselor-link-result" style="margin-top:14px;"></div>
+        </div>
+      </div>
     </div>
 
     <!-- 案號管理 -->
@@ -1844,6 +1853,39 @@
         <div class="form-section-title">備註（選填）</div>
         <textarea class="field-input" id="rec-notes" rows="2"
           style="resize:vertical;" placeholder="（選填）其他補充說明…"></textarea>
+      </div>
+
+      <!-- 預約下次諮商時間 -->
+      <div class="form-section">
+        <div class="form-section-title">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
+            <input type="checkbox" id="rec-next-bk-toggle" onchange="toggleNextBookingFields()" style="width:16px;height:16px;">
+            同時預約下次諮商空間（選填）
+          </label>
+        </div>
+        <div id="rec-next-bk-fields" style="display:none;margin-top:10px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div>
+              <label class="field-label">空間</label>
+              <select class="field-input" id="rec-next-bk-room">
+                <option value="">請選擇</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label">日期</label>
+              <input type="date" class="field-input" id="rec-next-bk-date">
+            </div>
+            <div>
+              <label class="field-label">開始時間</label>
+              <input type="time" class="field-input" id="rec-next-bk-start" step="1800">
+            </div>
+            <div>
+              <label class="field-label">結束時間</label>
+              <input type="time" class="field-input" id="rec-next-bk-end" step="1800">
+            </div>
+          </div>
+          <div id="rec-next-bk-conflict" style="display:none;margin-top:8px;" class="alert alert-warn"></div>
+        </div>
       </div>
 
       <div class="form-actions">
@@ -2848,7 +2890,13 @@ td+td{padding-left:12pt}
 <div class="sec"><div class="sh">二、主述與會談資料</div><div class="box">${printRich(r.summary)}</div></div>
 <div class="sec"><div class="sh">三、問題評估</div><div class="box sm">${safe(r.assessment)}</div></div>
 <div class="sec"><div class="sh">四、當次介入處遇</div><div class="svc-grid">${svcCbs}</div></div>
-<div class="sec"><div class="sh">五、後續處遇計畫</div><div class="box sm">${safe(r.nextPlan)}</div></div>
+<div class="sec"><div class="sh">五、後續處遇計畫</div><div class="box sm">${
+  (() => {
+    const nextBk = bookingsData.find(b => b.caseId === r.caseId && b.date > r.date);
+    const bkLine = nextBk ? `【下次預約】${nextBk.date} ${(nextBk.startTime||'').slice(0,5)}–${(nextBk.endTime||'').slice(0,5)} ${nextBk.room}` : '';
+    return safe(r.nextPlan) + (bkLine && r.nextPlan ? '<br>' : '') + safe(bkLine);
+  })()
+}</div></div>
 <div class="sig"><div class="sig-f">晤談人員：<div class="sig-l">${safe(r.counselorName||r.counselorEmail||'')}</div></div></div>
 <div class="foot">${printerName ? safe(printerName)+' 於 ' : ''}${safe(printTime)} 列印　國立屏東科技大學學生諮商中心資訊系統</div>
 </div>
@@ -3664,6 +3712,16 @@ function openNewRecordPage(caseId, recordId = null) {
     document.getElementById('rec-next-plan').value  = '';
     document.getElementById('rec-notes').value      = '';
   }
+  // 重置預約下次欄位
+  const nbToggle = document.getElementById('rec-next-bk-toggle');
+  if (nbToggle) { nbToggle.checked = false; toggleNextBookingFields(); }
+  // 預填下次預約日期（今天+7天）
+  const nextDate = new Date(); nextDate.setDate(nextDate.getDate() + 7);
+  const nbDateEl = document.getElementById('rec-next-bk-date');
+  if (nbDateEl) nbDateEl.value = nextDate.toISOString().slice(0, 10);
+  const nbRoom = document.getElementById('rec-next-bk-room');
+  if (nbRoom) nbRoom.innerHTML = '<option value="">請選擇</option>' +
+    ROOMS.map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
 
   showPage('page-new-record', null);
 
@@ -3787,6 +3845,16 @@ function canReadRecord(rec, c) {
 }
 function isAdmin() {
   return currentRole === '主任' || extraRole === '管理者';
+}
+
+function toggleNextBookingFields() {
+  const show = document.getElementById('rec-next-bk-toggle')?.checked;
+  const fields = document.getElementById('rec-next-bk-fields');
+  if (fields) fields.style.display = show ? '' : 'none';
+  if (!show) {
+    const c = document.getElementById('rec-next-bk-conflict');
+    if (c) c.style.display = 'none';
+  }
 }
 
 function snapshotRecordDraft() {
@@ -4425,6 +4493,32 @@ async function saveRecord() {
   const nextPlan      = document.getElementById('rec-next-plan').value.trim();
   const notes         = document.getElementById('rec-notes').value.trim();
   if (!_recCounselors.length) { _recAlert('請至少新增一位晤談者。'); return; }
+
+  // 預約下次：衝突檢查
+  const nbToggle = document.getElementById('rec-next-bk-toggle');
+  const wantNextBooking = nbToggle?.checked;
+  let nextBkRoom = '', nextBkDate = '', nextBkStart = '', nextBkEnd = '';
+  if (wantNextBooking) {
+    nextBkRoom  = document.getElementById('rec-next-bk-room')?.value  || '';
+    nextBkDate  = document.getElementById('rec-next-bk-date')?.value  || '';
+    nextBkStart = document.getElementById('rec-next-bk-start')?.value || '';
+    nextBkEnd   = document.getElementById('rec-next-bk-end')?.value   || '';
+    if (!nextBkRoom || !nextBkDate || !nextBkStart || !nextBkEnd) {
+      _recAlert('已勾選「預約下次諮商空間」，請填寫空間、日期、開始與結束時間。'); return;
+    }
+    if (nextBkStart >= nextBkEnd) {
+      _recAlert('預約下次：結束時間必須晚於開始時間。'); return;
+    }
+    const conflict = bookingsData.find(b =>
+      b.room === nextBkRoom && b.date === nextBkDate &&
+      b.startTime < nextBkEnd && b.endTime > nextBkStart
+    );
+    if (conflict) {
+      const cEl = document.getElementById('rec-next-bk-conflict');
+      if (cEl) { cEl.style.display = ''; cEl.textContent = `衝突：${nextBkRoom} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已有預約（${conflict.counselorName || '—'}）。`; }
+      _recAlert('預約下次的時間與既有預約衝突，請修改。'); return;
+    }
+  }
   const counselorList = [..._recCounselors];
   const counselorName = counselorList.map(c => c.label).join('、');
 
@@ -4484,6 +4578,17 @@ async function saveRecord() {
     casesData[cidx].updatedAt = new Date().toISOString();
     try {
       await saveCasesChunks(_recordCaseId);
+      // 若勾選預約下次，同步建立空間預約
+      if (wantNextBooking && nextBkRoom && nextBkDate && nextBkStart && nextBkEnd) {
+        const myName = configData?.users?.[currentUser.email]?.name || currentUser.email || '';
+        const caseObj = casesData[cidx];
+        bookingsData.push({ id: `bk_${Date.now()}`, room: nextBkRoom, date: nextBkDate,
+          startTime: nextBkStart, endTime: nextBkEnd,
+          counselorEmail: currentUser.email, counselorName: myName,
+          caseId: _recordCaseId, caseName: caseObj?.name || '',
+          notes: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+        await saveBookings().catch(e => console.warn('預約儲存失敗:', e));
+      }
       auditLog('新增晤談紀錄', _recordCaseId, newRecord.id);
       hideLoading();
       clearRecordDraft();
@@ -5329,6 +5434,17 @@ async function importCasesFromExcel(file) {
         bsrsTotal:       bsrsTotalRaw !== '' ? (parseInt(bsrsTotalRaw)||null) : null,
         bsrs6:           bsrs6Raw !== '' ? (bsrsTextMap[bsrs6Raw] ?? null) : null,
         testSemester:    String(r[36]||'').trim(),
+        psychTestResults: (() => {
+          const toNum = v => (v !== '' && v != null) ? (parseFloat(v) || null) : null;
+          const ts = String(r[36]||'').trim();
+          const AL = toNum(r[39]);
+          const dims = { AL,
+            S01:toNum(r[40]),S02:toNum(r[41]),S03:toNum(r[42]),S04:toNum(r[43]),
+            S05:toNum(r[44]),S06:toNum(r[45]),S07:toNum(r[46]),S08:toNum(r[47]),
+            S09:toNum(r[48]),S10:toNum(r[49]),S11:toNum(r[50]),S12:toNum(r[51]) };
+          const hasAny = Object.values(dims).some(v => v !== null);
+          return hasAny ? [{ testSemester: ts, ...dims, importedAt: now }] : [];
+        })(),
         disability:'',
         isImported:      true,
         createdAt: now, updatedAt: now,
@@ -5969,6 +6085,78 @@ async function mergeCounselorGroup(radioName, gi) {
   } catch (err) {
     hideLoading();
     alert('整併失敗：' + err.message);
+  }
+}
+
+function renderCounselorLinkTool() {
+  const out = document.getElementById('counselor-link-result');
+  if (!out) return;
+  // 找所有 counselorEmail 為空但有 counselorText/counselorName 的個案
+  const unlinked = new Map(); // displayName → { count, caseIds }
+  casesData.forEach(c => {
+    if (c.deleted) return;
+    if (c.counselorEmail) return;
+    const name = (c.counselorText || c.counselorName || '').trim();
+    if (!name) return;
+    if (!unlinked.has(name)) unlinked.set(name, { count: 0 });
+    unlinked.get(name).count++;
+  });
+  if (!unlinked.size) {
+    out.innerHTML = '<span style="color:#276749;">✓ 目前所有個案的主責人員均已連結帳號。</span>';
+    return;
+  }
+  const users = configData?.users || {};
+  const userOpts = Object.entries(users)
+    .filter(([, u]) => u.role && u.name)
+    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name)} (${escHtml(email)})</option>`)
+    .join('');
+  let html = `<div style="font-size:.88rem;color:#744210;background:#fffbeb;border:1px solid #fbd38d;border-radius:6px;padding:10px 14px;margin-bottom:12px;">
+    找到 <strong>${unlinked.size}</strong> 個未連結的主責人員名稱，共影響 <strong>${[...unlinked.values()].reduce((s,v)=>s+v.count,0)}</strong> 筆個案。
+  </div>`;
+  let idx = 0;
+  for (const [name, info] of unlinked) {
+    html += `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid #e2e8f0;">
+      <div style="min-width:180px;font-weight:600;color:#2d3748;font-size:.875rem;">${escHtml(name)}<span style="font-weight:400;color:#718096;margin-left:6px;">(${info.count} 筆)</span></div>
+      <select id="cl-sel-${idx}" class="field-input" style="flex:1;min-width:200px;max-width:320px;padding:5px 8px;">
+        <option value="">— 選擇要連結的帳號 —</option>
+        ${userOpts}
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="applyCounselorLink('${escHtml(name)}','cl-sel-${idx}')">連結</button>
+    </div>`;
+    idx++;
+  }
+  out.innerHTML = html;
+}
+
+async function applyCounselorLink(counselorText, selId) {
+  const email = document.getElementById(selId)?.value;
+  if (!email) { alert('請選擇要連結的帳號。'); return; }
+  const userName = configData?.users?.[email]?.name || email;
+  if (!confirm(`將所有主責為「${counselorText}」的個案連結至「${userName}（${email}）」？`)) return;
+  let touched = 0;
+  casesData.forEach(c => {
+    if (c.counselorEmail) return;
+    const name = (c.counselorText || c.counselorName || '').trim();
+    if (name !== counselorText) return;
+    c.counselorEmail = email;
+    c.counselorName  = userName;
+    c.counselorText  = counselorText;
+    c.updatedAt = new Date().toISOString();
+    touched++;
+  });
+  if (!touched) { alert('沒有找到符合的個案。'); return; }
+  showLoading(`連結中（${touched} 筆）…`);
+  try {
+    casesManifest = { chunks: [] };
+    await migrateToChunks();
+    auditLog('連結主責人員帳號', null, `${counselorText} → ${email}，${touched} 筆`);
+    hideLoading();
+    renderCounselorLinkTool();
+    renderCases();
+    alert(`✓ 已連結 ${touched} 筆個案。`);
+  } catch (err) {
+    hideLoading();
+    alert('連結失敗：' + err.message);
   }
 }
 
