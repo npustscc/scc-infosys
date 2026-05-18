@@ -994,6 +994,16 @@
           <button class="btn btn-primary" onclick="reorganizeCasesByYear()">依學年重組 cases 資料夾</button>
           <button class="btn btn-secondary" onclick="consolidateYearFolders()">整合學年資料夾（同名合併）</button>
           <div id="reorg-result" style="margin-top:14px;"></div>
+          <hr style="margin:18px 0;border:none;border-top:1px solid #e2e8f0;" />
+          <p style="font-size:.88rem;color:#718096;margin-bottom:12px;">
+            <b>搬移到共用雲端硬碟</b>：把目前 <code>scc-infosys/</code> 內的所有檔案（含 cases/、config.json、audit_log.json、pending_cases.json 等）搬移到指定的共用雲端硬碟資料夾。
+            繞過 Google Drive 網頁的 30 個檔案上限。
+          </p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <input type="text" id="migrate-target-id" class="field-input" placeholder="目標資料夾 ID（從共用雲端硬碟網址列複製）" style="flex:1;min-width:280px;" />
+            <button class="btn btn-danger" onclick="migrateAllToSharedDrive()">執行搬移</button>
+          </div>
+          <div id="migrate-result" style="margin-top:14px;"></div>
         </div>
       </div>
     </div>
@@ -6573,6 +6583,98 @@ async function saveCasesChunks(...caseIds) {
     const chunkCases = casesData.filter(c => c.id && getCaseChunkName(c.id) === name);
     return driveSaveJsonInCases(`${name}.json`, { cases: chunkCases });
   }));
+}
+
+// 將當前 DRIVE_FOLDER_ID 內的所有檔案 / 子資料夾搬移到指定的共用雲端硬碟資料夾
+// 透過 Drive API 一筆一筆 PATCH，避免 Drive UI 拖移到 Shared Drive 的 30 個限制
+async function migrateAllToSharedDrive() {
+  const out = document.getElementById('migrate-result');
+  const target = document.getElementById('migrate-target-id').value.trim();
+  if (!target) { out.innerHTML = '<span style="color:#c53030;">請輸入目標資料夾 ID</span>'; return; }
+  if (target === DRIVE_FOLDER_ID) { out.innerHTML = '<span style="color:#c53030;">目標 ID 不能與來源相同。</span>'; return; }
+  if (!confirm(
+    '即將把目前 scc-infosys/ 內的所有檔案搬到目標資料夾。\n\n' +
+    '⚠️ 注意：\n' +
+    '1. 來源資料夾結構會被搬空（只有檔案被移動，不會留複本）\n' +
+    '2. 完成後請把 index.html 內的 DRIVE_FOLDER_ID 換成新位置\n' +
+    '3. 建議先確認目標是空資料夾，避免名稱衝突\n\n' +
+    '確定執行？'
+  )) return;
+
+  out.innerHTML = '<span style="color:#718096;">正在驗證目標資料夾…</span>';
+  try {
+    // 確認目標資料夾存在且可寫
+    await apiFetch(`https://www.googleapis.com/drive/v3/files/${target}?fields=id,name,mimeType,driveId`);
+  } catch (e) {
+    out.innerHTML = `<span style="color:#c53030;">目標資料夾無法存取：${escHtml(e.message)}</span>`;
+    return;
+  }
+
+  out.innerHTML = '<span style="color:#718096;">掃描來源資料夾…</span>';
+  // 遞迴複製：在目標下建立對應子資料夾，再把檔案 PATCH 過去
+  let stats = { folders: 0, files: 0, failed: 0 };
+
+  async function listChildren(folderId) {
+    const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${folderId}' in parents and trashed=false`)}&fields=files(id,name,mimeType)&pageSize=1000`;
+    const r = await apiFetch(url);
+    return r.files || [];
+  }
+
+  async function getOrCreateChildFolder(parentId, name) {
+    const q = `name='${name.replace(/'/g, "\\'")}' and mimeType='application/vnd.google-apps.folder' and '${parentId}' in parents and trashed=false`;
+    const r = await apiFetch(`https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`);
+    if (r.files && r.files.length) return r.files[0].id;
+    return await driveCreateFolder(name, parentId);
+  }
+
+  // 為了支援取消多個 parents（檔案可能掛在多個父資料夾下），先取 file.parents
+  async function moveFile(fileId, oldParentId, newParentId) {
+    const url = `https://www.googleapis.com/drive/v3/files/${fileId}?addParents=${newParentId}&removeParents=${oldParentId}&fields=id,parents`;
+    return apiFetch(url, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  }
+
+  async function migrateRecurse(srcFolderId, dstFolderId) {
+    const items = await listChildren(srcFolderId);
+    out.innerHTML = `<span style="color:#718096;">處理中… 已搬移 ${stats.files} 個檔案、${stats.folders} 個資料夾</span>`;
+    for (const it of items) {
+      if (it.mimeType === 'application/vnd.google-apps.folder') {
+        // 在目標下建立同名資料夾，再遞迴處理
+        const newSubId = await getOrCreateChildFolder(dstFolderId, it.name);
+        stats.folders++;
+        await migrateRecurse(it.id, newSubId);
+        // 子資料夾搬空後刪除來源資料夾（移到垃圾桶）
+        try {
+          await apiFetch(`https://www.googleapis.com/drive/v3/files/${it.id}`, {
+            method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ trashed: true }),
+          });
+        } catch (e) { /* 忽略：可能還有不可見內容 */ }
+      } else {
+        try {
+          await moveFile(it.id, srcFolderId, dstFolderId);
+          stats.files++;
+        } catch (e) {
+          stats.failed++;
+          console.warn('move failed', it.name, e);
+        }
+        if (stats.files % 5 === 0) out.innerHTML = `<span style="color:#718096;">處理中… 已搬移 ${stats.files} 個檔案、${stats.folders} 個資料夾</span>`;
+      }
+    }
+  }
+
+  try {
+    await migrateRecurse(DRIVE_FOLDER_ID, target);
+    out.innerHTML = `
+      <div style="color:#276749;font-weight:600;">✓ 完成！搬移 ${stats.files} 個檔案、${stats.folders} 個資料夾（失敗 ${stats.failed}）。</div>
+      <div style="margin-top:8px;color:#8a6d3b;background:#fff8e6;padding:10px 14px;border-radius:6px;font-size:.88rem;">
+        <b>下一步：</b><br>
+        1. 把目標資料夾 ID（<code>${escHtml(target)}</code>）給 Claude，他會更新 <code>index.html</code> 的 <code>DRIVE_FOLDER_ID</code> 並 push。<br>
+        2. 等 GitHub Pages 部署完成（約 1 分鐘）後重新整理頁面，系統就會接到新位置。
+      </div>`;
+    auditLog('搬移至共用雲端硬碟', `目標 ${target}`, `${stats.files} 檔案、${stats.folders} 資料夾`);
+  } catch (e) {
+    out.innerHTML = `<span style="color:#c53030;">✗ 搬移過程出錯：${escHtml(e.message)}<br>已完成：${stats.files} 個檔案、${stats.folders} 個資料夾。</span>`;
+  }
 }
 
 // 整合 cases 下「同名的學年子資料夾」為一個
