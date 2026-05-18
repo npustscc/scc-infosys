@@ -1260,6 +1260,10 @@
             <input type="text" class="field-input" id="nc-phone" placeholder="0912345678" />
           </div>
           <div>
+            <label class="field-label">電子郵件（選填）</label>
+            <input type="email" class="field-input" id="nc-email" placeholder="example@mail.npust.edu.tw" />
+          </div>
+          <div>
             <label class="field-label">住所類型<span class="req">*</span></label>
             <div class="radio-group">
               <label><input type="radio" name="nc-residence" value="住校" /> 住校</label>
@@ -2011,7 +2015,7 @@ async function loadCases() {
       catch (e) { console.error('[loadCases] manifest 載入失敗:', e.message); manifest = null; }
     }
 
-    if (manifest && Array.isArray(manifest.chunks)) {
+    if (manifest && Array.isArray(manifest.chunks) && manifest.chunks.length > 0) {
       casesManifest = manifest;
       const results = await Promise.all(
         manifest.chunks.map(chunk => {
@@ -2023,18 +2027,35 @@ async function loadCases() {
       );
       casesData = results.flatMap(r => r.cases || []);
     } else {
-      // 舊格式 index.json → 自動升級
-      try {
-        const legacy = await driveReadJson(CASES_INDEX);
-        casesData = legacy.cases || [];
+      // manifest 為空或不存在，先嘗試從殘存 chunk 檔自動恢復
+      const chunkEntries = fileMap
+        ? [...fileMap.entries()].filter(([name]) => name !== 'manifest.json' && name !== 'index.json' && name.endsWith('.json'))
+        : [];
+      if (chunkEntries.length > 0) {
+        showLoading(`偵測到 ${chunkEntries.length} 個 chunk 檔，自動重建 manifest 中…`);
+        const results = await Promise.all(
+          chunkEntries.map(([, id]) => driveReadJsonById(id).then(r => r.cases || []).catch(() => []))
+        );
+        casesData = results.flat();
         casesManifest = { chunks: [] };
         if (casesData.length > 0) {
-          showLoading('首次升級資料結構，請稍候…');
           await migrateToChunks();
+          console.info('[loadCases] manifest 已自動重建，個案數:', casesData.length);
         }
-      } catch {
-        casesData = [];
-        casesManifest = { chunks: [] };
+      } else {
+        // 舊格式 index.json → 自動升級
+        try {
+          const legacy = await driveReadJson(CASES_INDEX);
+          casesData = legacy.cases || [];
+          casesManifest = { chunks: [] };
+          if (casesData.length > 0) {
+            showLoading('首次升級資料結構，請稍候…');
+            await migrateToChunks();
+          }
+        } catch {
+          casesData = [];
+          casesManifest = { chunks: [] };
+        }
       }
     }
     renderCases();
@@ -2858,6 +2879,7 @@ function showCaseDetail(caseId) {
     </div>`) +
     mkSection('contact', '聯絡資料', `<div class="form-grid">
       ${field('聯絡電話', c.phone)}
+      ${c.email ? field('電子郵件', c.email) : ''}
       ${field('住所類型', c.residence)}
       ${field('宿舍樓層／地址', c.address || '無/未填寫')}
       ${field('緊急聯絡人', c.emergencyName)}
@@ -4087,6 +4109,7 @@ function openEditCasePage(caseId) {
   document.getElementById('nc-grade').value      = c.grade || '';
   document.getElementById('nc-class').value      = c.classNo || '';
   document.getElementById('nc-phone').value      = c.phone || '';
+  document.getElementById('nc-email').value      = c.email || '';
   document.getElementById('nc-address').value    = c.address || '';
   document.getElementById('nc-emg-name').value   = c.emergencyName || '';
   document.getElementById('nc-emg-phone').value  = c.emergencyPhone || '';
@@ -4192,7 +4215,7 @@ function openNewCasePage() {
 
   // 清空所有欄位
   ['nc-name','nc-student-id','nc-id-number','nc-disability',
-   'nc-dept','nc-class','nc-phone','nc-address','nc-emg-name','nc-emg-phone','nc-emg-relation',
+   'nc-dept','nc-class','nc-phone','nc-email','nc-address','nc-emg-name','nc-emg-phone','nc-emg-relation',
    'nc-foreign-country','nc-topic-other',
    'nc-birth-year','nc-birth-month','nc-birth-day'].forEach(id => {
     document.getElementById(id).value = '';
@@ -4398,6 +4421,20 @@ async function confirmClearAllCases() {
   if (answer !== '確認清空') { alert('已取消。'); return; }
   showLoading('清空中…');
   try {
+    let fileMap;
+    try { fileMap = await getCasesFolderFileMap(); } catch { fileMap = new Map(); }
+    const chunkIds = [...fileMap.entries()]
+      .filter(([name]) => name !== 'manifest.json' && name !== 'index.json' && name.endsWith('.json'))
+      .map(([, id]) => id);
+    if (chunkIds.length > 0) {
+      showLoading(`刪除 ${chunkIds.length} 個 chunk 檔…`);
+      await Promise.all(chunkIds.map(id =>
+        fetch(`https://www.googleapis.com/drive/v3/files/${id}`, {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer ' + gAccessToken },
+        }).catch(() => {})
+      ));
+    }
     casesData = [];
     casesManifest = { chunks: [] };
     await driveSaveJsonInCases('manifest.json', { chunks: [] });
@@ -4745,6 +4782,7 @@ async function saveCase() {
   const grade      = document.getElementById('nc-grade').value;
   const classNo    = document.getElementById('nc-class').value.trim();
   const phone      = document.getElementById('nc-phone').value.trim();
+  const email      = document.getElementById('nc-email').value.trim();
   const residence  = document.querySelector('input[name="nc-residence"]:checked')?.value || '';
   const address    = document.getElementById('nc-address').value.trim();
   const emgName    = document.getElementById('nc-emg-name').value.trim();
@@ -4837,7 +4875,7 @@ async function saveCase() {
     foreignCountry: nationality === '外國籍' ? foreignCountry : '',
     program, disability,
     department: dept, grade, classNo,
-    phone, residence, address,
+    phone, email, residence, address,
     emergencyName: emgName, emergencyPhone: emgPhone, emergencyRelation: emgRelation,
     source, pastRecords, topics,
     counselorEmail, counselorName, counselorText: '',
@@ -4942,6 +4980,7 @@ function fillFromCase(caseId) {
   document.getElementById('nc-grade').value         = c.grade || '';
   document.getElementById('nc-class').value         = c.classNo || '';
   document.getElementById('nc-phone').value         = c.phone || '';
+  document.getElementById('nc-email').value         = c.email || '';
   document.getElementById('nc-address').value       = c.address || '';
   document.getElementById('nc-emg-name').value      = c.emergencyName || '';
   document.getElementById('nc-emg-phone').value     = c.emergencyPhone || '';
