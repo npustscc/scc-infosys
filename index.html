@@ -8099,10 +8099,11 @@ function renderBookingsPage() {
       rb.forEach(b => {
         const caseTag = b.caseId ? `<span style="font-size:.8rem;color:#2471a3;margin-left:6px;">個案 ${escHtml(b.caseId)}${b.caseName ? ' ' + escHtml(b.caseName) : ''}</span>` : '';
         const noteTag = b.notes ? `<span style="font-size:.8rem;color:#718096;margin-left:6px;">${escHtml(b.notes.slice(0,30))}${b.notes.length > 30 ? '…' : ''}</span>` : '';
+        const calTag = b.calendarEventId ? `<span title="已同步 Google Calendar" style="font-size:.85rem;cursor:default;">📅</span>` : '';
         html += `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 8px;background:#edf2f7;border-radius:6px;margin-bottom:4px;">
           <span style="font-size:.85rem;font-weight:600;color:#2d3748;min-width:105px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</span>
           <span style="font-size:.875rem;color:#4a5568;">${escHtml(b.counselorName || '—')}</span>
-          ${caseTag}${noteTag}
+          ${caseTag}${noteTag}${calTag}
           <span style="margin-left:auto;display:flex;gap:4px;">
             <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="editBooking('${escHtml(b.id)}')">編輯</button>
             <button class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="deleteBooking('${escHtml(b.id)}')">刪除</button>
@@ -8226,17 +8227,36 @@ async function saveBooking() {
   const counselorName = configData?.users?.[counselorEmail]?.name || counselorEmail || '';
   const caseObj = caseId ? casesData.find(c => c.id === caseId) : null;
   const now = new Date().toISOString();
+  const calParams = { room, date, startTime: start, endTime: end, counselorName,
+    caseId: caseId || '', caseName: caseObj?.name || '', notes };
+
+  let calendarEventId = undefined;
+  try {
+    if (_editingBookingId) {
+      const existing = bookingsData.find(x => x.id === _editingBookingId);
+      if (existing?.calendarEventId) {
+        await proxyCall('updateCalendarEvent', { eventId: existing.calendarEventId, ...calParams });
+        calendarEventId = existing.calendarEventId;
+      } else {
+        calendarEventId = await proxyCall('createCalendarEvent', calParams);
+      }
+    } else {
+      calendarEventId = await proxyCall('createCalendarEvent', calParams);
+    }
+  } catch (_) {}
+
+  const calField = calendarEventId !== undefined ? { calendarEventId } : {};
 
   if (_editingBookingId) {
     const idx = bookingsData.findIndex(x => x.id === _editingBookingId);
     if (idx >= 0) bookingsData[idx] = { ...bookingsData[idx],
       room, date, startTime: start, endTime: end,
       counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
-      notes, updatedAt: now };
+      notes, updatedAt: now, ...calField };
   } else {
     bookingsData.push({ id: `bk_${Date.now()}`, room, date, startTime: start, endTime: end,
       counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
-      notes, createdAt: now, updatedAt: now });
+      notes, createdAt: now, updatedAt: now, ...calField });
   }
 
   closeBookingModal();
@@ -8255,10 +8275,12 @@ async function deleteBooking(id) {
   const b = bookingsData.find(x => x.id === id);
   if (!b) return;
   if (!confirm(`確定刪除 ${b.room} ${b.date} ${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)} 的預約？`)) return;
+  const calEventId = b.calendarEventId;
   bookingsData = bookingsData.filter(x => x.id !== id);
   showLoading('刪除中…');
   try {
     await saveBookings();
+    if (calEventId) proxyCall('deleteCalendarEvent', { eventId: calEventId }).catch(() => {});
     auditLog('刪除空間預約', b.caseId || null);
   } catch (e) {
     setAlert('bookings-alert', 'warn', '刪除失敗：' + e.message);
