@@ -5127,7 +5127,7 @@ async function confirmClearAllCases() {
     if (chunkIds.length > 0) {
       showLoading(`刪除 ${chunkIds.length} 個 chunk 檔…`);
       await Promise.all(chunkIds.map(id =>
-        fetch(`https://www.googleapis.com/drive/v3/files/${id}`, {
+        fetch(injectSharedDriveParams(`https://www.googleapis.com/drive/v3/files/${id}`), {
           method: 'DELETE',
           headers: { Authorization: 'Bearer ' + gAccessToken },
         }).catch(() => {})
@@ -6801,7 +6801,7 @@ async function driveQuery(q, fields = 'id,name') {
 
 async function driveReadJson(path) {
   const fileId = await driveFindFile(path);
-  const url    = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+  const url    = injectSharedDriveParams(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
   const r      = await fetch(url, { headers: { Authorization: 'Bearer ' + gAccessToken } });
   if (!r.ok) throw new Error(`Drive 讀取失敗 (${r.status})`);
   return r.json();
@@ -6852,7 +6852,8 @@ async function getCasesFolderFileMap() {
 
 async function driveCreateFolder(name, parentId) {
   const meta = { name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] };
-  const r = await fetch('https://www.googleapis.com/drive/v3/files', {
+  const url = injectSharedDriveParams('https://www.googleapis.com/drive/v3/files');
+  const r = await fetch(url, {
     method: 'POST',
     headers: { Authorization: 'Bearer ' + gAccessToken, 'Content-Type': 'application/json' },
     body: JSON.stringify(meta),
@@ -6870,17 +6871,15 @@ async function driveCreateJsonFile(name, content, parentId) {
     `--${boundary}\r\nContent-Type: application/json\r\n\r\n${metaPart}\r\n` +
     `--${boundary}\r\nContent-Type: application/json\r\n\r\n${bodyPart}\r\n` +
     `--${boundary}--`;
-  const r = await fetch(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + gAccessToken,
-        'Content-Type': `multipart/related; boundary=${boundary}`,
-      },
-      body,
-    }
-  );
+  const url = injectSharedDriveParams('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart');
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: 'Bearer ' + gAccessToken,
+      'Content-Type': `multipart/related; boundary=${boundary}`,
+    },
+    body,
+  });
   if (!r.ok) throw new Error(`建立檔案失敗 (${r.status}): ${name}`);
   return (await r.json()).id;
 }
@@ -6894,17 +6893,15 @@ async function driveUpdateJsonFile(path, content) {
     `--${boundary}\r\nContent-Type: application/json\r\n\r\n${metaPart}\r\n` +
     `--${boundary}\r\nContent-Type: application/json\r\n\r\n${bodyPart}\r\n` +
     `--${boundary}--`;
-  const r = await fetch(
-    `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`,
-    {
-      method: 'PATCH',
-      headers: {
-        Authorization: 'Bearer ' + gAccessToken,
-        'Content-Type': `multipart/related; boundary=${boundary}`,
-      },
-      body,
-    }
-  );
+  const url = injectSharedDriveParams(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`);
+  const r = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: 'Bearer ' + gAccessToken,
+      'Content-Type': `multipart/related; boundary=${boundary}`,
+    },
+    body,
+  });
   if (!r.ok) throw new Error(`更新檔案失敗 (${r.status}): ${path}`);
   return (await r.json()).id;
 }
@@ -6925,18 +6922,42 @@ function refreshAccessToken() {
   });
 }
 
-async function apiFetch(url) {
-  const doFetch = () => fetch(url, { headers: { Authorization: 'Bearer ' + gAccessToken } });
+// 對 Drive API URL 自動補上 supportsAllDrives / includeItemsFromAllDrives，
+// 讓共用雲端硬碟（Shared Drive）內的檔案也能存取。
+function injectSharedDriveParams(url) {
+  if (!url || typeof url !== 'string') return url;
+  if (!url.startsWith('https://www.googleapis.com/drive/v3/') &&
+      !url.startsWith('https://www.googleapis.com/upload/drive/v3/')) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  const extras = ['supportsAllDrives=true'];
+  // 對「列出 / 查詢」端點還需要 includeItemsFromAllDrives
+  if (url.includes('/files?')) extras.push('includeItemsFromAllDrives=true');
+  // 避免重複加
+  const present = new Set(url.split(/[?&]/).map(s => s.split('=')[0]));
+  const add = extras.filter(p => !present.has(p.split('=')[0]));
+  if (!add.length) return url;
+  return url + sep + add.join('&');
+}
+
+async function apiFetch(url, options = {}) {
+  const finalUrl = injectSharedDriveParams(url);
+  const headers = { Authorization: 'Bearer ' + gAccessToken, ...(options.headers || {}) };
+  const doFetch = () => fetch(finalUrl, { ...options, headers });
   let r = await doFetch();
   if (r.status === 401) {
     await refreshAccessToken();
+    headers.Authorization = 'Bearer ' + gAccessToken;
     r = await doFetch();
   }
   if (!r.ok) {
     const body = await r.text();
     throw new Error(`API 錯誤 ${r.status}: ${body.slice(0, 200)}`);
   }
-  return r.json();
+  // 204 / 空回應時不解析 JSON
+  if (r.status === 204) return null;
+  const ct = r.headers.get('content-type') || '';
+  if (ct.includes('application/json')) return r.json();
+  return null;
 }
 
 // ══════════════════════════════════════════════
