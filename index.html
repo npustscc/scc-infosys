@@ -973,7 +973,7 @@
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
             <button class="btn btn-danger" onclick="confirmClearAllCases()">清空所有個案</button>
             <button class="btn btn-secondary" onclick="recoverCasesFromDrive()">從 Drive 恢復個案</button>
-            <label class="btn btn-primary" style="cursor:pointer;margin:0;">匯入服務總表（個案）
+            <label class="btn btn-primary" style="cursor:pointer;margin:0;">匯入服務總表個案基本資料
               <input type="file" id="import-file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportFile(this)" />
             </label>
             <label class="btn btn-secondary" style="cursor:pointer;margin:0;">匯入輔導服務記錄
@@ -2151,6 +2151,16 @@ function openDateToSemPrefix(dateStr) {
 function semesterLabel(prefix) {
   if (!prefix || prefix.length < 4) return prefix || '—';
   return `${prefix.slice(0, -1)}-${prefix.slice(-1)}`;
+}
+function semesterMonths(prefix) {
+  if (!prefix || prefix.length < 4) return [];
+  const semType = prefix.slice(-1);
+  const adYear = parseInt(prefix.slice(0, -1)) + 1911;
+  if (semType === '1') {
+    return [`${adYear}-08`,`${adYear}-09`,`${adYear}-10`,`${adYear}-11`,`${adYear}-12`,`${adYear+1}-01`];
+  } else {
+    return [`${adYear+1}-02`,`${adYear+1}-03`,`${adYear+1}-04`,`${adYear+1}-05`,`${adYear+1}-06`,`${adYear+1}-07`];
+  }
 }
 let sortStatusLocked = localStorage.getItem('scc_sort_status_locked') !== 'false';
 let caseSort = { col: null, dir: 1 };
@@ -5592,27 +5602,202 @@ async function importCasesFromExcel(file) {
       // 形如 "1141"，前 3 碼為年、最後 1 碼為學期；做字串比較即可
       return sem < curSem;
     };
-    const hasOlder = imported.some(c => isOlderThanCurrent(openDateToSemPrefix(c.openDate)));
-    if (hasOlder) {
-      // 為「歷史學期」個案預設結案，並彈出 UI 讓使用者勾選哪些其實還未結案
-      imported.forEach(c => {
-        if (isOlderThanCurrent(openDateToSemPrefix(c.openDate))) {
-          if (!c.closeDate) {
-            c.closeDate = c.openDate; // 沒填結案日期就先沿用開案日期，可在 UI 中改
-            c.status = 'closed';
-            c._defaultedClosed = true;
-          }
+    // 歷史學期個案預設結案（使用者可在預覽介面中調整）
+    imported.forEach(c => {
+      if (isOlderThanCurrent(openDateToSemPrefix(c.openDate))) {
+        if (!c.closeDate) {
+          c.closeDate = c.openDate;
+          c.status = 'closed';
+          c._defaultedClosed = true;
         }
-      });
-      prog.innerHTML = '<span style="color:#718096;">請於下方挑選「仍未結案」的個案，再確認匯入…</span>';
-      await showImportClosurePicker(imported, prog);
-      return;
-    }
+      }
+    });
 
+    prog.innerHTML = '<span style="color:#718096;">請於預覽介面確認所有個案後再匯入…</span>';
+    const confirmed = await showImportReviewModal(imported, prog);
+    if (!confirmed) return;
     await finalizeImport(imported, prog);
   } catch(e) {
     prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span><br><span style="color:#a0aec0;font-size:.8rem;">若因密碼保護無法開啟，請先將 Excel 另存為無密碼的 .xlsx 後再匯入。</span>`;
   }
+}
+
+// 匯入預覽 modal：呈現所有解析出的個案，供使用者逐欄確認後再匯入
+function showImportReviewModal(imported, prog) {
+  return new Promise(resolve => {
+    let modal = document.getElementById('ir-modal');
+    if (modal) modal.remove();
+    modal = document.createElement('div');
+    modal.id = 'ir-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+    const PAGE_SIZE = 10;
+    const reviewMap = new Map(); // origIdx → { status, closeDate, counselorEmail, counselorName }
+    imported.forEach((c, i) => {
+      reviewMap.set(i, {
+        status: c.status,
+        closeDate: c.closeDate || '',
+        counselorEmail: c.counselorEmail || '',
+        counselorName: c.counselorName || c.counselorText || '',
+      });
+    });
+
+    // 顯示順序：應確認（舊學期預設結案）優先，其次依開案日期由新到舊
+    const sorted = imported
+      .map((c, origIdx) => ({ ...c, _origIdx: origIdx }))
+      .sort((a, b) => {
+        if (a._defaultedClosed && !b._defaultedClosed) return -1;
+        if (!a._defaultedClosed && b._defaultedClosed) return 1;
+        return (b.openDate || '').localeCompare(a.openDate || '');
+      });
+
+    let _tab = 'all', _search = '', _page = 0;
+
+    const counselorEntries = Object.entries(configData?.users || {})
+      .filter(([, info]) => BK_COUNSELING_ROLES.has(info.role || ''));
+
+    const getFiltered = () => {
+      const q = _search.toLowerCase();
+      return sorted.filter(c => {
+        const ed = reviewMap.get(c._origIdx);
+        if (_tab === 'confirm' && !c._defaultedClosed) return false;
+        if (_tab === 'nocounselor' && ed.counselorEmail) return false;
+        if (q && !((c.name||'').toLowerCase().includes(q) ||
+                   (c.id||'').toLowerCase().includes(q) ||
+                   (c.studentId||'').toLowerCase().includes(q) ||
+                   (ed.counselorName||'').toLowerCase().includes(q))) return false;
+        return true;
+      });
+    };
+
+    const renderTable = () => {
+      const filtered = getFiltered();
+      const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+      if (_page >= totalPages) _page = totalPages - 1;
+      const rows = filtered.slice(_page * PAGE_SIZE, (_page + 1) * PAGE_SIZE);
+
+      const confirmCount = sorted.filter(c => c._defaultedClosed).length;
+      const noCounselorCount = sorted.filter(c => !reviewMap.get(c._origIdx).counselorEmail).length;
+
+      const ts = (tab, color) => {
+        const on = _tab === tab;
+        return `padding:7px 14px;border:none;background:none;cursor:pointer;font-size:.86rem;border-bottom:2px solid ${on?color:'transparent'};margin-bottom:-2px;color:${on?color:'#4a5568'};font-weight:${on?'600':'400'};`;
+      };
+      const tabs = `
+        <div style="display:flex;margin-bottom:14px;border-bottom:2px solid #e2e8f0;">
+          <button type="button" onclick="irTab('all')" style="${ts('all','#3182ce')}">全部（${sorted.length}）</button>
+          ${confirmCount ? `<button type="button" onclick="irTab('confirm')" style="${ts('confirm','#e53e3e')}">⚠ 應確認（${confirmCount}）</button>` : ''}
+          ${noCounselorCount ? `<button type="button" onclick="irTab('nocounselor')" style="${ts('nocounselor','#dd6b20')}">主責未比對（${noCounselorCount}）</button>` : ''}
+        </div>`;
+
+      const rowsHtml = rows.map((c, ri) => {
+        const oi = c._origIdx;
+        const ed = reviewMap.get(oi);
+        const warn = c._defaultedClosed;
+        const bg = warn ? '#fff5f5' : (ri%2===0 ? '#fff' : '#f7fafc');
+        const counselorOpts = counselorEntries.map(([em, info]) =>
+          `<option value="${escHtml(em)}" ${ed.counselorEmail===em?'selected':''}>${escHtml(info.name||em)}</option>`
+        ).join('');
+        const statusOpts = `<option value="active" ${ed.status==='active'?'selected':''}>在案中</option><option value="closed" ${ed.status==='closed'?'selected':''}>已結案</option>`;
+        const closeDateCell = ed.status === 'closed'
+          ? `<input type="date" value="${escHtml(ed.closeDate)}" onchange="irUpd(${oi},'closeDate',this.value)" style="border:1px solid #cbd5e0;border-radius:4px;padding:2px 4px;font-size:.78rem;width:116px;">`
+          : `<span style="color:#a0aec0;font-size:.79rem;">—</span>`;
+        return `<tr style="background:${bg};">
+          <td style="padding:5px 8px;text-align:center;width:22px;">${warn?'<span style="color:#e53e3e;font-size:.82rem;" title="已預設結案，請確認">⚠</span>':''}</td>
+          <td style="padding:5px 8px;font-size:.79rem;color:#4a5568;white-space:nowrap;">${escHtml(c.id)}</td>
+          <td style="padding:5px 8px;font-size:.85rem;font-weight:600;">${escHtml(c.name||'—')}</td>
+          <td style="padding:5px 8px;font-size:.78rem;color:#718096;">${escHtml(c.studentId||'—')}</td>
+          <td style="padding:5px 8px;font-size:.78rem;color:#718096;white-space:nowrap;">${escHtml(c.openDate||'—')}</td>
+          <td style="padding:5px 8px;"><select onchange="irUpd(${oi},'counselorEmail',this.value)" style="border:1px solid ${!ed.counselorEmail?'#fc8181':'#cbd5e0'};border-radius:4px;padding:2px 4px;font-size:.78rem;max-width:128px;"><option value="">— 未指定 —</option>${counselorOpts}</select></td>
+          <td style="padding:5px 8px;"><select onchange="irUpd(${oi},'status',this.value)" style="border:1px solid #cbd5e0;border-radius:4px;padding:2px 4px;font-size:.78rem;">${statusOpts}</select></td>
+          <td style="padding:5px 8px;">${closeDateCell}</td>
+        </tr>`;
+      }).join('');
+
+      const pag = totalPages <= 1 ? '' : `
+        <div style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:10px;font-size:.84rem;color:#4a5568;">
+          <button type="button" onclick="irPg(${_page-1})" ${_page===0?'disabled':''} style="padding:3px 10px;border:1px solid #e2e8f0;border-radius:4px;background:#fff;cursor:pointer;">‹</button>
+          <span>第 ${_page+1} / ${totalPages} 頁（${filtered.length} 筆）</span>
+          <button type="button" onclick="irPg(${_page+1})" ${_page>=totalPages-1?'disabled':''} style="padding:3px 10px;border:1px solid #e2e8f0;border-radius:4px;background:#fff;cursor:pointer;">›</button>
+        </div>`;
+
+      return `${tabs}
+        <div style="overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;">
+            <thead><tr style="background:#edf2f7;text-align:left;">
+              <th style="padding:6px 8px;width:22px;"></th>
+              <th style="padding:6px 8px;font-size:.8rem;white-space:nowrap;">案號</th>
+              <th style="padding:6px 8px;font-size:.8rem;">姓名</th>
+              <th style="padding:6px 8px;font-size:.8rem;">學號</th>
+              <th style="padding:6px 8px;font-size:.8rem;white-space:nowrap;">開案日期</th>
+              <th style="padding:6px 8px;font-size:.8rem;white-space:nowrap;">主責輔導人員</th>
+              <th style="padding:6px 8px;font-size:.8rem;">狀態</th>
+              <th style="padding:6px 8px;font-size:.8rem;white-space:nowrap;">結案日期</th>
+            </tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>${pag}`;
+    };
+
+    const rerender = () => { const el = modal.querySelector('#ir-tbl'); if (el) el.innerHTML = renderTable(); };
+
+    window.irTab = (t) => { _tab = t; _page = 0; rerender(); };
+    window.irSearch = (v) => { _search = v; _page = 0; rerender(); };
+    window.irPg = (p) => {
+      const tot = Math.max(1, Math.ceil(getFiltered().length / PAGE_SIZE));
+      _page = Math.max(0, Math.min(tot-1, p));
+      rerender();
+    };
+    window.irUpd = (origIdx, field, val) => {
+      const ed = reviewMap.get(origIdx);
+      if (field === 'status') { ed.status = val; if (val === 'active') ed.closeDate = ''; }
+      else if (field === 'closeDate') { ed.closeDate = val; }
+      else if (field === 'counselorEmail') {
+        ed.counselorEmail = val;
+        const info = configData?.users?.[val];
+        ed.counselorName = info ? (formatCounselorLabel(val) || info.name || val) : '';
+      }
+      rerender();
+    };
+
+    const confirmCount = sorted.filter(c => c._defaultedClosed).length;
+    modal.innerHTML = `
+      <div style="background:#fff;border-radius:12px;max-width:980px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
+        <div style="padding:18px 24px;border-bottom:1px solid #e2e8f0;flex-shrink:0;">
+          <h3 style="margin:0;color:#1a5276;font-size:1.1rem;">匯入預覽：確認所有個案資料</h3>
+          <div style="color:#718096;font-size:.84rem;margin-top:5px;">
+            共解析 <strong>${sorted.length}</strong> 筆個案。${confirmCount ? ` 其中 <strong style="color:#e53e3e;">${confirmCount}</strong> 筆來自舊學期，已預設「已結案」—請確認狀態後再匯入。` : ''}
+          </div>
+          <div style="margin-top:10px;">
+            <input type="text" placeholder="搜尋姓名 / 案號 / 學號 / 主責…" style="width:100%;max-width:340px;padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.87rem;" oninput="irSearch(this.value)" />
+          </div>
+        </div>
+        <div id="ir-tbl" style="padding:16px 24px;overflow:auto;flex:1;">${renderTable()}</div>
+        <div style="padding:14px 24px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:8px;background:#f7fafc;flex-shrink:0;">
+          <button class="btn btn-secondary" type="button" id="ir-cancel">取消匯入</button>
+          <button class="btn btn-primary" type="button" id="ir-confirm">確認匯入（${sorted.length} 筆）</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+
+    modal.querySelector('#ir-cancel').onclick = () => {
+      modal.remove();
+      prog.innerHTML = '<span style="color:#a0aec0;">已取消匯入。</span>';
+      resolve(false);
+    };
+    modal.querySelector('#ir-confirm').onclick = () => {
+      imported.forEach((c, origIdx) => {
+        const ed = reviewMap.get(origIdx);
+        c.status = ed.status;
+        c.closeDate = ed.closeDate;
+        c.counselorEmail = ed.counselorEmail;
+        c.counselorName = ed.counselorName;
+        delete c._defaultedClosed;
+      });
+      modal.remove();
+      resolve(true);
+    };
+  });
 }
 
 // 歷史學期匯入：彈出 UI 讓使用者勾選哪些「其實還未結案」
@@ -7662,6 +7847,76 @@ function renderStats() {
   const counselorMax  = Math.max(...Object.values(byCounselor), 1);
   const monthMax      = Math.max(...Object.values(byMonth),     1);
 
+  // ── 服務狀況統計 ──
+  const roleGroups = {
+    '專任輔導人員': new Set(['主任','專任社會工作師','專任諮商心理師','專任臨床心理師']),
+    '兼任輔導人員': new Set(['兼任諮商心理師','兼任臨床心理師']),
+    '精神科醫師':   new Set(['駐校精神科醫師']),
+    '實習心理師':   new Set(['實習諮商心理師']),
+    '義務輔導老師': new Set(['義務輔導老師']),
+  };
+  const emailToGroup = {};
+  Object.entries(configData?.users || {}).forEach(([email, info]) => {
+    for (const [grp, roles] of Object.entries(roleGroups)) {
+      if (roles.has(info.role || '')) { emailToGroup[email] = grp; break; }
+    }
+  });
+  const svcSemPrefixes = new Set();
+  visible.forEach(c => (c.records || []).filter(r => !r.deleted).forEach(r => {
+    const s = openDateToSemPrefix(r.date || ''); if (s) svcSemPrefixes.add(s);
+  }));
+  const svcSemList = [...svcSemPrefixes].sort().reverse();
+  const svcDefaultSem = svcSemList[0] || currentSemesterPrefix();
+  window._svcStatsVisible = visible;
+  window._svcEmailToGroup = emailToGroup;
+  window._renderSvcTable = (sem) => {
+    const vis = window._svcStatsVisible;
+    const e2g = window._svcEmailToGroup;
+    const groupKeys = ['總計', ...Object.keys(roleGroups)];
+    const mos = semesterMonths(sem);
+    const st = {};
+    mos.forEach(m => {
+      st[m] = {};
+      groupKeys.forEach(g => { st[m][g] = { p: new Set(), n: 0 }; });
+      st[m]['電話關懷'] = { p: new Set(), n: 0 };
+    });
+    vis.forEach(c => (c.records || []).filter(r => !r.deleted).forEach(r => {
+      const m = (r.date || '').slice(0, 7);
+      if (!st[m]) return;
+      const grp = e2g[r.counselorEmail || ''];
+      st[m]['總計'].p.add(c.id); st[m]['總計'].n++;
+      if (grp) { st[m][grp].p.add(c.id); st[m][grp].n++; }
+      if ((r.interventionMode || '') === '電話關懷') { st[m]['電話關懷'].p.add(c.id); st[m]['電話關懷'].n++; }
+    }));
+    const cell = (d) => d.n === 0 && d.p.size === 0
+      ? `<span style="color:#cbd5e0;">—</span>`
+      : `${d.p.size}&nbsp;/&nbsp;${d.n}`;
+    const hdr = mos.map(m => `<th style="padding:7px 8px;text-align:center;font-size:.79rem;font-weight:600;white-space:nowrap;border-bottom:2px solid #e2e8f0;">${parseInt(m.slice(5))}月</th>`).join('');
+    const tr = (label, key, bg='') => {
+      const cols = mos.map(m => `<td style="padding:6px 8px;text-align:center;font-size:.8rem;">${cell(st[m][key])}</td>`).join('');
+      return `<tr style="background:${bg};"><td style="padding:6px 10px;font-size:.82rem;font-weight:${key==='總計'?'700':'400'};white-space:nowrap;border-right:1px solid #e2e8f0;">${label}</td>${cols}</tr>`;
+    };
+    return `<div style="overflow-x:auto;">
+      <p style="font-size:.8rem;color:#718096;margin:0 0 8px 0;">格式：<strong>人數 / 人次</strong>（人數為當月有紀錄的不重複個案數）</p>
+      <table style="width:100%;border-collapse:collapse;min-width:520px;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">
+        <thead><tr style="background:#edf2f7;">
+          <th style="padding:7px 10px;text-align:left;font-size:.79rem;font-weight:600;min-width:90px;border-bottom:2px solid #e2e8f0;border-right:1px solid #e2e8f0;">分類</th>${hdr}</tr></thead>
+        <tbody>
+          ${tr('總計','總計','#ebf5fb;')}
+          ${Object.keys(roleGroups).map((g,i) => tr(g, g, i%2===0?'#fff':'#f7fafc')).join('')}
+          <tr style="border-top:2px solid #e2e8f0;">
+            <td colspan="${mos.length+1}" style="padding:4px;background:#fffff0;"></td>
+          </tr>
+          ${tr('電話關懷（合計）','電話關懷','#fffff0;')}
+        </tbody>
+      </table></div>`;
+  };
+  const svcSemSelect = `<select class="field-select" style="font-size:.85rem;padding:4px 8px;" onchange="const el=document.getElementById('svc-tbl');if(el)el.innerHTML=_renderSvcTable(this.value)">
+    ${svcSemList.length
+      ? svcSemList.map(s => `<option value="${escHtml(s)}" ${s===svcDefaultSem?'selected':''}>${semesterLabel(s)} 學期</option>`).join('')
+      : `<option value="${escHtml(svcDefaultSem)}">${semesterLabel(svcDefaultSem)} 學期</option>`}
+  </select>`;
+
   document.getElementById('stats-body').innerHTML = `
     <div class="stats-cards">
       <div class="stats-card"><div class="stats-num">${total}</div><div class="stats-lbl">可檢視個案</div></div>
@@ -7684,11 +7939,18 @@ function renderStats() {
         </div>
       </div>
     </div>
-    <div class="card">
+    <div class="card" style="margin-bottom:20px;">
       <div class="card-header"><h3>近 6 個月開案趨勢</h3></div>
       <div style="padding:16px;">
         ${months.map(m => mkBar(parseInt(m.slice(5)) + ' 月', byMonth[m], monthMax, '#27ae60')).join('')}
       </div>
+    </div>
+    <div class="card">
+      <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+        <h3 style="margin:0;">服務狀況統計</h3>
+        <div>${svcSemSelect}</div>
+      </div>
+      <div style="padding:16px;" id="svc-tbl">${window._renderSvcTable(svcDefaultSem)}</div>
     </div>`;
 }
 
