@@ -2056,6 +2056,23 @@ const CHUNK_SIZE      = 20;
 const AUDIT_LOG_FILE  = 'audit_log.json';
 const BOOKINGS_FILE   = 'bookings.json';
 const ROOMS = ['玉山', '雪山', '中央山脈', '阿里山', '海岸山脈', '團體諮商室', '其他'];
+const BK_PERIODS = [
+  { label: '第1節  08:10–09:00',  start: '08:10', end: '09:00' },
+  { label: '第2節  09:10–10:00',  start: '09:10', end: '10:00' },
+  { label: '第3節  10:15–11:05',  start: '10:15', end: '11:05' },
+  { label: '第4節  11:10–12:00',  start: '11:10', end: '12:00' },
+  { label: '第5節  13:30–14:20',  start: '13:30', end: '14:20' },
+  { label: '第6節  14:30–15:20',  start: '14:30', end: '15:20' },
+  { label: '第7節  15:30–16:20',  start: '15:30', end: '16:20' },
+  { label: '第8節  16:30–17:20',  start: '16:30', end: '17:20' },
+  { label: '第9節  18:00–18:50',  start: '18:00', end: '18:50' },
+  { label: '第10節 18:55–19:45', start: '18:55', end: '19:45' },
+  { label: '第11節 19:50–20:40', start: '19:50', end: '20:40' },
+];
+const BK_COUNSELING_ROLES = new Set([
+  '主任','專任社會工作師','專任諮商心理師','專任臨床心理師',
+  '兼任諮商心理師','兼任臨床心理師','實習諮商心理師','駐校精神科醫師','義務輔導老師',
+]);
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby9ZDT7NO7Jso3mbzbMaOzN0mdfgREbxoHRLC3NEbulGtKwp9eTibpD0XwKJCeC9wlh/exec';
 
 // 角色常數
@@ -8605,7 +8622,9 @@ function renderBookingsPage() {
       rb.forEach(b => {
         const caseTag = b.caseId ? `<span style="font-size:.8rem;color:#2471a3;margin-left:6px;">個案 ${escHtml(b.caseId)}${b.caseName ? ' ' + escHtml(b.caseName) : ''}</span>` : '';
         const noteTag = b.notes ? `<span style="font-size:.8rem;color:#718096;margin-left:6px;">${escHtml(b.notes.slice(0,30))}${b.notes.length > 30 ? '…' : ''}</span>` : '';
-        const calTag = b.calendarEventId ? `<span title="已同步 Google Calendar" style="font-size:.85rem;cursor:default;">📅</span>` : '';
+        const calTag = b.calendarEventId
+          ? `<span title="已同步 Google Calendar" style="font-size:.85rem;cursor:default;">📅</span>`
+          : `<button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:.75rem;" data-sync-id="${escHtml(b.id)}" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅 同步</button>`;
         html += `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 8px;background:#edf2f7;border-radius:6px;margin-bottom:4px;">
           <span style="font-size:.85rem;font-weight:600;color:#2d3748;min-width:105px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</span>
           <span style="font-size:.875rem;color:#4a5568;">${escHtml(b.counselorName || '—')}</span>
@@ -8646,11 +8665,68 @@ function _populateBookingRoomSelect() {
 function _populateBookingCounselorSelect() {
   const users = configData?.users || {};
   const opts = Object.entries(users)
-    .filter(([, u]) => u.role)
-    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}</option>`);
+    .filter(([, u]) => BK_COUNSELING_ROLES.has(u.role))
+    .sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''))
+    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}（${escHtml(u.role || '')}）</option>`);
   const sel = document.getElementById('bk-counselor');
-  sel.innerHTML = '<option value="">（請選擇）</option>' + opts.join('');
-  if (currentUser?.email && users[currentUser.email]) sel.value = currentUser.email;
+  sel.innerHTML = '<option value="">（請選擇輔導人員）</option>' + opts.join('');
+  if (currentUser?.email && BK_COUNSELING_ROLES.has(users[currentUser.email]?.role)) {
+    sel.value = currentUser.email;
+  }
+}
+
+function onBkPeriodChange(sel) {
+  const customDiv = document.getElementById('bk-custom-times');
+  const val = sel.value;
+  if (val === '其他') {
+    customDiv.style.display = '';
+    document.getElementById('bk-start').value = '';
+    document.getElementById('bk-end').value = '';
+  } else {
+    customDiv.style.display = 'none';
+    const p = BK_PERIODS.find(x => x.label === val);
+    document.getElementById('bk-start').value = p ? p.start : '';
+    document.getElementById('bk-end').value   = p ? p.end   : '';
+  }
+}
+
+function _restoreBkPeriod(startTime, endTime) {
+  const s = (startTime || '').slice(0, 5);
+  const e = (endTime   || '').slice(0, 5);
+  const p = BK_PERIODS.find(x => x.start === s && x.end === e);
+  const periodSel  = document.getElementById('bk-period');
+  const customDiv  = document.getElementById('bk-custom-times');
+  if (p) {
+    periodSel.value = p.label;
+    customDiv.style.display = 'none';
+    document.getElementById('bk-start').value = p.start;
+    document.getElementById('bk-end').value   = p.end;
+  } else {
+    periodSel.value = startTime ? '其他' : '';
+    customDiv.style.display = startTime ? '' : 'none';
+    document.getElementById('bk-start').value = startTime || '';
+    document.getElementById('bk-end').value   = endTime   || '';
+  }
+}
+
+async function syncBookingToCalendar(id) {
+  const b = bookingsData.find(x => x.id === id);
+  if (!b || b.calendarEventId) return;
+  const btn = document.querySelector(`[data-sync-id="${CSS.escape(id)}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = '同步中…'; }
+  try {
+    const calParams = { room: b.room, date: b.date, startTime: b.startTime, endTime: b.endTime,
+      counselorName: b.counselorName, caseId: b.caseId || '', caseName: b.caseName || '', notes: b.notes || '' };
+    const calendarEventId = await proxyCall('createCalendarEvent', calParams);
+    if (calendarEventId) {
+      const idx = bookingsData.findIndex(x => x.id === id);
+      if (idx >= 0) bookingsData[idx].calendarEventId = calendarEventId;
+      await saveBookings();
+    }
+  } catch (e) {
+    alert('同步失敗：' + e.message);
+  }
+  renderBookingsPage();
 }
 
 function _populateBookingCaseDatalist() {
@@ -8660,12 +8736,23 @@ function _populateBookingCaseDatalist() {
       .join('');
 }
 
+function _initBkPeriodSelect() {
+  const sel = document.getElementById('bk-period');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">— 請選擇節次 —</option>'
+    + BK_PERIODS.map(p => `<option value="${escHtml(p.label)}">${escHtml(p.label)}</option>`).join('')
+    + '<option value="其他">其他（自填時間）</option>';
+}
+
 function openBookingModal(prefillCaseId) {
   _editingBookingId = null;
   document.getElementById('booking-modal-title').textContent = '新增預約';
   _populateBookingRoomSelect();
   _populateBookingCounselorSelect();
   _populateBookingCaseDatalist();
+  _initBkPeriodSelect();
+  document.getElementById('bk-period').value = '';
+  document.getElementById('bk-custom-times').style.display = 'none';
   document.getElementById('bk-date').value = document.getElementById('booking-date')?.value || new Date().toISOString().slice(0,10);
   document.getElementById('bk-start').value = '';
   document.getElementById('bk-end').value = '';
@@ -8673,6 +8760,7 @@ function openBookingModal(prefillCaseId) {
   document.getElementById('bk-case-id').value = prefillCaseId || '';
   document.getElementById('bk-room').value = '';
   document.getElementById('booking-conflict-warn').style.display = 'none';
+  const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
   document.getElementById('booking-modal').style.display = 'flex';
 }
 
@@ -8684,14 +8772,15 @@ function editBooking(id) {
   _populateBookingRoomSelect();
   _populateBookingCounselorSelect();
   _populateBookingCaseDatalist();
+  _initBkPeriodSelect();
   document.getElementById('bk-room').value = b.room || '';
   document.getElementById('bk-date').value = b.date || '';
-  document.getElementById('bk-start').value = b.startTime || '';
-  document.getElementById('bk-end').value = b.endTime || '';
+  _restoreBkPeriod(b.startTime, b.endTime);
   document.getElementById('bk-counselor').value = b.counselorEmail || '';
   document.getElementById('bk-case-id').value = b.caseId || '';
   document.getElementById('bk-notes').value = b.notes || '';
   document.getElementById('booking-conflict-warn').style.display = 'none';
+  const sb2 = document.getElementById('btn-save-booking'); if (sb2) sb2.disabled = false;
   document.getElementById('booking-modal').style.display = 'flex';
 }
 
@@ -8700,6 +8789,10 @@ function closeBookingModal() {
 }
 
 async function saveBooking() {
+  const saveBtn = document.getElementById('btn-save-booking');
+  if (saveBtn?.disabled) return;
+  if (saveBtn) saveBtn.disabled = true;
+
   const room  = document.getElementById('bk-room').value;
   const date  = document.getElementById('bk-date').value;
   const start = document.getElementById('bk-start').value;
@@ -8708,25 +8801,22 @@ async function saveBooking() {
   const caseId = document.getElementById('bk-case-id').value.trim();
   const notes  = document.getElementById('bk-notes').value.trim();
 
-  if (!room || !date || !start || !end) {
+  const _bkWarn = (msg) => {
     document.getElementById('booking-conflict-warn').style.display = '';
-    document.getElementById('booking-conflict-warn').textContent = '請填寫空間、日期、開始與結束時間。';
-    return;
-  }
-  if (start >= end) {
-    document.getElementById('booking-conflict-warn').style.display = '';
-    document.getElementById('booking-conflict-warn').textContent = '結束時間必須晚於開始時間。';
-    return;
-  }
+    document.getElementById('booking-conflict-warn').textContent = msg;
+    if (saveBtn) saveBtn.disabled = false;
+  };
+
+  if (!room || !date) { _bkWarn('請填寫空間與日期。'); return; }
+  if (!start || !end) { _bkWarn('請選擇節次或填寫自訂時間。'); return; }
+  if (start >= end)   { _bkWarn('結束時間必須晚於開始時間。'); return; }
 
   const conflict = bookingsData.find(b =>
     b.id !== _editingBookingId && b.room === room && b.date === date &&
     b.startTime < end && b.endTime > start
   );
   if (conflict) {
-    document.getElementById('booking-conflict-warn').style.display = '';
-    document.getElementById('booking-conflict-warn').textContent =
-      `時間衝突：${room} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已由 ${conflict.counselorName || '—'} 預約。`;
+    _bkWarn(`時間衝突：${room} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已由 ${conflict.counselorName || '—'} 預約。`);
     return;
   }
 
@@ -9106,16 +9196,26 @@ async function importPsychTestCSV(file) {
         <label class="field-label">日期<span class="req">*</span></label>
         <input type="date" class="field-input" id="bk-date">
       </div>
-      <div>
-        <label class="field-label">開始時間<span class="req">*</span></label>
-        <input type="time" class="field-input" id="bk-start" step="1800">
+      <div style="grid-column:1/-1;">
+        <label class="field-label">節次<span class="req">*</span></label>
+        <select class="field-input" id="bk-period" onchange="onBkPeriodChange(this)">
+          <option value="">— 請選擇節次 —</option>
+        </select>
       </div>
-      <div>
-        <label class="field-label">結束時間<span class="req">*</span></label>
-        <input type="time" class="field-input" id="bk-end" step="1800">
+      <div id="bk-custom-times" style="display:none;grid-column:1/-1;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+          <div>
+            <label class="field-label">開始時間<span class="req">*</span></label>
+            <input type="time" class="field-input" id="bk-start" step="300">
+          </div>
+          <div>
+            <label class="field-label">結束時間<span class="req">*</span></label>
+            <input type="time" class="field-input" id="bk-end" step="300">
+          </div>
+        </div>
       </div>
       <div style="grid-column:1/-1;">
-        <label class="field-label">諮商師</label>
+        <label class="field-label">輔導人員</label>
         <select class="field-input" id="bk-counselor"></select>
       </div>
       <div style="grid-column:1/-1;">
@@ -9131,7 +9231,7 @@ async function importPsychTestCSV(file) {
     <div id="booking-conflict-warn" style="display:none;margin-top:10px;" class="alert alert-warn"></div>
     <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
       <button class="btn btn-secondary" onclick="closeBookingModal()">取消</button>
-      <button class="btn btn-primary" onclick="saveBooking()">儲存</button>
+      <button class="btn btn-primary" id="btn-save-booking" onclick="saveBooking()">儲存</button>
     </div>
   </div>
 </div>
