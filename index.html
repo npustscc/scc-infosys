@@ -7808,7 +7808,6 @@ async function importCounselingRecords(file) {
     try { wb = XLSX.read(buf, { type:'array', password:'7617' }); }
     catch { wb = XLSX.read(buf, { type:'array' }); }
 
-    // 嘗試兩種 sheet 名稱（記錄 vs 紀錄）
     const ws = wb.Sheets['輔導服務紀錄'] || wb.Sheets['輔導服務記錄'];
     if (!ws) throw new Error('找不到「輔導服務紀錄」工作表，請確認檔案格式。');
 
@@ -7821,7 +7820,6 @@ async function importCounselingRecords(file) {
       return '';
     };
 
-    // 建立姓名 → 個案陣列 Map（含 semester 範圍）
     const nameMap = new Map();
     casesData.forEach(c => {
       if (!c.name) return;
@@ -7836,66 +7834,26 @@ async function importCounselingRecords(file) {
       return '';
     };
 
-    const topicClean = (raw) => {
-      const s = String(raw).trim();
-      // 移除開頭數字和點，例如 "1.自我探索" → "自我探索"
-      return s.replace(/^\d+\.?\s*/, '');
-    };
+    const topicClean = (raw) => String(raw).trim().replace(/^\d+\.?\s*/, '');
 
-    let matched = 0, unmatched = 0, added = 0;
-    const modifiedCaseIds = new Set();
-
-    for (let i = 1; i < rows.length; i++) {
-      const r = rows[i];
-      const dateRaw     = String(r[0]||'').trim();
-      const studentName = String(r[2]||'').trim();
-      if (!studentName || !dateRaw) continue;
-
-      const date = rocToAD(dateRaw);
-      if (!date) continue;
-
-      // 找對應個案
-      const candidates = nameMap.get(studentName) || [];
-      let targetCase = null;
-      if (candidates.length === 1) {
-        targetCase = candidates[0];
-      } else if (candidates.length > 1) {
-        // 選日期最接近且開案日期 ≤ 記錄日期的個案
-        const sorted = candidates
-          .filter(c => c.openDate && c.openDate <= date)
-          .sort((a, b) => b.openDate.localeCompare(a.openDate));
-        targetCase = sorted[0] || candidates[0];
-      }
-
-      if (!targetCase) { unmatched++; continue; }
-      matched++;
-
-      const counselorText  = String(r[6]||'').trim();
-      const counselorKey   = findCounselorKey(counselorText);
-      const counselorName  = counselorKey ? (formatCounselorLabel(counselorKey) || counselorText) : counselorText;
-      const topic1 = topicClean(r[9]);
-      const topic2 = topicClean(r[10]);
-      const topics = [topic1, topic2].filter(Boolean);
-
-      const svcPurpose1 = String(r[12]||'').trim();
-      const svcPurpose2 = String(r[13]||'').trim();
-      const serviceItems = [svcPurpose1, svcPurpose2].filter(Boolean);
-
-      const mode          = String(r[7]||'').trim();
-      const interviewee   = String(r[8]||'').trim();
-      const remark        = String(r[14]||'').trim();
-      const crossUnit     = String(r[15]||'').trim();
-      const crossUnitOther= String(r[16]||'').trim();
+    const buildRecord = (r, rowIdx) => {
+      const counselorText = String(r[6]||'').trim();
+      const counselorKey  = findCounselorKey(counselorText);
+      const counselorName = counselorKey ? (formatCounselorLabel(counselorKey) || counselorText) : counselorText;
+      const topics = [topicClean(r[9]), topicClean(r[10])].filter(Boolean);
+      const serviceItems = [String(r[12]||'').trim(), String(r[13]||'').trim()].filter(Boolean);
+      const mode = String(r[7]||'').trim(), interviewee = String(r[8]||'').trim();
+      const remark = String(r[14]||'').trim();
+      const crossUnit = String(r[15]||'').trim(), crossUnitOther = String(r[16]||'').trim();
       const summary = [
         mode ? `輔導方式：${mode}` : '',
         interviewee ? `受訪對象：${interviewee}` : '',
         remark,
         crossUnit ? `跨單位聯繫：${crossUnit}${crossUnitOther ? '（'+crossUnitOther+'）' : ''}` : '',
       ].filter(Boolean).join('\n');
-
-      const newRec = {
-        id: `REC-IMP-${i}-${Date.now()}`,
-        date,
+      return {
+        id: `REC-IMP-${rowIdx}-${Date.now()}`,
+        date: rocToAD(String(r[0]||'').trim()),
         time: String(r[1]||'').trim(),
         counselorEmail: counselorKey,
         counselorName,
@@ -7907,26 +7865,324 @@ async function importCounselingRecords(file) {
         isImported: true,
         createdAt: new Date().toISOString(),
       };
+    };
 
-      const idx = casesData.findIndex(c => c.id === targetCase.id);
-      if (idx < 0) continue;
-      if (!casesData[idx].records) casesData[idx].records = [];
-      casesData[idx].records.push(newRec);
-      casesData[idx].updatedAt = new Date().toISOString();
-      modifiedCaseIds.add(targetCase.id);
-      added++;
+    // ── Phase 1: parse, split matched / unmatched ──
+    const matchedItems   = []; // { record, targetCase, studentName, rowIdx }
+    const unmatchedItems = []; // { rawRow, record, studentName, rowIdx }
+
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i];
+      const dateRaw     = String(r[0]||'').trim();
+      const studentName = String(r[2]||'').trim();
+      if (!studentName || !dateRaw) continue;
+      const date = rocToAD(dateRaw);
+      if (!date) continue;
+
+      const candidates = nameMap.get(studentName) || [];
+      let targetCase = null;
+      if (candidates.length === 1) {
+        targetCase = candidates[0];
+      } else if (candidates.length > 1) {
+        const sorted = candidates
+          .filter(c => c.openDate && c.openDate <= date)
+          .sort((a, b) => b.openDate.localeCompare(a.openDate));
+        targetCase = sorted[0] || candidates[0];
+      }
+
+      const rec = buildRecord(r, i);
+      if (targetCase) {
+        matchedItems.push({ record: rec, targetCase, studentName, rowIdx: i });
+      } else {
+        unmatchedItems.push({ rawRow: r, record: rec, studentName, rowIdx: i });
+      }
     }
 
-    if (modifiedCaseIds.size > 0) {
-      prog.innerHTML = `<span style="color:#718096;">寫入 ${modifiedCaseIds.size} 個個案的記錄至 Drive…</span>`;
-      await saveCasesChunks(...modifiedCaseIds);
-    }
+    // ── Phase 2: show review modal ──
+    prog.innerHTML = `<span style="color:#718096;">開啟預覽介面…</span>`;
+    await showCounselingImportPreview(matchedItems, unmatchedItems, prog);
 
-    prog.innerHTML = `<span style="color:#276749;font-weight:600;">✓ 成功匯入 ${added} 筆輔導記錄（比對到 ${matched} 筆，無法比對 ${unmatched} 筆）。</span>`;
-    auditLog(`批次匯入輔導服務記錄 ${added} 筆`);
   } catch(e) {
     prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span>`;
   }
+}
+
+// 輔導記錄匯入預覽 modal
+function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
+  return new Promise(resolve => {
+    let modal = document.getElementById('counsel-import-modal');
+    if (modal) modal.remove();
+    modal = document.createElement('div');
+    modal.id = 'counsel-import-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.75);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+
+    // 每列維護一個狀態物件（可被使用者修改）
+    const unmatchedState = unmatchedItems.map(item => ({
+      ...item,
+      assignedCaseId: '',  // 使用者手動指派的 case id
+      skip: false,
+    }));
+    const matchedState = matchedItems.map(item => ({
+      ...item,
+      skip: false,
+    }));
+
+    const renderModal = () => {
+      const filterVal = (modal.querySelector('#ci-filter-input')?.value || '').toLowerCase();
+      const showTab   = modal.querySelector('#ci-tab-all')?.dataset.active === '1' ? 'all'
+                      : modal.querySelector('#ci-tab-unmatched')?.dataset.active === '1' ? 'unmatched' : 'matched';
+
+      const unmatchedVisible = unmatchedState.filter(s => {
+        if (showTab === 'matched') return false;
+        if (!filterVal) return true;
+        return s.studentName.includes(filterVal) ||
+               s.record.date.includes(filterVal) ||
+               s.record.counselorName.includes(filterVal);
+      });
+      const matchedVisible = matchedState.filter(s => {
+        if (showTab === 'unmatched') return false;
+        if (!filterVal) return true;
+        return s.studentName.includes(filterVal) ||
+               s.record.date.includes(filterVal) ||
+               s.record.counselorName.includes(filterVal) ||
+               s.targetCase.id.includes(filterVal);
+      });
+
+      const pendingConfirm = unmatchedState.filter(s => !s.skip && s.assignedCaseId).length
+                           + matchedState.filter(s => !s.skip).length;
+      const pendingUnmatched = unmatchedState.filter(s => !s.skip && !s.assignedCaseId).length;
+
+      // case 搜尋選項（用於 unmatched 的 select）
+      const caseOptions = casesData
+        .sort((a, b) => (a.name||'').localeCompare(b.name||''))
+        .map(c => `<option value="${escHtml(c.id)}">${escHtml(c.name||'—')} （${escHtml(c.id)}）${c.studentId ? ' '+escHtml(c.studentId) : ''}</option>`)
+        .join('');
+
+      const unmatchedRows = unmatchedVisible.map((s, vi) => {
+        const realIdx = unmatchedState.indexOf(s);
+        const skipCls = s.skip ? 'opacity:.4;' : '';
+        const bgCls   = s.skip ? '#f7fafc' : s.assignedCaseId ? '#f0fff4' : '#fff5f5';
+        return `<tr data-type="unmatched" data-real-idx="${realIdx}" style="background:${bgCls};${skipCls}">
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;white-space:nowrap;color:#718096;">${escHtml(s.record.date)}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.88rem;font-weight:600;">${escHtml(s.studentName)}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;color:#4a5568;">${escHtml(s.record.counselorName||'—')}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;color:#4a5568;">${escHtml((s.record.topics||[]).join('、')||'—')}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;min-width:220px;">
+            ${s.skip ? '<span style="color:#a0aec0;font-size:.8rem;">已跳過</span>' : `
+            <input list="ci-case-list-${realIdx}" class="field-input" style="width:100%;font-size:.82rem;padding:4px 7px;" placeholder="搜尋姓名/案號…"
+              data-real-idx="${realIdx}" oninput="ciAssignCase(this)" value="${escHtml(s._searchVal||'')}">
+            <datalist id="ci-case-list-${realIdx}">${caseOptions}</datalist>`}
+          </td>
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;text-align:center;">
+            <button class="btn btn-secondary btn-sm" style="font-size:.78rem;padding:2px 8px;" onclick="ciToggleSkip('unmatched',${realIdx})">${s.skip ? '取消跳過' : '跳過'}</button>
+          </td>
+        </tr>`;
+      }).join('') || `<tr><td colspan="6" style="text-align:center;padding:20px;color:#a0aec0;">（無符合條件的記錄）</td></tr>`;
+
+      const matchedRows = matchedVisible.map((s, vi) => {
+        const realIdx = matchedState.indexOf(s);
+        const skipCls = s.skip ? 'opacity:.4;' : '';
+        return `<tr data-type="matched" data-real-idx="${realIdx}" style="background:${s.skip ? '#f7fafc' : '#fff'};${skipCls}">
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;white-space:nowrap;color:#718096;">${escHtml(s.record.date)}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.88rem;font-weight:600;">${escHtml(s.studentName)}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;color:#4a5568;">${escHtml(s.record.counselorName||'—')}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;color:#4a5568;">${escHtml((s.record.topics||[]).join('、')||'—')}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;">
+            <span style="font-size:.82rem;color:#276749;">${escHtml(s.targetCase.id)}</span>
+            <span style="font-size:.78rem;color:#718096;margin-left:6px;">${escHtml(s.targetCase.name||'')}</span>
+          </td>
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;text-align:center;">
+            <button class="btn btn-secondary btn-sm" style="font-size:.78rem;padding:2px 8px;" onclick="ciToggleSkip('matched',${realIdx})">${s.skip ? '取消跳過' : '跳過'}</button>
+          </td>
+        </tr>`;
+      }).join('') || `<tr><td colspan="6" style="text-align:center;padding:20px;color:#a0aec0;">（無符合條件的記錄）</td></tr>`;
+
+      const tabStyle = (active) => active
+        ? 'padding:6px 16px;border:1.5px solid #2b6cb0;background:#ebf8ff;color:#2b6cb0;border-radius:6px;cursor:pointer;font-size:.85rem;font-weight:600;'
+        : 'padding:6px 16px;border:1.5px solid #e2e8f0;background:#fff;color:#4a5568;border-radius:6px;cursor:pointer;font-size:.85rem;';
+      const isAll = showTab === 'all', isUM = showTab === 'unmatched', isM = showTab === 'matched';
+
+      modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;max-width:1100px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 25px 50px rgba(0,0,0,.3);">
+          <!-- Header -->
+          <div style="padding:18px 24px;border-bottom:1px solid #e2e8f0;background:#f7fafc;">
+            <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+              <h3 style="margin:0;color:#1a5276;font-size:1.1rem;">匯入輔導記錄 — 預覽與確認</h3>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                ${unmatchedItems.length > 0 ? `<span style="padding:3px 10px;background:#fff5f5;border:1px solid #fc8181;border-radius:99px;font-size:.8rem;color:#c53030;font-weight:600;">⚠ 無法比對 ${unmatchedItems.length} 筆</span>` : ''}
+                <span style="padding:3px 10px;background:#f0fff4;border:1px solid #68d391;border-radius:99px;font-size:.8rem;color:#276749;font-weight:600;">✓ 已比對 ${matchedItems.length} 筆</span>
+              </div>
+            </div>
+            <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+              <button id="ci-tab-all" data-active="${isAll?'1':'0'}" style="${tabStyle(isAll)}" onclick="ciSwitchTab('all')">全部（${unmatchedItems.length + matchedItems.length}）</button>
+              ${unmatchedItems.length > 0 ? `<button id="ci-tab-unmatched" data-active="${isUM?'1':'0'}" style="${tabStyle(isUM)}" onclick="ciSwitchTab('unmatched')">⚠ 無法比對（${unmatchedItems.length}）</button>` : ''}
+              <button id="ci-tab-matched" data-active="${isM?'1':'0'}" style="${tabStyle(isM)}" onclick="ciSwitchTab('matched')">✓ 已比對（${matchedItems.length}）</button>
+              <input id="ci-filter-input" class="field-input" placeholder="搜尋姓名 / 案號 / 輔導人員…" style="flex:1;min-width:200px;font-size:.85rem;" oninput="ciFilter()" value="${escHtml(filterVal)}">
+            </div>
+            ${pendingUnmatched > 0 ? `<div style="margin-top:8px;font-size:.82rem;color:#b7791f;background:#fffbeb;padding:6px 12px;border-radius:6px;border:1px solid #f6e05e;">
+              ℹ ${pendingUnmatched} 筆無法比對尚未指派個案，匯入時將略過這些筆。如需匯入請在下方「指派至個案」欄搜尋並選擇對應個案。
+            </div>` : ''}
+          </div>
+
+          <!-- Table -->
+          <div style="overflow:auto;flex:1;">
+            ${(showTab !== 'matched' && unmatchedItems.length > 0) ? `
+            <div style="padding:8px 16px 4px;background:#fff5f5;border-bottom:1px solid #fed7d7;">
+              <span style="font-size:.82rem;font-weight:700;color:#c53030;">⚠ 無法比對的記錄（${unmatchedItems.length} 筆）— 請指派至正確個案，或跳過</span>
+            </div>
+            <table style="width:100%;border-collapse:collapse;">
+              <thead>
+                <tr style="background:#fff5f5;font-size:.78rem;color:#718096;text-align:left;">
+                  <th style="padding:7px 10px;border-bottom:2px solid #fed7d7;white-space:nowrap;">日期</th>
+                  <th style="padding:7px 10px;border-bottom:2px solid #fed7d7;">學生姓名</th>
+                  <th style="padding:7px 10px;border-bottom:2px solid #fed7d7;">輔導人員</th>
+                  <th style="padding:7px 10px;border-bottom:2px solid #fed7d7;">主題</th>
+                  <th style="padding:7px 10px;border-bottom:2px solid #fed7d7;">指派至個案</th>
+                  <th style="padding:7px 10px;border-bottom:2px solid #fed7d7;"></th>
+                </tr>
+              </thead>
+              <tbody>${unmatchedRows}</tbody>
+            </table>` : ''}
+
+            ${(showTab !== 'unmatched' && matchedItems.length > 0) ? `
+            <div style="padding:8px 16px 4px;background:#f0fff4;border-bottom:1px solid #c6f6d5;${showTab==='all'&&unmatchedItems.length>0?'margin-top:0;':''}">
+              <span style="font-size:.82rem;font-weight:700;color:#276749;">✓ 已比對的記錄（${matchedItems.length} 筆）— 確認比對正確，或跳過不需要的筆</span>
+            </div>
+            <table style="width:100%;border-collapse:collapse;">
+              <thead>
+                <tr style="background:#f0fff4;font-size:.78rem;color:#718096;text-align:left;">
+                  <th style="padding:7px 10px;border-bottom:2px solid #c6f6d5;white-space:nowrap;">日期</th>
+                  <th style="padding:7px 10px;border-bottom:2px solid #c6f6d5;">學生姓名</th>
+                  <th style="padding:7px 10px;border-bottom:2px solid #c6f6d5;">輔導人員</th>
+                  <th style="padding:7px 10px;border-bottom:2px solid #c6f6d5;">主題</th>
+                  <th style="padding:7px 10px;border-bottom:2px solid #c6f6d5;">比對至個案</th>
+                  <th style="padding:7px 10px;border-bottom:2px solid #c6f6d5;"></th>
+                </tr>
+              </thead>
+              <tbody>${matchedRows}</tbody>
+            </table>` : ''}
+          </div>
+
+          <!-- Footer -->
+          <div style="padding:14px 24px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;background:#f7fafc;flex-wrap:wrap;gap:10px;">
+            <div style="font-size:.85rem;color:#718096;">
+              將匯入 <strong style="color:#2d3748;">${pendingConfirm}</strong> 筆
+              ${unmatchedState.filter(s=>s.skip).length + matchedState.filter(s=>s.skip).length > 0
+                ? `，略過 <strong>${unmatchedState.filter(s=>s.skip).length + matchedState.filter(s=>s.skip).length}</strong> 筆`
+                : ''}
+              ${pendingUnmatched > 0 ? `，<span style="color:#b7791f;">${pendingUnmatched} 筆未指派將略過</span>` : ''}
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button class="btn btn-secondary" type="button" id="ci-cancel-btn">取消</button>
+              <button class="btn btn-primary" type="button" id="ci-confirm-btn" ${pendingConfirm===0?'disabled':''}>確認匯入 ${pendingConfirm} 筆</button>
+            </div>
+          </div>
+        </div>`;
+
+      modal.querySelector('#ci-cancel-btn').onclick = () => {
+        modal.remove();
+        prog.innerHTML = '<span style="color:#a0aec0;">已取消匯入。</span>';
+        resolve();
+      };
+      modal.querySelector('#ci-confirm-btn').onclick = () => doConfirmImport();
+    };
+
+    // 掛載輔助函式到 window（modal 內 onclick 用）
+    window.ciSwitchTab = (tab) => {
+      ['all','unmatched','matched'].forEach(t => {
+        const el = modal.querySelector(`#ci-tab-${t}`);
+        if (el) el.dataset.active = (t === tab ? '1' : '0');
+      });
+      renderModal();
+    };
+    window.ciFilter = () => renderModal();
+    window.ciToggleSkip = (type, realIdx) => {
+      if (type === 'unmatched') unmatchedState[realIdx].skip = !unmatchedState[realIdx].skip;
+      else matchedState[realIdx].skip = !matchedState[realIdx].skip;
+      renderModal();
+    };
+    window.ciAssignCase = (input) => {
+      const realIdx = parseInt(input.dataset.realIdx);
+      const val = input.value;
+      unmatchedState[realIdx]._searchVal = val;
+      // 嘗試從 datalist 中比對完整選項（案號完全符合）
+      const match = casesData.find(c =>
+        val === `${c.name||'—'} （${c.id}）${c.studentId ? ' '+c.studentId : ''}` ||
+        val === c.id ||
+        val.includes(`（${c.id}）`)
+      );
+      unmatchedState[realIdx].assignedCaseId = match ? match.id : '';
+      // 不重繪整個 modal，只更新 footer 計數
+      const pendingConfirm = unmatchedState.filter(s => !s.skip && s.assignedCaseId).length
+                           + matchedState.filter(s => !s.skip).length;
+      const pendingUnmatched = unmatchedState.filter(s => !s.skip && !s.assignedCaseId).length;
+      const confirmBtn = modal.querySelector('#ci-confirm-btn');
+      if (confirmBtn) {
+        confirmBtn.disabled = pendingConfirm === 0;
+        confirmBtn.textContent = `確認匯入 ${pendingConfirm} 筆`;
+      }
+      const footerInfo = modal.querySelector('#ci-footer-info');
+      if (footerInfo) {
+        footerInfo.innerHTML = `將匯入 <strong style="color:#2d3748;">${pendingConfirm}</strong> 筆`
+          + (unmatchedState.filter(s=>s.skip).length + matchedState.filter(s=>s.skip).length > 0
+              ? `，略過 <strong>${unmatchedState.filter(s=>s.skip).length + matchedState.filter(s=>s.skip).length}</strong> 筆` : '')
+          + (pendingUnmatched > 0 ? `，<span style="color:#b7791f;">${pendingUnmatched} 筆未指派將略過</span>` : '');
+      }
+      // 改變列背景色以給即時反饋
+      const row = modal.querySelector(`tr[data-type="unmatched"][data-real-idx="${realIdx}"]`);
+      if (row) row.style.background = match ? '#f0fff4' : '#fff5f5';
+    };
+
+    const doConfirmImport = async () => {
+      modal.remove();
+      prog.style.display = '';
+      prog.innerHTML = '<span style="color:#718096;">寫入記錄至 Drive…</span>';
+
+      const modifiedCaseIds = new Set();
+      let added = 0;
+
+      // 處理已比對（未跳過）
+      for (const s of matchedState) {
+        if (s.skip) continue;
+        const idx = casesData.findIndex(c => c.id === s.targetCase.id);
+        if (idx < 0) continue;
+        if (!casesData[idx].records) casesData[idx].records = [];
+        casesData[idx].records.push(s.record);
+        casesData[idx].updatedAt = new Date().toISOString();
+        modifiedCaseIds.add(s.targetCase.id);
+        added++;
+      }
+
+      // 處理無法比對但已手動指派（未跳過）
+      for (const s of unmatchedState) {
+        if (s.skip || !s.assignedCaseId) continue;
+        const idx = casesData.findIndex(c => c.id === s.assignedCaseId);
+        if (idx < 0) continue;
+        if (!casesData[idx].records) casesData[idx].records = [];
+        casesData[idx].records.push(s.record);
+        casesData[idx].updatedAt = new Date().toISOString();
+        modifiedCaseIds.add(s.assignedCaseId);
+        added++;
+      }
+
+      if (modifiedCaseIds.size > 0) {
+        prog.innerHTML = `<span style="color:#718096;">寫入 ${modifiedCaseIds.size} 個個案至 Drive…</span>`;
+        await saveCasesChunks(...modifiedCaseIds);
+      }
+
+      const skipped = unmatchedState.filter(s => s.skip).length + matchedState.filter(s => s.skip).length;
+      const autoSkipped = unmatchedState.filter(s => !s.skip && !s.assignedCaseId).length;
+      prog.innerHTML = `<span style="color:#276749;font-weight:600;">✓ 成功匯入 ${added} 筆輔導記錄`
+        + (skipped > 0 ? `，已跳過 ${skipped} 筆` : '')
+        + (autoSkipped > 0 ? `，${autoSkipped} 筆未指派略過` : '')
+        + `。</span>`;
+      auditLog(`批次匯入輔導服務記錄 ${added} 筆`);
+      resolve();
+    };
+
+    document.body.appendChild(modal);
+    renderModal();
+  });
 }
 
 // ══════════════════════════════════════════════
