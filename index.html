@@ -971,7 +971,10 @@
       <div class="card">
         <div class="card-header">
           <h3>目前已設定使用者</h3>
-          <button class="btn btn-primary" onclick="openUserModal()">＋ 新增使用者</button>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary" onclick="openBulkAddModal()">批次新增</button>
+            <button class="btn btn-primary" onclick="openUserModal()">＋ 新增使用者</button>
+          </div>
         </div>
         <div id="admin-users-wrap">
           <div class="empty-state">
@@ -3154,6 +3157,109 @@ function renderAdminUsers() {
       <thead><tr><th>帳號 / 識別碼</th><th>姓名</th><th>角色</th><th>附加身分</th><th>操作</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
+}
+
+function openBulkAddModal() {
+  const rolesHint = ROLES.join('、');
+  const existingEmails = new Set(Object.keys(configData.users || {}));
+  document.body.insertAdjacentHTML('beforeend', `
+    <div id="bulk-add-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:600;display:flex;align-items:center;justify-content:center;padding:20px;">
+      <div style="background:#fff;border-radius:12px;padding:28px;width:95%;max-width:680px;max-height:90vh;overflow-y:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h3 style="font-size:1.1rem;color:#1a202c;">批次新增使用者</h3>
+          <button onclick="document.getElementById('bulk-add-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+        </div>
+        <p style="font-size:.85rem;color:#718096;margin-bottom:6px;">每行一位，格式：<code style="background:#f7fafc;padding:2px 5px;border-radius:3px;">Email, 姓名, 角色, 管理者</code>（管理者欄填「是」或留空）</p>
+        <p style="font-size:.82rem;color:#a0aec0;margin-bottom:12px;">可用角色：${rolesHint}</p>
+        <textarea id="bulk-csv-input" rows="10" style="width:100%;padding:10px;border:1.5px solid #e2e8f0;border-radius:8px;font-family:monospace;font-size:.85rem;resize:vertical;box-sizing:border-box;"
+          placeholder="linkinlol528101@gmail.com, 陳錦錫, 專任諮商心理師, 是&#10;m036090006@gmail.com, 黃靖容, 專任社會工作師&#10;bce112214nptu@gmail.com, 王庭葳, 實習諮商心理師"></textarea>
+        <div id="bulk-csv-preview" style="margin-top:14px;"></div>
+        <div style="display:flex;gap:10px;margin-top:16px;">
+          <button class="btn btn-secondary" onclick="previewBulkUsers()">預覽</button>
+          <button class="btn btn-primary" id="bulk-save-btn" style="display:none;" onclick="saveBulkUsers()">確認新增</button>
+          <button class="btn btn-secondary" onclick="document.getElementById('bulk-add-modal').remove()">取消</button>
+        </div>
+      </div>
+    </div>`);
+}
+
+function previewBulkUsers() {
+  const raw = document.getElementById('bulk-csv-input').value.trim();
+  if (!raw) { document.getElementById('bulk-csv-preview').innerHTML = ''; return; }
+  const lines = raw.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+  const existingEmails = new Set(Object.keys(configData.users || {}));
+  const parsed = [];
+  const errors = [];
+
+  lines.forEach((line, i) => {
+    const cols = line.split(',').map(c => c.trim());
+    const email = cols[0] || '';
+    const name  = cols[1] || '';
+    const role  = cols[2] || '';
+    const isAdmin = /^(是|yes|y|true|1)$/i.test(cols[3] || '');
+    if (!email.includes('@')) { errors.push(`第 ${i+1} 行：「${email}」不像 email`); return; }
+    if (role && !ROLES.includes(role) && role !== '行政人員' && role !== '其他') {
+      errors.push(`第 ${i+1} 行：角色「${role}」不在角色清單中（會照填，請確認）`);
+    }
+    parsed.push({ email, name, role, isAdmin, isDup: existingEmails.has(email) });
+  });
+
+  const errHtml = errors.length
+    ? `<div style="padding:8px 12px;background:#fff5f5;border-radius:6px;color:#c53030;font-size:.83rem;margin-bottom:10px;">${errors.map(escHtml).join('<br>')}</div>`
+    : '';
+
+  if (!parsed.length) {
+    document.getElementById('bulk-csv-preview').innerHTML = errHtml + '<p style="color:#718096;font-size:.88rem;">未解析到有效資料。</p>';
+    document.getElementById('bulk-save-btn').style.display = 'none';
+    return;
+  }
+
+  const rows = parsed.map(u => `
+    <tr style="${u.isDup ? 'background:#fff8e1;' : ''}">
+      <td style="padding:6px 10px;font-size:.85rem;">${escHtml(u.email)}</td>
+      <td style="padding:6px 10px;font-size:.85rem;">${escHtml(u.name)}</td>
+      <td style="padding:6px 10px;font-size:.85rem;">${escHtml(u.role)}</td>
+      <td style="padding:6px 10px;font-size:.85rem;text-align:center;">${u.isAdmin ? '✅' : '—'}</td>
+      <td style="padding:6px 10px;font-size:.8rem;color:#d97706;">${u.isDup ? '⚠ 將覆蓋現有' : ''}</td>
+    </tr>`).join('');
+
+  document.getElementById('bulk-csv-preview').innerHTML = errHtml + `
+    <div style="font-size:.83rem;color:#718096;margin-bottom:6px;">解析結果（共 ${parsed.length} 位）：</div>
+    <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">
+      <thead><tr style="background:#f7fafc;font-size:.8rem;">
+        <th style="padding:6px 10px;text-align:left;">Email</th>
+        <th style="padding:6px 10px;text-align:left;">姓名</th>
+        <th style="padding:6px 10px;text-align:left;">角色</th>
+        <th style="padding:6px 10px;">管理者</th>
+        <th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  document.getElementById('bulk-save-btn').style.display = '';
+  window._bulkParsed = parsed;
+}
+
+async function saveBulkUsers() {
+  const parsed = window._bulkParsed;
+  if (!parsed?.length) return;
+  if (!configData.users) configData.users = {};
+  parsed.forEach(u => {
+    configData.users[u.email] = {
+      ...(configData.users[u.email] || {}),
+      name: u.name,
+      role: u.role,
+      ...(u.isAdmin ? { isAdmin: true } : {}),
+    };
+    if (!u.isAdmin && configData.users[u.email].isAdmin) delete configData.users[u.email].isAdmin;
+  });
+  showLoading('儲存中…');
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('批次新增使用者', `${parsed.length} 位`);
+    hideLoading();
+    document.getElementById('bulk-add-modal')?.remove();
+    renderAdminUsers();
+  } catch(e) { hideLoading(); alert('儲存失敗：' + e.message); }
 }
 
 async function importBulkUsers() {
