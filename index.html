@@ -752,9 +752,6 @@
       <span style="font-size:1.25rem;line-height:1;">🔔</span>
       <span id="notif-badge"></span>
     </div>
-    <div id="btn-lock-screen" onclick="lockScreen(true)" title="鎖定畫面" style="cursor:pointer;display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:50%;transition:background .15s;" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background=''">
-      <span style="font-size:1.15rem;line-height:1;">🔒</span>
-    </div>
     <img id="user-avatar" src="" alt="頭像" title="偏好設定" style="cursor:pointer;" onclick="showPage('page-prefs', null); renderPrefsPage()" />
     <div style="text-align:right;line-height:1.4;">
       <div style="font-size:.9rem;" id="user-name"></div>
@@ -875,12 +872,18 @@
       <div class="nav-item" data-nav-id="page-recycle" onclick="showPage('page-recycle', this); renderRecycleBin()">
         <span class="icon">🗑️</span> 資源回收桶 <span class="nav-drag-handle">⠿</span>
       </div>
+      <div class="nav-item" data-nav-id="page-transfer" onclick="showPage('page-transfer', this); renderTransferPage()">
+        <span class="icon">🔄</span> 轉銜管理 <span class="nav-drag-handle">⠿</span>
+      </div>
     </div>
 
     <div class="sidebar-section">
       <h3>個人</h3>
       <div class="nav-item" data-nav-id="page-prefs" onclick="showPage('page-prefs', this); renderPrefsPage()">
         <span class="icon">🔧</span> 偏好設定 <span class="nav-drag-handle">⠿</span>
+      </div>
+      <div class="nav-item" id="btn-lock-screen" data-nav-id="__lock__" onclick="lockScreen(true)">
+        <span class="icon">🔒</span> 鎖定畫面 <span class="nav-drag-handle">⠿</span>
       </div>
     </div>
   </nav>
@@ -1105,6 +1108,12 @@
     <div id="page-recycle" class="page">
       <div class="page-title">資源回收桶</div>
       <div id="recycle-body"></div>
+    </div>
+
+    <!-- 轉銜管理 -->
+    <div id="page-transfer" class="page">
+      <div class="page-title">轉銜管理</div>
+      <div id="transfer-body"></div>
     </div>
 
     <!-- 統計分析 -->
@@ -2085,12 +2094,14 @@
 const CLIENT_ID   = '68582831293-fecbka17adht886tm6oh18vrdsdg1hbj.apps.googleusercontent.com';
 const SCOPES      = 'https://www.googleapis.com/auth/drive openid profile email';
 const DRIVE_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP'; // npust.scc 共用雲端硬碟內的 scc-infosys 子資料夾
+const BOOTSTRAP_ADMIN_EMAIL = 'linkinlol528101@gmail.com'; // 永久管理者備援帳號
 const CONFIG_FILE     = 'config.json';
 const CASES_INDEX     = 'cases/index.json'; // 舊格式（升級後僅作備份）
 const CASES_MANIFEST  = 'cases/manifest.json';
 const CHUNK_SIZE      = 20;
 const AUDIT_LOG_FILE  = 'audit_log.json';
 const BOOKINGS_FILE   = 'bookings.json';
+const TRANSFER_FILE   = 'transfer.json';
 const ROOMS = ['玉山', '雪山', '中央山脈', '阿里山', '海岸山脈', '團體諮商室', '其他'];
 const BK_PERIODS = [
   { label: '第1節  08:10–09:00',  start: '08:10', end: '09:00' },
@@ -2268,7 +2279,7 @@ function updateFloatingBackBtn(pageId) {
     fab.onclick = () => handleFloatingBack();
     document.body.appendChild(fab);
   }
-  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings','page-recycle'];
+  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings','page-recycle','page-transfer'];
   fab.style.display = showOn.includes(pageId) ? 'inline-block' : 'none';
   fab.dataset.fromPage = pageId;
 }
@@ -2451,7 +2462,7 @@ async function afterLogin() {
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-layout').style.display  = 'flex';
     checkPinSetup();
-    await Promise.all([loadCases(), loadPendingCases(), loadBookings()]);
+    await Promise.all([loadCases(), loadPendingCases(), loadBookings(), loadTransfer()]);
   } catch (err) {
     hideLoading();
     // 找不到設定檔 → 顯示初始化畫面
@@ -2491,6 +2502,11 @@ function resolveUserRole() {
     // 支援 isAdmin:true 與舊格式 extraRole:'管理者' 兩種寫法
     if (entry.isAdmin === true || entry.extraRole === '管理者') extraRole = '管理者';
     else if (entry.extraRole === '個案管理員') extraRole = '個案管理員';
+  }
+  // 備援：BOOTSTRAP_ADMIN_EMAIL 永遠擁有管理者身分（防止 config 遺失時鎖死）
+  if (currentUser?.email === BOOTSTRAP_ADMIN_EMAIL) {
+    if (!currentRole) currentRole = '專任諮商心理師';
+    extraRole = '管理者';
   }
 
   // Header 職稱顯示
@@ -3291,6 +3307,7 @@ function showCaseDetail(caseId) {
   let actionsHtml = `<button class="btn btn-secondary" onclick="window.print()">列印</button>`;
   actionsHtml += ` <button class="btn btn-secondary" onclick="printAllRecords('${cid}')">列印晤談彙整</button>`;
   actionsHtml += ` <button class="btn btn-secondary" onclick="openInitialInterviewPage('${cid}')">初次晤談表</button>`;
+  actionsHtml += ` <button class="btn btn-secondary" onclick="openPsychiatristModal('${cid}')">精神科評估</button>`;
   if (c.initialInterview && (c.initialInterview.type === 'filled' || c.initialInterview.problemsMain)) {
     actionsHtml += ` <button class="btn btn-secondary" onclick="printInitialInterview('${cid}')">列印初次晤談</button>`;
   }
@@ -3552,6 +3569,33 @@ function showCaseDetail(caseId) {
 
   const iiReminderHtml = '';
 
+  // 精神科醫師評估區塊
+  const psyHtml = (() => {
+    const records = (c.psychiatristRecords || []);
+    const cards = records.map(pr => `
+      <div class="record-card" style="margin-bottom:10px;">
+        <div class="record-card-header">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-weight:600;">🩺 ${escHtml(pr.date||'—')}</span>
+            ${pr.timeStart ? `<span style="color:#718096;font-size:.83rem;">${escHtml(pr.timeStart)}–${escHtml(pr.timeEnd||'')}</span>` : ''}
+            ${pr.diagnosisType==='specific' ? `<span class="badge badge-orange">${escHtml(pr.diagnosisName||'確診')}</span>` : ''}
+            ${pr.medicationAdvice==='yes' ? '<span class="badge badge-red">建議藥物</span>' : ''}
+            ${pr.hospitalizationAdvice==='yes' ? '<span class="badge badge-red">建議住院</span>' : ''}
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button class="btn btn-secondary btn-sm" onclick="openPsychiatristModal('${escHtml(c.id)}','${escHtml(pr.id)}')">編輯</button>
+            <button class="btn btn-secondary btn-sm" onclick="printPsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')">列印</button>
+            ${!caseIsDeleted ? `<button class="btn btn-danger btn-sm" onclick="deletePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')">刪除</button>` : ''}
+          </div>
+        </div>
+        ${pr.recommendations ? `<div style="padding:8px 12px;font-size:.85rem;color:#4a5568;border-top:1px solid #f0f4f8;">諮商中心建議：${escHtml(pr.recommendations)}</div>` : ''}
+      </div>`).join('');
+    const addBtn = !caseIsDeleted ? `<button class="btn btn-primary" onclick="openPsychiatristModal('${escHtml(c.id)}')">＋ 新增評估</button>` : '';
+    const emptyMsg = records.length === 0 ? '<div style="color:#718096;font-size:.88rem;padding:8px 0;">尚無精神科評估紀錄</div>' : '';
+    return mkSection('psychiatrist', `精神科醫師評估（${records.length} 筆）`,
+      `<div style="margin-bottom:10px;">${addBtn}</div><div>${emptyMsg}${cards}</div>`);
+  })();
+
   // 結案評估區塊（已結案才顯示）
   const evalHtml = (() => {
     const ev = c.closureEvaluation;
@@ -3632,6 +3676,7 @@ function showCaseDetail(caseId) {
       ${field('主訴問題', (c.topics || []).join('、') || '—')}
     </div>`) +
     evalHtml +
+    psyHtml +
     iiReminderHtml +
     recordsHtml;
 
@@ -8954,6 +8999,8 @@ async function savePendingCases() {
 // ══════════════════════════════════════════════
 let bookingsData = [];
 let _editingBookingId = null;
+
+let transferData = [];  // loaded from transfer.json
 let _bkDaySpan = parseInt(localStorage.getItem('scc_bk_span') || '1') || 1;
 
 async function loadBookings() {
@@ -8971,6 +9018,23 @@ async function saveBookings() {
   } catch (e) {
     if (e.message.includes('找不到')) {
       await driveCreateJsonFile(BOOKINGS_FILE, { bookings: bookingsData }, DRIVE_FOLDER_ID);
+    } else throw e;
+  }
+}
+
+async function loadTransfer() {
+  try {
+    const data = await driveReadJson(TRANSFER_FILE);
+    transferData = Array.isArray(data?.records) ? data.records : [];
+  } catch(e) { transferData = []; }
+}
+
+async function saveTransfer() {
+  try {
+    await driveUpdateJsonFile(TRANSFER_FILE, { records: transferData });
+  } catch(e) {
+    if (e.message.includes('找不到')) {
+      await driveCreateJsonFile(TRANSFER_FILE, { records: transferData }, DRIVE_FOLDER_ID);
     } else throw e;
   }
 }
@@ -10111,6 +10175,537 @@ async function rbPurgeAll() {
 }
 
 // ══════════════════════════════════════════════
+//  轉銜管理
+// ══════════════════════════════════════════════
+const TRANSFER_INDICATORS = [
+  { key: 'i1', label: '嚴重自傷或自殺之虞，致使影響生活與學習' },
+  { key: 'i2', label: '嚴重情緒困擾，或經醫師確診有精神或心理疾病，致使影響生活與學習' },
+  { key: 'i3', label: '嚴重人際困擾，致使影響身心適應與學習' },
+  { key: 'i4', label: '嚴重行為問題（攻擊或傷人傾向等），致使影響生活與學習' },
+  { key: 'i5', label: '曾有觸法行為或有曝險之虞，致使影響生活或學習' },
+  { key: 'i6', label: '家庭系統嚴重功能不足，致使嚴重影響身心適應與學習' },
+  { key: 'i7', label: '曾依法被通報至各主管機關，有適應困難或嚴重影響生活與學習之虞' },
+  { key: 'i8', label: '經歷重大創傷或重大災害事件、網路成癮或其他情形，致使嚴重影響身心適應與學習' },
+];
+
+function renderTransferPage() {
+  const tab = window._transferTab || 'outgoing';
+  const outgoing = transferData.filter(r => r.type === 'outgoing');
+  const incoming = transferData.filter(r => r.type === 'incoming');
+  const tabBtn = (id, label, count) =>
+    `<button onclick="window._transferTab='${id}';renderTransferPage()" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:${tab===id?'700':'400'};background:${tab===id?'#3498db':'#f0f4f8'};color:${tab===id?'#fff':'#4a5568'};">${label}（${count}）</button>`;
+  const importOutBtn = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'outgoing')"><span class="btn btn-secondary btn-sm">📥 匯入轉出名單</span></label>`;
+  const importInBtn  = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'incoming')"><span class="btn btn-secondary btn-sm">📥 匯入轉進名單</span></label>`;
+  const addOutBtn = `<button class="btn btn-primary btn-sm" onclick="openTransferAssessmentModal(null,'outgoing')">＋ 手動新增</button>`;
+  const addInBtn  = `<button class="btn btn-primary btn-sm" onclick="openTransferAssessmentModal(null,'incoming')">＋ 手動新增</button>`;
+  const list = (tab === 'outgoing' ? outgoing : incoming);
+  const listHtml = list.length === 0
+    ? `<div class="empty-state"><div class="icon">🔄</div><p>尚無${tab==='outgoing'?'轉出':'轉進'}學生</p></div>`
+    : list.map(_renderTransferRow).join('');
+  const actionBar = tab === 'outgoing'
+    ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importOutBtn}${addOutBtn}</div>`
+    : `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importInBtn}${addInBtn}</div>`;
+  document.getElementById('transfer-body').innerHTML = `
+    <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;">
+      ${tabBtn('outgoing','轉出學生',outgoing.length)}
+      ${tabBtn('incoming','轉進學生',incoming.length)}
+    </div>
+    ${actionBar}
+    <div>${listHtml}</div>`;
+}
+
+function _renderTransferRow(r) {
+  const hasAssessment = r.type === 'outgoing' && r.recommendation;
+  const statusBadge = r.type === 'outgoing'
+    ? (hasAssessment ? `<span class="badge badge-green">已填評估</span>` : `<span class="badge badge-orange">待填評估</span>`)
+    : (r.caseId ? `<span class="badge badge-green">已連結個案</span>` : `<span class="badge badge-gray">待分案</span>`);
+  const recBadge = r.recommendation === 'transfer' ? '<span class="badge badge-red">建議轉銜</span>'
+    : r.recommendation === 'discuss' ? '<span class="badge badge-orange">建議討論</span>'
+    : r.recommendation === 'noTransfer' ? '<span class="badge badge-green">建議不轉銜</span>' : '';
+  const schoolInfo = r.fromSchool ? `<span style="font-size:.8rem;color:#718096;">來源：${escHtml(r.fromSchool)}</span>` : (r.toSchool ? `<span style="font-size:.8rem;color:#718096;">轉至：${escHtml(r.toSchool)}</span>` : '');
+  const actions = r.type === 'outgoing'
+    ? `<button class="btn btn-secondary btn-sm" onclick="openTransferAssessmentModal('${escHtml(r.id)}','outgoing')">填寫評估</button>
+       ${hasAssessment ? `<button class="btn btn-secondary btn-sm" onclick="printTransferAssessment('${escHtml(r.id)}')">列印</button>` : ''}
+       <button class="btn btn-danger btn-sm" onclick="deleteTransferRecord('${escHtml(r.id)}')">刪除</button>`
+    : `${!r.caseId ? `<button class="btn btn-primary btn-sm" onclick="createCaseFromTransfer('${escHtml(r.id)}')">建立個案</button>` : `<button class="btn btn-secondary btn-sm" onclick="showCaseDetail('${escHtml(r.caseId)}')">查看個案</button>`}
+       <button class="btn btn-danger btn-sm" onclick="deleteTransferRecord('${escHtml(r.id)}')">刪除</button>`;
+  return `<div class="record-card" style="margin-bottom:10px;">
+    <div class="record-card-header">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <strong>${escHtml(r.name||'—')}</strong>
+        <span style="color:#718096;font-size:.83rem;">${escHtml(r.studentId||r.idNumber||'')}</span>
+        ${statusBadge}${recBadge}${schoolInfo}
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${actions}</div>
+    </div>
+  </div>`;
+}
+
+async function handleImportTransferExcel(input, type) {
+  if (!input.files?.length) return;
+  const file = input.files[0]; input.value = '';
+  const prog = document.getElementById('transfer-body');
+  prog.innerHTML = '<div style="padding:20px;color:#718096;">解析中…</div>';
+  try {
+    const ab = await file.arrayBuffer();
+    const wb = XLSX.read(ab, { type: 'array', password: '7617' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    if (rows.length < 2) { alert('找不到資料列'); renderTransferPage(); return; }
+    await showTransferImportPreview(rows, type);
+  } catch(e) { alert('解析失敗：' + e.message); renderTransferPage(); }
+}
+
+async function showTransferImportPreview(rows, type) {
+  const headers = rows[0].map(h => String(h).trim());
+  const dataRows = rows.slice(1).filter(r => r.some(v => v !== ''));
+  const colIdx = {};
+  headers.forEach((h, i) => {
+    if (/姓名/.test(h)) colIdx.name = i;
+    else if (/學號/.test(h)) colIdx.studentId = i;
+    else if (/身分證/.test(h)) colIdx.idNumber = i;
+    else if (/出生|生日/.test(h)) colIdx.birthday = i;
+    else if (/班級|系所|科系/.test(h)) colIdx.department = i;
+    else if (/來源學校|原就讀/.test(h)) colIdx.fromSchool = i;
+    else if (/轉至|接收學校/.test(h)) colIdx.toSchool = i;
+  });
+  const students = dataRows.map(r => ({
+    name: colIdx.name !== undefined ? String(r[colIdx.name]||'').trim() : '',
+    studentId: colIdx.studentId !== undefined ? String(r[colIdx.studentId]||'').trim() : '',
+    idNumber: colIdx.idNumber !== undefined ? String(r[colIdx.idNumber]||'').trim() : '',
+    birthday: colIdx.birthday !== undefined ? String(r[colIdx.birthday]||'').trim() : '',
+    department: colIdx.department !== undefined ? String(r[colIdx.department]||'').trim() : '',
+    fromSchool: colIdx.fromSchool !== undefined ? String(r[colIdx.fromSchool]||'').trim() : '',
+    toSchool: colIdx.toSchool !== undefined ? String(r[colIdx.toSchool]||'').trim() : '',
+  })).filter(s => s.name || s.studentId);
+  if (!students.length) { alert('未找到有效資料。請確認第一列為標題（需含「姓名」欄）。'); renderTransferPage(); return; }
+  students.forEach(s => { s._dup = transferData.some(t => t.type === type && t.name === s.name && t.studentId === s.studentId && s.studentId); });
+
+  let sel = new Set(students.map((_,i) => i).filter(i => !students[i]._dup));
+  const typeName = type === 'outgoing' ? '轉出' : '轉進';
+  const colH4 = type === 'incoming' ? '來源學校' : '轉至學校';
+  const colV4 = s => type === 'incoming' ? s.fromSchool : s.toSchool;
+
+  const render = () => {
+    const tbody = students.map((s, i) =>
+      `<tr style="${s._dup?'background:#fff8e1;':''}">
+        <td style="padding:6px 8px;"><input type="checkbox" ${sel.has(i)?'checked':''} onchange="window._tiSel(${i},this.checked)"></td>
+        <td style="padding:6px 8px;">${escHtml(s.name)}</td>
+        <td style="padding:6px 8px;">${escHtml(s.studentId)}</td>
+        <td style="padding:6px 8px;">${escHtml(s.department)}</td>
+        <td style="padding:6px 8px;">${escHtml(colV4(s))}</td>
+        <td style="padding:6px 8px;color:#d97706;font-size:.8rem;">${s._dup?'⚠ 重複':''}</td>
+      </tr>`).join('');
+    document.getElementById('ti-list').innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:.88rem;">
+        <thead><tr style="background:#f7fafc;font-size:.8rem;">
+          <th style="padding:6px 8px;"><input type="checkbox" onchange="window._tiSelAll(this.checked)"></th>
+          <th style="padding:6px 8px;">姓名</th><th style="padding:6px 8px;">學號</th>
+          <th style="padding:6px 8px;">系所/班級</th><th style="padding:6px 8px;">${colH4}</th><th></th>
+        </tr></thead><tbody>${tbody}</tbody>
+      </table>`;
+    document.getElementById('ti-confirm-btn').textContent = `匯入 ${sel.size} 筆`;
+  };
+  window._tiSel = (i, c) => { c ? sel.add(i) : sel.delete(i); render(); };
+  window._tiSelAll = (c) => { sel = c ? new Set(students.map((_,i)=>i)) : new Set(); render(); };
+  document.getElementById('transfer-body').innerHTML = `
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3 style="font-size:1rem;color:#1a202c;">匯入${typeName}學生（共 ${students.length} 筆）</h3>
+        <button onclick="renderTransferPage()" style="background:none;border:none;cursor:pointer;font-size:1.3rem;color:#718096;">&times;</button>
+      </div>
+      ${students.some(s=>s._dup)?'<div style="padding:8px 12px;background:#fff8e1;border-radius:6px;color:#d97706;font-size:.85rem;margin-bottom:10px;">⚠ 黃色列為重複記錄，預設不匯入</div>':''}
+      <div id="ti-list"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;">
+        <button id="ti-confirm-btn" class="btn btn-primary" onclick="window._tiConfirm()">匯入</button>
+        <button class="btn btn-secondary" onclick="renderTransferPage()">取消</button>
+      </div>
+    </div>`;
+  render();
+  window._tiConfirm = async () => {
+    const toImport = students.filter((_,i) => sel.has(i));
+    if (!toImport.length) { alert('未選取任何學生'); return; }
+    const now = new Date().toISOString();
+    toImport.forEach(s => {
+      const ex = s._dup ? transferData.find(t => t.type===type && t.name===s.name && t.studentId===s.studentId) : null;
+      if (ex) { Object.assign(ex, { ...s, type, updatedAt: now }); }
+      else { transferData.push({ id:'tr_'+Date.now()+'_'+Math.random().toString(36).slice(2), type, ...s, createdAt:now, updatedAt:now, createdBy:currentUser?.email, createdByName:currentUser?.name }); }
+    });
+    showLoading('儲存中…');
+    try { await saveTransfer(); auditLog(`匯入${typeName}學生名單`,`${toImport.length}筆`); hideLoading(); renderTransferPage(); }
+    catch(e) { hideLoading(); alert('儲存失敗：'+e.message); }
+  };
+}
+
+function openTransferAssessmentModal(transferId, type) {
+  const rec = transferId ? transferData.find(r => r.id === transferId) : null;
+  const t = type || rec?.type || 'outgoing';
+  const r = rec || { name:'',studentId:'',idNumber:'',birthday:'',department:'',fromSchool:'',toSchool:'',legalGender:'',
+    consentStatus:'',notInformedReason:'',notInformedOtherReason:'',studentConsent:'',guardianConsent:'',
+    indicators:{},mainIssue:'',intervention:'',transferAssessment:'',
+    filledBy:currentUser?.name||'',filledDate:new Date().toISOString().slice(0,10),recommendation:'' };
+  const cs = r.consentStatus||'';
+  const indRows = TRANSFER_INDICATORS.map(ind => {
+    const iv = r.indicators?.[ind.key]||{};
+    const dO = (v,l) => `<label style="margin-right:8px;white-space:nowrap;"><input type="radio" name="ind_deg_${ind.key}" value="${v}" ${iv.degree===v?'checked':''}> ${l}</label>`;
+    const rO = v => `<label style="margin-right:6px;"><input type="radio" name="ind_rsk_${ind.key}" value="${v}" ${String(iv.riskScore)===String(v)?'checked':''}> ${v}</label>`;
+    return `<tr style="border-bottom:1px solid #f0f4f8;">
+      <td style="padding:8px;font-size:.82rem;vertical-align:top;">${escHtml(ind.label)}</td>
+      <td style="padding:8px;vertical-align:top;white-space:nowrap;">${dO('low','低')}${dO('mid','中')}${dO('high','高')}${dO('unclear','不清楚')}<br><label><input type="checkbox" name="ind_na_${ind.key}" ${iv.notApplicable?'checked':''}> 無此議題</label></td>
+      <td style="padding:8px;vertical-align:top;white-space:nowrap;">${[1,2,3,4,5].map(rO).join('')}</td>
+    </tr>`;
+  }).join('');
+  const gO = (v,l) => `<option value="${v}" ${r.legalGender===v?'selected':''}>${l}</option>`;
+  const csO = (v,l) => `<label style="margin-right:12px;"><input type="radio" name="ta_cs" value="${v}" ${cs===v?'checked':''}> ${l}</label>`;
+  const niO = (v,l) => `<label style="margin-right:12px;"><input type="radio" name="ta_ni" value="${v}" ${r.notInformedReason===v?'checked':''}> ${l}</label>`;
+  const scO = (v,l) => `<label style="margin-right:12px;"><input type="radio" name="ta_sc" value="${v}" ${r.studentConsent===v?'checked':''}> ${l}</label>`;
+  const gcO = (v,l) => `<label style="margin-right:12px;"><input type="radio" name="ta_gc" value="${v}" ${r.guardianConsent===v?'checked':''}> ${l}</label>`;
+  const rO2 = (v,l) => `<label style="margin-right:12px;"><input type="radio" name="ta_rec" value="${v}" ${r.recommendation===v?'checked':''}> ${l}</label>`;
+  const isNew = !rec;
+
+  document.body.insertAdjacentHTML('beforeend', `
+    <div id="transfer-assessment-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:600;overflow-y:auto;display:flex;align-items:flex-start;justify-content:center;padding:20px;">
+      <div style="background:#fff;border-radius:12px;padding:28px;width:95%;max-width:800px;margin:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+          <h3 style="font-size:1.1rem;">${isNew?'新增':'編輯'}轉銜學生初評（${t==='outgoing'?'轉出':'轉進'}）</h3>
+          <button onclick="document.getElementById('transfer-assessment-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
+          <div><label class="field-label">高關懷學生姓名 <span class="req">*</span></label><input type="text" class="field-input" id="ta-name" value="${escHtml(r.name||'')}"></div>
+          <div><label class="field-label">就讀班級/系所</label><input type="text" class="field-input" id="ta-dept" value="${escHtml(r.department||'')}"></div>
+          <div><label class="field-label">出生年月日（西元）</label><input type="date" class="field-input" id="ta-birthday" value="${r.birthday||''}"></div>
+          <div><label class="field-label">法定性別</label><select class="field-input" id="ta-gender"><option value="">請選擇</option>${gO('男','男')}${gO('女','女')}</select></div>
+          <div><label class="field-label">身分證字號</label><input type="text" class="field-input" id="ta-id" value="${escHtml(r.idNumber||'')}"></div>
+          <div><label class="field-label">學號</label><input type="text" class="field-input" id="ta-sid" value="${escHtml(r.studentId||'')}"></div>
+          ${t==='incoming' ? `<div><label class="field-label">來源學校</label><input type="text" class="field-input" id="ta-from" value="${escHtml(r.fromSchool||'')}"></div>` : `<div><label class="field-label">轉至學校</label><input type="text" class="field-input" id="ta-to" value="${escHtml(r.toSchool||'')}"></div>`}
+        </div>
+        <div style="margin-bottom:20px;padding:14px;background:#f8fafc;border-radius:8px;">
+          <div style="font-weight:600;margin-bottom:8px;">當事人意願 <span class="req">*</span></div>
+          <div style="margin-bottom:8px;">${csO('notInformed','未告知轉銜輔導相關措施')}${csO('informed','已告知轉銜輔導相關措施')}</div>
+          <div id="ta-ni-sec" style="${cs!=='notInformed'?'display:none;':''}margin-left:20px;margin-bottom:8px;">
+            未告知理由：${niO('notReached','聯繫未果')}${niO('greenLight','綠燈結案')}${niO('other','其他')}
+            <input type="text" id="ta-ni-other" class="field-input" style="width:200px;margin-top:4px;" placeholder="其他原因" value="${escHtml(r.notInformedOtherReason||'')}">
+          </div>
+          <div id="ta-inf-sec" style="${cs!=='informed'?'display:none;':''}margin-left:20px;">
+            <div style="margin-bottom:6px;">當事人：${scO('agree','同意')}${scO('disagree','不同意')}${scO('unclear','未明確表達')}</div>
+            <div>法定代理人（滿18歲免填）：${gcO('agree','同意')}${gcO('disagree','不同意')}${gcO('unclear','未明確表達')}${gcO('na','免填')}</div>
+          </div>
+        </div>
+        <div style="margin-bottom:20px;">
+          <div style="font-weight:600;margin-bottom:8px;">轉銜類型評估指標</div>
+          <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:.83rem;">
+            <thead><tr style="background:#f7fafc;"><th style="padding:8px;text-align:left;">指標</th><th style="padding:8px;text-align:left;">程度</th><th style="padding:8px;text-align:left;">風險值（1–5）</th></tr></thead>
+            <tbody>${indRows}</tbody>
+          </table></div>
+        </div>
+        <div style="padding:14px;background:#f8fafc;border-radius:8px;margin-bottom:20px;">
+          <div style="font-weight:600;margin-bottom:10px;">總結初評結果 <span class="req">*</span></div>
+          <div style="margin-bottom:10px;"><label class="field-label">主訴問題</label><textarea class="field-input" id="ta-issue" rows="3" style="resize:vertical;">${escHtml(r.mainIssue||'')}</textarea></div>
+          <div style="margin-bottom:10px;"><label class="field-label">介入處遇</label><textarea class="field-input" id="ta-interv" rows="3" style="resize:vertical;">${escHtml(r.intervention||'')}</textarea></div>
+          <div style="margin-bottom:10px;"><label class="field-label">轉銜評估</label><textarea class="field-input" id="ta-ta" rows="3" style="resize:vertical;">${escHtml(r.transferAssessment||'')}</textarea></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div><label class="field-label">填表人</label><input type="text" class="field-input" id="ta-by" value="${escHtml(r.filledBy||'')}"></div>
+            <div><label class="field-label">填表日期</label><input type="date" class="field-input" id="ta-date" value="${r.filledDate||''}"></div>
+          </div>
+        </div>
+        <div style="padding:14px;background:#f8fafc;border-radius:8px;margin-bottom:20px;">
+          <div style="font-weight:600;margin-bottom:8px;">建議</div>
+          ${rO2('transfer','建議評估會議轉銜')}${rO2('discuss','建議經評估會議討論後再決定')}${rO2('noTransfer','建議不需轉銜')}
+        </div>
+        <div style="display:flex;gap:10px;">
+          <button class="btn btn-primary" onclick="saveTransferAssessment('${isNew?'__new__':escHtml(r.id)}','${t}')">儲存</button>
+          ${!isNew && r.recommendation ? `<button class="btn btn-secondary" onclick="printTransferAssessment('${escHtml(r.id)}')">列印</button>` : ''}
+          <button class="btn btn-secondary" onclick="document.getElementById('transfer-assessment-modal').remove()">取消</button>
+        </div>
+      </div>
+    </div>`);
+  document.querySelectorAll('[name="ta_cs"]').forEach(el => el.addEventListener('change', () => {
+    document.getElementById('ta-ni-sec').style.display = el.value==='notInformed' ? '' : 'none';
+    document.getElementById('ta-inf-sec').style.display = el.value==='informed' ? '' : 'none';
+  }));
+}
+
+async function saveTransferAssessment(idOrNew, type) {
+  const gV = id => document.getElementById(id)?.value?.trim()||'';
+  const gR = n => { const el=document.querySelector(`[name="${n}"]:checked`); return el?el.value:''; };
+  const indicators = {};
+  TRANSFER_INDICATORS.forEach(ind => {
+    indicators[ind.key] = {
+      degree: gR(`ind_deg_${ind.key}`),
+      riskScore: gR(`ind_rsk_${ind.key}`) ? parseInt(gR(`ind_rsk_${ind.key}`)) : null,
+      notApplicable: document.querySelector(`[name="ind_na_${ind.key}"]`)?.checked||false,
+    };
+  });
+  const now = new Date().toISOString();
+  const data = {
+    type, name:gV('ta-name'), department:gV('ta-dept'), birthday:gV('ta-birthday'),
+    legalGender:gV('ta-gender'), idNumber:gV('ta-id'), studentId:gV('ta-sid'),
+    fromSchool: type==='incoming' ? gV('ta-from') : '',
+    toSchool: type==='outgoing' ? gV('ta-to') : '',
+    consentStatus:gR('ta_cs'), notInformedReason:gR('ta_ni'),
+    notInformedOtherReason:gV('ta-ni-other'),
+    studentConsent:gR('ta_sc'), guardianConsent:gR('ta_gc'),
+    indicators, mainIssue:gV('ta-issue'), intervention:gV('ta-interv'),
+    transferAssessment:gV('ta-ta'), filledBy:gV('ta-by'), filledDate:gV('ta-date'),
+    recommendation:gR('ta_rec'), updatedAt:now,
+  };
+  if (!data.name) { alert('請填寫學生姓名'); return; }
+  showLoading('儲存中…');
+  try {
+    if (idOrNew === '__new__') {
+      data.id = 'tr_'+Date.now()+'_'+Math.random().toString(36).slice(2);
+      data.createdAt = now; data.createdBy = currentUser?.email; data.createdByName = currentUser?.name;
+      transferData.push(data);
+    } else {
+      const idx = transferData.findIndex(r => r.id === idOrNew);
+      if (idx >= 0) transferData[idx] = { ...transferData[idx], ...data };
+      else transferData.push({ ...data, id:idOrNew, createdAt:now, createdBy:currentUser?.email, createdByName:currentUser?.name });
+    }
+    await saveTransfer();
+    auditLog('儲存轉銜評估', data.name);
+    hideLoading();
+    document.getElementById('transfer-assessment-modal')?.remove();
+    renderTransferPage();
+  } catch(e) { hideLoading(); alert('儲存失敗：'+e.message); }
+}
+
+async function deleteTransferRecord(id) {
+  const r = transferData.find(t => t.id === id);
+  if (!r || !confirm(`確定刪除「${r.name}」的轉銜記錄？`)) return;
+  transferData = transferData.filter(t => t.id !== id);
+  showLoading('刪除中…');
+  try { await saveTransfer(); hideLoading(); renderTransferPage(); }
+  catch(e) { hideLoading(); alert('刪除失敗：'+e.message); }
+}
+
+async function createCaseFromTransfer(transferId) {
+  const r = transferData.find(t => t.id === transferId);
+  if (!r) return;
+  const existing = r.studentId ? casesData.find(c => c.studentId === r.studentId && !c.deleted) : null;
+  if (existing) {
+    if (!confirm(`已有學號 ${r.studentId} 的個案（${existing.name}），前往查看？`)) return;
+    showCaseDetail(existing.id); return;
+  }
+  openNewCasePage();
+  await new Promise(res => setTimeout(res, 150));
+  const set = (id, val) => { const el = document.getElementById(id); if (el && val) el.value = val; };
+  set('nc-name', r.name); set('nc-student-id', r.studentId); set('nc-id-number', r.idNumber);
+  set('nc-birthday', r.birthday); set('nc-department', r.department); set('nc-legal-gender', r.legalGender);
+  window._transferPendingLink = transferId;
+}
+
+function printTransferAssessment(transferId) {
+  const r = transferData.find(t => t.id === transferId);
+  if (!r) return;
+  const rocDate = d => { if(!d) return '　年　月　日'; const p=d.split('-'); return p.length===3?`${parseInt(p[0])-1911}年${parseInt(p[1])}月${parseInt(p[2])}日`:d; };
+  const degLabel = v => ({low:'低',mid:'中',high:'高',unclear:'不清楚'}[v]||'');
+  const indHtml = TRANSFER_INDICATORS.map((ind,idx) => {
+    const iv = r.indicators?.[ind.key]||{};
+    return `<tr><td style="padding:6px 8px;font-size:11pt;border:1px solid #ccc;">${idx+1}. ${ind.label}</td>
+      <td style="padding:6px 8px;text-align:center;border:1px solid #ccc;">${iv.notApplicable?'無此議題':degLabel(iv.degree)}</td>
+      <td style="padding:6px 8px;text-align:center;border:1px solid #ccc;">${iv.notApplicable?'—':(iv.riskScore||'—')}</td></tr>`;
+  }).join('');
+  const consentHtml = r.consentStatus==='notInformed'
+    ? `■ 未告知　理由：${r.notInformedReason==='notReached'?'■聯繫未果 □綠燈結案 □其他':r.notInformedReason==='greenLight'?'□聯繫未果 ■綠燈結案 □其他':`□聯繫未果 □綠燈結案 ■其他：${r.notInformedOtherReason||''}`}`
+    : `□ 未告知　■ 已告知<br>當事人：${r.studentConsent==='agree'?'■':' □'}同意 ${r.studentConsent==='disagree'?'■':'□'}不同意 ${r.studentConsent==='unclear'?'■':'□'}未明確<br>法定代理人：${r.guardianConsent==='agree'?'■':'□'}同意 ${r.guardianConsent==='disagree'?'■':'□'}不同意 ${r.guardianConsent==='unclear'?'■':'□'}未明確 ${r.guardianConsent==='na'?'■':'□'}免填`;
+  const recHtml = ['transfer','discuss','noTransfer'].map((v,i) => {
+    const labels = ['建議評估會議轉銜','建議經評估會議討論後再決定是否轉銜','建議不需轉銜'];
+    return `${r.recommendation===v?'■':'□'} ${labels[i]}`;
+  }).join('<br>');
+  const w = window.open('','_blank');
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>轉銜評估表</title>
+    <style>body{font-family:'標楷體',serif;font-size:12pt;line-height:1.8;margin:15mm;}
+    h2{text-align:center;font-size:15pt;} h3{font-size:12pt;font-weight:bold;}
+    table{width:100%;border-collapse:collapse;margin-bottom:14px;}
+    th{background:#f5f5f5;padding:6px 10px;border:1px solid #ccc;font-size:11pt;}
+    .sect{border:1px solid #ccc;padding:10px;border-radius:4px;margin-bottom:14px;}
+    .no-print{margin-bottom:12px;} @media print{.no-print{display:none;}}</style></head><body>
+    <div class="no-print"><button onclick="window.print()">列印</button></div>
+    <h2>轉銜學生初評參考指標</h2>
+    <p style="text-align:center;font-size:11pt;color:#555;">本文件為保密性文件；僅供學校內部輔導專業評估使用</p>
+    <div class="sect">
+      <strong>高關懷學生姓名：</strong>${escHtml(r.name)||'　　　'}&emsp;
+      <strong>法定性別：</strong>${r.legalGender||'　'}&emsp;
+      <strong>出生年月日：</strong>${rocDate(r.birthday)}<br>
+      <strong>身分證字號：</strong>${escHtml(r.idNumber)||'　　　　　　'}&emsp;
+      <strong>就讀班級/系所：</strong>${escHtml(r.department)||'　　　　'}
+    </div>
+    <div class="sect"><h3>當事人意願</h3>${consentHtml}</div>
+    <div class="sect"><h3>轉銜類型評估指標</h3>
+      <table><thead><tr><th>指標</th><th style="width:80px;">程度</th><th style="width:70px;">風險值</th></tr></thead>
+      <tbody>${indHtml}</tbody></table></div>
+    <div class="sect"><h3>總結初評結果</h3>
+      <p><strong>主訴問題：</strong></p><div style="white-space:pre-wrap;min-height:50px;border:1px solid #ccc;padding:6px;">${escHtml(r.mainIssue||'')}</div>
+      <p><strong>介入處遇：</strong></p><div style="white-space:pre-wrap;min-height:50px;border:1px solid #ccc;padding:6px;">${escHtml(r.intervention||'')}</div>
+      <p><strong>轉銜評估：</strong></p><div style="white-space:pre-wrap;min-height:50px;border:1px solid #ccc;padding:6px;">${escHtml(r.transferAssessment||'')}</div>
+      <p><strong>填表人：</strong>${escHtml(r.filledBy||'　　　　')}&emsp;<strong>填表日期：</strong>${rocDate(r.filledDate)}</p>
+    </div>
+    <div class="sect"><h3>建議</h3>${recHtml}</div>
+    </body></html>`);
+  w.document.close(); setTimeout(() => w.print(), 600);
+}
+
+// ══════════════════════════════════════════════
+//  精神科醫師評估
+// ══════════════════════════════════════════════
+function openPsychiatristModal(caseId, recordId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const existing = recordId ? (c.psychiatristRecords||[]).find(r => r.id === recordId) : null;
+  const pr = existing || {
+    date: new Date().toISOString().slice(0,10), timeStart:'', timeEnd:'',
+    intervieweeName: c.name||'', legalGender: c.legalGender||'',
+    department: c.department||'', studentId: c.studentId||'',
+    mainIssue:'', coreAssessment:'', intervention:'', recommendations:'',
+    diagnosisType:'none', diagnosisName:'',
+    medicationAdvice:'no', hospitalizationAdvice:'no',
+    otherNotes:'', doctorSignature:'',
+  };
+  const dO = (n,v,l,cur) => `<label style="margin-right:12px;"><input type="radio" name="${n}" value="${v}" ${cur===v?'checked':''}> ${l}</label>`;
+  document.body.insertAdjacentHTML('beforeend', `
+    <div id="psychiatrist-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:600;overflow-y:auto;display:flex;align-items:flex-start;justify-content:center;padding:20px;">
+      <div style="background:#fff;border-radius:12px;padding:28px;width:95%;max-width:700px;margin:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+          <h3 style="font-size:1.1rem;">${existing?'編輯':'新增'}精神科醫師會談評估</h3>
+          <button onclick="document.getElementById('psychiatrist-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+          <div><label class="field-label">與談者姓名</label><input type="text" class="field-input" id="pr-name" value="${escHtml(pr.intervieweeName)}"></div>
+          <div><label class="field-label">法定性別</label><select class="field-input" id="pr-gender">
+            <option value="">請選擇</option>
+            <option value="男" ${pr.legalGender==='男'?'selected':''}>男</option>
+            <option value="女" ${pr.legalGender==='女'?'selected':''}>女</option>
+          </select></div>
+          <div><label class="field-label">系級</label><input type="text" class="field-input" id="pr-dept" value="${escHtml(pr.department)}"></div>
+          <div><label class="field-label">學號</label><input type="text" class="field-input" id="pr-sid" value="${escHtml(pr.studentId)}"></div>
+          <div><label class="field-label">會談日期</label><input type="date" class="field-input" id="pr-date" value="${pr.date}"></div>
+          <div style="display:flex;gap:8px;">
+            <div style="flex:1;"><label class="field-label">開始</label><input type="time" class="field-input" id="pr-start" value="${pr.timeStart}"></div>
+            <div style="flex:1;"><label class="field-label">結束</label><input type="time" class="field-input" id="pr-end" value="${pr.timeEnd}"></div>
+          </div>
+        </div>
+        <div style="margin-bottom:12px;"><label class="field-label">主述與會談資料</label><textarea class="field-input" id="pr-main" rows="4" style="resize:vertical;">${escHtml(pr.mainIssue)}</textarea></div>
+        <div style="margin-bottom:12px;"><label class="field-label">核心問題之評估與判斷</label><textarea class="field-input" id="pr-core" rows="4" style="resize:vertical;">${escHtml(pr.coreAssessment)}</textarea></div>
+        <div style="margin-bottom:12px;"><label class="field-label">介入處遇</label><textarea class="field-input" id="pr-interv" rows="3" style="resize:vertical;">${escHtml(pr.intervention)}</textarea></div>
+        <div style="margin-bottom:16px;"><label class="field-label">給學生諮商中心的建議</label><textarea class="field-input" id="pr-rec" rows="3" style="resize:vertical;">${escHtml(pr.recommendations)}</textarea></div>
+        <div style="padding:14px;background:#f8fafc;border-radius:8px;margin-bottom:16px;">
+          <div style="margin-bottom:10px;">
+            <div style="font-weight:600;margin-bottom:6px;">是否符合精神疾患診斷標準？</div>
+            ${dO('pr_diag','none','不符合任一精神疾患之診斷',pr.diagnosisType)}
+            ${dO('pr_diag','specific','符合',pr.diagnosisType)}
+            <div id="pr-diag-row" style="${pr.diagnosisType!=='specific'?'display:none;':''}margin-top:6px;">
+              <input type="text" class="field-input" id="pr-diag-name" placeholder="請填寫診斷名稱" value="${escHtml(pr.diagnosisName||'')}">
+            </div>
+          </div>
+          <div style="margin-bottom:10px;">
+            <div style="font-weight:600;margin-bottom:6px;">是否建議藥物治療？</div>
+            ${dO('pr_med','no','否',pr.medicationAdvice)}
+            ${dO('pr_med','yes','是，應定期回診並考慮藥物治療',pr.medicationAdvice)}
+          </div>
+          <div>
+            <div style="font-weight:600;margin-bottom:6px;">是否建議住院治療？</div>
+            ${dO('pr_hosp','no','否',pr.hospitalizationAdvice)}
+            ${dO('pr_hosp','yes','是，建議住院療養',pr.hospitalizationAdvice)}
+          </div>
+        </div>
+        <div style="margin-bottom:12px;"><label class="field-label">其他注意事項</label><textarea class="field-input" id="pr-notes" rows="2" style="resize:vertical;">${escHtml(pr.otherNotes)}</textarea></div>
+        <div style="margin-bottom:20px;"><label class="field-label">精神科醫師簽名</label><input type="text" class="field-input" id="pr-sig" value="${escHtml(pr.doctorSignature)}"></div>
+        <div style="display:flex;gap:10px;">
+          <button class="btn btn-primary" onclick="savePsychiatristRecord('${escHtml(caseId)}','${existing?escHtml(recordId):'__new__'}')">儲存</button>
+          ${existing ? `<button class="btn btn-secondary" onclick="printPsychiatristRecord('${escHtml(caseId)}','${escHtml(recordId)}')">列印</button>` : ''}
+          <button class="btn btn-secondary" onclick="document.getElementById('psychiatrist-modal').remove()">取消</button>
+        </div>
+      </div>
+    </div>`);
+  document.querySelectorAll('[name="pr_diag"]').forEach(el => el.addEventListener('change', () => {
+    document.getElementById('pr-diag-row').style.display = el.value==='specific' ? '' : 'none';
+  }));
+}
+
+async function savePsychiatristRecord(caseId, recordId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const gV = id => document.getElementById(id)?.value?.trim()||'';
+  const gR = n => { const el=document.querySelector(`[name="${n}"]:checked`); return el?el.value:''; };
+  const data = {
+    intervieweeName:gV('pr-name'), legalGender:gV('pr-gender'),
+    department:gV('pr-dept'), studentId:gV('pr-sid'),
+    date:gV('pr-date'), timeStart:gV('pr-start'), timeEnd:gV('pr-end'),
+    mainIssue:gV('pr-main'), coreAssessment:gV('pr-core'),
+    intervention:gV('pr-interv'), recommendations:gV('pr-rec'),
+    diagnosisType:gR('pr_diag'), diagnosisName:gV('pr-diag-name'),
+    medicationAdvice:gR('pr_med'), hospitalizationAdvice:gR('pr_hosp'),
+    otherNotes:gV('pr-notes'), doctorSignature:gV('pr-sig'),
+    updatedAt:new Date().toISOString(), updatedBy:currentUser?.email, updatedByName:currentUser?.name,
+  };
+  if (!c.psychiatristRecords) c.psychiatristRecords = [];
+  const now = new Date().toISOString();
+  if (recordId === '__new__') {
+    data.id = 'psy_'+Date.now()+'_'+Math.random().toString(36).slice(2);
+    data.createdAt = now; data.createdBy = currentUser?.email; data.createdByName = currentUser?.name;
+    c.psychiatristRecords.push(data);
+  } else {
+    const idx = c.psychiatristRecords.findIndex(r => r.id === recordId);
+    if (idx >= 0) c.psychiatristRecords[idx] = { ...c.psychiatristRecords[idx], ...data };
+    else c.psychiatristRecords.push({ ...data, id:recordId, createdAt:now });
+  }
+  showLoading('儲存中…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('儲存精神科評估', `${c.name} ${data.date}`);
+    hideLoading();
+    document.getElementById('psychiatrist-modal')?.remove();
+    showCaseDetail(caseId);
+  } catch(e) { hideLoading(); alert('儲存失敗：'+e.message); }
+}
+
+async function deletePsychiatristRecord(caseId, recordId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c || !confirm('確定刪除此精神科評估紀錄？')) return;
+  c.psychiatristRecords = (c.psychiatristRecords||[]).filter(r => r.id !== recordId);
+  showLoading('刪除中…');
+  try { await saveCasesChunks(caseId); hideLoading(); showCaseDetail(caseId); }
+  catch(e) { hideLoading(); alert('刪除失敗：'+e.message); }
+}
+
+function printPsychiatristRecord(caseId, recordId) {
+  const c = casesData.find(x => x.id === caseId);
+  const pr = (c?.psychiatristRecords||[]).find(r => r.id === recordId);
+  if (!pr) return;
+  const rocDate = d => { if(!d) return '　年　月　日'; const p=d.split('-'); return p.length===3?`${parseInt(p[0])-1911}年${parseInt(p[1])}月${parseInt(p[2])}日`:d; };
+  const timeRange = pr.timeStart||pr.timeEnd ? `${pr.timeStart||'　　'}～${pr.timeEnd||'　　'}` : '　　～　　';
+  const diagHtml = pr.diagnosisType==='specific' ? `□ 不符合任一精神疾患之診斷<br>■ 符合 ${escHtml(pr.diagnosisName||'')} 診斷標準` : '■ 不符合任一精神疾患之診斷<br>□ 符合　　　　診斷標準';
+  const medHtml = pr.medicationAdvice==='yes' ? '□ 否<br>■ 是，應定期回診並考慮藥物治療' : '■ 否<br>□ 是，應定期回診並考慮藥物治療';
+  const hospHtml = pr.hospitalizationAdvice==='yes' ? '□ 否<br>■ 是，建議住院療養' : '■ 否<br>□ 是，建議住院療養';
+  const w = window.open('','_blank');
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>精神科醫師會談評估表</title>
+    <style>body{font-family:'標楷體',serif;font-size:12pt;line-height:1.8;margin:15mm;}
+    h2{text-align:center;font-size:15pt;margin-bottom:16px;}
+    table{width:100%;border-collapse:collapse;}
+    td,th{border:1px solid #888;padding:8px 12px;vertical-align:top;}
+    th{background:#f5f5f5;font-weight:bold;width:32%;white-space:nowrap;}
+    .no-print{margin-bottom:12px;} @media print{.no-print{display:none;}}</style></head><body>
+    <div class="no-print"><button onclick="window.print()">列印</button></div>
+    <h2>精神科醫師會談評估表</h2>
+    <table>
+      <tr><th>與談者姓名</th><td>${escHtml(pr.intervieweeName||'')}</td><th>法定性別</th><td>${pr.legalGender||'　'}</td></tr>
+      <tr><th>系級</th><td>${escHtml(pr.department||'')}</td><th>學號</th><td>${pr.studentId||'　'}</td></tr>
+      <tr><th>會談時段</th><td colspan="3">${rocDate(pr.date)}（${timeRange}）</td></tr>
+      <tr><th>主述與會談資料</th><td colspan="3" style="min-height:80px;white-space:pre-wrap;">${escHtml(pr.mainIssue||'')}</td></tr>
+      <tr><th>核心問題之評估與判斷</th><td colspan="3" style="min-height:80px;white-space:pre-wrap;">${escHtml(pr.coreAssessment||'')}</td></tr>
+      <tr><th>介入處遇</th><td colspan="3" style="min-height:80px;white-space:pre-wrap;">${escHtml(pr.intervention||'')}</td></tr>
+      <tr><th>給學生諮商中心的建議</th><td colspan="3" style="min-height:80px;white-space:pre-wrap;">${escHtml(pr.recommendations||'')}</td></tr>
+      <tr><th>是否符合精神疾患診斷標準</th><td colspan="3">${diagHtml}</td></tr>
+      <tr><th>是否建議藥物治療</th><td colspan="3">${medHtml}</td></tr>
+      <tr><th>是否建議住院治療</th><td colspan="3">${hospHtml}</td></tr>
+      <tr><th>其他注意事項</th><td colspan="3" style="min-height:50px;white-space:pre-wrap;">${escHtml(pr.otherNotes||'')}</td></tr>
+      <tr><th>精神科醫師簽名</th><td colspan="3" style="min-height:40px;">${escHtml(pr.doctorSignature||'')}</td></tr>
+    </table>
+    </body></html>`);
+  w.document.close(); setTimeout(() => w.print(), 600);
+}
+
+// ══════════════════════════════════════════════
 //  側邊欄拖曳排序
 // ══════════════════════════════════════════════
 function initSidebarDrag() {
@@ -10289,7 +10884,7 @@ function restoreSidebarOrder() {
 </div>
 
 <!-- 畫面鎖定遮罩 -->
-<div id="lock-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.93);z-index:9999;align-items:center;justify-content:center;">
+<div id="lock-overlay" style="display:none;position:fixed;inset:0;background:#0f172a;z-index:9999;align-items:center;justify-content:center;">
   <div style="background:#fff;padding:40px 36px;border-radius:14px;text-align:center;min-width:300px;box-shadow:0 8px 32px rgba(0,0,0,.3);">
     <div style="font-size:2.4rem;margin-bottom:12px;">🔒</div>
     <h2 style="margin-bottom:6px;color:#1a202c;">畫面已鎖定</h2>
