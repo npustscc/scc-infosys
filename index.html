@@ -9384,8 +9384,48 @@ async function syncBookingToCalendar(id) {
 function _populateBookingCaseDatalist() {
   document.getElementById('bk-case-list').innerHTML =
     casesData.filter(c => !c.deleted && c.status === 'active')
-      .map(c => `<option value="${escHtml(c.id)}">${escHtml(c.id + (c.name ? ' ' + c.name : ''))}</option>`)
-      .join('');
+      .map(c => {
+        const label = [c.id, c.name, c.studentId].filter(Boolean).join(' ');
+        return `<option value="${escHtml(c.id)}">${escHtml(label)}</option>`;
+      }).join('');
+}
+
+function onBkCaseIdInput() {
+  const raw = document.getElementById('bk-case-id').value.trim();
+  const hint = document.getElementById('bk-case-hint');
+  if (!raw) { hint.style.display = 'none'; return; }
+
+  const active = casesData.filter(c => !c.deleted && c.status === 'active');
+  let matches = active.filter(c => c.id === raw);
+  if (!matches.length) matches = active.filter(c => c.studentId && c.studentId === raw);
+  if (!matches.length && raw.length >= 2) matches = active.filter(c => (c.name || '').includes(raw));
+
+  if (!matches.length) { hint.style.display = 'none'; return; }
+
+  hint.style.display = '';
+  hint.style.color = '';
+  if (matches.length === 1) {
+    const m = matches[0];
+    hint.innerHTML =
+      `是否是 <b>${escHtml(m.name || m.id)}</b>（學號：${escHtml(m.studentId || '—')}，案號：${escHtml(m.id)}）？` +
+      `<button type="button" class="btn btn-sm btn-primary" style="margin-left:8px;padding:2px 10px;" onclick="confirmBkCase('${escHtml(m.id)}','${escHtml(m.name||'')}')">✓ 是</button>` +
+      `<button type="button" class="btn btn-sm btn-secondary" style="padding:2px 8px;margin-left:4px;" onclick="document.getElementById('bk-case-hint').style.display='none'">✗ 否</button>`;
+  } else {
+    const rows = matches.slice(0, 5).map(m =>
+      `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;">` +
+      `<span style="font-size:.88rem;">${escHtml(m.name || m.id)}（${escHtml(m.id)}${m.studentId ? '，學號 ' + escHtml(m.studentId) : ''}）</span>` +
+      `<button type="button" class="btn btn-sm btn-primary" style="padding:2px 8px;" onclick="confirmBkCase('${escHtml(m.id)}','${escHtml(m.name||'')}')">選</button>` +
+      `</div>`).join('');
+    hint.innerHTML = `<div style="font-size:.82rem;color:#718096;margin-bottom:3px;">找到 ${matches.length} 筆符合個案：</div>${rows}`;
+  }
+}
+
+function confirmBkCase(caseId, caseName) {
+  document.getElementById('bk-case-id').value = caseId;
+  const hint = document.getElementById('bk-case-hint');
+  hint.style.display = '';
+  hint.style.color = '#276749';
+  hint.innerHTML = `✓ 已連結：<b>${escHtml(caseName)}</b>（${escHtml(caseId)}）`;
 }
 
 function _initBkPeriodSelect() {
@@ -9410,6 +9450,7 @@ function openBookingModal(prefillCaseId) {
   document.getElementById('bk-end').value = '';
   document.getElementById('bk-notes').value = '';
   document.getElementById('bk-case-id').value = prefillCaseId || '';
+  document.getElementById('bk-case-hint').style.display = 'none';
   document.getElementById('bk-room').value = '';
   document.getElementById('booking-conflict-warn').style.display = 'none';
   const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
@@ -9430,6 +9471,7 @@ function editBooking(id) {
   _restoreBkPeriod(b.startTime, b.endTime);
   document.getElementById('bk-counselor').value = b.counselorEmail || '';
   document.getElementById('bk-case-id').value = b.caseId || '';
+  document.getElementById('bk-case-hint').style.display = 'none';
   document.getElementById('bk-notes').value = b.notes || '';
   document.getElementById('booking-conflict-warn').style.display = 'none';
   const sb2 = document.getElementById('btn-save-booking'); if (sb2) sb2.disabled = false;
@@ -11016,9 +11058,10 @@ function restoreSidebarOrder() {
         <select class="field-input" id="bk-counselor"></select>
       </div>
       <div style="grid-column:1/-1;">
-        <label class="field-label">連結個案（選填，輸入案號）</label>
-        <input type="text" class="field-input" id="bk-case-id" placeholder="例：1141001" list="bk-case-list">
+        <label class="field-label">連結個案（選填，輸入案號、學號或姓名）</label>
+        <input type="text" class="field-input" id="bk-case-id" placeholder="案號、學號或姓名" list="bk-case-list" oninput="onBkCaseIdInput()">
         <datalist id="bk-case-list"></datalist>
+        <div id="bk-case-hint" style="display:none;margin-top:6px;padding:8px 10px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;font-size:.875rem;line-height:1.6;"></div>
       </div>
       <div style="grid-column:1/-1;">
         <label class="field-label">備註</label>
