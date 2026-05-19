@@ -3050,6 +3050,10 @@ async function pollNotifications() {
   try {
     const fresh = await driveReadJson(CONFIG_FILE);
     if (!fresh?.users) return;
+    // 防止空的 users 覆蓋記憶體中的使用者清單
+    const freshCount   = Object.keys(fresh.users).length;
+    const currentCount = Object.keys(configData.users || {}).length;
+    if (freshCount === 0 && currentCount > 0) return;
     configData.users = fresh.users;
     renderNotifBell();
     const panel = document.getElementById('notif-panel');
@@ -3111,7 +3115,12 @@ function renderAdminUsers() {
 
   if (!users.length) {
     document.getElementById('admin-users-wrap').innerHTML = `
-      <div class="empty-state"><div class="icon">👥</div><p>尚無使用者</p></div>`;
+      <div class="empty-state"><div class="icon">👥</div>
+        <p>尚無使用者（config.json 的 users 資料可能遺失）</p>
+        <p style="font-size:.85rem;color:#718096;margin-top:8px;">請點「＋ 新增使用者」逐一重建，或貼上 JSON 批次匯入：</p>
+        <textarea id="bulk-users-json" rows="6" style="width:90%;max-width:500px;font-family:monospace;font-size:.8rem;padding:8px;border:1px solid #cbd5e0;border-radius:6px;margin-top:8px;" placeholder='{"email@gmail.com":{"name":"姓名","role":"專任諮商心理師","isAdmin":true},...}'></textarea>
+        <br><button class="btn btn-primary" style="margin-top:8px;" onclick="importBulkUsers()">批次匯入使用者</button>
+      </div>`;
     return;
   }
 
@@ -3145,6 +3154,25 @@ function renderAdminUsers() {
       <thead><tr><th>帳號 / 識別碼</th><th>姓名</th><th>角色</th><th>附加身分</th><th>操作</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
+}
+
+async function importBulkUsers() {
+  const raw = document.getElementById('bulk-users-json')?.value?.trim();
+  if (!raw) { alert('請貼上 JSON 資料'); return; }
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch(e) { alert('JSON 格式錯誤：' + e.message); return; }
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) { alert('格式應為 { "email": { ... }, ... }'); return; }
+  const count = Object.keys(parsed).length;
+  if (!count || !confirm(`確定匯入 ${count} 位使用者？`)) return;
+  if (!configData.users) configData.users = {};
+  Object.assign(configData.users, parsed);
+  showLoading('儲存中…');
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('批次匯入使用者', `${count} 位`);
+    hideLoading();
+    renderAdminUsers();
+  } catch(e) { hideLoading(); alert('儲存失敗：' + e.message); }
 }
 
 // ══════════════════════════════════════════════
