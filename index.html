@@ -1039,6 +1039,21 @@
     <!-- 偏好設定 -->
     <div id="page-prefs" class="page">
       <div class="page-title">偏好設定</div>
+      <div class="card" style="margin-bottom:20px;">
+        <div class="card-header"><h3>輔導人員選單排序</h3></div>
+        <div style="padding:16px 20px;max-width:520px;">
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+            <input type="checkbox" id="pref-counselor-freq" style="width:16px;height:16px;margin-top:2px;flex-shrink:0;" />
+            <span>
+              <strong>記憶選單偏好</strong>：常選的輔導人員自動排到最上方<br>
+              <span style="font-size:.82rem;color:#718096;">關閉後改以職別（專任、兼任、精神科醫師、實習、義務）及筆畫排序。</span>
+            </span>
+          </label>
+          <div style="margin-top:10px;">
+            <button class="btn btn-secondary btn-sm" type="button" onclick="if(confirm('確定清除所有輔導人員選單使用記憶？'))localStorage.removeItem('scc_counselor_freqs')">清除使用記憶</button>
+          </div>
+        </div>
+      </div>
       <div class="card">
         <div class="card-header"><h3>畫面鎖定（AFK）</h3></div>
         <div style="padding:16px 20px;display:flex;flex-direction:column;gap:14px;max-width:480px;">
@@ -2077,6 +2092,38 @@ const BK_COUNSELING_ROLES = new Set([
   '主任','專任社會工作師','專任諮商心理師','專任臨床心理師',
   '兼任諮商心理師','兼任臨床心理師','實習諮商心理師','駐校精神科醫師','義務輔導老師',
 ]);
+// 職別排序優先順序（數字小者在前）
+const COUNSELOR_ROLE_ORDER = {
+  '主任': 0,
+  '專任社會工作師': 1, '專任諮商心理師': 1, '專任臨床心理師': 1,
+  '兼任諮商心理師': 2, '兼任臨床心理師': 2,
+  '駐校精神科醫師': 3,
+  '實習諮商心理師': 4,
+  '義務輔導老師': 5,
+};
+// 傳入 filterFn([email, info]) 過濾，依使用頻率（開啟記憶時）或職別+筆畫排序
+function getSortedCounselorEntries(filterFn) {
+  const entries = Object.entries(configData?.users || {}).filter(filterFn);
+  const freqMode = localStorage.getItem('scc_counselor_freq_mode') !== 'false';
+  const freqs = freqMode ? (JSON.parse(localStorage.getItem('scc_counselor_freqs') || '{}')) : {};
+  entries.sort(([ea, ia], [eb, ib]) => {
+    if (freqMode) {
+      const fa = freqs[ea] || 0, fb = freqs[eb] || 0;
+      if (fb !== fa) return fb - fa;
+    }
+    const oa = COUNSELOR_ROLE_ORDER[ia.role || ''] ?? 99;
+    const ob = COUNSELOR_ROLE_ORDER[ib.role || ''] ?? 99;
+    if (oa !== ob) return oa - ob;
+    return (ia.name || '').localeCompare(ib.name || '', 'zh', { sensitivity: 'base' });
+  });
+  return entries;
+}
+function recordCounselorUsage(...emails) {
+  if (localStorage.getItem('scc_counselor_freq_mode') === 'false') return;
+  const freqs = JSON.parse(localStorage.getItem('scc_counselor_freqs') || '{}');
+  emails.filter(Boolean).forEach(e => { freqs[e] = (freqs[e] || 0) + 1; });
+  localStorage.setItem('scc_counselor_freqs', JSON.stringify(freqs));
+}
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby9ZDT7NO7Jso3mbzbMaOzN0mdfgREbxoHRLC3NEbulGtKwp9eTibpD0XwKJCeC9wlh/exec';
 
 // 角色常數
@@ -3797,16 +3844,13 @@ function openNewRecordPage(caseId, recordId = null) {
   ]);
   const sel = document.getElementById('rec-transfer-counselor');
   sel.innerHTML = '<option value="">— 請選擇輔導人員 —</option>';
-  if (configData?.users) {
-    Object.entries(configData.users).forEach(([email, info]) => {
-      if (_COUNSELING_ROLES.has(info.role) && email !== currentUser.email) {
-        const opt = document.createElement('option');
-        opt.value = email;
-        opt.textContent = formatCounselorLabel(email);
-        sel.appendChild(opt);
-      }
+  getSortedCounselorEntries(([email, info]) => _COUNSELING_ROLES.has(info.role) && email !== currentUser.email)
+    .forEach(([email]) => {
+      const opt = document.createElement('option');
+      opt.value = email;
+      opt.textContent = formatCounselorLabel(email);
+      sel.appendChild(opt);
     });
-  }
 
   document.getElementById('dap-help-panel').classList.remove('active');
   setAlert('new-record-alert', '', '');
@@ -3910,17 +3954,13 @@ function renderRecCounselorChips() {
   if (sel) {
     const exist = new Set(_recCounselors.map(c => c.email));
     sel.innerHTML = '<option value="">— 新增晤談者 —</option>';
-    if (configData?.users) {
-      const COUNSELING_ROLES = new Set(['主任','專任社會工作師','專任諮商心理師','專任臨床心理師','兼任諮商心理師','兼任臨床心理師','實習諮商心理師','駐校精神科醫師','義務輔導老師']);
-      Object.entries(configData.users).forEach(([email, info]) => {
-        if (!COUNSELING_ROLES.has(info.role)) return;
-        if (exist.has(email)) return;
+    getSortedCounselorEntries(([email, info]) => BK_COUNSELING_ROLES.has(info.role || '') && !exist.has(email))
+      .forEach(([email]) => {
         const opt = document.createElement('option');
         opt.value = email;
         opt.textContent = formatCounselorLabel(email);
         sel.appendChild(opt);
       });
-    }
   }
   syncRecCounselorHidden();
 }
@@ -3937,6 +3977,7 @@ function addRecCounselor() {
   const label = formatCounselorLabel(email);
   if (_recCounselors.find(c => c.email === email)) return;
   _recCounselors.push({ email, label });
+  recordCounselorUsage(email);
   sel.value = '';
   renderRecCounselorChips();
 }
@@ -5230,17 +5271,14 @@ function openNewCasePage() {
   // 填充主責人員選單
   const sel = document.getElementById('nc-counselor');
   sel.innerHTML = '<option value="">未選擇</option>';
-  if (configData && configData.users) {
-    Object.entries(configData.users).forEach(([key, info]) => {
-      if (info.role && info.role !== '系統管理者') {
-        const opt = document.createElement('option');
-        opt.value = key;
-        opt.textContent = formatCounselorLabel(key);
-        if (key === currentUser.email) opt.selected = true;
-        sel.appendChild(opt);
-      }
+  getSortedCounselorEntries(([key, info]) => info.role && info.role !== '系統管理者')
+    .forEach(([key]) => {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = formatCounselorLabel(key);
+      if (key === currentUser.email) opt.selected = true;
+      sel.appendChild(opt);
     });
-  }
 
   const mgrSection = document.getElementById('nc-managers-section');
   if (currentRole === '主任' || extraRole === '管理者') {
@@ -8137,6 +8175,7 @@ function renderPrefsPage() {
   document.getElementById('pref-pin-confirm').value = '';
   document.getElementById('pref-error').style.display   = 'none';
   document.getElementById('pref-success').style.display = 'none';
+  document.getElementById('pref-counselor-freq').checked = localStorage.getItem('scc_counselor_freq_mode') !== 'false';
 }
 
 function toggleCustomTimeout(sel) {
@@ -8165,6 +8204,7 @@ function savePrefs() {
   if (pinVal) localStorage.setItem(pinKey(), pinVal);
   // 若留空：保留舊 PIN（不變更）
   localStorage.setItem(pinTmoKey(), String(tmoMins));
+  localStorage.setItem('scc_counselor_freq_mode', String(document.getElementById('pref-counselor-freq').checked));
   // 同步到 Drive profile（PIN 留空時不改 PIN，但仍同步 timeout）
   syncPinToConfig(pinVal || localStorage.getItem(pinKey()) || '', tmoMins);
 
@@ -9013,10 +9053,7 @@ function _populateBookingRoomSelect() {
 }
 
 function _populateBookingCounselorSelect() {
-  const users = configData?.users || {};
-  const opts = Object.entries(users)
-    .filter(([, u]) => BK_COUNSELING_ROLES.has(u.role))
-    .sort((a, b) => (a[1].name || '').localeCompare(b[1].name || ''))
+  const opts = getSortedCounselorEntries(([, u]) => BK_COUNSELING_ROLES.has(u.role || ''))
     .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}（${escHtml(u.role || '')}）</option>`);
   const sel = document.getElementById('bk-counselor');
   sel.innerHTML = '<option value="">（請選擇輔導人員）</option>' + opts.join('');
@@ -9206,6 +9243,7 @@ async function saveBooking() {
   }
 
   closeBookingModal();
+  if (counselorEmail) recordCounselorUsage(counselorEmail);
   showLoading('儲存預約中…');
   try {
     await saveBookings();
