@@ -1581,6 +1581,30 @@
             </div>
             <input type="hidden" id="rec-counselor" />
           </div>
+          <div>
+            <label class="field-label">介入方式<span class="req">*</span></label>
+            <select class="field-select" id="rec-intervention-mode">
+              <option value="">— 請選擇 —</option>
+              <option>面談</option>
+              <option>視訊</option>
+              <option>團體</option>
+              <option>電話關懷</option>
+              <option>E-mail/簡訊</option>
+              <option>外展訪視</option>
+              <option>其他</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-label">晤談對象<span class="req">*</span></label>
+            <div style="display:flex;flex-wrap:wrap;gap:6px 16px;padding:8px;border:1px solid #cbd5e0;border-radius:6px;background:#fff;">
+              <label style="display:inline-flex;align-items:center;gap:5px;font-size:.88rem;cursor:pointer;"><input type="checkbox" name="rec-interviewee" value="學生本人" /> 學生本人</label>
+              <label style="display:inline-flex;align-items:center;gap:5px;font-size:.88rem;cursor:pointer;"><input type="checkbox" name="rec-interviewee" value="家屬" /> 家屬</label>
+              <label style="display:inline-flex;align-items:center;gap:5px;font-size:.88rem;cursor:pointer;"><input type="checkbox" name="rec-interviewee" value="朋友" /> 朋友</label>
+              <label style="display:inline-flex;align-items:center;gap:5px;font-size:.88rem;cursor:pointer;"><input type="checkbox" name="rec-interviewee" value="伴侶" /> 伴侶</label>
+              <label style="display:inline-flex;align-items:center;gap:5px;font-size:.88rem;cursor:pointer;"><input type="checkbox" name="rec-interviewee" value="教職員工生" /> 教職員工生</label>
+              <label style="display:inline-flex;align-items:center;gap:5px;font-size:.88rem;cursor:pointer;"><input type="checkbox" name="rec-interviewee" value="資源網絡人員" /> 資源網絡人員</label>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -3268,7 +3292,18 @@ function showCaseDetail(caseId) {
       ? `<div class="record-tags">${r.serviceItems.map(s=>{const ci=s.indexOf('：');return ci>0?`<span class="svc-badge"><b class="svc-main">${escHtml(s.slice(0,ci))}</b><span class="svc-sep">：</span><span class="svc-sub">${escHtml(s.slice(ci+1))}</span></span>`:`<span class="svc-badge"><b class="svc-main">${escHtml(s)}</b></span>`;}).join('')}</div>`
       : '';
 
+    const modeBadge = r.interventionMode
+      ? `<span class="badge badge-gray" style="background:#ebf4ff;color:#2b6cb0;border:1px solid #bee3f8;margin-right:4px;">${escHtml(r.interventionMode)}</span>`
+      : '';
+    const intervieweeBadges = (r.interviewees || []).length
+      ? (r.interviewees).map(v => `<span class="badge badge-gray" style="background:#f0fff4;color:#276749;border:1px solid #c6f6d5;margin-right:4px;">${escHtml(v)}</span>`).join('')
+      : '';
+    const modeIntervieweeRow = (modeBadge || intervieweeBadges)
+      ? `<div style="margin-bottom:5px;">${modeBadge}${intervieweeBadges}</div>`
+      : '';
+
     const foldView = `<div class="rec-fold-view">
+      ${modeIntervieweeRow}
       ${topicBadges}
       ${r.summary ? `<div class="record-summary rec-summary-clamp">${renderMaybeHtml(r.summary)}</div>
       <div class="rec-fold-more"><span class="rec-dots">……</span><button class="rec-more-btn" onclick="toggleRecordExpand('${escHtml(r.id)}')">更多</button></div>` : ''}
@@ -3278,6 +3313,7 @@ function showCaseDetail(caseId) {
     </div>`;
 
     const fullView = `<div class="rec-full-view">
+      ${modeIntervieweeRow}
       ${topicBadges}
       ${r.summary ? `<div class="rec-section-label">主述與會談資料</div><div class="record-summary">${renderMaybeHtml(r.summary)}</div>` : ''}
       ${r.assessment ? `<div class="rec-section-label">問題評估</div><div class="record-summary">${escHtml(r.assessment)}</div>` : ''}
@@ -3307,52 +3343,118 @@ function showCaseDetail(caseId) {
       </div>`;
   };
 
+  // 排序後的記錄列表
+  const sortedRecords = _recSortDesc
+    ? [...visibleRecords].reverse()
+    : [...visibleRecords];
   const recordCards = visibleRecords.length === 0
     ? `<div class="empty-state" style="padding:30px;"><div class="icon">📝</div><p>尚無晤談紀錄</p></div>`
-    : [...visibleRecords].reverse().map(renderRecordCard).join('');
+    : sortedRecords.map(renderRecordCard).join('');
+
+  // 初次晤談折疊卡片（顯示在晤談紀錄列表中）
+  const iiCardHtml = (() => {
+    if (caseIsDeleted) return '';
+    const ii = c.initialInterview;
+    const iiId = `ii-card-${escHtml(c.id)}`;
+    if (needsInitialInterview(c)) {
+      return `
+        <div class="record-card" id="${iiId}" style="border:1.5px dashed #f6c00b;background:#fffbeb;">
+          <div class="record-card-header">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="font-weight:700;color:#8a6d3b;">⚠ 初次晤談紀錄表（未填寫）</span>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn btn-primary btn-sm" onclick="openInitialInterviewPage('${escHtml(c.id)}')">填寫</button>
+              <button class="btn btn-secondary btn-sm" onclick="markInitialInterviewAsContinuation('${escHtml(c.id)}')">舊案延續</button>
+              <button class="btn btn-secondary btn-sm" onclick="pickRecordAsInitialInterview('${escHtml(c.id)}')">沿用現有紀錄</button>
+            </div>
+          </div>
+        </div>`;
+    }
+    if (!ii) return '';
+    if (ii.type === 'continuation') {
+      return `
+        <div class="record-card" id="${iiId}" style="border:1.5px solid #c6f6d5;background:#f0fff4;">
+          <div class="record-card-header">
+            <span style="font-weight:700;color:#276749;">🗂 初次晤談紀錄表（舊案延續）</span>
+            <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${escHtml(c.id)}')" style="font-size:.78rem;">清除標記</button>
+          </div>
+          ${ii.note ? `<div style="padding:0 16px 10px;font-size:.85rem;color:#4a5568;">${escHtml(ii.note)}</div>` : ''}
+        </div>`;
+    }
+    if (ii.type === 'linkedRecord') {
+      const lr = (c.records || []).find(x => x.id === ii.recordId);
+      return `
+        <div class="record-card" id="${iiId}" style="border:1.5px solid #bee3f8;background:#ebf8ff;">
+          <div class="record-card-header">
+            <span style="font-weight:700;color:#2b6cb0;">🔗 初次晤談紀錄表（沿用 ${escHtml(lr?.date || '某筆')} 晤談紀錄）</span>
+            <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${escHtml(c.id)}')" style="font-size:.78rem;">清除標記</button>
+          </div>
+        </div>`;
+    }
+    // 已填寫的初次晤談表 — 折疊卡片
+    const probBadges = (ii.problemsMain || []).map(p => `<span class="badge badge-gray" style="margin-right:4px;">${escHtml(p)}</span>`).join('');
+    const riskColor = ii.risk === '高' ? '#c53030' : ii.risk === '中' ? '#b7791f' : '#276749';
+    const riskBadge = ii.risk ? `<span class="badge" style="background:#fff;border:1px solid ${riskColor};color:${riskColor};margin-left:6px;">風險：${escHtml(ii.risk)}</span>` : '';
+    const foldContent = `
+      <div class="rec-fold-view">
+        <div style="margin-bottom:5px;">${probBadges}${riskBadge}</div>
+        ${ii.mainIssue ? `<div class="record-summary rec-summary-clamp" style="color:#4a5568;">${escHtml(ii.mainIssue)}</div>
+        <div class="rec-fold-more"><span class="rec-dots">……</span><button class="rec-more-btn" onclick="toggleRecordExpand('${iiId}')">更多</button></div>` : ''}
+      </div>`;
+    const iiField = (label, val) => val
+      ? `<div style="margin-bottom:8px;"><div style="font-size:.75rem;color:#a0aec0;margin-bottom:2px;">${escHtml(label)}</div><div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(val)}</div></div>`
+      : '';
+    const fullContent = `
+      <div class="rec-full-view">
+        ${(ii.problemsMain||[]).length ? `<div style="margin-bottom:8px;"><span style="font-size:.75rem;color:#a0aec0;">問題評估：</span>${probBadges}${riskBadge}</div>` : ''}
+        ${iiField('個案類型', ii.caseType)}
+        ${iiField('家庭背景', ii.family)}
+        ${iiField('主訴問題', ii.mainIssue)}
+        ${iiField('問題摘要', ii.summary)}
+        ${iiField('個案期待', ii.expectation)}
+        ${iiField('風險描述', ii.riskDesc)}
+        ${iiField('服務計畫', ii.plan)}
+        ${(ii.services||[]).length ? `<div style="margin-bottom:8px;"><span style="font-size:.75rem;color:#a0aec0;">服務項目：</span>${(ii.services).map(s=>`<span class="badge badge-gray" style="margin-right:4px;">${escHtml(s)}</span>`).join('')}</div>` : ''}
+        ${iiField('出席人員', ii.attendees)}
+        ${ii.updatedAt ? `<div style="font-size:.75rem;color:#a0aec0;margin-top:6px;">更新：${new Date(ii.updatedAt).toLocaleString('zh-TW')}</div>` : ''}
+      </div>`;
+    return `
+      <div class="record-card" id="${iiId}" style="border:1.5px solid #b2d8b2;background:#f6fbf6;">
+        <div class="record-card-header">
+          <span style="font-weight:700;color:#276749;">📋 初次晤談紀錄表</span>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="openInitialInterviewPage('${escHtml(c.id)}')">編輯</button>
+            <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${escHtml(c.id)}')" style="font-size:.78rem;">清除</button>
+            <button class="rec-toggle-btn" onclick="toggleRecordExpand('${iiId}')">展開 ▼</button>
+          </div>
+        </div>
+        ${foldContent}${fullContent}
+      </div>`;
+  })();
 
   const countLabel = isAdminUser && deletedCount > 0
     ? `晤談紀錄（${activeCount} 筆，含 ${deletedCount} 筆已刪除）`
     : `晤談紀錄（${activeCount} 筆）`;
 
+  const sortLabel = _recSortDesc ? '新→舊' : '舊→新';
+  const sortBtn = `<button class="btn btn-secondary btn-sm" style="font-size:.8rem;" onclick="_recSortDesc=!_recSortDesc;showCaseDetail('${escHtml(c.id)}')">排序：${sortLabel}</button>`;
+
+  const listContent = iiCardHtml + recordCards;
+
   const recordsHtml = `
     <div class="card" style="margin-bottom:20px;">
       <div class="card-header">
         <h3>${countLabel}</h3>
-        ${isActive && !caseIsDeleted ? `<button class="btn btn-primary" onclick="openNewRecordPage('${escHtml(c.id)}')">＋ 新增紀錄</button>` : ''}
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          ${sortBtn}
+          ${isActive && !caseIsDeleted ? `<button class="btn btn-primary" onclick="openNewRecordPage('${escHtml(c.id)}')">＋ 新增紀錄</button>` : ''}
+        </div>
       </div>
-      <div style="padding:16px;">${recordCards}</div>
+      <div style="padding:16px;">${listContent}</div>
     </div>`;
 
-  // 初次晤談提醒（無紀錄則持續提醒）
-  let iiReminderHtml = '';
-  if (!caseIsDeleted) {
-    if (needsInitialInterview(c)) {
-      iiReminderHtml = `
-        <div style="background:#fff8e6;border:1.5px solid #f0c850;border-left:5px solid #d69e2e;border-radius:8px;padding:14px 18px;margin-bottom:18px;">
-          <div style="font-weight:700;color:#8a6d3b;margin-bottom:6px;">⚠ 尚未填寫初次晤談紀錄表</div>
-          <div style="font-size:.86rem;color:#7a6d3b;margin-bottom:10px;line-height:1.6;">請主責人員選擇下列其中一種方式處理：</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-primary btn-sm" onclick="openInitialInterviewPage('${escHtml(c.id)}')">填寫初次晤談表</button>
-            <button class="btn btn-secondary btn-sm" onclick="markInitialInterviewAsContinuation('${escHtml(c.id)}')">標記為「舊案延續」</button>
-            <button class="btn btn-secondary btn-sm" onclick="pickRecordAsInitialInterview('${escHtml(c.id)}')">從現有晤談挑選一筆</button>
-          </div>
-        </div>`;
-    } else if (c.initialInterview) {
-      const ii = c.initialInterview;
-      let label = '';
-      if (ii.type === 'continuation') label = `🗂 已標記為「舊案延續」${ii.note ? '：' + ii.note : ''}`;
-      else if (ii.type === 'linkedRecord' && ii.recordId) {
-        const r = (c.records || []).find(x => x.id === ii.recordId);
-        label = r ? `🔗 初次晤談沿用：${escHtml(r.date || '')} 紀錄` : '🔗 初次晤談已沿用某筆紀錄';
-      } else label = '✓ 初次晤談紀錄表已填寫';
-      iiReminderHtml = `
-        <div style="background:#e6f4ea;border:1px solid #b7d4bd;border-left:5px solid #38a169;border-radius:8px;padding:10px 14px;margin-bottom:18px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-          <span style="color:#22543d;font-size:.88rem;font-weight:600;flex:1;">${label}</span>
-          <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${escHtml(c.id)}')" style="font-size:.78rem;">清除標記</button>
-        </div>`;
-    }
-  }
+  const iiReminderHtml = '';
 
   // 結案評估區塊（已結案才顯示）
   const evalHtml = (() => {
@@ -3520,6 +3622,7 @@ async function removeCaseManager(caseId, email) {
 // ══════════════════════════════════════════════
 let _recordCaseId   = null;
 let _editingRecordId = null;
+let _recSortDesc = true; // 晤談紀錄排序：true=新→舊，false=舊→新
 
 function isEditable(createdAt) {
   if (!createdAt) return false;
@@ -3700,6 +3803,8 @@ function openNewRecordPage(caseId, recordId = null) {
     document.getElementById('rec-notes').value      = existingRec.notes || '';
     _restoreTopics(existingRec.topics || []);
     _restoreServiceItems(existingRec.serviceItems || []);
+    document.getElementById('rec-intervention-mode').value = existingRec.interventionMode || '';
+    document.querySelectorAll('input[name="rec-interviewee"]').forEach(cb => { cb.checked = (existingRec.interviewees || []).includes(cb.value); });
   } else {
     // ── 新增模式 ──
     document.getElementById('rec-date').value = new Date().toISOString().slice(0,10);
@@ -3711,6 +3816,8 @@ function openNewRecordPage(caseId, recordId = null) {
     document.getElementById('rec-assessment').value = '';
     document.getElementById('rec-next-plan').value  = '';
     document.getElementById('rec-notes').value      = '';
+    document.getElementById('rec-intervention-mode').value = '';
+    document.querySelectorAll('input[name="rec-interviewee"]').forEach(cb => cb.checked = false);
   }
   // 重置預約下次欄位
   const nbToggle = document.getElementById('rec-next-bk-toggle');
@@ -4488,6 +4595,10 @@ async function saveRecord() {
     _recAlert('服務項目「' + _svcErrors.join('、') + '」已勾選，請補充必要內容後再儲存。'); return;
   }
 
+  const interventionMode = document.getElementById('rec-intervention-mode').value;
+  if (!interventionMode) { _recAlert('請選擇介入方式。'); return; }
+  const interviewees = [...document.querySelectorAll('input[name="rec-interviewee"]:checked')].map(cb => cb.value);
+  if (!interviewees.length) { _recAlert('請至少選擇一項晤談對象。'); return; }
   const serviceItems  = _collectServiceItems();
   const assessment    = document.getElementById('rec-assessment').value.trim();
   const nextPlan      = document.getElementById('rec-next-plan').value.trim();
@@ -4546,6 +4657,7 @@ async function saveRecord() {
     Object.assign(casesData[cidx].records[ridx], {
       date, time, topics, serviceItems, summary, assessment, nextPlan, notes,
       counselorName, counselors: counselorList,
+      interventionMode, interviewees,
       updatedAt: new Date().toISOString(),
       updatedBy: currentUser.email,
     });
@@ -4571,6 +4683,7 @@ async function saveRecord() {
       counselorEmail: currentUser.email,
       counselorName,
       counselors: counselorList,
+      interventionMode, interviewees,
       topics, serviceItems, summary, assessment, nextPlan, notes,
       createdAt: new Date().toISOString(),
     };
@@ -7836,18 +7949,48 @@ async function importCounselingRecords(file) {
 
     const topicClean = (raw) => String(raw).trim().replace(/^\d+\.?\s*/, '');
 
+    // 輔導方式 → 介入方式
+    const mapInterventionMode = (raw) => {
+      const s = String(raw||'').trim();
+      if (!s) return '';
+      if (/視訊/.test(s)) return '視訊';
+      if (/團體/.test(s)) return '團體';
+      if (/電話/.test(s)) return '電話關懷';
+      if (/mail|email|簡訊/i.test(s)) return 'E-mail/簡訊';
+      if (/外展/.test(s)) return '外展訪視';
+      if (/面談|個別/.test(s)) return '面談';
+      return '其他';
+    };
+
+    // 受訪對象 → interviewees 陣列（可能多個，用頓號/逗號分隔）
+    const INTERVIEWEE_OPTIONS = ['學生本人','家屬','朋友','伴侶','教職員工生','資源網絡人員'];
+    const mapInterviewees = (raw) => {
+      const s = String(raw||'').trim();
+      if (!s) return [];
+      const parts = s.split(/[,，、\/；;]+/).map(x => x.trim()).filter(Boolean);
+      return parts.map(p => {
+        if (/學生|本人|個案/.test(p)) return '學生本人';
+        if (/家屬|家長|父母|親屬/.test(p)) return '家屬';
+        if (/朋友|同學/.test(p)) return '朋友';
+        if (/伴侶|男友|女友|男朋友|女朋友/.test(p)) return '伴侶';
+        if (/教職|教師|老師|職員|工生|教授/.test(p)) return '教職員工生';
+        if (/資源|網絡|社工|機構|醫院/.test(p)) return '資源網絡人員';
+        return INTERVIEWEE_OPTIONS.find(o => o.includes(p) || p.includes(o)) || '';
+      }).filter(Boolean);
+    };
+
     const buildRecord = (r, rowIdx) => {
       const counselorText = String(r[6]||'').trim();
       const counselorKey  = findCounselorKey(counselorText);
       const counselorName = counselorKey ? (formatCounselorLabel(counselorKey) || counselorText) : counselorText;
       const topics = [topicClean(r[9]), topicClean(r[10])].filter(Boolean);
       const serviceItems = [String(r[12]||'').trim(), String(r[13]||'').trim()].filter(Boolean);
-      const mode = String(r[7]||'').trim(), interviewee = String(r[8]||'').trim();
+      const modeRaw = String(r[7]||'').trim(), intervieweeRaw = String(r[8]||'').trim();
+      const interventionMode = mapInterventionMode(modeRaw);
+      const interviewees = mapInterviewees(intervieweeRaw);
       const remark = String(r[14]||'').trim();
       const crossUnit = String(r[15]||'').trim(), crossUnitOther = String(r[16]||'').trim();
       const summary = [
-        mode ? `輔導方式：${mode}` : '',
-        interviewee ? `受訪對象：${interviewee}` : '',
         remark,
         crossUnit ? `跨單位聯繫：${crossUnit}${crossUnitOther ? '（'+crossUnitOther+'）' : ''}` : '',
       ].filter(Boolean).join('\n');
@@ -7857,6 +8000,8 @@ async function importCounselingRecords(file) {
         time: String(r[1]||'').trim(),
         counselorEmail: counselorKey,
         counselorName,
+        interventionMode,
+        interviewees,
         topics,
         serviceItems,
         summary,
@@ -7965,7 +8110,11 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
         return `<tr data-type="unmatched" data-real-idx="${realIdx}" style="background:${bgCls};${skipCls}">
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;white-space:nowrap;color:#718096;">${escHtml(s.record.date)}</td>
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.88rem;font-weight:600;">${escHtml(s.studentName)}</td>
-          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;color:#4a5568;">${escHtml(s.record.counselorName||'—')}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;color:#4a5568;">
+            ${escHtml(s.record.counselorName||'—')}
+            ${s.record.interventionMode ? `<br><span style="font-size:.75rem;color:#2b6cb0;">${escHtml(s.record.interventionMode)}</span>` : ''}
+            ${(s.record.interviewees||[]).length ? `<br><span style="font-size:.75rem;color:#276749;">${escHtml(s.record.interviewees.join('、'))}</span>` : ''}
+          </td>
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;color:#4a5568;">${escHtml((s.record.topics||[]).join('、')||'—')}</td>
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;min-width:220px;">
             ${s.skip ? '<span style="color:#a0aec0;font-size:.8rem;">已跳過</span>' : `
@@ -7985,7 +8134,11 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
         return `<tr data-type="matched" data-real-idx="${realIdx}" style="background:${s.skip ? '#f7fafc' : '#fff'};${skipCls}">
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;white-space:nowrap;color:#718096;">${escHtml(s.record.date)}</td>
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.88rem;font-weight:600;">${escHtml(s.studentName)}</td>
-          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;color:#4a5568;">${escHtml(s.record.counselorName||'—')}</td>
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;color:#4a5568;">
+            ${escHtml(s.record.counselorName||'—')}
+            ${s.record.interventionMode ? `<br><span style="font-size:.75rem;color:#2b6cb0;">${escHtml(s.record.interventionMode)}</span>` : ''}
+            ${(s.record.interviewees||[]).length ? `<br><span style="font-size:.75rem;color:#276749;">${escHtml(s.record.interviewees.join('、'))}</span>` : ''}
+          </td>
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;color:#4a5568;">${escHtml((s.record.topics||[]).join('、')||'—')}</td>
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;">
             <span style="font-size:.82rem;color:#276749;">${escHtml(s.targetCase.id)}</span>
