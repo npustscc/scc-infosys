@@ -114,6 +114,14 @@
     .nav-item:hover   { background: #ebf4fb; color: #1a5276; }
     .nav-item.active  { background: #d6eaf8; color: #1a5276; font-weight: 600; }
     .nav-item .icon   { font-size: 1rem; width: 20px; text-align: center; }
+    .nav-item.dragging { opacity: 0.4; }
+    .nav-item.nav-drag-over-before { border-top: 2px solid #3498db; margin-top: -2px; }
+    .nav-item.nav-drag-over-after  { border-bottom: 2px solid #3498db; margin-bottom: -2px; }
+    .nav-drag-handle {
+      margin-left: auto; color: #c8d0d8; font-size: .8rem;
+      opacity: 0; cursor: grab; user-select: none; padding: 0 2px; flex-shrink: 0;
+    }
+    .nav-item:hover .nav-drag-handle { opacity: 1; }
 
     /* Role badge in sidebar */
     #sidebar-role-box {
@@ -839,40 +847,40 @@
 
     <div class="sidebar-section">
       <h3>個案管理</h3>
-      <div class="nav-item active" onclick="showPage('page-cases', this)">
-        <span class="icon">📋</span> 個案列表
+      <div class="nav-item active" data-nav-id="page-cases" onclick="showPage('page-cases', this)">
+        <span class="icon">📋</span> 個案列表 <span class="nav-drag-handle">⠿</span>
       </div>
-      <div class="nav-item" onclick="showPage('page-pending', this); renderPendingList()">
-        <span class="icon">📁</span> 不開案個案
+      <div class="nav-item" data-nav-id="page-pending" onclick="showPage('page-pending', this); renderPendingList()">
+        <span class="icon">📁</span> 不開案個案 <span class="nav-drag-handle">⠿</span>
       </div>
-      <div class="nav-item" onclick="showPage('page-bookings', this); renderBookingsPage()">
-        <span class="icon">📅</span> 空間預約
+      <div class="nav-item" data-nav-id="page-bookings" onclick="showPage('page-bookings', this); renderBookingsPage()">
+        <span class="icon">📅</span> 空間預約 <span class="nav-drag-handle">⠿</span>
       </div>
-      <div class="nav-item" onclick="showPage('page-casenums', this); renderCaseNums()">
-        <span class="icon">🔢</span> 案號管理
+      <div class="nav-item" data-nav-id="page-casenums" onclick="showPage('page-casenums', this); renderCaseNums()">
+        <span class="icon">🔢</span> 案號管理 <span class="nav-drag-handle">⠿</span>
       </div>
-      <div class="nav-item" onclick="showPage('page-stats', this); renderStats()">
-        <span class="icon">📊</span> 統計分析
+      <div class="nav-item" data-nav-id="page-stats" onclick="showPage('page-stats', this); renderStats()">
+        <span class="icon">📊</span> 統計分析 <span class="nav-drag-handle">⠿</span>
       </div>
     </div>
 
     <div class="sidebar-section" id="nav-admin-section" style="display:none;">
       <h3>系統管理</h3>
-      <div class="nav-item" onclick="showPage('page-admin', this)">
-        <span class="icon">⚙️</span> 使用者管理
+      <div class="nav-item" data-nav-id="page-admin" onclick="showPage('page-admin', this)">
+        <span class="icon">⚙️</span> 使用者管理 <span class="nav-drag-handle">⠿</span>
       </div>
-      <div class="nav-item" onclick="showPage('page-audit', this); renderAuditLog()">
-        <span class="icon">📜</span> 稽核日誌
+      <div class="nav-item" data-nav-id="page-audit" onclick="showPage('page-audit', this); renderAuditLog()">
+        <span class="icon">📜</span> 稽核日誌 <span class="nav-drag-handle">⠿</span>
       </div>
-      <div class="nav-item" onclick="showPage('page-recycle', this); renderRecycleBin()">
-        <span class="icon">🗑️</span> 資源回收桶
+      <div class="nav-item" data-nav-id="page-recycle" onclick="showPage('page-recycle', this); renderRecycleBin()">
+        <span class="icon">🗑️</span> 資源回收桶 <span class="nav-drag-handle">⠿</span>
       </div>
     </div>
 
     <div class="sidebar-section">
       <h3>個人</h3>
-      <div class="nav-item" onclick="showPage('page-prefs', this); renderPrefsPage()">
-        <span class="icon">🔧</span> 偏好設定
+      <div class="nav-item" data-nav-id="page-prefs" onclick="showPage('page-prefs', this); renderPrefsPage()">
+        <span class="icon">🔧</span> 偏好設定 <span class="nav-drag-handle">⠿</span>
       </div>
     </div>
   </nav>
@@ -2438,6 +2446,7 @@ async function afterLogin() {
     configData = await driveReadJson(CONFIG_FILE);
     hideLoading();
     resolveUserRole();
+    initSidebarDrag();
     renderNotifBell();
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-layout').style.display  = 'flex';
@@ -10099,6 +10108,74 @@ async function rbPurgeAll() {
     auditLog('清除逾期刪除項目');
     hideLoading(); renderRecycleBin(); renderCases();
   } catch(e) { hideLoading(); alert('清除失敗：' + e.message); }
+}
+
+// ══════════════════════════════════════════════
+//  側邊欄拖曳排序
+// ══════════════════════════════════════════════
+function initSidebarDrag() {
+  restoreSidebarOrder();
+  document.querySelectorAll('.sidebar-section').forEach(section => {
+    section.querySelectorAll('.nav-item').forEach(item => {
+      item.setAttribute('draggable', 'true');
+      item.addEventListener('dragstart', e => {
+        window._dragNavItem = item;
+        window._dragNavSection = section;
+        setTimeout(() => item.classList.add('dragging'), 0);
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      item.addEventListener('dragend', () => {
+        item.classList.remove('dragging');
+        document.querySelectorAll('.nav-item').forEach(n =>
+          n.classList.remove('nav-drag-over-before', 'nav-drag-over-after'));
+        saveSidebarOrder();
+      });
+      item.addEventListener('dragover', e => {
+        if (window._dragNavSection !== section) return;
+        e.preventDefault();
+        document.querySelectorAll('.nav-item').forEach(n =>
+          n.classList.remove('nav-drag-over-before', 'nav-drag-over-after'));
+        const rect = item.getBoundingClientRect();
+        if (e.clientY < rect.top + rect.height / 2)
+          item.classList.add('nav-drag-over-before');
+        else
+          item.classList.add('nav-drag-over-after');
+      });
+      item.addEventListener('drop', e => {
+        e.preventDefault();
+        const dragged = window._dragNavItem;
+        if (!dragged || window._dragNavSection !== section || dragged === item) return;
+        const rect = item.getBoundingClientRect();
+        if (e.clientY < rect.top + rect.height / 2)
+          section.insertBefore(dragged, item);
+        else
+          section.insertBefore(dragged, item.nextSibling);
+        document.querySelectorAll('.nav-item').forEach(n =>
+          n.classList.remove('nav-drag-over-before', 'nav-drag-over-after'));
+        saveSidebarOrder();
+      });
+    });
+  });
+}
+
+function saveSidebarOrder() {
+  document.querySelectorAll('.sidebar-section').forEach((section, si) => {
+    const ids = [...section.querySelectorAll('.nav-item')].map(n => n.dataset.navId).filter(Boolean);
+    localStorage.setItem('scc_nav_order_' + si, JSON.stringify(ids));
+  });
+}
+
+function restoreSidebarOrder() {
+  document.querySelectorAll('.sidebar-section').forEach((section, si) => {
+    const saved = localStorage.getItem('scc_nav_order_' + si);
+    if (!saved) return;
+    try {
+      const ids = JSON.parse(saved);
+      const itemMap = {};
+      section.querySelectorAll('.nav-item').forEach(n => { if (n.dataset.navId) itemMap[n.dataset.navId] = n; });
+      ids.forEach(id => { if (itemMap[id]) section.appendChild(itemMap[id]); });
+    } catch(_) {}
+  });
 }
 </script>
 
