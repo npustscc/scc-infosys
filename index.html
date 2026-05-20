@@ -9387,6 +9387,10 @@ function _bkDelCustomOpt(value) {
   _populateBookingCounselorSelect(_bkSelectedValue);
 }
 
+function onBkRoomChange(sel) {
+  document.getElementById('bk-room-custom').style.display = sel.value === '其他' ? '' : 'none';
+}
+
 function onBkPeriodChange(sel) {
   const customDiv = document.getElementById('bk-custom-times');
   const val = sel.value;
@@ -9513,6 +9517,8 @@ function openBookingModal(prefillCaseId) {
   document.getElementById('bk-case-id').value = prefillCaseId || '';
   document.getElementById('bk-case-hint').style.display = 'none';
   document.getElementById('bk-room').value = '';
+  document.getElementById('bk-room-custom').value = '';
+  document.getElementById('bk-room-custom').style.display = 'none';
   document.getElementById('booking-conflict-warn').style.display = 'none';
   const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
   document.getElementById('booking-modal').style.display = 'flex';
@@ -9528,6 +9534,9 @@ function editBooking(id) {
   _populateBookingCaseDatalist();
   _initBkPeriodSelect();
   document.getElementById('bk-room').value = b.room || '';
+  const isOtherRoom = b.room === '其他';
+  document.getElementById('bk-room-custom').style.display = isOtherRoom ? '' : 'none';
+  document.getElementById('bk-room-custom').value = isOtherRoom ? (b.customRoom || '') : '';
   document.getElementById('bk-date').value = b.date || '';
   _restoreBkPeriod(b.startTime, b.endTime);
   document.getElementById('bk-case-id').value = b.caseId || '';
@@ -9547,10 +9556,11 @@ async function saveBooking() {
   if (saveBtn?.disabled) return;
   if (saveBtn) saveBtn.disabled = true;
 
-  const room  = document.getElementById('bk-room').value;
-  const date  = document.getElementById('bk-date').value;
-  const start = document.getElementById('bk-start').value;
-  const end   = document.getElementById('bk-end').value;
+  const room       = document.getElementById('bk-room').value;
+  const customRoom = room === '其他' ? (document.getElementById('bk-room-custom')?.value.trim() || '') : '';
+  const date       = document.getElementById('bk-date').value;
+  const start      = document.getElementById('bk-start').value;
+  const end        = document.getElementById('bk-end').value;
   const isSysCounselor = !!configData?.users?.[_bkSelectedValue];
   const counselorEmail = (isSysCounselor || _bkSelectedValue === '中心會議') ? _bkSelectedValue : '';
   const caseId = document.getElementById('bk-case-id').value.trim();
@@ -9563,6 +9573,7 @@ async function saveBooking() {
   };
 
   if (!room || !date) { _bkWarn('請填寫空間與日期。'); return; }
+  if (room === '其他' && !customRoom) { _bkWarn('請填寫自訂空間名稱。'); return; }
   if (!start || !end) { _bkWarn('請選擇節次或填寫自訂時間。'); return; }
   if (start >= end)   { _bkWarn('結束時間必須晚於開始時間。'); return; }
 
@@ -9575,45 +9586,56 @@ async function saveBooking() {
     return;
   }
 
-  const counselorName = _bkSelectedLabel || _bkSelectedValue || '';
+  // counselorName: 系統人員只取姓名（不帶角色），其他直接用 value
+  const counselorName = isSysCounselor
+    ? (configData.users[_bkSelectedValue].name || _bkSelectedValue)
+    : (_bkSelectedValue || '');
   const caseObj = caseId ? casesData.find(c => c.id === caseId) : null;
   const now = new Date().toISOString();
-  const calParams = { room, date, startTime: start, endTime: end, counselorName,
-    caseId: caseId || '', caseName: caseObj?.name || '', notes };
+  const calParams = { room, customRoom, date, startTime: start, endTime: end, counselorName, notes };
 
-  let calendarEventId = undefined;
-  try {
-    if (_editingBookingId) {
-      const existing = bookingsData.find(x => x.id === _editingBookingId);
-      if (existing?.calendarEventId) {
-        await proxyCall('updateCalendarEvent', { eventId: existing.calendarEventId, ...calParams });
-        calendarEventId = existing.calendarEventId;
-      } else {
-        calendarEventId = await proxyCall('createCalendarEvent', calParams);
-      }
-    } else {
-      calendarEventId = await proxyCall('createCalendarEvent', calParams);
-    }
-  } catch (_) {}
+  // 先取舊的 calendarEventId（編輯時用）
+  const existingCalEventId = _editingBookingId
+    ? bookingsData.find(x => x.id === _editingBookingId)?.calendarEventId
+    : undefined;
+  const newId = _editingBookingId || `bk_${Date.now()}`;
 
-  const calField = calendarEventId !== undefined ? { calendarEventId } : {};
-
+  // 立即更新本機資料
   if (_editingBookingId) {
     const idx = bookingsData.findIndex(x => x.id === _editingBookingId);
     if (idx >= 0) bookingsData[idx] = { ...bookingsData[idx],
-      room, date, startTime: start, endTime: end,
+      room, customRoom, date, startTime: start, endTime: end,
       counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
-      notes, updatedAt: now, ...calField };
+      notes, updatedAt: now };
   } else {
-    bookingsData.push({ id: `bk_${Date.now()}`, room, date, startTime: start, endTime: end,
+    bookingsData.push({ id: newId, room, customRoom, date, startTime: start, endTime: end,
       counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
-      notes, createdAt: now, updatedAt: now, ...calField });
+      notes, createdAt: now, updatedAt: now });
   }
 
+  // 立即關閉 Modal 並顯示結果（樂觀更新）
   closeBookingModal();
   _recordBkFreq(_bkSelectedValue);
-  showLoading('儲存預約中…');
+  renderBookingsPage();
+
+  // 背景：同步 Calendar + 儲存至 Drive
+  showLoading('同步行事曆與儲存中…');
   try {
+    let calendarEventId = undefined;
+    try {
+      if (_editingBookingId && existingCalEventId) {
+        await proxyCall('updateCalendarEvent', { eventId: existingCalEventId, ...calParams });
+        calendarEventId = existingCalEventId;
+      } else {
+        calendarEventId = await proxyCall('createCalendarEvent', calParams);
+      }
+    } catch (_) {}
+
+    if (calendarEventId !== undefined) {
+      const bk = bookingsData.find(x => x.id === newId);
+      if (bk) bk.calendarEventId = calendarEventId;
+    }
+
     await saveBookings();
     auditLog(_editingBookingId ? '編輯空間預約' : '新增空間預約', caseId || null);
   } catch (e) {
@@ -11090,7 +11112,8 @@ function restoreSidebarOrder() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
       <div>
         <label class="field-label">空間<span class="req">*</span></label>
-        <select class="field-input" id="bk-room"></select>
+        <select class="field-input" id="bk-room" onchange="onBkRoomChange(this)"></select>
+        <input type="text" id="bk-room-custom" class="field-input" placeholder="請輸入空間名稱" style="display:none;margin-top:6px;" />
       </div>
       <div>
         <label class="field-label">日期<span class="req">*</span></label>
