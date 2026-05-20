@@ -1200,7 +1200,10 @@
         <div id="bookings-body" style="padding:0;min-height:60px;"></div>
       </div>
       <div class="card">
-        <div class="card-header"><h3>空間預約稽核記錄</h3></div>
+        <div class="card-header">
+          <h3>空間預約稽核記錄</h3>
+          <button class="btn btn-secondary btn-sm" onclick="renderBookingsAuditLog(true)" title="從 Drive 重新讀取最新稽核記錄">重新整理</button>
+        </div>
         <div id="bookings-audit-body" style="padding:0;min-height:40px;"></div>
       </div>
     </div>
@@ -2202,7 +2205,9 @@ async function migrateConfigIfNeeded() {
 
 let _prefSyncTimer = null;
 function syncUserPref_(updates) {
-  if (!configData?.users?.[currentUser?.email]) return;
+  if (!configData || !currentUser?.email) return;
+  if (!configData.users) configData.users = {};
+  if (!configData.users[currentUser.email]) configData.users[currentUser.email] = {};
   Object.assign(configData.users[currentUser.email], updates);
   clearTimeout(_prefSyncTimer);
   _prefSyncTimer = setTimeout(async () => {
@@ -8044,6 +8049,10 @@ function auditLog(action, caseId = null, recordId = null, detail = null) {
     ...(recordId ? { recordId } : {}),
     ...(detail   ? { detail }   : {}),
   };
+  // 立即更新本地快取，讓 renderBookingsAuditLog 可即時顯示
+  if (!Array.isArray(window._auditLogsCache)) window._auditLogsCache = [];
+  window._auditLogsCache.push(entry);
+
   (async () => {
     try {
       let raw;
@@ -8575,7 +8584,9 @@ function savePinSetup() {
 // 將 PIN 同步寫入使用者 Drive profile，跨瀏覽器登入時可自動沿用
 async function syncPinToConfig(pinVal, tmoMins) {
   try {
-    if (!configData?.users?.[currentUser?.email]) return;
+    if (!configData || !currentUser?.email) return;
+    if (!configData.users) configData.users = {};
+    if (!configData.users[currentUser.email]) configData.users[currentUser.email] = {};
     configData.users[currentUser.email].pin = pinVal;
     if (tmoMins !== undefined && tmoMins !== null) configData.users[currentUser.email].pinTmo = tmoMins;
     await driveUpdateJsonFile(CONFIG_FILE, configData);
@@ -9559,38 +9570,28 @@ async function syncFromCalendar(silent = false) {
   }
 }
 
-async function renderBookingsAuditLog() {
+async function renderBookingsAuditLog(forceRefresh = false) {
   const el = document.getElementById('bookings-audit-body');
   if (!el) return;
-  el.innerHTML = `<div style="padding:16px;color:#718096;font-size:.85rem;">⏳ 讀取稽核記錄中…</div>`;
-  try {
-    let logs = [];
-    try {
-      const data = await driveReadJson(AUDIT_LOG_FILE);
-      logs = Array.isArray(data?.logs) ? data.logs : [];
-      window._auditLogsCache = logs;
-    } catch (_) {}
 
+  const fmtTime = iso => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+  const aColor = a => {
+    if (a.includes('刪除')) return 'color:#c0392b;font-weight:600;';
+    if (a.includes('新增')) return 'color:#2980b9;font-weight:600;';
+    return '';
+  };
+  const _renderLogs = (logs) => {
     const isBookingAction = a => a.includes('空間預約') || a.includes('同步日曆');
     const filtered = [...logs].reverse().filter(l => isBookingAction(l.action));
-
     if (!filtered.length) {
       el.innerHTML = `<div class="empty-state" style="padding:16px;"><p>尚無空間預約稽核記錄</p></div>`;
       return;
     }
-
-    const fmtTime = iso => {
-      if (!iso) return '—';
-      const d = new Date(iso);
-      const pad = n => String(n).padStart(2, '0');
-      return `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    };
-    const aColor = a => {
-      if (a.includes('刪除')) return 'color:#c0392b;font-weight:600;';
-      if (a.includes('新增')) return 'color:#2980b9;font-weight:600;';
-      return '';
-    };
-
     const rows = filtered.map(l => `
       <tr>
         <td style="white-space:nowrap;font-size:.8rem;color:#718096;">${fmtTime(l.t)}</td>
@@ -9598,14 +9599,29 @@ async function renderBookingsAuditLog() {
         <td style="font-size:.85rem;${aColor(l.action)}">${escHtml(l.action)}</td>
         <td style="font-size:.82rem;">${escHtml(l.detail || '—')}</td>
       </tr>`).join('');
-
     el.innerHTML = `<div style="overflow-x:auto;"><table>
       <thead><tr><th>時間</th><th>操作者</th><th>動作</th><th>更動事由</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
-  } catch (e) {
-    el.innerHTML = `<div class="alert alert-error" style="margin:12px;">讀取失敗：${escHtml(e.message)}</div>`;
+  };
+
+  // 若快取已存在且不強制刷新 → 立即渲染，背景更新 Drive
+  if (Array.isArray(window._auditLogsCache) && !forceRefresh) {
+    _renderLogs(window._auditLogsCache);
+  } else {
+    el.innerHTML = `<div style="padding:16px;color:#718096;font-size:.85rem;">⏳ 讀取稽核記錄中…</div>`;
   }
+
+  // 背景從 Drive 拉最新資料並更新快取
+  try {
+    const data = await driveReadJson(AUDIT_LOG_FILE);
+    const driveLogs = Array.isArray(data?.logs) ? data.logs : [];
+    // 合併本地尚未寫入 Drive 的新項目（以時間戳去重）
+    const driveTs = new Set(driveLogs.map(l => l.t));
+    const localOnly = (window._auditLogsCache || []).filter(l => !driveTs.has(l.t));
+    window._auditLogsCache = [...driveLogs, ...localOnly].sort((a, b) => (a.t || '') < (b.t || '') ? -1 : 1);
+    _renderLogs(window._auditLogsCache);
+  } catch (_) {}
 }
 
 async function saveBookings() {
