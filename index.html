@@ -2588,7 +2588,14 @@ async function afterLogin() {
   document.getElementById('header-lock-btn').style.display = 'flex';
 
   try {
-    configData = await driveReadJson(CONFIG_FILE);
+    // 並行讀取 config + 三個不依賴 config 的資料，節省一次 round-trip
+    const [cfg] = await Promise.all([
+      driveReadJson(CONFIG_FILE),
+      loadPendingCases(),
+      loadBookings(),
+      loadTransfer(),
+    ]);
+    configData = cfg;
     hideLoading();
     resolveUserRole();
     migrateConfigIfNeeded(); // 背景靜默修復已知損毀
@@ -2597,7 +2604,7 @@ async function afterLogin() {
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-layout').style.display  = 'flex';
     checkPinSetup();
-    await Promise.all([loadCases(), loadPendingCases(), loadBookings(), loadTransfer()]);
+    await loadCases();
   } catch (err) {
     hideLoading();
     // 找不到設定檔 → 顯示初始化畫面
@@ -7581,12 +7588,17 @@ async function getOrCreateCasesSubfolder(name) {
   }
 }
 
+const _CASES_FOLDER_LS_KEY = 'scc_cases_folder_id_' + DRIVE_FOLDER_ID;
 async function getCasesFolderId() {
+  if (!_casesFolderIdCache) {
+    _casesFolderIdCache = localStorage.getItem(_CASES_FOLDER_LS_KEY) || null;
+  }
   if (!_casesFolderIdCache) {
     const q = `name='cases' and mimeType='application/vnd.google-apps.folder' and '${DRIVE_FOLDER_ID}' in parents and trashed=false`;
     const res = await driveQuery(q, 'id');
     if (!res.files || !res.files.length) throw new Error('找不到 cases/ 資料夾');
     _casesFolderIdCache = res.files[0].id;
+    localStorage.setItem(_CASES_FOLDER_LS_KEY, _casesFolderIdCache);
   }
   return _casesFolderIdCache;
 }
@@ -8576,7 +8588,7 @@ function savePinSetup() {
   // 儲存（空字串代表使用者選擇不設定 PIN）
   localStorage.setItem(pinKey(),    pinVal);
   localStorage.setItem(pinTmoKey(), String(tmoMins));
-  syncPinToConfig(pinVal, tmoMins);
+  syncUserPref_({ pin: pinVal, pinTmo: tmoMins });
   document.getElementById('pin-setup-modal').style.display = 'none';
   resetAfkTimer();
 }
@@ -8663,9 +8675,8 @@ function savePrefs() {
   // 若留空：保留舊 PIN（不變更）
   localStorage.setItem(pinTmoKey(), String(tmoMins));
   const freqMode = document.getElementById('pref-counselor-freq').checked;
-  syncUserPref_({ counselorFreqMode: freqMode, pinTmo: tmoMins });
-  // 同步到 Drive profile（PIN 留空時不改 PIN，但仍同步 timeout）
-  syncPinToConfig(pinVal || localStorage.getItem(pinKey()) || '', tmoMins);
+  const finalPin = pinVal || localStorage.getItem(pinKey()) || '';
+  syncUserPref_({ counselorFreqMode: freqMode, pinTmo: tmoMins, pin: finalPin });
 
   resetAfkTimer();
   renderPrefsPage();
