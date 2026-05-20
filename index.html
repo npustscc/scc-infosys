@@ -782,6 +782,7 @@
     <h2>學生諮商中心資訊系統</h2>
     <p>國立屏東科技大學<br/>請使用學校 Google 帳號登入</p>
     <div id="g-signin-btn"></div>
+    <div id="login-popup-blocked" style="display:none;margin-top:10px;" class="alert alert-warn">⚠️ 登入視窗被封鎖，請點擊上方按鈕重新登入。</div>
   </div>
 </div>
 
@@ -861,7 +862,7 @@
         <span class="icon">📅</span> 空間預約 <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" data-nav-id="page-psychiatry" onclick="showPage('page-psychiatry', this); renderPsychiatryPage()">
-        <span class="icon">🧠</span> 精神科評估 <span class="nav-drag-handle">⠿</span>
+        <span class="icon">🧠</span> 精神科醫師評估 <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" data-nav-id="page-casenums" onclick="showPage('page-casenums', this); renderCaseNums()">
         <span class="icon">🔢</span> 案號管理 <span class="nav-drag-handle">⠿</span>
@@ -1192,9 +1193,10 @@
             <button id="bk-span-3" class="btn btn-secondary btn-sm" onclick="setBkDaySpan(3)">3天</button>
             <button id="bk-span-5" class="btn btn-secondary btn-sm" onclick="setBkDaySpan(5)">5天</button>
           </div>
-          <div style="display:flex;gap:8px;">
+          <div style="display:flex;gap:8px;align-items:center;">
             <button class="btn btn-secondary btn-sm" onclick="syncFromCalendar()" title="從 Google Calendar 同步時間變更">與Google日曆同步</button>
             <button class="btn btn-primary" onclick="openBookingModal()">＋ 新增預約</button>
+            <button class="btn btn-secondary btn-sm" onclick="_toggleBkSection('bookings-body','bk-overview-icon')" title="收折/展開" style="padding:2px 7px;font-size:.85rem;"><span id="bk-overview-icon">▼</span></button>
           </div>
         </div>
         <div id="bookings-body" style="padding:0;min-height:60px;"></div>
@@ -1202,9 +1204,23 @@
       <div class="card">
         <div class="card-header">
           <h3>空間預約稽核記錄</h3>
-          <button class="btn btn-secondary btn-sm" onclick="renderBookingsAuditLog(true)" title="從 Drive 重新讀取最新稽核記錄">重新整理</button>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <button class="btn btn-secondary btn-sm" onclick="renderBookingsAuditLog(true)" title="從 Drive 重新讀取最新稽核記錄">重新整理</button>
+            <button class="btn btn-secondary btn-sm" onclick="_toggleBkSection('bk-audit-collapse','bk-audit-icon')" title="收折/展開" style="padding:2px 7px;font-size:.85rem;"><span id="bk-audit-icon">▼</span></button>
+          </div>
         </div>
-        <div id="bookings-audit-body" style="padding:0;min-height:40px;"></div>
+        <div id="bk-audit-collapse">
+          <div style="padding:10px 16px;border-bottom:1px solid #e2e8f0;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+            <span style="font-size:.8rem;color:#718096;white-space:nowrap;">篩選：</span>
+            <input type="date" id="bk-audit-date-from" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;" onchange="_applyBkAuditFilter()" title="起始日期">
+            <span style="font-size:.8rem;color:#718096;">～</span>
+            <input type="date" id="bk-audit-date-to" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;" onchange="_applyBkAuditFilter()" title="結束日期">
+            <input type="text" id="bk-audit-operator" placeholder="操作者" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;width:80px;" oninput="_applyBkAuditFilter()">
+            <input type="text" id="bk-audit-room" placeholder="空間" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;width:80px;" oninput="_applyBkAuditFilter()">
+            <button class="btn btn-secondary btn-sm" onclick="_clearBkAuditFilter()" style="font-size:.8rem;">清除</button>
+          </div>
+          <div id="bookings-audit-body" style="padding:0;min-height:40px;"></div>
+        </div>
       </div>
     </div>
 
@@ -2482,6 +2498,7 @@ window.addEventListener('load', () => {
     client_id: CLIENT_ID,
     callback: handleCredentialResponse,
     auto_select: true,
+    use_fedcm_for_prompt: true,
   });
 
   google.accounts.id.renderButton(
@@ -2514,6 +2531,8 @@ window.addEventListener('load', () => {
             hideLoading();
             sessionStorage.removeItem('scc_user');
             currentUser = null;
+            const blocked = document.getElementById('login-popup-blocked');
+            if (blocked) blocked.style.display = '';
           }
           // 若靜默成功，handleCredentialResponse 會自動接手並呼叫 afterLogin()
         });
@@ -9381,6 +9400,10 @@ function _bkNextSerial() {
 
 let transferData = [];  // loaded from transfer.json
 let _bkDaySpan = parseInt(localStorage.getItem('scc_bk_span') || '1') || 1;
+let _bkAuditPage = 0;
+let _bkAuditTotalPages = 1;
+let _bkAuditFilter = { dateFrom: '', dateTo: '', operator: '', room: '' };
+const BK_AUDIT_PAGE_SIZE = 50;
 
 async function loadBookings() {
   try {
@@ -9581,44 +9604,106 @@ async function syncFromCalendar(silent = false) {
   }
 }
 
-async function renderBookingsAuditLog(forceRefresh = false) {
+function _toggleBkSection(bodyId, iconId) {
+  const body = document.getElementById(bodyId);
+  const icon = document.getElementById(iconId);
+  if (!body) return;
+  const hidden = body.style.display === 'none';
+  body.style.display = hidden ? '' : 'none';
+  if (icon) icon.textContent = hidden ? '▼' : '▶';
+}
+
+function _applyBkAuditFilter() {
+  _bkAuditFilter = {
+    dateFrom: (document.getElementById('bk-audit-date-from') || {}).value || '',
+    dateTo:   (document.getElementById('bk-audit-date-to')   || {}).value || '',
+    operator: (document.getElementById('bk-audit-operator')  || {}).value || '',
+    room:     (document.getElementById('bk-audit-room')      || {}).value || '',
+  };
+  _bkAuditPage = 0;
+  _renderBkAuditLogs(window._auditLogsCache || []);
+}
+
+function _clearBkAuditFilter() {
+  ['bk-audit-date-from','bk-audit-date-to','bk-audit-operator','bk-audit-room'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  _bkAuditFilter = { dateFrom: '', dateTo: '', operator: '', room: '' };
+  _bkAuditPage = 0;
+  _renderBkAuditLogs(window._auditLogsCache || []);
+}
+
+function _renderBkAuditLogs(logs) {
   const el = document.getElementById('bookings-audit-body');
   if (!el) return;
 
-  const fmtTime = iso => {
+  const fmtDate = iso => {
     if (!iso) return '—';
     const d = new Date(iso);
     const pad = n => String(n).padStart(2, '0');
-    return `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())}`;
+  };
+  const fmtTimePart = iso => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   };
   const aColor = a => {
     if (a.includes('刪除')) return 'color:#c0392b;font-weight:600;';
     if (a.includes('新增')) return 'color:#2980b9;font-weight:600;';
     return '';
   };
-  const _renderLogs = (logs) => {
-    const isBookingAction = a => a.includes('空間預約') || a.includes('同步日曆');
-    const filtered = [...logs].reverse().filter(l => isBookingAction(l.action));
-    if (!filtered.length) {
-      el.innerHTML = `<div class="empty-state" style="padding:16px;"><p>尚無空間預約稽核記錄</p></div>`;
-      return;
-    }
-    const rows = filtered.map(l => `
-      <tr>
-        <td style="white-space:nowrap;font-size:.8rem;color:#718096;">${fmtTime(l.t)}</td>
-        <td style="font-size:.85rem;">${escHtml(l.name || '—')}</td>
-        <td style="font-size:.85rem;${aColor(l.action)}">${escHtml(l.action)}</td>
-        <td style="font-size:.82rem;">${escHtml(l.detail || '—')}</td>
-      </tr>`).join('');
-    el.innerHTML = `<div style="overflow-x:auto;"><table>
-      <thead><tr><th>時間</th><th>操作者</th><th>動作</th><th>更動事由</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table></div>`;
-  };
+
+  const isBookingAction = a => a.includes('空間預約') || a.includes('同步日曆');
+  let filtered = [...logs].reverse().filter(l => isBookingAction(l.action));
+
+  const { dateFrom, dateTo, operator, room } = _bkAuditFilter;
+  if (dateFrom) filtered = filtered.filter(l => l.t && l.t.slice(0,10) >= dateFrom);
+  if (dateTo)   filtered = filtered.filter(l => l.t && l.t.slice(0,10) <= dateTo);
+  if (operator) filtered = filtered.filter(l => (l.name || '').includes(operator));
+  if (room)     filtered = filtered.filter(l => (l.detail || '').split('　')[0].includes(room));
+
+  if (!filtered.length) {
+    el.innerHTML = `<div class="empty-state" style="padding:16px;"><p>尚無符合條件的空間預約稽核記錄</p></div>`;
+    return;
+  }
+
+  const total = filtered.length;
+  _bkAuditTotalPages = Math.ceil(total / BK_AUDIT_PAGE_SIZE);
+  if (_bkAuditPage >= _bkAuditTotalPages) _bkAuditPage = _bkAuditTotalPages - 1;
+  const start = _bkAuditPage * BK_AUDIT_PAGE_SIZE;
+  const pageItems = filtered.slice(start, start + BK_AUDIT_PAGE_SIZE);
+
+  const rows = pageItems.map(l => `
+    <tr>
+      <td style="white-space:nowrap;font-size:.8rem;color:#718096;">${fmtDate(l.t)}<br><span style="color:#a0aec0;">${fmtTimePart(l.t)}</span></td>
+      <td style="font-size:.85rem;white-space:nowrap;">${escHtml(l.name || '—')}</td>
+      <td style="font-size:.85rem;${aColor(l.action)}">${escHtml(l.action)}</td>
+      <td style="font-size:.82rem;">${escHtml(l.detail || '—')}</td>
+    </tr>`).join('');
+
+  const pager = _bkAuditTotalPages > 1 ? `
+    <div style="display:flex;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid #e2e8f0;">
+      <button class="btn btn-secondary btn-sm" onclick="_bkAuditPage=Math.max(0,_bkAuditPage-1);_renderBkAuditLogs(window._auditLogsCache||[])" ${_bkAuditPage===0?'disabled':''}>‹</button>
+      <span style="font-size:.8rem;color:#718096;">${_bkAuditPage+1} / ${_bkAuditTotalPages}（共 ${total} 筆）</span>
+      <button class="btn btn-secondary btn-sm" onclick="_bkAuditPage=Math.min(_bkAuditTotalPages-1,_bkAuditPage+1);_renderBkAuditLogs(window._auditLogsCache||[])" ${_bkAuditPage===_bkAuditTotalPages-1?'disabled':''}>›</button>
+    </div>` : '';
+
+  el.innerHTML = `<div style="overflow-x:auto;"><table>
+    <thead><tr><th>時間</th><th>操作者</th><th>動作</th><th>更動事由</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>${pager}`;
+}
+
+async function renderBookingsAuditLog(forceRefresh = false) {
+  const el = document.getElementById('bookings-audit-body');
+  if (!el) return;
 
   // 若快取已存在且不強制刷新 → 立即渲染，背景更新 Drive
   if (Array.isArray(window._auditLogsCache) && !forceRefresh) {
-    _renderLogs(window._auditLogsCache);
+    _renderBkAuditLogs(window._auditLogsCache);
   } else {
     el.innerHTML = `<div style="padding:16px;color:#718096;font-size:.85rem;">⏳ 讀取稽核記錄中…</div>`;
   }
@@ -9631,7 +9716,7 @@ async function renderBookingsAuditLog(forceRefresh = false) {
     const driveTs = new Set(driveLogs.map(l => l.t));
     const localOnly = (window._auditLogsCache || []).filter(l => !driveTs.has(l.t));
     window._auditLogsCache = [...driveLogs, ...localOnly].sort((a, b) => (a.t || '') < (b.t || '') ? -1 : 1);
-    _renderLogs(window._auditLogsCache);
+    _renderBkAuditLogs(window._auditLogsCache);
   } catch (_) {}
 }
 
