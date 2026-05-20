@@ -1172,7 +1172,7 @@
     <div id="page-bookings" class="page">
       <div class="page-title">空間預約</div>
       <div id="bookings-alert"></div>
-      <div class="card">
+      <div class="card" style="margin-bottom:20px;">
         <div class="card-header" style="flex-wrap:wrap;gap:8px;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <button class="btn btn-secondary btn-sm" onclick="shiftBookingDate(-1)" style="font-size:1.1rem;padding:3px 10px;">‹</button>
@@ -1184,9 +1184,16 @@
             <button id="bk-span-3" class="btn btn-secondary btn-sm" onclick="setBkDaySpan(3)">3天</button>
             <button id="bk-span-5" class="btn btn-secondary btn-sm" onclick="setBkDaySpan(5)">5天</button>
           </div>
-          <button class="btn btn-primary" onclick="openBookingModal()">＋ 新增預約</button>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary btn-sm" onclick="syncFromCalendar()" title="從 Google Calendar 同步時間變更">↕ 同步 GC</button>
+            <button class="btn btn-primary" onclick="openBookingModal()">＋ 新增預約</button>
+          </div>
         </div>
         <div id="bookings-body" style="padding:0;min-height:60px;"></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><h3>所有預約紀錄</h3></div>
+        <div id="all-bookings-body" style="padding:0;min-height:40px;"></div>
       </div>
     </div>
 
@@ -9258,6 +9265,107 @@ async function loadBookings() {
   } catch (e) {
     bookingsData = [];
   }
+  scheduleHourlyCalendarSync();
+}
+
+// ── Google Calendar 同步 ────────────────────────────────
+let _bkHourlySyncScheduled = false;
+function scheduleHourlyCalendarSync() {
+  if (_bkHourlySyncScheduled) return;
+  _bkHourlySyncScheduled = true;
+  const now = new Date();
+  const msToNextHour = (60 - now.getMinutes()) * 60000 - now.getSeconds() * 1000 - now.getMilliseconds();
+  setTimeout(() => {
+    syncFromCalendar(true);
+    setInterval(() => syncFromCalendar(true), 3600000);
+  }, msToNextHour);
+}
+
+async function syncFromCalendar(silent = false) {
+  if (!silent) showLoading('從 Google Calendar 同步中…');
+  try {
+    const minus30 = new Date(); minus30.setDate(minus30.getDate() - 30);
+    const plus90  = new Date(); plus90.setDate(plus90.getDate() + 90);
+    const startDate = minus30.toISOString().slice(0, 10);
+    const endDate   = plus90.toISOString().slice(0, 10);
+
+    const gcEvents = await proxyCall('listCalendarEvents', { startDate, endDate });
+    const gcMap = new Map(gcEvents.map(e => [e.id, e]));
+
+    let changed = false;
+    bookingsData = bookingsData.map(b => {
+      if (!b.calendarEventId) return b;
+      const gcE = gcMap.get(b.calendarEventId);
+      if (!gcE) {
+        // GC 上已不存在（被刪除或超出查詢範圍）
+        // 只清除 calendarEventId，保留預約紀錄
+        changed = true;
+        return { ...b, calendarEventId: null };
+      }
+      // 時間有變更 → 更新本機
+      const bStart = (b.startTime || '').slice(0, 5);
+      const bEnd   = (b.endTime   || '').slice(0, 5);
+      if (gcE.date !== b.date || gcE.startTime !== bStart || gcE.endTime !== bEnd) {
+        changed = true;
+        return { ...b, date: gcE.date, startTime: gcE.startTime, endTime: gcE.endTime };
+      }
+      return b;
+    });
+
+    if (changed) {
+      await saveBookings();
+      renderBookingsPage();
+    }
+    if (!silent) {
+      hideLoading();
+      setAlert('bookings-alert', 'ok', changed ? 'Google Calendar 同步完成，已更新本機資料。' : 'Google Calendar 同步完成，無變動。');
+    }
+  } catch (e) {
+    if (!silent) { hideLoading(); setAlert('bookings-alert', 'warn', '同步失敗：' + e.message); }
+    console.warn('syncFromCalendar failed', e);
+  }
+}
+
+function renderAllBookingsTable() {
+  const el = document.getElementById('all-bookings-body');
+  if (!el) return;
+  const sorted = [...bookingsData]
+    .filter(b => !b.deleted)
+    .sort((a, b) => (b.date + (b.startTime||'')) > (a.date + (a.startTime||'')) ? 1 : -1);
+
+  if (!sorted.length) {
+    el.innerHTML = `<div class="empty-state" style="padding:20px;"><p>尚無預約紀錄</p></div>`;
+    return;
+  }
+
+  const WD = ['日','一','二','三','四','五','六'];
+  const fmtT    = t => (t || '').slice(0, 5);
+  const fmtDate = s => {
+    const d = new Date(s + 'T00:00:00');
+    return `${s} (${WD[d.getDay()]})`;
+  };
+
+  const rows = sorted.map(b => {
+    const roomDisplay = b.room === '其他' ? (b.customRoom || '其他') : b.room;
+    const calMark = b.calendarEventId
+      ? `<span title="已同步 GC" style="color:#27ae60;">📅</span>`
+      : `<span style="color:#a0aec0;font-size:.75rem;">—</span>`;
+    return `<tr>
+      <td style="white-space:nowrap;font-size:.82rem;color:#4a5568;">${escHtml(fmtDate(b.date))}</td>
+      <td style="white-space:nowrap;font-size:.82rem;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</td>
+      <td style="font-size:.85rem;">${escHtml(roomDisplay)}</td>
+      <td style="font-size:.85rem;">${escHtml(b.counselorName || '—')}</td>
+      <td style="font-size:.82rem;color:#718096;max-width:200px;">${escHtml(b.notes || '')}</td>
+      <td style="text-align:center;">${calMark}</td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `<div style="overflow-x:auto;">
+    <table>
+      <thead><tr><th>日期</th><th>時段</th><th>空間</th><th>借用人／事由</th><th>備註</th><th>GC</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
 }
 
 async function saveBookings() {
@@ -9408,6 +9516,7 @@ function renderBookingsPage() {
     html += '</div>';
     body.innerHTML = html;
   }
+  renderAllBookingsTable();
 }
 
 function shiftBookingDate(delta) {
@@ -9685,6 +9794,20 @@ async function saveBooking() {
   if (conflict) {
     _bkWarn(`時間衝突：${room} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已由 ${conflict.counselorName || '—'} 預約。`);
     return;
+  }
+
+  // 同一人同時段借用不同空間：提醒但允許確認後繼續
+  if (_bkSelectedValue && _bkSelectedValue !== '中心會議') {
+    const personConflict = bookingsData.find(b =>
+      b.id !== _editingBookingId && b.room !== room && b.date === date &&
+      (b.counselorEmail === _bkSelectedValue || (!b.counselorEmail && b.counselorName === _bkSelectedValue)) &&
+      b.startTime < end && b.endTime > start
+    );
+    if (personConflict) {
+      const pRoom = personConflict.room === '其他' ? (personConflict.customRoom || '其他') : personConflict.room;
+      const ok = confirm(`提醒：${_bkSelectedLabel || _bkSelectedValue} 在 ${(personConflict.startTime||'').slice(0,5)}–${(personConflict.endTime||'').slice(0,5)} 已借用「${pRoom}」。確定要再新增一筆嗎？`);
+      if (!ok) { if (saveBtn) saveBtn.disabled = false; return; }
+    }
   }
 
   // counselorName: 系統人員只取姓名（不帶角色），其他直接用 value

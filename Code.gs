@@ -29,9 +29,10 @@
         case 'moveFile':           result = moveFile_(params); break;
         case 'query':              result = driveQuery_(params); break;
         case 'listFolder':         result = listFolder_(params); break;
-        case 'createCalendarEvent': result = createCalendarEvent_(params); break;
-        case 'updateCalendarEvent': result = updateCalendarEvent_(params); break;
-        case 'deleteCalendarEvent': result = deleteCalendarEvent_(params); break;
+        case 'createCalendarEvent':  result = createCalendarEvent_(params); break;
+        case 'updateCalendarEvent':  result = updateCalendarEvent_(params); break;
+        case 'deleteCalendarEvent':  result = deleteCalendarEvent_(params); break;
+        case 'listCalendarEvents':   result = listCalendarEvents_(params); break;
         default: return jsonResp_({ error: 'Unknown action: ' + action });
       }
       return jsonResp_(result);
@@ -347,4 +348,19 @@
     const event = cal.getEventById(eventId);
     if (event) event.deleteEvent();
     return { ok: true };
+  }
+
+  function listCalendarEvents_({ startDate, endDate }) {
+    const tz  = 'Asia/Taipei';
+    const cal = getOrCreateCalendar_();
+    const start = new Date(startDate + 'T00:00:00+08:00');
+    const end   = new Date(endDate   + 'T23:59:59+08:00');
+    const events = cal.getEvents(start, end);
+    return events.map(e => ({
+      id:        e.getId(),
+      title:     e.getTitle(),
+      date:      Utilities.formatDate(e.getStartTime(), tz, 'yyyy-MM-dd'),
+      startTime: Utilities.formatDate(e.getStartTime(), tz, 'HH:mm'),
+      endTime:   Utilities.formatDate(e.getEndTime(),   tz, 'HH:mm'),
+    }));
   }
