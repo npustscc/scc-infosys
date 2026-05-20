@@ -2483,7 +2483,22 @@ window.addEventListener('load', () => {
   if (stored) {
     try {
       currentUser = JSON.parse(stored);
-      gIdToken = sessionStorage.getItem('scc_idtoken') || null;
+      const storedToken = sessionStorage.getItem('scc_idtoken');
+      // 檢查 ID token 是否還有效（JWT exp claim，過期則清掉強制重新登入）
+      let tokenValid = false;
+      if (storedToken) {
+        try {
+          const p = JSON.parse(atob(storedToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+          tokenValid = p.exp && Number(p.exp) > Math.floor(Date.now() / 1000) + 30;
+        } catch (_) {}
+      }
+      if (!tokenValid) {
+        sessionStorage.removeItem('scc_user');
+        sessionStorage.removeItem('scc_idtoken');
+        currentUser = null;
+        // 不自動登入，讓使用者點登入按鈕取得新 token
+      } else {
+      gIdToken = storedToken;
       showLoading('自動登入中…');
       const tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: CLIENT_ID,
@@ -2501,8 +2516,10 @@ window.addEventListener('load', () => {
         },
       });
       tokenClient.requestAccessToken({ prompt: '' });
+      } // end else (token valid)
     } catch (e) {
       sessionStorage.removeItem('scc_user');
+      sessionStorage.removeItem('scc_idtoken');
     }
   }
 });
