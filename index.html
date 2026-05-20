@@ -1185,7 +1185,7 @@
             <button id="bk-span-5" class="btn btn-secondary btn-sm" onclick="setBkDaySpan(5)">5天</button>
           </div>
           <div style="display:flex;gap:8px;">
-            <button class="btn btn-secondary btn-sm" onclick="syncFromCalendar()" title="從 Google Calendar 同步時間變更">↕ 同步 GC</button>
+            <button class="btn btn-secondary btn-sm" onclick="syncFromCalendar()" title="從 Google Calendar 同步時間變更">與Google日曆同步</button>
             <button class="btn btn-primary" onclick="openBookingModal()">＋ 新增預約</button>
           </div>
         </div>
@@ -3102,11 +3102,20 @@ async function pollNotifications() {
   try {
     const fresh = await driveReadJson(CONFIG_FILE);
     if (!fresh?.users) return;
-    // 防止空的 users 覆蓋記憶體中的使用者清單
     const freshCount   = Object.keys(fresh.users).length;
     const currentCount = Object.keys(configData.users || {}).length;
-    if (freshCount === 0 && currentCount > 0) return;
-    configData.users = fresh.users;
+    if (freshCount >= currentCount) {
+      // 正常情況：Drive 有等量或更多使用者，整體更新
+      configData.users = fresh.users;
+    } else if (freshCount > 0) {
+      // Drive 使用者數少於記憶體（可能 Drive 資料損毀）：僅更新當前使用者的通知
+      const myFresh = fresh.users[currentUser.email];
+      if (configData.users?.[currentUser.email] && myFresh?.notifications !== undefined) {
+        configData.users[currentUser.email].notifications = myFresh.notifications;
+      }
+    } else {
+      return; // freshCount === 0，拒絕覆蓋
+    }
     renderNotifBell();
     const panel = document.getElementById('notif-panel');
     if (panel && panel.style.display === 'block') renderNotifList();
@@ -9289,17 +9298,25 @@ async function syncFromCalendar(silent = false) {
     const startDate = minus30.toISOString().slice(0, 10);
     const endDate   = plus90.toISOString().slice(0, 10);
 
-    const gcEvents = await proxyCall('listCalendarEvents', { startDate, endDate });
+    const gcEventsRaw = await proxyCall('listCalendarEvents', { startDate, endDate });
+    if (!Array.isArray(gcEventsRaw)) {
+      throw new Error('Google Calendar 回傳格式錯誤，請確認 Apps Script 已部署最新版本。');
+    }
+    const gcEvents = gcEventsRaw;
     const gcMap = new Map(gcEvents.map(e => [e.id, e]));
 
+    const myName = configData?.users?.[currentUser?.email]?.name || currentUser?.name || currentUser?.email || '';
+    const auditActions = [];
     let changed = false;
+
     bookingsData = bookingsData.map(b => {
       if (!b.calendarEventId) return b;
       const gcE = gcMap.get(b.calendarEventId);
       if (!gcE) {
-        // GC 上已不存在（被刪除或超出查詢範圍）
-        // 只清除 calendarEventId，保留預約紀錄
+        // GC 上已不存在（被刪除或超出查詢範圍）— 只清除連結，保留預約紀錄
         changed = true;
+        const rd = b.room === '其他' ? (b.customRoom || '其他') : (b.room || '');
+        auditActions.push({ action: '因' + myName + '同步日曆而移除日曆連結', caseId: b.caseId || null, detail: rd + '　' + b.date + '　' + (b.startTime || '').slice(0, 5) + '–' + (b.endTime || '').slice(0, 5) });
         return { ...b, calendarEventId: null };
       }
       // 時間有變更 → 更新本機
@@ -9307,6 +9324,8 @@ async function syncFromCalendar(silent = false) {
       const bEnd   = (b.endTime   || '').slice(0, 5);
       if (gcE.date !== b.date || gcE.startTime !== bStart || gcE.endTime !== bEnd) {
         changed = true;
+        const rd = b.room === '其他' ? (b.customRoom || '其他') : (b.room || '');
+        auditActions.push({ action: '因' + myName + '同步日曆而更新時間', caseId: b.caseId || null, detail: rd + '　' + gcE.date + '　' + gcE.startTime + '–' + gcE.endTime });
         return { ...b, date: gcE.date, startTime: gcE.startTime, endTime: gcE.endTime };
       }
       return b;
@@ -9314,6 +9333,7 @@ async function syncFromCalendar(silent = false) {
 
     if (changed) {
       await saveBookings();
+      auditActions.forEach(a => auditLog(a.action, a.caseId, null, a.detail));
       renderBookingsPage();
     }
     if (!silent) {
