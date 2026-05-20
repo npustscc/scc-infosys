@@ -10000,6 +10000,9 @@ function closeBookingModal() {
   document.getElementById('booking-modal').style.display = 'none';
 }
 
+let _bkSkipPersonConflict = false;
+function _bkForcePersonSave() { _bkSkipPersonConflict = true; saveBooking(); }
+
 async function saveBooking() {
   const saveBtn = document.getElementById('btn-save-booking');
   if (saveBtn?.disabled) return;
@@ -10036,19 +10039,27 @@ async function saveBooking() {
     return;
   }
 
-  // 同一人同時段借用不同空間：提醒但允許確認後繼續
+  // 同一人同時段借用不同空間：inline 提醒（可強制儲存）
   if (_bkSelectedValue && _bkSelectedValue !== '中心會議') {
     const personConflict = bookingsData.find(b =>
       b.id !== _editingBookingId && b.room !== room && b.date === date &&
       (b.counselorEmail === _bkSelectedValue || (!b.counselorEmail && b.counselorName === _bkSelectedValue)) &&
       b.startTime < end && b.endTime > start
     );
-    if (personConflict) {
+    if (personConflict && !_bkSkipPersonConflict) {
       const pRoom = personConflict.room === '其他' ? (personConflict.customRoom || '其他') : personConflict.room;
-      const ok = confirm(`提醒：${_bkSelectedLabel || _bkSelectedValue} 在 ${(personConflict.startTime||'').slice(0,5)}–${(personConflict.endTime||'').slice(0,5)} 已借用「${pRoom}」。確定要再新增一筆嗎？`);
-      if (!ok) { if (saveBtn) saveBtn.disabled = false; return; }
+      const warnEl = document.getElementById('booking-conflict-warn');
+      warnEl.style.display = '';
+      warnEl.innerHTML = `提醒：${escHtml(_bkSelectedLabel||_bkSelectedValue)} 在 ${escHtml((personConflict.startTime||'').slice(0,5))}–${escHtml((personConflict.endTime||'').slice(0,5))} 已借用「${escHtml(pRoom)}」。`+
+        `<div style="display:flex;gap:8px;margin-top:8px;">` +
+        `<button class="btn btn-secondary btn-sm" onclick="document.getElementById('booking-conflict-warn').style.display='none'" style="font-size:.82rem;">取消</button>`+
+        `<button class="btn btn-primary btn-sm" onclick="_bkForcePersonSave()" style="font-size:.82rem;">仍要儲存</button>`+
+        `</div>`;
+      if (saveBtn) saveBtn.disabled = false;
+      return;
     }
   }
+  _bkSkipPersonConflict = false;
 
   // counselorName: 系統人員只取姓名（不帶角色），其他直接用 value
   const counselorName = isSysCounselor
