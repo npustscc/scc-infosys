@@ -2171,8 +2171,24 @@ function syncUserPref_(updates) {
   Object.assign(configData.users[currentUser.email], updates);
   clearTimeout(_prefSyncTimer);
   _prefSyncTimer = setTimeout(async () => {
-    try { await driveUpdateJsonFile(CONFIG_FILE, configData); }
-    catch (e) { console.warn('syncUserPref_ failed', e); }
+    try {
+      // 寫入前先從 Drive 讀最新版，避免把記憶體中可能過舊的 users 寫回去
+      const myEmail = currentUser?.email;
+      if (!myEmail) return;
+      const myLocalData = { ...(configData.users[myEmail] || {}) };
+      const fresh = await driveReadJson(CONFIG_FILE);
+      if (fresh?.users) {
+        const freshCount   = Object.keys(fresh.users).length;
+        const currentCount = Object.keys(configData.users || {}).length;
+        if (freshCount >= currentCount) {
+          // Drive 有等量或更多使用者 → 以 Drive 為基礎
+          configData.users = fresh.users;
+        }
+        // 無論如何，確保自己最新的偏好設定蓋過 Drive 上的舊值
+        configData.users[myEmail] = { ...(configData.users[myEmail] || {}), ...myLocalData };
+      }
+      await driveUpdateJsonFile(CONFIG_FILE, configData);
+    } catch (e) { console.warn('syncUserPref_ failed', e); }
   }, 1500);
 }
 function _userPref_(key, def) {
@@ -7964,17 +7980,19 @@ function auditLog(action, caseId = null, recordId = null, detail = null) {
   };
   (async () => {
     try {
-      let data = { logs: [] };
-      try {
-        const raw = await driveReadJson(AUDIT_LOG_FILE);
-        data = (raw && Array.isArray(raw.logs)) ? raw : { logs: [] };
-      } catch { /* 檔案尚未建立 */ }
-      data.logs.push(entry);
-      try {
-        await driveUpdateJsonFile(AUDIT_LOG_FILE, data);
-      } catch {
-        await driveCreateJsonFile('audit_log.json', data, DRIVE_FOLDER_ID);
+      let raw;
+      try { raw = await driveReadJson(AUDIT_LOG_FILE); }
+      catch { raw = null; /* 檔案尚未建立 */ }
+      // 若讀取失敗（raw === null）且可能已有歷史資料，則跳過寫入，避免覆蓋
+      if (raw === null) {
+        // 嘗試建立新檔（只在檔案確實不存在時）
+        try { await driveCreateJsonFile('audit_log.json', { logs: [entry] }, DRIVE_FOLDER_ID); }
+        catch { /* 已存在則忽略 */ }
+        return;
       }
+      const data = (Array.isArray(raw?.logs)) ? raw : { logs: [] };
+      data.logs.push(entry);
+      await driveUpdateJsonFile(AUDIT_LOG_FILE, data);
     } catch (e) { console.warn('audit log failed:', e); }
   })();
 }
