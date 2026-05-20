@@ -319,15 +319,20 @@
     return counselorName ? roomPart + '.' + counselorName : roomPart;
   }
 
-  function buildEventDesc_(creatorName, notes, createdAt, bkSerial) {
-    let dt = '';
-    if (createdAt) {
-      const d = new Date(createdAt);
-      const pad = n => String(n).padStart(2, '0');
-      dt = ` (${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())})`;
+  function buildEventDesc_(actorName, notes, dateTime, bkSerial, isEdit) {
+    const verb = isEdit ? '編輯' : '建立';
+    const pad = n => String(n).padStart(2, '0');
+    let desc = notes ? notes.trim() : '';
+    let actorLine = '';
+    if (actorName || dateTime) {
+      let dtStr = '';
+      if (dateTime) {
+        const d = new Date(dateTime);
+        dtStr = ' ' + d.getFullYear() + '/' + pad(d.getMonth()+1) + '/' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+      }
+      actorLine = (actorName || '') + ' ' + verb + dtStr;
     }
-    let desc = (creatorName || '') + ' 建立' + dt;
-    if (notes) desc += '\n' + notes;
+    if (actorLine) desc += (desc ? '\n\n' : '') + actorLine;
     if (bkSerial) desc += '\n\n#' + String(bkSerial).padStart(4, '0');
     return desc;
   }
@@ -336,18 +341,19 @@
     const cal = getOrCreateCalendar_();
     const { start, end } = parseEventTimes_(date, startTime, endTime);
     const title = buildEventTitle_(room, counselorName, customRoom || '');
-    const desc  = buildEventDesc_(creatorName || counselorName || '', notes, createdAt, bkSerial);
+    const desc  = buildEventDesc_(creatorName || counselorName || '', notes, createdAt, bkSerial, false);
     const event = cal.createEvent(title, start, end, { description: desc });
     return event.getId();
   }
 
-  function updateCalendarEvent_({ eventId, room, customRoom, date, startTime, endTime, counselorName, notes, creatorName, createdAt, bkSerial }) {
+  function updateCalendarEvent_({ eventId, room, customRoom, date, startTime, endTime, counselorName, notes, creatorName, createdAt, updatedAt, isEdit, bkSerial }) {
     const cal = getOrCreateCalendar_();
     const event = cal.getEventById(eventId);
     if (!event) throw new Error('Event not found: ' + eventId);
     const { start, end } = parseEventTimes_(date, startTime, endTime);
+    const actorTime = isEdit ? (updatedAt || createdAt) : createdAt;
     event.setTitle(buildEventTitle_(room, counselorName, customRoom || ''));
-    event.setDescription(buildEventDesc_(creatorName || counselorName || '', notes, createdAt, bkSerial));
+    event.setDescription(buildEventDesc_(creatorName || counselorName || '', notes, actorTime, bkSerial, !!isEdit));
     event.setTime(start, end);
     return { ok: true };
   }

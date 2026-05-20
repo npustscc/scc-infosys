@@ -9484,17 +9484,26 @@ async function syncFromCalendar(silent = false) {
       // 比對標題、時間與說明
       const bStart = (b.startTime || '').slice(0, 5);
       const bEnd   = (b.endTime   || '').slice(0, 5);
-      // 解析 GC description：第一行為「OOO 建立…」，末尾可能有「\n\n#NNNN」流水號
+      // 解析 GC description（支援新舊格式）
+      // 新格式：{備註}\n\nOOO 建立/編輯 YYYY/MM/DD HH:mm\n\n#NNNN
+      // 舊格式：OOO 建立 ...\n{備註}
       const _rawDesc = gcE.description || '';
-      const _descLines = _rawDesc.split('\n');
       let gcSerial = null;
-      const _noteLines = _descLines.slice(1);
-      if (_noteLines.length > 0 && /^#\d+$/.test((_noteLines[_noteLines.length - 1] || '').trim())) {
-        gcSerial = parseInt(_noteLines[_noteLines.length - 1].trim().slice(1));
-        _noteLines.pop();
-        while (_noteLines.length > 0 && _noteLines[_noteLines.length - 1].trim() === '') _noteLines.pop();
+      let gcNotes = '';
+      const _serialMatch = _rawDesc.match(/\n\n#(\d+)\s*$/);
+      if (_serialMatch) {
+        // 新格式：有流水號 → 從末尾往前剝
+        gcSerial = parseInt(_serialMatch[1]);
+        let _body = _rawDesc.slice(0, _rawDesc.length - _serialMatch[0].length);
+        // 剝除最後的 actor line（如「陳大明 建立 2026/05/20 14:30」）
+        const _actorMatch = _body.match(/\n\n.+ (建立|編輯) \d{4}\/\d{2}\/\d{2} \d{2}:\d{2}\s*$/);
+        if (_actorMatch) _body = _body.slice(0, _body.length - _actorMatch[0].length);
+        gcNotes = _body.trim();
+      } else {
+        // 舊格式：第一行為 creator/actor，其餘為備註
+        const _descLines = _rawDesc.split('\n');
+        gcNotes = _descLines.slice(1).join('\n').trim();
       }
-      const gcNotes = _noteLines.join('\n').trim();
       // 流水號對不上 → 排入還原佇列
       if (b.bkSerial && gcSerial !== b.bkSerial) serialRestoreQueue.push(b.id);
       const expectedTitle = _buildBkExpectedTitle(b);
@@ -9566,11 +9575,14 @@ async function syncFromCalendar(silent = false) {
         const bk = bookingsData.find(x => x.id === bId);
         if (!bk?.calendarEventId) continue;
         try {
+          const _isEdit = !!(bk.updatedAt && bk.updatedAt !== bk.createdAt);
           await proxyCall('updateCalendarEvent', {
             eventId: bk.calendarEventId, room: bk.room, customRoom: bk.customRoom || '',
             date: bk.date, startTime: bk.startTime, endTime: bk.endTime,
             counselorName: bk.counselorName || '', notes: bk.notes || '',
-            creatorName: '', createdAt: bk.createdAt, bkSerial: bk.bkSerial });
+            creatorName: bk.creatorName || bk.counselorName || '',
+            createdAt: bk.createdAt, updatedAt: bk.updatedAt || bk.createdAt,
+            isEdit: _isEdit, bkSerial: bk.bkSerial });
         } catch (_) {}
       }
     }
@@ -9884,7 +9896,7 @@ function _populateBookingCounselorSelect(restoreValue) {
     `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">${chips || '<span style="color:#a0aec0;font-size:.82rem;">（尚無選項）</span>'}</div>` +
     `<div style="display:flex;gap:6px;"><input type="text" id="bk-custom-inp" class="field-input" placeholder="新增自訂選項…" style="flex:1;font-size:.82rem;padding:5px 9px;" onkeydown="if(event.key==='Enter'){event.preventDefault();_bkAddCustomOpt();}"/><button type="button" onclick="_bkAddCustomOpt()" style="padding:5px 14px;background:#edf2f7;border:1px solid #cbd5e0;border-radius:6px;cursor:pointer;font-size:.82rem;white-space:nowrap;">新增</button></div>`;
 }
-function _bkPickOpt(value, label) { _bkSelectedValue = value; _bkSelectedLabel = label; _populateBookingCounselorSelect(value); }
+function _bkPickOpt(value, label) { _bkSelectedValue = value; _bkSelectedLabel = label; _populateBookingCounselorSelect(value); _checkBkConflict(); }
 function _bkAddCustomOpt() {
   const inp = document.getElementById('bk-custom-inp');
   const lbl = (inp?.value || '').trim(); if (!lbl) return;
@@ -9952,19 +9964,51 @@ function _checkBkConflict() {
   const date  = document.getElementById('bk-date')?.value;
   const start = document.getElementById('bk-start')?.value;
   const end   = document.getElementById('bk-end')?.value;
-  const warnEl = document.getElementById('booking-conflict-warn');
-  if (!warnEl) return;
-  if (!room || !date || !start || !end || start >= end) { warnEl.style.display = 'none'; return; }
+  const roomWarnEl   = document.getElementById('bk-room-conflict-warn');
+  const personWarnEl = document.getElementById('bk-person-conflict-warn');
 
-  const conflict = bookingsData.find(b =>
+  if (!room || !date || !start || !end || start >= end) {
+    if (roomWarnEl)   roomWarnEl.style.display   = 'none';
+    if (personWarnEl) personWarnEl.style.display = 'none';
+    return;
+  }
+
+  // 空間衝突
+  const roomConflict = bookingsData.find(b =>
     b.id !== _editingBookingId && b.room === room && b.date === date &&
     b.startTime < end && b.endTime > start
   );
-  if (conflict) {
-    warnEl.style.display = '';
-    warnEl.textContent = `時間衝突：${room} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已由 ${conflict.counselorName || '—'} 預約。`;
-  } else {
-    warnEl.style.display = 'none';
+  if (roomWarnEl) {
+    if (roomConflict) {
+      roomWarnEl.style.display = '';
+      roomWarnEl.textContent = `時間衝突：${room} 在 ${(roomConflict.startTime||'').slice(0,5)}–${(roomConflict.endTime||'').slice(0,5)} 已由 ${roomConflict.counselorName || '—'} 預約。`;
+    } else {
+      roomWarnEl.style.display = 'none';
+    }
+  }
+
+  // 同人員同時段不同空間（即時提醒，無操作按鈕）
+  if (personWarnEl) {
+    if (_bkSelectedValue && _bkSelectedValue !== '中心會議') {
+      const personConflict = bookingsData.find(b =>
+        b.id !== _editingBookingId && b.room !== room && b.date === date &&
+        (b.counselorEmail === _bkSelectedValue || (!b.counselorEmail && b.counselorName === _bkSelectedValue)) &&
+        b.startTime < end && b.endTime > start
+      );
+      if (personConflict) {
+        const pRoom = personConflict.room === '其他' ? (personConflict.customRoom || '其他') : personConflict.room;
+        personWarnEl.style.display = '';
+        personWarnEl.innerHTML =
+          `<div style="background:#fffbeb;border:2px solid #f6ad55;border-radius:8px;padding:10px 14px;">` +
+          `<div style="font-weight:600;color:#744210;margin-bottom:4px;">⚠ ${escHtml(_bkSelectedLabel||_bkSelectedValue)} 已在此時段預約另一空間</div>` +
+          `<div style="font-size:.875rem;color:#92400e;">目前已預約「${escHtml(pRoom)}」（${escHtml((personConflict.startTime||'').slice(0,5))}–${escHtml((personConflict.endTime||'').slice(0,5))}）</div>` +
+          `</div>`;
+      } else {
+        personWarnEl.style.display = 'none';
+      }
+    } else {
+      personWarnEl.style.display = 'none';
+    }
   }
 }
 
@@ -10080,6 +10124,8 @@ function openBookingModal(prefillCaseId) {
   document.getElementById('bk-case-id').value = prefillCaseId || '';
   document.getElementById('bk-case-hint').style.display = 'none';
   document.getElementById('booking-conflict-warn').style.display = 'none';
+  document.getElementById('bk-room-conflict-warn').style.display = 'none';
+  document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
   document.getElementById('booking-modal').style.display = 'flex';
 }
@@ -10107,6 +10153,8 @@ function editBooking(id) {
   document.getElementById('bk-case-hint').style.display = 'none';
   document.getElementById('bk-notes').value = b.notes || '';
   document.getElementById('booking-conflict-warn').style.display = 'none';
+  document.getElementById('bk-room-conflict-warn').style.display = 'none';
+  document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb2 = document.getElementById('btn-save-booking'); if (sb2) sb2.disabled = false;
   document.getElementById('booking-modal').style.display = 'flex';
 }
@@ -10145,16 +10193,19 @@ async function saveBooking() {
   if (!_tRx.test(start) || !_tRx.test(end)) { _bkWarn('時間格式錯誤，請輸入 HH:MM（如 09:10）。'); return; }
   if (start >= end)   { _bkWarn('結束時間必須晚於開始時間。'); return; }
 
-  const conflict = bookingsData.find(b =>
+  // 空間衝突：顯示在空間卡片下方
+  const roomConflict = bookingsData.find(b =>
     b.id !== _editingBookingId && b.room === room && b.date === date &&
     b.startTime < end && b.endTime > start
   );
-  if (conflict) {
-    _bkWarn(`時間衝突：${room} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已由 ${conflict.counselorName || '—'} 預約。`);
+  if (roomConflict) {
+    const rcEl = document.getElementById('bk-room-conflict-warn');
+    if (rcEl) { rcEl.style.display = ''; rcEl.textContent = `時間衝突：${room} 在 ${(roomConflict.startTime||'').slice(0,5)}–${(roomConflict.endTime||'').slice(0,5)} 已由 ${roomConflict.counselorName || '—'} 預約。`; }
+    if (saveBtn) saveBtn.disabled = false;
     return;
   }
 
-  // 同一人同時段借用不同空間：inline 提醒（可強制儲存）
+  // 同一人同時段借用不同空間：顯示在人員卡片下方，需確認才儲存
   if (_bkSelectedValue && _bkSelectedValue !== '中心會議') {
     const personConflict = bookingsData.find(b =>
       b.id !== _editingBookingId && b.room !== room && b.date === date &&
@@ -10163,13 +10214,18 @@ async function saveBooking() {
     );
     if (personConflict && !_bkSkipPersonConflict) {
       const pRoom = personConflict.room === '其他' ? (personConflict.customRoom || '其他') : personConflict.room;
-      const warnEl = document.getElementById('booking-conflict-warn');
-      warnEl.style.display = '';
-      warnEl.innerHTML = `提醒：${escHtml(_bkSelectedLabel||_bkSelectedValue)} 在 ${escHtml((personConflict.startTime||'').slice(0,5))}–${escHtml((personConflict.endTime||'').slice(0,5))} 已借用「${escHtml(pRoom)}」。`+
-        `<div style="display:flex;gap:8px;margin-top:8px;">` +
-        `<button class="btn btn-secondary btn-sm" onclick="document.getElementById('booking-conflict-warn').style.display='none'" style="font-size:.82rem;">取消</button>`+
-        `<button class="btn btn-primary btn-sm" onclick="_bkForcePersonSave()" style="font-size:.82rem;">仍要儲存</button>`+
-        `</div>`;
+      const pcEl = document.getElementById('bk-person-conflict-warn');
+      if (pcEl) {
+        pcEl.style.display = '';
+        pcEl.innerHTML =
+          `<div style="background:#fffbeb;border:2px solid #f6ad55;border-radius:8px;padding:10px 14px;">` +
+          `<div style="font-weight:600;color:#744210;margin-bottom:4px;">⚠ ${escHtml(_bkSelectedLabel||_bkSelectedValue)} 已在此時段預約另一空間</div>` +
+          `<div style="font-size:.875rem;color:#92400e;margin-bottom:8px;">目前已預約「${escHtml(pRoom)}」（${escHtml((personConflict.startTime||'').slice(0,5))}–${escHtml((personConflict.endTime||'').slice(0,5))}）。仍要為此人預約「${escHtml(room)}」嗎？</div>` +
+          `<div style="display:flex;gap:8px;">` +
+          `<button class="btn btn-secondary btn-sm" onclick="document.getElementById('bk-person-conflict-warn').style.display='none'" style="font-size:.82rem;">取消</button>` +
+          `<button class="btn btn-primary btn-sm" onclick="_bkForcePersonSave()" style="font-size:.82rem;">仍要預約</button>` +
+          `</div></div>`;
+      }
       if (saveBtn) saveBtn.disabled = false;
       return;
     }
@@ -10189,6 +10245,7 @@ async function saveBooking() {
   const newSerial = _editingBookingId ? (_oldBkSnap?.bkSerial) : _bkNextSerial();
   const calParams = { room, customRoom, date, startTime: start, endTime: end, counselorName, notes, creatorName,
     createdAt: _editingBookingId ? (_oldBkSnap?.createdAt || now) : now,
+    updatedAt: now, isEdit: !!_editingBookingId,
     bkSerial: newSerial };
   const existingCalEventId = _oldBkSnap?.calendarEventId;
   const newId = _editingBookingId || `bk_${Date.now()}`;
@@ -10203,7 +10260,7 @@ async function saveBooking() {
   } else {
     bookingsData.push({ id: newId, bkSerial: newSerial, room, customRoom, date, startTime: start, endTime: end,
       counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
-      notes, createdAt: now, updatedAt: now });
+      notes, createdAt: now, updatedAt: now, creatorName });
   }
 
   // 立即關閉 Modal 並顯示結果（樂觀更新）
@@ -11800,6 +11857,7 @@ function restoreSidebarOrder() {
       <div>
         <label class="field-label">空間<span class="req">*</span></label>
         <div id="bk-room-chips-wrap" style="border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;background:#f7fafc;"></div>
+        <div id="bk-room-conflict-warn" style="display:none;margin-top:6px;" class="alert alert-warn"></div>
       </div>
       <div>
         <label class="field-label">日期<span class="req">*</span></label>
@@ -11826,6 +11884,7 @@ function restoreSidebarOrder() {
       <div style="grid-column:1/-1;">
         <label class="field-label">輔導人員／借用事由</label>
         <div id="bk-counselor-picker" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;background:#f7fafc;"></div>
+        <div id="bk-person-conflict-warn" style="display:none;margin-top:6px;"></div>
       </div>
       <div style="grid-column:1/-1;">
         <label class="field-label">連結個案（選填，輸入案號、學號或姓名）</label>
