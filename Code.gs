@@ -319,29 +319,28 @@
     return counselorName ? roomPart + '.' + counselorName : roomPart;
   }
 
-  function buildEventDesc_(room, counselorName, customRoom, notes) {
-    const displayRoom = (room === '其他') ? (customRoom || '其他') : room;
-    let desc = '空間：' + displayRoom + '\n主責：' + (counselorName || '');
-    if (notes) desc += '\n備註：' + notes;
+  function buildEventDesc_(creatorName, notes) {
+    let desc = (creatorName || '') + ' 建立';
+    if (notes) desc += '\n' + notes;
     return desc;
   }
 
-  function createCalendarEvent_({ room, customRoom, date, startTime, endTime, counselorName, notes }) {
+  function createCalendarEvent_({ room, customRoom, date, startTime, endTime, counselorName, notes, creatorName }) {
     const cal = getOrCreateCalendar_();
     const { start, end } = parseEventTimes_(date, startTime, endTime);
     const title = buildEventTitle_(room, counselorName, customRoom || '');
-    const desc  = buildEventDesc_(room, counselorName, customRoom || '', notes);
+    const desc  = buildEventDesc_(creatorName || counselorName || '', notes);
     const event = cal.createEvent(title, start, end, { description: desc });
     return event.getId();
   }
 
-  function updateCalendarEvent_({ eventId, room, customRoom, date, startTime, endTime, counselorName, notes }) {
+  function updateCalendarEvent_({ eventId, room, customRoom, date, startTime, endTime, counselorName, notes, creatorName }) {
     const cal = getOrCreateCalendar_();
     const event = cal.getEventById(eventId);
     if (!event) throw new Error('Event not found: ' + eventId);
     const { start, end } = parseEventTimes_(date, startTime, endTime);
     event.setTitle(buildEventTitle_(room, counselorName, customRoom || ''));
-    event.setDescription(buildEventDesc_(room, counselorName, customRoom || '', notes));
+    event.setDescription(buildEventDesc_(creatorName || counselorName || '', notes));
     event.setTime(start, end);
     return { ok: true };
   }
@@ -360,10 +359,11 @@
     const end   = new Date(endDate   + 'T23:59:59+08:00');
     const events = cal.getEvents(start, end);
     return events.map(e => ({
-      id:        e.getId(),
-      title:     e.getTitle(),
-      date:      Utilities.formatDate(e.getStartTime(), tz, 'yyyy-MM-dd'),
-      startTime: Utilities.formatDate(e.getStartTime(), tz, 'HH:mm'),
-      endTime:   Utilities.formatDate(e.getEndTime(),   tz, 'HH:mm'),
+      id:          e.getId(),
+      title:       e.getTitle(),
+      date:        Utilities.formatDate(e.getStartTime(), tz, 'yyyy-MM-dd'),
+      startTime:   Utilities.formatDate(e.getStartTime(), tz, 'HH:mm'),
+      endTime:     Utilities.formatDate(e.getEndTime(),   tz, 'HH:mm'),
+      description: e.getDescription() || '',
     }));
   }

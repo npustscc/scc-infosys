@@ -9382,28 +9382,43 @@ async function syncFromCalendar(silent = false) {
     const myName = configData?.users?.[currentUser?.email]?.name || currentUser?.name || currentUser?.email || '';
     const auditActions = [];
     let changed = false;
+    const deletedIds = new Set();
 
     bookingsData = bookingsData.map(b => {
       if (!b.calendarEventId) return b;
+      // 查詢範圍外的預約不納入刪除判斷（可能仍存在於 GC）
+      if (b.date < startDate || b.date > endDate) return b;
+
       const gcE = gcMap.get(b.calendarEventId);
       if (!gcE) {
-        // GC 上已不存在（被刪除或超出查詢範圍）— 只清除連結，保留預約紀錄
+        // GC 上已刪除 → 同步刪除本機預約
         changed = true;
         const rd = b.room === '其他' ? (b.customRoom || '其他') : (b.room || '');
-        auditActions.push({ action: '因' + myName + '同步日曆而移除日曆連結', caseId: b.caseId || null, detail: rd + '　' + b.date + '　' + (b.startTime || '').slice(0, 5) + '–' + (b.endTime || '').slice(0, 5) });
-        return { ...b, calendarEventId: null };
+        auditActions.push({ action: '因' + myName + '同步日曆而刪除預約', caseId: b.caseId || null, detail: rd + '　' + b.date + '　' + (b.startTime||'').slice(0,5) + '–' + (b.endTime||'').slice(0,5) + (b.counselorName ? '　' + b.counselorName : '') });
+        deletedIds.add(b.id);
+        return b;
       }
-      // 時間有變更 → 更新本機
+
+      // 比對時間與說明（description 第一行為「OOO 建立」，第二行起為系統說明欄）
       const bStart = (b.startTime || '').slice(0, 5);
       const bEnd   = (b.endTime   || '').slice(0, 5);
-      if (gcE.date !== b.date || gcE.startTime !== bStart || gcE.endTime !== bEnd) {
+      const gcNotes = gcE.description ? gcE.description.split('\n').slice(1).join('\n').trim() : '';
+      const timeChanged  = gcE.date !== b.date || gcE.startTime !== bStart || gcE.endTime !== bEnd;
+      const notesChanged = gcNotes !== (b.notes || '');
+
+      if (timeChanged || notesChanged) {
         changed = true;
         const rd = b.room === '其他' ? (b.customRoom || '其他') : (b.room || '');
-        auditActions.push({ action: '因' + myName + '同步日曆而更新時間', caseId: b.caseId || null, detail: rd + '　' + gcE.date + '　' + gcE.startTime + '–' + gcE.endTime });
-        return { ...b, date: gcE.date, startTime: gcE.startTime, endTime: gcE.endTime };
+        const diffs = [];
+        if (timeChanged) diffs.push(`${b.date} ${bStart}–${bEnd}→${gcE.date} ${gcE.startTime}–${gcE.endTime}`);
+        if (notesChanged) diffs.push(`說明 ${b.notes||'—'}→${gcNotes||'—'}`);
+        auditActions.push({ action: '因' + myName + '同步日曆而更新', caseId: b.caseId || null, detail: rd + (b.counselorName ? '　' + b.counselorName : '') + '　' + diffs.join('；') });
+        return { ...b, date: gcE.date, startTime: gcE.startTime, endTime: gcE.endTime, notes: gcNotes };
       }
       return b;
     });
+
+    if (deletedIds.size > 0) bookingsData = bookingsData.filter(b => !deletedIds.has(b.id));
 
     if (changed) {
       await saveBookings();
@@ -9910,7 +9925,8 @@ async function saveBooking() {
     : (_bkSelectedValue || '');
   const caseObj = caseId ? casesData.find(c => c.id === caseId) : null;
   const now = new Date().toISOString();
-  const calParams = { room, customRoom, date, startTime: start, endTime: end, counselorName, notes };
+  const creatorName = configData?.users?.[currentUser?.email]?.name || currentUser?.name || '';
+  const calParams = { room, customRoom, date, startTime: start, endTime: end, counselorName, notes, creatorName };
 
   // 先取舊的 calendarEventId 與舊狀態快照（編輯時用，供稽核日誌差異比對）
   const _oldBkSnap = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
