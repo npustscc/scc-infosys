@@ -455,6 +455,20 @@
       animation: spin .8s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-bar {
+      width: 200px; height: 4px;
+      background: #e2e8f0; border-radius: 2px; overflow: hidden;
+    }
+    .loading-bar::after {
+      content: ''; display: block;
+      width: 40%; height: 100%;
+      background: #1a5276; border-radius: 2px;
+      animation: loadSlide 1.2s ease-in-out infinite;
+    }
+    @keyframes loadSlide {
+      0%   { transform: translateX(-150%); }
+      100% { transform: translateX(400%); }
+    }
 
     .alert {
       padding: 12px 16px;
@@ -748,6 +762,7 @@
 <div id="loading-overlay" style="display:none;">
   <div class="spinner"></div>
   <span id="loading-msg">載入中…</span>
+  <div class="loading-bar"></div>
 </div>
 
 <!-- ── App Header ── -->
@@ -1215,8 +1230,8 @@
             <input type="date" id="bk-audit-date-from" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;" onchange="_applyBkAuditFilter()" title="起始日期">
             <span style="font-size:.8rem;color:#718096;">～</span>
             <input type="date" id="bk-audit-date-to" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;" onchange="_applyBkAuditFilter()" title="結束日期">
-            <input type="text" id="bk-audit-operator" placeholder="操作者" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;width:80px;" oninput="_applyBkAuditFilter()">
-            <input type="text" id="bk-audit-room" placeholder="空間" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;width:80px;" oninput="_applyBkAuditFilter()">
+            <select id="bk-audit-operator" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;" onchange="_applyBkAuditFilter()"><option value="">全部操作者</option></select>
+            <select id="bk-audit-room" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;" onchange="_applyBkAuditFilter()"><option value="">全部空間</option></select>
             <button class="btn btn-secondary btn-sm" onclick="_clearBkAuditFilter()" style="font-size:.8rem;">清除</button>
           </div>
           <div id="bookings-audit-body" style="padding:0;min-height:40px;"></div>
@@ -2220,32 +2235,36 @@ async function migrateConfigIfNeeded() {
 }
 
 let _prefSyncTimer = null;
+async function _doUserPrefWrite_() {
+  const myEmail = currentUser?.email;
+  if (!myEmail) return;
+  // 寫入前先從 Drive 讀最新版，避免把記憶體中可能過舊的 users 寫回去
+  const myLocalData = { ...(configData.users[myEmail] || {}) };
+  const fresh = await driveReadJson(CONFIG_FILE);
+  if (fresh?.users) {
+    const freshCount   = Object.keys(fresh.users).length;
+    const currentCount = Object.keys(configData.users || {}).length;
+    if (freshCount >= currentCount) configData.users = fresh.users;
+    // 確保自己最新的偏好設定蓋過 Drive 上的舊值
+    configData.users[myEmail] = { ...(configData.users[myEmail] || {}), ...myLocalData };
+  }
+  await driveUpdateJsonFile(CONFIG_FILE, configData);
+}
 function syncUserPref_(updates) {
   if (!configData || !currentUser?.email) return;
   if (!configData.users) configData.users = {};
   if (!configData.users[currentUser.email]) configData.users[currentUser.email] = {};
   Object.assign(configData.users[currentUser.email], updates);
   clearTimeout(_prefSyncTimer);
-  _prefSyncTimer = setTimeout(async () => {
-    try {
-      // 寫入前先從 Drive 讀最新版，避免把記憶體中可能過舊的 users 寫回去
-      const myEmail = currentUser?.email;
-      if (!myEmail) return;
-      const myLocalData = { ...(configData.users[myEmail] || {}) };
-      const fresh = await driveReadJson(CONFIG_FILE);
-      if (fresh?.users) {
-        const freshCount   = Object.keys(fresh.users).length;
-        const currentCount = Object.keys(configData.users || {}).length;
-        if (freshCount >= currentCount) {
-          // Drive 有等量或更多使用者 → 以 Drive 為基礎
-          configData.users = fresh.users;
-        }
-        // 無論如何，確保自己最新的偏好設定蓋過 Drive 上的舊值
-        configData.users[myEmail] = { ...(configData.users[myEmail] || {}), ...myLocalData };
-      }
-      await driveUpdateJsonFile(CONFIG_FILE, configData);
-    } catch (e) { console.warn('syncUserPref_ failed', e); }
-  }, 1500);
+  // PIN 變更：立即寫入（不走 debounce），確保跨裝置同步可靠
+  if ('pin' in updates) {
+    _doUserPrefWrite_().catch(e => console.warn('syncUserPref_ (PIN) failed', e));
+  } else {
+    _prefSyncTimer = setTimeout(
+      () => _doUserPrefWrite_().catch(e => console.warn('syncUserPref_ failed', e)),
+      1500
+    );
+  }
 }
 function _userPref_(key, def) {
   const u = configData?.users?.[currentUser?.email];
@@ -9604,6 +9623,37 @@ async function syncFromCalendar(silent = false) {
   }
 }
 
+function _initBkAuditDropdowns() {
+  // 操作者 — 從 configData.users 取有名稱的使用者
+  const opSel = document.getElementById('bk-audit-operator');
+  if (opSel) {
+    const cur = opSel.value;
+    opSel.innerHTML = '<option value="">全部操作者</option>';
+    const names = Object.values(configData?.users || {})
+      .map(u => u.name).filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, 'zh'));
+    [...new Set(names)].forEach(n => {
+      const o = document.createElement('option');
+      o.value = o.textContent = n;
+      opSel.appendChild(o);
+    });
+    opSel.value = cur || '';
+  }
+  // 空間 — 固定清單 + 自訂空間
+  const roomSel = document.getElementById('bk-audit-room');
+  if (roomSel) {
+    const cur = roomSel.value;
+    roomSel.innerHTML = '<option value="">全部空間</option>';
+    const allRooms = [...ROOMS, ..._getBkCustomRooms()].filter(r => r !== '其他');
+    allRooms.forEach(r => {
+      const o = document.createElement('option');
+      o.value = o.textContent = r;
+      roomSel.appendChild(o);
+    });
+    roomSel.value = cur || '';
+  }
+}
+
 function _toggleBkSection(bodyId, iconId) {
   const body = document.getElementById(bodyId);
   const icon = document.getElementById(iconId);
@@ -9700,6 +9750,8 @@ function _renderBkAuditLogs(logs) {
 async function renderBookingsAuditLog(forceRefresh = false) {
   const el = document.getElementById('bookings-audit-body');
   if (!el) return;
+
+  _initBkAuditDropdowns();
 
   // 若快取已存在且不強制刷新 → 立即渲染，背景更新 Drive
   if (Array.isArray(window._auditLogsCache) && !forceRefresh) {
