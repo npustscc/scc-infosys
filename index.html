@@ -2165,6 +2165,35 @@ const COUNSELOR_ROLE_ORDER = {
   '義務輔導老師': 5,
 };
 // ── 偏好設定同步至 Drive（防抖，避免頻繁寫入）──────────────
+// 一次性修復已知資料損毀（role 字串含 U+FFFD、email key 錯誤）
+async function migrateConfigIfNeeded() {
+  if (!configData?.users) return;
+  let changed = false;
+
+  // 修復 role 字串損毀：「専任」的「任」被編碼錯誤成 $<FFFD><FFFD>
+  for (const u of Object.values(configData.users)) {
+    if (u.role && u.role.includes('�')) {
+      // 保留「専」，刪除其後所有損毀字元（直到損毀段結束），補上「任」
+      u.role = '專任' + u.role.replace(/^專.+?�+/, '');
+      changed = true;
+    }
+  }
+
+  // 修復 email key 錯誤：noust.scc → npust.scc
+  const wrongKey = 'noust.scc@heartnpust.tw';
+  const rightKey = 'npust.scc@heartnpust.tw';
+  if (configData.users[wrongKey] && !configData.users[rightKey]) {
+    configData.users[rightKey] = configData.users[wrongKey];
+    delete configData.users[wrongKey];
+    changed = true;
+  }
+
+  if (changed) {
+    try { await driveUpdateJsonFile(CONFIG_FILE, configData); }
+    catch (e) { console.warn('migrateConfigIfNeeded failed:', e); }
+  }
+}
+
 let _prefSyncTimer = null;
 function syncUserPref_(updates) {
   if (!configData?.users?.[currentUser?.email]) return;
@@ -2525,6 +2554,7 @@ async function afterLogin() {
     configData = await driveReadJson(CONFIG_FILE);
     hideLoading();
     resolveUserRole();
+    migrateConfigIfNeeded(); // 背景靜默修復已知損毀
     initSidebarDrag();
     renderNotifBell();
     document.getElementById('login-screen').style.display = 'none';

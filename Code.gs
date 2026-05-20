@@ -170,7 +170,7 @@
     }
     const fileName = parts[parts.length - 1];
     const q2 = "name='" + fileName + "' and '" + curId + "' in parents and trashed=false";
-    const res2 = driveGet_('files', { q: q2, fields: 'files(id)', pageSize: '1' });
+    const res2 = driveGet_('files', { q: q2, fields: 'files(id)', orderBy: 'modifiedTime desc', pageSize: '1' });
     if (!res2.files || res2.files.length === 0) throw new Error('File not found: ' + path);
     return res2.files[0].id;
   }
