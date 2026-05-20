@@ -4,6 +4,8 @@
   const CLIENT_ID     = '68582831293-fecbka17adht886tm6oh18vrdsdg1hbj.apps.googleusercontent.com';
   const ROOT_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP';
   const CALENDAR_NAME = 'SCC 空間預約';
+  // 2026-05-20 修復：直接寫死乾淨的 config.json ID，跳過名稱搜尋（Drive 有兩個同名檔案，orderBy 在 shared drive 被忽略）
+  const CONFIG_FILE_ID_OVERRIDE = '1CKXefjjiB-PrIFZa-DBQ7Q2ASs-TQroj';
 
   // ── 進入點 ────────────────────────────────────────────────────────────────────
 
@@ -159,6 +161,7 @@
 
   // 路徑解析：把 "cases/manifest.json" 轉成 fileId
   function resolvePathToId_(path) {
+    if (path === 'config.json' && CONFIG_FILE_ID_OVERRIDE) return CONFIG_FILE_ID_OVERRIDE;
     const parts = path.split('/');
     let curId = ROOT_FOLDER_ID;
     for (let i = 0; i < parts.length - 1; i++) {
