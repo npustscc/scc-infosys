@@ -5096,11 +5096,12 @@ async function saveRecord() {
       if (wantNextBooking && nextBkRoom && nextBkDate && nextBkStart && nextBkEnd) {
         const myName = configData?.users?.[currentUser.email]?.name || currentUser.email || '';
         const caseObj = casesData[cidx];
-        bookingsData.push({ id: `bk_${Date.now()}`, room: nextBkRoom, date: nextBkDate,
+        const _nbNow = new Date().toISOString();
+        bookingsData.push({ id: `bk_${Date.now()}`, bkSerial: _bkNextSerial(), room: nextBkRoom, date: nextBkDate,
           startTime: nextBkStart, endTime: nextBkEnd,
           counselorEmail: currentUser.email, counselorName: myName,
           caseId: _recordCaseId, caseName: caseObj?.name || '',
-          notes: '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+          notes: '', createdAt: _nbNow, updatedAt: _nbNow });
         await saveBookings().catch(e => console.warn('預約儲存失敗:', e));
       }
       auditLog('新增晤談紀錄', _recordCaseId, newRecord.id);
@@ -9368,6 +9369,10 @@ async function savePendingCases() {
 let bookingsData = [];
 let _editingBookingId = null;
 
+function _bkNextSerial() {
+  return bookingsData.reduce((m, b) => Math.max(m, b.bkSerial || 0), 0) + 1;
+}
+
 let transferData = [];  // loaded from transfer.json
 let _bkDaySpan = parseInt(localStorage.getItem('scc_bk_span') || '1') || 1;
 
@@ -9441,6 +9446,7 @@ async function syncFromCalendar(silent = false) {
     const auditActions = [];
     let changed = false;
     const deletedIds = new Set();
+    const serialRestoreQueue = [];
 
     bookingsData = bookingsData.map(b => {
       if (!b.calendarEventId) return b;
@@ -9460,7 +9466,19 @@ async function syncFromCalendar(silent = false) {
       // 比對標題、時間與說明
       const bStart = (b.startTime || '').slice(0, 5);
       const bEnd   = (b.endTime   || '').slice(0, 5);
-      const gcNotes      = gcE.description ? gcE.description.split('\n').slice(1).join('\n').trim() : '';
+      // 解析 GC description：第一行為「OOO 建立…」，末尾可能有「\n\n#NNNN」流水號
+      const _rawDesc = gcE.description || '';
+      const _descLines = _rawDesc.split('\n');
+      let gcSerial = null;
+      const _noteLines = _descLines.slice(1);
+      if (_noteLines.length > 0 && /^#\d+$/.test((_noteLines[_noteLines.length - 1] || '').trim())) {
+        gcSerial = parseInt(_noteLines[_noteLines.length - 1].trim().slice(1));
+        _noteLines.pop();
+        while (_noteLines.length > 0 && _noteLines[_noteLines.length - 1].trim() === '') _noteLines.pop();
+      }
+      const gcNotes = _noteLines.join('\n').trim();
+      // 流水號對不上 → 排入還原佇列
+      if (b.bkSerial && gcSerial !== b.bkSerial) serialRestoreQueue.push(b.id);
       const expectedTitle = _buildBkExpectedTitle(b);
       const titleChanged  = gcE.title !== expectedTitle;
       const timeChanged   = gcE.date !== b.date || gcE.startTime !== bStart || gcE.endTime !== bEnd;
@@ -9512,6 +9530,21 @@ async function syncFromCalendar(silent = false) {
     if (!silent) {
       hideLoading();
       setAlert('bookings-alert', 'ok', changed ? 'Google Calendar 同步完成，已更新本機資料。' : 'Google Calendar 同步完成，無變動。');
+    }
+
+    // 流水號還原：背景修復 GC description 中被篡改的流水號
+    if (serialRestoreQueue.length > 0) {
+      for (const bId of serialRestoreQueue) {
+        const bk = bookingsData.find(x => x.id === bId);
+        if (!bk?.calendarEventId || !bk.bkSerial) continue;
+        try {
+          await proxyCall('updateCalendarEvent', {
+            eventId: bk.calendarEventId, room: bk.room, customRoom: bk.customRoom || '',
+            date: bk.date, startTime: bk.startTime, endTime: bk.endTime,
+            counselorName: bk.counselorName || '', notes: bk.notes || '',
+            creatorName: '', createdAt: bk.createdAt, bkSerial: bk.bkSerial });
+        } catch (_) {}
+      }
     }
   } catch (e) {
     if (!silent) { hideLoading(); setAlert('bookings-alert', 'warn', '同步失敗：' + e.message); }
@@ -10125,8 +10158,10 @@ async function saveBooking() {
 
   // 先取舊的 calendarEventId 與舊狀態快照（編輯時用，供稽核日誌差異比對）
   const _oldBkSnap = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
+  const newSerial = _editingBookingId ? (_oldBkSnap?.bkSerial) : _bkNextSerial();
   const calParams = { room, customRoom, date, startTime: start, endTime: end, counselorName, notes, creatorName,
-    createdAt: _editingBookingId ? (_oldBkSnap?.createdAt || now) : now };
+    createdAt: _editingBookingId ? (_oldBkSnap?.createdAt || now) : now,
+    bkSerial: newSerial };
   const existingCalEventId = _oldBkSnap?.calendarEventId;
   const newId = _editingBookingId || `bk_${Date.now()}`;
 
@@ -10138,7 +10173,7 @@ async function saveBooking() {
       counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
       notes, updatedAt: now };
   } else {
-    bookingsData.push({ id: newId, room, customRoom, date, startTime: start, endTime: end,
+    bookingsData.push({ id: newId, bkSerial: newSerial, room, customRoom, date, startTime: start, endTime: end,
       counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
       notes, createdAt: now, updatedAt: now });
   }
