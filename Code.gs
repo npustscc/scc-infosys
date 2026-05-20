@@ -366,11 +366,12 @@
     const end   = new Date(endDate   + 'T23:59:59+08:00');
     const events = cal.getEvents(start, end);
     return events.map(e => ({
-      id:          e.getId(),
-      title:       e.getTitle(),
-      date:        Utilities.formatDate(e.getStartTime(), tz, 'yyyy-MM-dd'),
-      startTime:   Utilities.formatDate(e.getStartTime(), tz, 'HH:mm'),
-      endTime:     Utilities.formatDate(e.getEndTime(),   tz, 'HH:mm'),
-      description: e.getDescription() || '',
+      id:           e.getId(),
+      title:        e.getTitle(),
+      date:         Utilities.formatDate(e.getStartTime(), tz, 'yyyy-MM-dd'),
+      startTime:    Utilities.formatDate(e.getStartTime(), tz, 'HH:mm'),
+      endTime:      Utilities.formatDate(e.getEndTime(),   tz, 'HH:mm'),
+      description:  e.getDescription() || '',
+      lastModified: e.getLastUpdated().toISOString(),
     }));
   }

@@ -9447,6 +9447,7 @@ async function syncFromCalendar(silent = false) {
     let changed = false;
     const deletedIds = new Set();
     const serialRestoreQueue = [];
+    const gcPushBackQueue = [];  // 系統比 GC 新 → 推回 GC
 
     bookingsData = bookingsData.map(b => {
       if (!b.calendarEventId) return b;
@@ -9486,6 +9487,15 @@ async function syncFromCalendar(silent = false) {
 
       if (titleChanged || timeChanged || notesChanged) {
         const rd = b.room === '其他' ? (b.customRoom || '其他') : (b.room || '');
+        // 交叉驗證：比較 GC lastModified 與系統 updatedAt / createdAt
+        const gcIsNewer = !gcE.lastModified || gcE.lastModified > (b.updatedAt || b.createdAt || '');
+
+        if (!gcIsNewer) {
+          // 系統較新 → 推回 GC，不更新本機
+          gcPushBackQueue.push(b.id);
+          return b;
+        }
+
         const diffs = [];
         const update = {};
 
@@ -9533,10 +9543,11 @@ async function syncFromCalendar(silent = false) {
     }
 
     // 流水號還原：背景修復 GC description 中被篡改的流水號
-    if (serialRestoreQueue.length > 0) {
-      for (const bId of serialRestoreQueue) {
+    const _allRestoreIds = [...new Set([...serialRestoreQueue, ...gcPushBackQueue])];
+    if (_allRestoreIds.length > 0) {
+      for (const bId of _allRestoreIds) {
         const bk = bookingsData.find(x => x.id === bId);
-        if (!bk?.calendarEventId || !bk.bkSerial) continue;
+        if (!bk?.calendarEventId) continue;
         try {
           await proxyCall('updateCalendarEvent', {
             eventId: bk.calendarEventId, room: bk.room, customRoom: bk.customRoom || '',
