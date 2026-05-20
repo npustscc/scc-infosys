@@ -2493,10 +2493,19 @@ window.addEventListener('load', () => {
         } catch (_) {}
       }
       if (!tokenValid) {
-        sessionStorage.removeItem('scc_user');
+        // Token 已過期：清掉舊 token，透過 GSI 靜默取得新 token（auto_select 情況下無需使用者動作）
         sessionStorage.removeItem('scc_idtoken');
-        currentUser = null;
-        // 不自動登入，讓使用者點登入按鈕取得新 token
+        gIdToken = null;
+        showLoading('驗證身分中…');
+        google.accounts.id.prompt(notification => {
+          if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+            // 無法靜默重新登入（如瀏覽器封鎖 One Tap），退回登入畫面
+            hideLoading();
+            sessionStorage.removeItem('scc_user');
+            currentUser = null;
+          }
+          // 若靜默成功，handleCredentialResponse 會自動接手並呼叫 afterLogin()
+        });
       } else {
       gIdToken = storedToken;
       showLoading('自動登入中…');
@@ -9903,10 +9912,9 @@ async function saveBooking() {
   const now = new Date().toISOString();
   const calParams = { room, customRoom, date, startTime: start, endTime: end, counselorName, notes };
 
-  // 先取舊的 calendarEventId（編輯時用）
-  const existingCalEventId = _editingBookingId
-    ? bookingsData.find(x => x.id === _editingBookingId)?.calendarEventId
-    : undefined;
+  // 先取舊的 calendarEventId 與舊狀態快照（編輯時用，供稽核日誌差異比對）
+  const _oldBkSnap = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
+  const existingCalEventId = _oldBkSnap?.calendarEventId;
   const newId = _editingBookingId || `bk_${Date.now()}`;
 
   // 立即更新本機資料
@@ -9946,8 +9954,24 @@ async function saveBooking() {
     }
 
     await saveBookings();
-    const _bkRoomDisplay = room === '其他' ? (customRoom || '其他') : room;
-    const _bkDetail = `${_bkRoomDisplay}　${date}　${(start||'').slice(0,5)}–${(end||'').slice(0,5)}${counselorName ? '　' + counselorName : ''}`;
+    let _bkDetail;
+    if (_editingBookingId && _oldBkSnap) {
+      // 計算差異：只列出有變更的欄位
+      const diffs = [];
+      const oldRoomD = _oldBkSnap.room === '其他' ? (_oldBkSnap.customRoom || '其他') : (_oldBkSnap.room || '');
+      const newRoomD = room === '其他' ? (customRoom || '其他') : room;
+      if (oldRoomD !== newRoomD) diffs.push(`${oldRoomD}→${newRoomD}`);
+      const oldTimeStr = `${_oldBkSnap.date} ${(_oldBkSnap.startTime||'').slice(0,5)}–${(_oldBkSnap.endTime||'').slice(0,5)}`;
+      const newTimeStr = `${date} ${(start||'').slice(0,5)}–${(end||'').slice(0,5)}`;
+      if (oldTimeStr !== newTimeStr) diffs.push(`${oldTimeStr}→${newTimeStr}`);
+      if ((_oldBkSnap.counselorName||'') !== (counselorName||'')) diffs.push(`${_oldBkSnap.counselorName||'—'}→${counselorName||'—'}`);
+      if ((_oldBkSnap.caseId||'') !== (caseId||'')) diffs.push(`案號 ${_oldBkSnap.caseId||'無'}→${caseId||'無'}`);
+      const _bkId = `${oldRoomD}　${oldTimeStr}${_oldBkSnap.counselorName ? '　'+_oldBkSnap.counselorName : ''}`;
+      _bkDetail = diffs.length ? `${_bkId}　${diffs.join('；')}` : _bkId;
+    } else {
+      const _bkRoomDisplay = room === '其他' ? (customRoom || '其他') : room;
+      _bkDetail = `${_bkRoomDisplay}　${date}　${(start||'').slice(0,5)}–${(end||'').slice(0,5)}${counselorName ? '　' + counselorName : ''}`;
+    }
     auditLog(_editingBookingId ? '編輯空間預約' : '新增空間預約', caseId || null, null, _bkDetail);
   } catch (e) {
     setAlert('bookings-alert', 'warn', '儲存失敗：' + e.message);
