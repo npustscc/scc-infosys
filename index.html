@@ -1060,6 +1060,7 @@
     <!-- 偏好設定 -->
     <div id="page-prefs" class="page">
       <div class="page-title">偏好設定</div>
+
       <div class="card" style="margin-bottom:20px;">
         <div class="card-header"><h3>輔導人員選單排序</h3></div>
         <div style="padding:16px 20px;max-width:520px;">
@@ -1071,10 +1072,30 @@
             </span>
           </label>
           <div style="margin-top:10px;">
-            <button class="btn btn-secondary btn-sm" type="button" onclick="if(confirm('確定清除所有輔導人員選單使用記憶？'))localStorage.removeItem('scc_counselor_freqs')">清除使用記憶</button>
+            <button class="btn btn-secondary btn-sm" type="button" onclick="prefResetCounselorFreqs()">清除使用記憶</button>
           </div>
         </div>
       </div>
+
+      <div class="card" style="margin-bottom:20px;">
+        <div class="card-header"><h3>空間預約偏好</h3></div>
+        <div style="padding:16px 20px;max-width:520px;display:flex;flex-direction:column;gap:16px;">
+          <div>
+            <div class="field-label" style="margin-bottom:6px;">自訂借用事由選項</div>
+            <div id="pref-bk-custom-opts" style="margin-bottom:8px;"></div>
+            <div style="display:flex;gap:6px;">
+              <input type="text" id="pref-bk-new-opt" class="field-input" placeholder="新增選項名稱…" style="flex:1;font-size:.88rem;" onkeydown="if(event.key==='Enter'){event.preventDefault();prefAddBkCustomOpt();}" />
+              <button class="btn btn-secondary btn-sm" onclick="prefAddBkCustomOpt()">新增</button>
+            </div>
+          </div>
+          <div>
+            <div class="field-label" style="margin-bottom:6px;">使用頻率記憶（選項排序）</div>
+            <p style="font-size:.82rem;color:#718096;margin:0 0 8px;">系統記憶預約時最常選的輔導人員/事由，自動排到前面。</p>
+            <button class="btn btn-secondary btn-sm" onclick="prefResetBkFreqs()">清除排序記憶</button>
+          </div>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-header"><h3>畫面鎖定（AFK）</h3></div>
         <div style="padding:16px 20px;display:flex;flex-direction:column;gap:14px;max-width:480px;">
@@ -2136,11 +2157,27 @@ const COUNSELOR_ROLE_ORDER = {
   '實習諮商心理師': 4,
   '義務輔導老師': 5,
 };
+// ── 偏好設定同步至 Drive（防抖，避免頻繁寫入）──────────────
+let _prefSyncTimer = null;
+function syncUserPref_(updates) {
+  if (!configData?.users?.[currentUser?.email]) return;
+  Object.assign(configData.users[currentUser.email], updates);
+  clearTimeout(_prefSyncTimer);
+  _prefSyncTimer = setTimeout(async () => {
+    try { await driveUpdateJsonFile(CONFIG_FILE, configData); }
+    catch (e) { console.warn('syncUserPref_ failed', e); }
+  }, 1500);
+}
+function _userPref_(key, def) {
+  const u = configData?.users?.[currentUser?.email];
+  return u ? (u[key] ?? def) : def;
+}
+
 // 傳入 filterFn([email, info]) 過濾，依使用頻率（開啟記憶時）或職別+筆畫排序
 function getSortedCounselorEntries(filterFn) {
   const entries = Object.entries(configData?.users || {}).filter(filterFn);
-  const freqMode = localStorage.getItem('scc_counselor_freq_mode') !== 'false';
-  const freqs = freqMode ? (JSON.parse(localStorage.getItem('scc_counselor_freqs') || '{}')) : {};
+  const freqMode = _userPref_('counselorFreqMode', true);
+  const freqs    = freqMode ? (_userPref_('counselorFreqs', {})) : {};
   entries.sort(([ea, ia], [eb, ib]) => {
     if (freqMode) {
       const fa = freqs[ea] || 0, fb = freqs[eb] || 0;
@@ -2154,10 +2191,10 @@ function getSortedCounselorEntries(filterFn) {
   return entries;
 }
 function recordCounselorUsage(...emails) {
-  if (localStorage.getItem('scc_counselor_freq_mode') === 'false') return;
-  const freqs = JSON.parse(localStorage.getItem('scc_counselor_freqs') || '{}');
+  if (!_userPref_('counselorFreqMode', true)) return;
+  const freqs = { ..._userPref_('counselorFreqs', {}) };
   emails.filter(Boolean).forEach(e => { freqs[e] = (freqs[e] || 0) + 1; });
-  localStorage.setItem('scc_counselor_freqs', JSON.stringify(freqs));
+  syncUserPref_({ counselorFreqs: freqs });
 }
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycby9ZDT7NO7Jso3mbzbMaOzN0mdfgREbxoHRLC3NEbulGtKwp9eTibpD0XwKJCeC9wlh/exec';
 
@@ -8344,8 +8381,8 @@ function checkPinSetup() {
   if (setupEl) setupEl.style.display = 'none';
 
   let stored = localStorage.getItem(pinKey());
-  // 跨瀏覽器同步：若本機未設定但 Drive 上的 user profile 有 PIN，自動回填到 localStorage
-  if (stored === null && configData?.users?.[currentUser?.email]) {
+  // 跨裝置同步：從 Drive user profile 回填 PIN 與 pinTmo 到 localStorage（lockScreen/resetAfkTimer 用）
+  if (configData?.users?.[currentUser?.email]) {
     const u = configData.users[currentUser.email];
     if (u.pin !== undefined) {
       localStorage.setItem(pinKey(), u.pin);
@@ -8393,7 +8430,7 @@ function toggleSetupCustom(sel) {
 // ── 偏好設定頁面 ────────────────────────────
 function renderPrefsPage() {
   const stored  = localStorage.getItem(pinKey());
-  const tmo     = localStorage.getItem(pinTmoKey()) ?? '10';
+  const tmo     = String(_userPref_('pinTmo', 10));
   const hasPIN  = stored !== null && stored.length > 0;
 
   const statusEl = document.getElementById('pref-current-pin-status');
@@ -8415,11 +8452,45 @@ function renderPrefsPage() {
   document.getElementById('pref-pin-confirm').value = '';
   document.getElementById('pref-error').style.display   = 'none';
   document.getElementById('pref-success').style.display = 'none';
-  document.getElementById('pref-counselor-freq').checked = localStorage.getItem('scc_counselor_freq_mode') !== 'false';
+  document.getElementById('pref-counselor-freq').checked = _userPref_('counselorFreqMode', true);
+
+  // 空間預約自訂選項列表
+  const customOpts = _getBkCustomOpts();
+  const bkOptsEl = document.getElementById('pref-bk-custom-opts');
+  if (bkOptsEl) {
+    bkOptsEl.innerHTML = customOpts.length
+      ? customOpts.map(lbl =>
+          `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;">
+            <span style="flex:1;font-size:.88rem;">${escHtml(lbl)}</span>
+            <button class="btn btn-secondary btn-sm" onclick="prefDelBkCustomOpt(${JSON.stringify(lbl)})">刪除</button>
+          </div>`
+        ).join('')
+      : '<span style="font-size:.82rem;color:#a0aec0;">（尚無自訂選項）</span>';
+  }
 }
 
 function toggleCustomTimeout(sel) {
   document.getElementById('pref-timeout-custom').style.display = sel.value === 'custom' ? '' : 'none';
+}
+function prefAddBkCustomOpt() {
+  const inp = document.getElementById('pref-bk-new-opt');
+  const lbl = (inp?.value || '').trim(); if (!lbl) return;
+  const opts = _getBkCustomOpts(); if (!opts.includes(lbl)) { opts.push(lbl); _saveBkCustomOpts(opts); }
+  inp.value = ''; renderPrefsPage();
+}
+function prefDelBkCustomOpt(lbl) {
+  _saveBkCustomOpts(_getBkCustomOpts().filter(l => l !== lbl));
+  renderPrefsPage();
+}
+function prefResetBkFreqs() {
+  if (!confirm('確定清除空間預約使用頻率記憶？選項排序將回到預設。')) return;
+  syncUserPref_({ bkFreqs: {} });
+  renderPrefsPage();
+}
+function prefResetCounselorFreqs() {
+  if (!confirm('確定清除輔導人員選單使用記憶？')) return;
+  syncUserPref_({ counselorFreqs: {} });
+  renderPrefsPage();
 }
 
 function savePrefs() {
@@ -8444,7 +8515,8 @@ function savePrefs() {
   if (pinVal) localStorage.setItem(pinKey(), pinVal);
   // 若留空：保留舊 PIN（不變更）
   localStorage.setItem(pinTmoKey(), String(tmoMins));
-  localStorage.setItem('scc_counselor_freq_mode', String(document.getElementById('pref-counselor-freq').checked));
+  const freqMode = document.getElementById('pref-counselor-freq').checked;
+  syncUserPref_({ counselorFreqMode: freqMode, pinTmo: tmoMins });
   // 同步到 Drive profile（PIN 留空時不改 PIN，但仍同步 timeout）
   syncPinToConfig(pinVal || localStorage.getItem(pinKey()) || '', tmoMins);
 
@@ -9331,21 +9403,19 @@ function _populateBookingRoomSelect() {
 // ── 空間預約「輔導人員/借用事由」選擇器 ──────────────
 let _bkSelectedValue = '';
 let _bkSelectedLabel = '';
-const _bkFreqKey       = () => `scc_bk_freq_${currentUser?.email || ''}`;
-const _bkCustomOptsKey = () => `scc_bk_custom_${currentUser?.email || ''}`;
-function _getBkFreqs() { return JSON.parse(localStorage.getItem(_bkFreqKey()) || '{}'); }
+function _getBkFreqs()        { return { ..._userPref_('bkFreqs', {}) }; }
 function _recordBkFreq(v) {
   if (!v) return;
   const f = _getBkFreqs(); f[v] = (f[v] || 0) + 1;
-  localStorage.setItem(_bkFreqKey(), JSON.stringify(f));
+  syncUserPref_({ bkFreqs: f });
 }
-function _getBkCustomOpts() { return JSON.parse(localStorage.getItem(_bkCustomOptsKey()) || '[]'); }
-function _saveBkCustomOpts(opts) { localStorage.setItem(_bkCustomOptsKey(), JSON.stringify(opts)); }
+function _getBkCustomOpts()   { return [...(_userPref_('bkCustomOpts', []))]; }
+function _saveBkCustomOpts(opts) { syncUserPref_({ bkCustomOpts: opts }); }
 
 function _bkBuildAllOpts() {
   const freqs = _getBkFreqs();
   const counselors = getSortedCounselorEntries(([, u]) => BK_COUNSELING_ROLES.has(u.role || ''))
-    .map(([email, u]) => ({ value: email, label: `${u.name || email}（${u.role || ''}）`, isCustom: false }));
+    .map(([email, u]) => ({ value: email, label: u.name || email, isCustom: false }));
   const fixed   = [{ value: '中心會議', label: '🏛 中心會議', isCustom: false }];
   const custom  = _getBkCustomOpts().map(lbl => ({ value: lbl, label: lbl, isCustom: true }));
   const all     = [...counselors, ...fixed, ...custom];
