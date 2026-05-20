@@ -860,6 +860,9 @@
       <div class="nav-item" data-nav-id="page-bookings" onclick="showPage('page-bookings', this); renderBookingsPage()">
         <span class="icon">📅</span> 空間預約 <span class="nav-drag-handle">⠿</span>
       </div>
+      <div class="nav-item" data-nav-id="page-psychiatry" onclick="showPage('page-psychiatry', this); renderPsychiatryPage()">
+        <span class="icon">🧠</span> 精神科評估 <span class="nav-drag-handle">⠿</span>
+      </div>
       <div class="nav-item" data-nav-id="page-casenums" onclick="showPage('page-casenums', this); renderCaseNums()">
         <span class="icon">🔢</span> 案號管理 <span class="nav-drag-handle">⠿</span>
       </div>
@@ -1143,6 +1146,18 @@
     <div id="page-transfer" class="page">
       <div class="page-title">轉銜管理</div>
       <div id="transfer-body"></div>
+    </div>
+
+    <!-- 精神科醫師評估 -->
+    <div id="page-psychiatry" class="page">
+      <div class="page-title">精神科醫師評估</div>
+      <div class="card">
+        <div class="card-header" style="flex-wrap:wrap;gap:8px;">
+          <input type="text" id="psychiatry-q" class="field-input" placeholder="搜尋姓名、學號或案號…" style="flex:1;min-width:180px;max-width:340px;" oninput="renderPsychiatryPage()">
+          <button class="btn btn-primary" onclick="openPsychiatrySearch()">＋ 新增評估</button>
+        </div>
+        <div id="psychiatry-body" style="min-height:60px;"></div>
+      </div>
     </div>
 
     <!-- 統計分析 -->
@@ -2374,7 +2389,7 @@ function updateFloatingBackBtn(pageId) {
     fab.onclick = () => handleFloatingBack();
     document.body.appendChild(fab);
   }
-  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings','page-recycle','page-transfer'];
+  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings','page-recycle','page-transfer','page-psychiatry'];
   fab.style.display = showOn.includes(pageId) ? 'inline-block' : 'none';
   fab.dataset.fromPage = pageId;
 }
@@ -11419,6 +11434,79 @@ function printTransferAssessment(transferId) {
 // ══════════════════════════════════════════════
 //  精神科醫師評估
 // ══════════════════════════════════════════════
+function renderPsychiatryPage() {
+  const q = (document.getElementById('psychiatry-q')?.value || '').trim().toLowerCase();
+  const rows = [];
+  for (const c of casesData) {
+    if (c.deleted) continue;
+    for (const pr of (c.psychiatristRecords || [])) {
+      if (!q || c.name.toLowerCase().includes(q) || (c.studentId||'').includes(q) || c.id.includes(q) ||
+          (pr.diagnosisName||'').toLowerCase().includes(q) || (pr.recommendations||'').toLowerCase().includes(q)) {
+        rows.push({ c, pr });
+      }
+    }
+  }
+  rows.sort((a, b) => (a.pr.date||'') < (b.pr.date||'') ? 1 : -1);
+  const body = document.getElementById('psychiatry-body');
+  if (!body) return;
+  if (rows.length === 0) {
+    body.innerHTML = `<div style="padding:24px;text-align:center;color:#718096;">尚無精神科評估紀錄${q ? '（無符合結果）' : ''}</div>`;
+    return;
+  }
+  body.innerHTML = rows.map(({ c, pr }) => {
+    const diagLabel = pr.diagnosisType === 'specific' ? `符合：${escHtml(pr.diagnosisName||'—')}` : '不符合任一精神疾患診斷';
+    const tags = [pr.medicationAdvice==='yes'?'建議藥物':'', pr.hospitalizationAdvice==='yes'?'建議住院':''].filter(Boolean);
+    return `<div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid #e2e8f0;flex-wrap:wrap;">
+      <div style="min-width:90px;font-weight:600;color:#2d3748;font-size:.88rem;">${escHtml(pr.date||'—')}</div>
+      <div style="flex:1;min-width:120px;">
+        <div style="font-size:.9rem;color:#2d3748;font-weight:600;">${escHtml(c.name||'—')} <span style="color:#718096;font-weight:400;font-size:.78rem;">${escHtml(c.id)}</span></div>
+        <div style="font-size:.82rem;color:#4a5568;">${diagLabel}</div>
+      </div>
+      ${tags.length ? `<div style="display:flex;gap:4px;">${tags.map(t=>`<span style="background:#fed7d7;color:#c53030;padding:2px 8px;border-radius:10px;font-size:.75rem;">${t}</span>`).join('')}</div>` : ''}
+      <button class="btn btn-secondary btn-sm" onclick="openPsychiatristModal('${escHtml(c.id)}','${escHtml(pr.id)}')" style="font-size:.78rem;">編輯</button>
+    </div>`;
+  }).join('');
+}
+
+function openPsychiatrySearch() {
+  const el = document.getElementById('psych-nav-search-modal');
+  if (el) el.remove();
+  document.body.insertAdjacentHTML('beforeend', `
+    <div id="psych-nav-search-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:600;display:flex;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:12px;padding:24px;width:90%;max-width:420px;box-shadow:0 8px 32px rgba(0,0,0,.2);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+          <h3 style="font-size:1rem;">選擇個案以新增精神科評估</h3>
+          <button onclick="document.getElementById('psych-nav-search-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+        </div>
+        <input type="text" id="psych-nav-q" class="field-input" placeholder="輸入姓名、學號或案號…" oninput="_renderPsychNavResults()">
+        <div id="psych-nav-results" style="margin-top:10px;max-height:300px;overflow-y:auto;"></div>
+      </div>
+    </div>`);
+  document.getElementById('psych-nav-q')?.focus();
+  _renderPsychNavResults();
+}
+
+function _renderPsychNavResults() {
+  const q = (document.getElementById('psych-nav-q')?.value || '').trim().toLowerCase();
+  const el = document.getElementById('psych-nav-results');
+  if (!el) return;
+  if (!q) { el.innerHTML = `<div style="color:#718096;font-size:.85rem;text-align:center;padding:12px;">請輸入關鍵字</div>`; return; }
+  const matches = casesData.filter(c => !c.deleted &&
+    (c.name.toLowerCase().includes(q) || (c.studentId||'').includes(q) || c.id.includes(q))
+  ).slice(0, 20);
+  if (!matches.length) { el.innerHTML = `<div style="color:#718096;font-size:.85rem;text-align:center;padding:12px;">找不到符合的個案</div>`; return; }
+  el.innerHTML = matches.map(c => `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:6px;cursor:pointer;"
+      onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background=''"
+      onclick="document.getElementById('psych-nav-search-modal').remove();openPsychiatristModal('${escHtml(c.id)}')">
+      <div>
+        <div style="font-weight:600;font-size:.88rem;">${escHtml(c.name)}</div>
+        <div style="color:#718096;font-size:.78rem;">${escHtml(c.id)} | ${escHtml(c.studentId||'—')}</div>
+      </div>
+      <span style="color:#3182ce;font-size:.82rem;">選擇</span>
+    </div>`).join('');
+}
+
 function openPsychiatristModal(caseId, recordId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
