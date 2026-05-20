@@ -42,6 +42,11 @@
     .notif-item:hover { background:#f0f9ff !important; }
     .notif-unread { background:#ebf8ff; }
     .notif-read   { background:#fff; }
+    .bk-opt-chip { display:inline-flex;align-items:center;padding:5px 11px;border:1.5px solid #e2e8f0;border-radius:20px;cursor:pointer;font-size:.82rem;background:#fff;transition:border-color .12s,background .12s;white-space:nowrap;line-height:1.4;user-select:none; }
+    .bk-opt-chip:hover { border-color:#90cdf4;background:#ebf8ff; }
+    .bk-opt-chip-sel { border-color:#2471a3 !important;background:#dbeafe !important;color:#1a4971;font-weight:600; }
+    .bk-opt-chip-del { margin-left:5px;opacity:.45;font-size:.72rem; }
+    .bk-opt-chip-del:hover { opacity:1;color:#c53030; }
     #btn-logout {
       background: transparent;
       border: 1px solid rgba(255,255,255,.6);
@@ -9323,14 +9328,63 @@ function _populateBookingRoomSelect() {
     ROOMS.map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
 }
 
-function _populateBookingCounselorSelect() {
-  const opts = getSortedCounselorEntries(([, u]) => BK_COUNSELING_ROLES.has(u.role || ''))
-    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}（${escHtml(u.role || '')}）</option>`);
-  const sel = document.getElementById('bk-counselor');
-  sel.innerHTML = '<option value="">（請選擇輔導人員）</option><option value="中心會議">🏛 中心會議</option>' + opts.join('');
-  if (currentUser?.email && BK_COUNSELING_ROLES.has(configData?.users?.[currentUser.email]?.role)) {
-    sel.value = currentUser.email;
+// ── 空間預約「輔導人員/借用事由」選擇器 ──────────────
+let _bkSelectedValue = '';
+let _bkSelectedLabel = '';
+const _bkFreqKey       = () => `scc_bk_freq_${currentUser?.email || ''}`;
+const _bkCustomOptsKey = () => `scc_bk_custom_${currentUser?.email || ''}`;
+function _getBkFreqs() { return JSON.parse(localStorage.getItem(_bkFreqKey()) || '{}'); }
+function _recordBkFreq(v) {
+  if (!v) return;
+  const f = _getBkFreqs(); f[v] = (f[v] || 0) + 1;
+  localStorage.setItem(_bkFreqKey(), JSON.stringify(f));
+}
+function _getBkCustomOpts() { return JSON.parse(localStorage.getItem(_bkCustomOptsKey()) || '[]'); }
+function _saveBkCustomOpts(opts) { localStorage.setItem(_bkCustomOptsKey(), JSON.stringify(opts)); }
+
+function _bkBuildAllOpts() {
+  const freqs = _getBkFreqs();
+  const counselors = getSortedCounselorEntries(([, u]) => BK_COUNSELING_ROLES.has(u.role || ''))
+    .map(([email, u]) => ({ value: email, label: `${u.name || email}（${u.role || ''}）`, isCustom: false }));
+  const fixed   = [{ value: '中心會議', label: '🏛 中心會議', isCustom: false }];
+  const custom  = _getBkCustomOpts().map(lbl => ({ value: lbl, label: lbl, isCustom: true }));
+  const all     = [...counselors, ...fixed, ...custom];
+  all.sort((a, b) => (freqs[b.value] || 0) - (freqs[a.value] || 0));
+  return all;
+}
+
+function _populateBookingCounselorSelect(restoreValue) {
+  if (restoreValue !== undefined) _bkSelectedValue = restoreValue;
+  if (!_bkSelectedValue && currentUser?.email && BK_COUNSELING_ROLES.has(configData?.users?.[currentUser.email]?.role)) {
+    _bkSelectedValue = currentUser.email;
   }
+  const opts = _bkBuildAllOpts();
+  const cur  = opts.find(o => o.value === _bkSelectedValue);
+  _bkSelectedLabel = cur ? cur.label : _bkSelectedValue;
+  const chips = opts.map(o => {
+    const sel = o.value === _bkSelectedValue;
+    const del = o.isCustom
+      ? `<span class="bk-opt-chip-del" onclick="event.stopPropagation();_bkDelCustomOpt(${JSON.stringify(o.value)})">✕</span>`
+      : '';
+    return `<div class="bk-opt-chip${sel ? ' bk-opt-chip-sel' : ''}" onclick="_bkPickOpt(${JSON.stringify(o.value)},${JSON.stringify(o.label)})">${escHtml(o.label)}${del}</div>`;
+  }).join('');
+  const picker = document.getElementById('bk-counselor-picker');
+  if (!picker) return;
+  picker.innerHTML =
+    `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">${chips || '<span style="color:#a0aec0;font-size:.82rem;">（尚無選項）</span>'}</div>` +
+    `<div style="display:flex;gap:6px;"><input type="text" id="bk-custom-inp" class="field-input" placeholder="新增自訂選項…" style="flex:1;font-size:.82rem;padding:5px 9px;" onkeydown="if(event.key==='Enter'){event.preventDefault();_bkAddCustomOpt();}"/><button type="button" onclick="_bkAddCustomOpt()" style="padding:5px 14px;background:#edf2f7;border:1px solid #cbd5e0;border-radius:6px;cursor:pointer;font-size:.82rem;white-space:nowrap;">新增</button></div>`;
+}
+function _bkPickOpt(value, label) { _bkSelectedValue = value; _bkSelectedLabel = label; _populateBookingCounselorSelect(value); }
+function _bkAddCustomOpt() {
+  const inp = document.getElementById('bk-custom-inp');
+  const lbl = (inp?.value || '').trim(); if (!lbl) return;
+  const opts = _getBkCustomOpts(); if (!opts.includes(lbl)) { opts.push(lbl); _saveBkCustomOpts(opts); }
+  inp.value = ''; _populateBookingCounselorSelect(_bkSelectedValue);
+}
+function _bkDelCustomOpt(value) {
+  _saveBkCustomOpts(_getBkCustomOpts().filter(l => l !== value));
+  if (_bkSelectedValue === value) { _bkSelectedValue = ''; _bkSelectedLabel = ''; }
+  _populateBookingCounselorSelect(_bkSelectedValue);
 }
 
 function onBkPeriodChange(sel) {
@@ -9444,6 +9498,7 @@ function _initBkPeriodSelect() {
 
 function openBookingModal(prefillCaseId) {
   _editingBookingId = null;
+  _bkSelectedValue = ''; _bkSelectedLabel = '';
   document.getElementById('booking-modal-title').textContent = '新增預約';
   _populateBookingRoomSelect();
   _populateBookingCounselorSelect();
@@ -9469,13 +9524,12 @@ function editBooking(id) {
   _editingBookingId = id;
   document.getElementById('booking-modal-title').textContent = '編輯預約';
   _populateBookingRoomSelect();
-  _populateBookingCounselorSelect();
+  _populateBookingCounselorSelect(b.counselorEmail || b.counselorName || '');
   _populateBookingCaseDatalist();
   _initBkPeriodSelect();
   document.getElementById('bk-room').value = b.room || '';
   document.getElementById('bk-date').value = b.date || '';
   _restoreBkPeriod(b.startTime, b.endTime);
-  document.getElementById('bk-counselor').value = b.counselorEmail || '';
   document.getElementById('bk-case-id').value = b.caseId || '';
   document.getElementById('bk-case-hint').style.display = 'none';
   document.getElementById('bk-notes').value = b.notes || '';
@@ -9497,7 +9551,8 @@ async function saveBooking() {
   const date  = document.getElementById('bk-date').value;
   const start = document.getElementById('bk-start').value;
   const end   = document.getElementById('bk-end').value;
-  const counselorEmail = document.getElementById('bk-counselor').value;
+  const isSysCounselor = !!configData?.users?.[_bkSelectedValue];
+  const counselorEmail = (isSysCounselor || _bkSelectedValue === '中心會議') ? _bkSelectedValue : '';
   const caseId = document.getElementById('bk-case-id').value.trim();
   const notes  = document.getElementById('bk-notes').value.trim();
 
@@ -9520,7 +9575,7 @@ async function saveBooking() {
     return;
   }
 
-  const counselorName = configData?.users?.[counselorEmail]?.name || counselorEmail || '';
+  const counselorName = _bkSelectedLabel || _bkSelectedValue || '';
   const caseObj = caseId ? casesData.find(c => c.id === caseId) : null;
   const now = new Date().toISOString();
   const calParams = { room, date, startTime: start, endTime: end, counselorName,
@@ -9556,7 +9611,7 @@ async function saveBooking() {
   }
 
   closeBookingModal();
-  if (counselorEmail) recordCounselorUsage(counselorEmail);
+  _recordBkFreq(_bkSelectedValue);
   showLoading('儲存預約中…');
   try {
     await saveBookings();
@@ -11060,8 +11115,8 @@ function restoreSidebarOrder() {
         </div>
       </div>
       <div style="grid-column:1/-1;">
-        <label class="field-label">輔導人員</label>
-        <select class="field-input" id="bk-counselor"></select>
+        <label class="field-label">輔導人員／借用事由</label>
+        <div id="bk-counselor-picker" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;background:#f7fafc;"></div>
       </div>
       <div style="grid-column:1/-1;">
         <label class="field-label">連結個案（選填，輸入案號、學號或姓名）</label>
