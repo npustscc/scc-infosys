@@ -1192,8 +1192,8 @@
         <div id="bookings-body" style="padding:0;min-height:60px;"></div>
       </div>
       <div class="card">
-        <div class="card-header"><h3>所有預約紀錄</h3></div>
-        <div id="all-bookings-body" style="padding:0;min-height:40px;"></div>
+        <div class="card-header"><h3>空間預約稽核記錄</h3></div>
+        <div id="bookings-audit-body" style="padding:0;min-height:40px;"></div>
       </div>
     </div>
 
@@ -8053,6 +8053,18 @@ function auditLog(action, caseId = null, recordId = null, detail = null) {
   })();
 }
 
+const AUDIT_PAGE_CATEGORIES = {
+  '空間預約':     a => a.includes('空間預約') || a.includes('同步日曆'),
+  '個案列表':     a => ['新增個案','批次匯入個案','刪除個案','復原個案','修改案號','查閱個案','再次開案'].some(k => a.includes(k)),
+  '個案詳細資料': a => ['編輯個案','執行結案','不開案'].some(k => a.includes(k)),
+  '晤談紀錄':     a => a.includes('晤談紀錄') || a.includes('晤談記錄'),
+  '初次晤談':     a => a.includes('初次晤談') || (a.includes('初談') && !a.includes('初談記錄')),
+  '使用者管理':   a => a.includes('使用者'),
+  '轉銜管理':     a => a.includes('轉銜'),
+  '精神科評估':   a => a.includes('精神科'),
+  '系統管理':     a => ['搬移至共用','整合學年','重組 cases','清除逾期','整併主責','連結主責'].some(k => a.includes(k)),
+};
+
 async function renderAuditLog() {
   const body = document.getElementById('audit-body');
   body.innerHTML = `<div class="empty-state"><div class="icon">⏳</div><p>讀取稽核日誌中…</p></div>`;
@@ -8087,11 +8099,25 @@ async function renderAuditLog() {
 
   const filterBar = `
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
-      <select id="af-action" class="field-select" style="max-width:180px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()">
+      <select id="af-page" class="field-select" style="max-width:160px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()">
+        <option value="">全部頁面</option>
+        <optgroup label="個案">
+          <option value="個案列表">個案列表</option>
+          <option value="個案詳細資料">個案詳細資料</option>
+          <option value="晤談紀錄">晤談紀錄</option>
+          <option value="初次晤談">初次晤談</option>
+        </optgroup>
+        <option value="空間預約">空間預約</option>
+        <option value="使用者管理">使用者管理</option>
+        <option value="轉銜管理">轉銜管理</option>
+        <option value="精神科評估">精神科評估</option>
+        <option value="系統管理">系統管理</option>
+      </select>
+      <select id="af-action" class="field-select" style="max-width:160px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()">
         <option value="">全部動作</option>
         ${actions.map(a => `<option value="${escHtml(a)}">${escHtml(a)}</option>`).join('')}
       </select>
-      <select id="af-person" class="field-select" style="max-width:180px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()">
+      <select id="af-person" class="field-select" style="max-width:160px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()">
         <option value="">全部人員</option>
         ${persons.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('')}
       </select>
@@ -8161,12 +8187,14 @@ async function renderAuditLog() {
 
 function filterAuditLog() {
   const logs = window._auditLogsCache || [];
+  const page   = document.getElementById('af-page')?.value || '';
   const action = document.getElementById('af-action')?.value || '';
   const person = document.getElementById('af-person')?.value || '';
   const from   = document.getElementById('af-date-from')?.value || '';
   const to     = document.getElementById('af-date-to')?.value || '';
 
   const filtered = logs.filter(l => {
+    if (page   && !(AUDIT_PAGE_CATEGORIES[page]?.(l.action))) return false;
     if (action && l.action !== action) return false;
     if (person && (l.name || l.email) !== person) return false;
     if (from && l.t < from) return false;
@@ -9435,46 +9463,53 @@ async function syncFromCalendar(silent = false) {
   }
 }
 
-function renderAllBookingsTable() {
-  const el = document.getElementById('all-bookings-body');
+async function renderBookingsAuditLog() {
+  const el = document.getElementById('bookings-audit-body');
   if (!el) return;
-  const sorted = [...bookingsData]
-    .filter(b => !b.deleted)
-    .sort((a, b) => (b.date + (b.startTime||'')) > (a.date + (a.startTime||'')) ? 1 : -1);
+  el.innerHTML = `<div style="padding:16px;color:#718096;font-size:.85rem;">⏳ 讀取稽核記錄中…</div>`;
+  try {
+    let logs = [];
+    try {
+      const data = await driveReadJson(AUDIT_LOG_FILE);
+      logs = Array.isArray(data?.logs) ? data.logs : [];
+      window._auditLogsCache = logs;
+    } catch (_) {}
 
-  if (!sorted.length) {
-    el.innerHTML = `<div class="empty-state" style="padding:20px;"><p>尚無預約紀錄</p></div>`;
-    return;
-  }
+    const isBookingAction = a => a.includes('空間預約') || a.includes('同步日曆');
+    const filtered = [...logs].reverse().filter(l => isBookingAction(l.action));
 
-  const WD = ['日','一','二','三','四','五','六'];
-  const fmtT    = t => (t || '').slice(0, 5);
-  const fmtDate = s => {
-    const d = new Date(s + 'T00:00:00');
-    return `${s} (${WD[d.getDay()]})`;
-  };
+    if (!filtered.length) {
+      el.innerHTML = `<div class="empty-state" style="padding:16px;"><p>尚無空間預約稽核記錄</p></div>`;
+      return;
+    }
 
-  const rows = sorted.map(b => {
-    const roomDisplay = b.room === '其他' ? (b.customRoom || '其他') : b.room;
-    const calMark = b.calendarEventId
-      ? `<span title="已同步 GC" style="color:#27ae60;">📅</span>`
-      : `<span style="color:#a0aec0;font-size:.75rem;">—</span>`;
-    return `<tr>
-      <td style="white-space:nowrap;font-size:.82rem;color:#4a5568;">${escHtml(fmtDate(b.date))}</td>
-      <td style="white-space:nowrap;font-size:.82rem;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</td>
-      <td style="font-size:.85rem;">${escHtml(roomDisplay)}</td>
-      <td style="font-size:.85rem;">${escHtml(b.counselorName || '—')}</td>
-      <td style="font-size:.82rem;color:#718096;max-width:200px;">${escHtml(b.notes || '')}</td>
-      <td style="text-align:center;">${calMark}</td>
-    </tr>`;
-  }).join('');
+    const fmtTime = iso => {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      const pad = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    };
+    const aColor = a => {
+      if (a.includes('刪除')) return 'color:#c0392b;font-weight:600;';
+      if (a.includes('新增')) return 'color:#2980b9;font-weight:600;';
+      return '';
+    };
 
-  el.innerHTML = `<div style="overflow-x:auto;">
-    <table>
-      <thead><tr><th>日期</th><th>時段</th><th>空間</th><th>借用人／事由</th><th>備註</th><th>GC</th></tr></thead>
+    const rows = filtered.map(l => `
+      <tr>
+        <td style="white-space:nowrap;font-size:.8rem;color:#718096;">${fmtTime(l.t)}</td>
+        <td style="font-size:.85rem;">${escHtml(l.name || '—')}</td>
+        <td style="font-size:.85rem;${aColor(l.action)}">${escHtml(l.action)}</td>
+        <td style="font-size:.82rem;">${escHtml(l.detail || '—')}</td>
+      </tr>`).join('');
+
+    el.innerHTML = `<div style="overflow-x:auto;"><table>
+      <thead><tr><th>時間</th><th>操作者</th><th>動作</th><th>更動事由</th></tr></thead>
       <tbody>${rows}</tbody>
-    </table>
-  </div>`;
+    </table></div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="alert alert-error" style="margin:12px;">讀取失敗：${escHtml(e.message)}</div>`;
+  }
 }
 
 async function saveBookings() {
@@ -9625,7 +9660,7 @@ function renderBookingsPage() {
     html += '</div>';
     body.innerHTML = html;
   }
-  renderAllBookingsTable();
+  renderBookingsAuditLog();
 }
 
 function shiftBookingDate(delta) {
@@ -9708,6 +9743,7 @@ function _bkDelCustomOpt(value) {
 
 function onBkRoomChange(sel) {
   document.getElementById('bk-room-custom').style.display = sel.value === '其他' ? '' : 'none';
+  _checkBkConflict();
 }
 
 function onBkPeriodChange(sel) {
@@ -9722,6 +9758,28 @@ function onBkPeriodChange(sel) {
     const p = BK_PERIODS.find(x => x.label === val);
     document.getElementById('bk-start').value = p ? p.start : '';
     document.getElementById('bk-end').value   = p ? p.end   : '';
+  }
+  _checkBkConflict();
+}
+
+function _checkBkConflict() {
+  const room  = document.getElementById('bk-room')?.value;
+  const date  = document.getElementById('bk-date')?.value;
+  const start = document.getElementById('bk-start')?.value;
+  const end   = document.getElementById('bk-end')?.value;
+  const warnEl = document.getElementById('booking-conflict-warn');
+  if (!warnEl) return;
+  if (!room || !date || !start || !end || start >= end) { warnEl.style.display = 'none'; return; }
+
+  const conflict = bookingsData.find(b =>
+    b.id !== _editingBookingId && b.room === room && b.date === date &&
+    b.startTime < end && b.endTime > start
+  );
+  if (conflict) {
+    warnEl.style.display = '';
+    warnEl.textContent = `時間衝突：${room} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已由 ${conflict.counselorName || '—'} 預約。`;
+  } else {
+    warnEl.style.display = 'none';
   }
 }
 
@@ -11470,7 +11528,7 @@ function restoreSidebarOrder() {
       </div>
       <div>
         <label class="field-label">日期<span class="req">*</span></label>
-        <input type="date" class="field-input" id="bk-date">
+        <input type="date" class="field-input" id="bk-date" onchange="_checkBkConflict()">
       </div>
       <div style="grid-column:1/-1;">
         <label class="field-label">節次<span class="req">*</span></label>
@@ -11482,11 +11540,11 @@ function restoreSidebarOrder() {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
           <div>
             <label class="field-label">開始時間<span class="req">*</span></label>
-            <input type="time" class="field-input" id="bk-start" step="300">
+            <input type="time" class="field-input" id="bk-start" step="300" onchange="_checkBkConflict()">
           </div>
           <div>
             <label class="field-label">結束時間<span class="req">*</span></label>
-            <input type="time" class="field-input" id="bk-end" step="300">
+            <input type="time" class="field-input" id="bk-end" step="300" onchange="_checkBkConflict()">
           </div>
         </div>
       </div>
