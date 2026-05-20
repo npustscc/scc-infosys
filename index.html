@@ -47,6 +47,7 @@
     .bk-opt-chip-sel { border-color:#2471a3 !important;background:#dbeafe !important;color:#1a4971;font-weight:600; }
     .bk-opt-chip-del { margin-left:5px;opacity:.45;font-size:.72rem; }
     .bk-opt-chip-del:hover { opacity:1;color:#c53030; }
+    .bk-room-chip-match { border-color:#f6ad55 !important;background:#fffbeb !important; }
     #btn-logout {
       background: transparent;
       border: 1px solid rgba(255,255,255,.6);
@@ -1971,9 +1972,7 @@
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
             <div>
               <label class="field-label">空間</label>
-              <select class="field-input" id="rec-next-bk-room">
-                <option value="">請選擇</option>
-              </select>
+              <div id="rec-next-bk-room-wrap" style="border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;background:#f7fafc;min-height:40px;"></div>
             </div>
             <div>
               <label class="field-label">日期</label>
@@ -4228,9 +4227,8 @@ function openNewRecordPage(caseId, recordId = null) {
   const nextDate = new Date(); nextDate.setDate(nextDate.getDate() + 7);
   const nbDateEl = document.getElementById('rec-next-bk-date');
   if (nbDateEl) nbDateEl.value = nextDate.toISOString().slice(0, 10);
-  const nbRoom = document.getElementById('rec-next-bk-room');
-  if (nbRoom) nbRoom.innerHTML = '<option value="">請選擇</option>' +
-    ROOMS.map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
+  _recNextBkRoom = '';
+  _populateRecNextBkRoomChips('');
 
   showPage('page-new-record', null);
 
@@ -5009,7 +5007,7 @@ async function saveRecord() {
   const wantNextBooking = nbToggle?.checked;
   let nextBkRoom = '', nextBkDate = '', nextBkStart = '', nextBkEnd = '';
   if (wantNextBooking) {
-    nextBkRoom  = document.getElementById('rec-next-bk-room')?.value  || '';
+    nextBkRoom  = _recNextBkRoom;
     nextBkDate  = document.getElementById('rec-next-bk-date')?.value  || '';
     nextBkStart = document.getElementById('rec-next-bk-start')?.value || '';
     nextBkEnd   = document.getElementById('rec-next-bk-end')?.value   || '';
@@ -9545,11 +9543,18 @@ function setBkDaySpan(n) {
   renderBookingsPage();
 }
 
+function _getBkDisplayRooms() {
+  const extra = new Set();
+  bookingsData.forEach(b => { if (b.room && !ROOMS.includes(b.room)) extra.add(b.room); });
+  _getBkCustomRooms().forEach(r => { if (!ROOMS.includes(r)) extra.add(r); });
+  return [...ROOMS, ...extra];
+}
+
 function _bkRenderDayColumn(date) {
   const fmtT = t => (t || '').slice(0, 5);
   const dayBookings = bookingsData.filter(b => b.date === date);
   let html = '';
-  for (const room of ROOMS) {
+  for (const room of _getBkDisplayRooms()) {
     const rb = dayBookings.filter(b => b.room === room).sort((a, b) => (a.startTime || '') < (b.startTime || '') ? -1 : 1);
     html += `<div style="border-bottom:1px solid #e2e8f0;padding:8px 10px;">
       <div style="font-weight:600;color:#2d3748;margin-bottom:4px;font-size:.82rem;">${escHtml(room)}</div>`;
@@ -9614,7 +9619,7 @@ function renderBookingsPage() {
     const fmtT = t => (t || '').slice(0, 5);
     const dayBookings = bookingsData.filter(b => b.date === startDate);
     let html = '';
-    for (const room of ROOMS) {
+    for (const room of _getBkDisplayRooms()) {
       const rb = dayBookings.filter(b => b.room === room).sort((a, b) => (a.startTime || '') < (b.startTime || '') ? -1 : 1);
       html += `<div style="border-bottom:1px solid #e2e8f0;padding:10px 16px;">
         <div style="font-weight:600;color:#2d3748;margin-bottom:6px;font-size:.9rem;">${escHtml(room)}</div>`;
@@ -9678,10 +9683,42 @@ function setBookingDateToday() {
   renderBookingsPage();
 }
 
-function _populateBookingRoomSelect() {
-  document.getElementById('bk-room').innerHTML =
-    '<option value="">請選擇空間</option>' +
-    ROOMS.map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
+// ── 空間預約「空間」選擇器（chips）──────────────────
+let _bkSelectedRoom = '';
+function _getBkCustomRooms()       { return [...(_userPref_('bkCustomRooms', []))]; }
+function _saveBkCustomRooms(rooms) { syncUserPref_({ bkCustomRooms: rooms }); }
+
+function _populateBookingRoomChips(restoreRoom) {
+  if (restoreRoom !== undefined) _bkSelectedRoom = restoreRoom;
+  const builtIn = ROOMS.filter(r => r !== '其他');
+  const custom  = _getBkCustomRooms();
+  const all     = [...builtIn, ...custom];
+  const filter  = (document.getElementById('bk-room-chip-inp')?.value || '').trim().toLowerCase();
+  const chips = all.map(r => {
+    const sel = r === _bkSelectedRoom;
+    const isC = !builtIn.includes(r);
+    const hi  = filter && !sel && r.toLowerCase().includes(filter);
+    const del = isC ? `<span class="bk-opt-chip-del" onclick="event.stopPropagation();_bkDelCustomRoom(${escHtml(JSON.stringify(r))})">✕</span>` : '';
+    return `<div class="bk-opt-chip${sel?' bk-opt-chip-sel':''}${hi?' bk-room-chip-match':''}" onclick="_bkPickRoom(${escHtml(JSON.stringify(r))})">${escHtml(r)}${del}</div>`;
+  }).join('');
+  const wrap = document.getElementById('bk-room-chips-wrap');
+  if (!wrap) return;
+  wrap.innerHTML =
+    `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">${chips||'<span style="color:#a0aec0;font-size:.82rem;">（無空間）</span>'}</div>`+
+    `<div style="display:flex;gap:6px;"><input type="text" id="bk-room-chip-inp" class="field-input" placeholder="新增自訂空間…" style="flex:1;font-size:.82rem;padding:5px 9px;" oninput="_populateBookingRoomChips()" onkeydown="if(event.key==='Enter'){event.preventDefault();_bkAddCustomRoom();}"/><button type="button" onclick="_bkAddCustomRoom()" style="padding:5px 14px;background:#edf2f7;border:1px solid #cbd5e0;border-radius:6px;cursor:pointer;font-size:.82rem;white-space:nowrap;">新增</button></div>`;
+}
+function _bkPickRoom(room) { _bkSelectedRoom = room; _populateBookingRoomChips(room); _checkBkConflict(); }
+function _bkAddCustomRoom() {
+  const inp = document.getElementById('bk-room-chip-inp');
+  const name = (inp?.value||'').trim(); if (!name) return;
+  const rooms = _getBkCustomRooms();
+  if (!rooms.includes(name) && !ROOMS.includes(name)) { rooms.push(name); _saveBkCustomRooms(rooms); }
+  inp.value = ''; _bkPickRoom(name);
+}
+function _bkDelCustomRoom(room) {
+  _saveBkCustomRooms(_getBkCustomRooms().filter(r => r !== room));
+  if (_bkSelectedRoom === room) _bkSelectedRoom = '';
+  _populateBookingRoomChips(_bkSelectedRoom); _checkBkConflict();
 }
 
 // ── 空間預約「輔導人員/借用事由」選擇器 ──────────────
@@ -9741,9 +9778,31 @@ function _bkDelCustomOpt(value) {
   _populateBookingCounselorSelect(_bkSelectedValue);
 }
 
-function onBkRoomChange(sel) {
-  document.getElementById('bk-room-custom').style.display = sel.value === '其他' ? '' : 'none';
-  _checkBkConflict();
+let _recNextBkRoom = '';
+function _populateRecNextBkRoomChips(restoreRoom) {
+  if (restoreRoom !== undefined) _recNextBkRoom = restoreRoom;
+  const builtIn = ROOMS.filter(r => r !== '其他');
+  const custom  = _getBkCustomRooms();
+  const all     = [...builtIn, ...custom];
+  const chips = all.map(r => {
+    const sel = r === _recNextBkRoom;
+    const isC = !builtIn.includes(r);
+    const del = isC ? `<span class="bk-opt-chip-del" onclick="event.stopPropagation();_bkDelCustomRoom(${escHtml(JSON.stringify(r))});_populateRecNextBkRoomChips()">✕</span>` : '';
+    return `<div class="bk-opt-chip${sel?' bk-opt-chip-sel':''}" onclick="_recNextPickRoom(${escHtml(JSON.stringify(r))})">${escHtml(r)}${del}</div>`;
+  }).join('');
+  const wrap = document.getElementById('rec-next-bk-room-wrap');
+  if (!wrap) return;
+  wrap.innerHTML =
+    `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">${chips||'<span style="color:#a0aec0;font-size:.82rem;">（無空間）</span>'}</div>`+
+    `<div style="display:flex;gap:6px;"><input type="text" id="rec-next-bk-inp" class="field-input" placeholder="新增自訂空間…" style="flex:1;font-size:.82rem;padding:5px 9px;" onkeydown="if(event.key==='Enter'){event.preventDefault();_recNextAddCustomRoom();}"/><button type="button" onclick="_recNextAddCustomRoom()" style="padding:5px 14px;background:#edf2f7;border:1px solid #cbd5e0;border-radius:6px;cursor:pointer;font-size:.82rem;white-space:nowrap;">新增</button></div>`;
+}
+function _recNextPickRoom(room) { _recNextBkRoom = room; _populateRecNextBkRoomChips(room); }
+function _recNextAddCustomRoom() {
+  const inp = document.getElementById('rec-next-bk-inp');
+  const name = (inp?.value||'').trim(); if (!name) return;
+  const rooms = _getBkCustomRooms();
+  if (!rooms.includes(name) && !ROOMS.includes(name)) { rooms.push(name); _saveBkCustomRooms(rooms); }
+  inp.value = ''; _recNextPickRoom(name);
 }
 
 function onBkPeriodChange(sel) {
@@ -9763,7 +9822,7 @@ function onBkPeriodChange(sel) {
 }
 
 function _checkBkConflict() {
-  const room  = document.getElementById('bk-room')?.value;
+  const room  = _bkSelectedRoom;
   const date  = document.getElementById('bk-date')?.value;
   const start = document.getElementById('bk-start')?.value;
   const end   = document.getElementById('bk-end')?.value;
@@ -9881,7 +9940,8 @@ function openBookingModal(prefillCaseId) {
   _editingBookingId = null;
   _bkSelectedValue = ''; _bkSelectedLabel = '';
   document.getElementById('booking-modal-title').textContent = '新增預約';
-  _populateBookingRoomSelect();
+  _bkSelectedRoom = '';
+  _populateBookingRoomChips('');
   _populateBookingCounselorSelect();
   _populateBookingCaseDatalist();
   _initBkPeriodSelect();
@@ -9893,9 +9953,6 @@ function openBookingModal(prefillCaseId) {
   document.getElementById('bk-notes').value = '';
   document.getElementById('bk-case-id').value = prefillCaseId || '';
   document.getElementById('bk-case-hint').style.display = 'none';
-  document.getElementById('bk-room').value = '';
-  document.getElementById('bk-room-custom').value = '';
-  document.getElementById('bk-room-custom').style.display = 'none';
   document.getElementById('booking-conflict-warn').style.display = 'none';
   const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
   document.getElementById('booking-modal').style.display = 'flex';
@@ -9906,14 +9963,18 @@ function editBooking(id) {
   if (!b) return;
   _editingBookingId = id;
   document.getElementById('booking-modal-title').textContent = '編輯預約';
-  _populateBookingRoomSelect();
   _populateBookingCounselorSelect(b.counselorEmail || b.counselorName || '');
   _populateBookingCaseDatalist();
   _initBkPeriodSelect();
-  document.getElementById('bk-room').value = b.room || '';
-  const isOtherRoom = b.room === '其他';
-  document.getElementById('bk-room-custom').style.display = isOtherRoom ? '' : 'none';
-  document.getElementById('bk-room-custom').value = isOtherRoom ? (b.customRoom || '') : '';
+  let _editRoom = b.room || '';
+  if (_editRoom === '其他') {
+    _editRoom = b.customRoom || '其他';
+    if (_editRoom && _editRoom !== '其他') {
+      const _cr = _getBkCustomRooms();
+      if (!_cr.includes(_editRoom) && !ROOMS.includes(_editRoom)) { _cr.push(_editRoom); _saveBkCustomRooms(_cr); }
+    }
+  }
+  _populateBookingRoomChips(_editRoom);
   document.getElementById('bk-date').value = b.date || '';
   _restoreBkPeriod(b.startTime, b.endTime);
   document.getElementById('bk-case-id').value = b.caseId || '';
@@ -9933,8 +9994,8 @@ async function saveBooking() {
   if (saveBtn?.disabled) return;
   if (saveBtn) saveBtn.disabled = true;
 
-  const room       = document.getElementById('bk-room').value;
-  const customRoom = room === '其他' ? (document.getElementById('bk-room-custom')?.value.trim() || '') : '';
+  const room       = _bkSelectedRoom;
+  const customRoom = '';
   const date       = document.getElementById('bk-date').value;
   const start      = document.getElementById('bk-start').value;
   const end        = document.getElementById('bk-end').value;
@@ -9950,7 +10011,6 @@ async function saveBooking() {
   };
 
   if (!room || !date) { _bkWarn('請填寫空間與日期。'); return; }
-  if (room === '其他' && !customRoom) { _bkWarn('請填寫自訂空間名稱。'); return; }
   if (!start || !end) { _bkWarn('請選擇節次或填寫自訂時間。'); return; }
   if (start >= end)   { _bkWarn('結束時間必須晚於開始時間。'); return; }
 
@@ -10033,7 +10093,7 @@ async function saveBooking() {
       // 計算差異：只列出有變更的欄位
       const diffs = [];
       const oldRoomD = _oldBkSnap.room === '其他' ? (_oldBkSnap.customRoom || '其他') : (_oldBkSnap.room || '');
-      const newRoomD = room === '其他' ? (customRoom || '其他') : room;
+      const newRoomD = room;
       if (oldRoomD !== newRoomD) diffs.push(`${oldRoomD}→${newRoomD}`);
       const oldTimeStr = `${_oldBkSnap.date} ${(_oldBkSnap.startTime||'').slice(0,5)}–${(_oldBkSnap.endTime||'').slice(0,5)}`;
       const newTimeStr = `${date} ${(start||'').slice(0,5)}–${(end||'').slice(0,5)}`;
@@ -10043,7 +10103,7 @@ async function saveBooking() {
       const _bkId = `${oldRoomD}　${oldTimeStr}${_oldBkSnap.counselorName ? '　'+_oldBkSnap.counselorName : ''}`;
       _bkDetail = diffs.length ? `${_bkId}　${diffs.join('；')}` : _bkId;
     } else {
-      const _bkRoomDisplay = room === '其他' ? (customRoom || '其他') : room;
+      const _bkRoomDisplay = room;
       _bkDetail = `${_bkRoomDisplay}　${date}　${(start||'').slice(0,5)}–${(end||'').slice(0,5)}${counselorName ? '　' + counselorName : ''}`;
     }
     auditLog(_editingBookingId ? '編輯空間預約' : '新增空間預約', caseId || null, null, _bkDetail);
@@ -10057,7 +10117,8 @@ async function saveBooking() {
 async function deleteBooking(id) {
   const b = bookingsData.find(x => x.id === id);
   if (!b) return;
-  if (!confirm(`確定刪除 ${b.room} ${b.date} ${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)} 的預約？`)) return;
+  const _delRoomD = b.room === '其他' ? (b.customRoom || '其他') : b.room;
+  if (!confirm(`確定刪除 ${_delRoomD} ${b.date} ${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)} 的預約？`)) return;
   const calEventId = b.calendarEventId;
   bookingsData = bookingsData.filter(x => x.id !== id);
   showLoading('刪除中…');
@@ -11523,8 +11584,7 @@ function restoreSidebarOrder() {
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
       <div>
         <label class="field-label">空間<span class="req">*</span></label>
-        <select class="field-input" id="bk-room" onchange="onBkRoomChange(this)"></select>
-        <input type="text" id="bk-room-custom" class="field-input" placeholder="請輸入空間名稱" style="display:none;margin-top:6px;" />
+        <div id="bk-room-chips-wrap" style="border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;background:#f7fafc;"></div>
       </div>
       <div>
         <label class="field-label">日期<span class="req">*</span></label>
