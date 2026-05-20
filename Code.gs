@@ -319,28 +319,34 @@
     return counselorName ? roomPart + '.' + counselorName : roomPart;
   }
 
-  function buildEventDesc_(creatorName, notes) {
-    let desc = (creatorName || '') + ' 建立';
+  function buildEventDesc_(creatorName, notes, createdAt) {
+    let dt = '';
+    if (createdAt) {
+      const d = new Date(createdAt);
+      const pad = n => String(n).padStart(2, '0');
+      dt = ` (${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())})`;
+    }
+    let desc = (creatorName || '') + ' 建立' + dt;
     if (notes) desc += '\n' + notes;
     return desc;
   }
 
-  function createCalendarEvent_({ room, customRoom, date, startTime, endTime, counselorName, notes, creatorName }) {
+  function createCalendarEvent_({ room, customRoom, date, startTime, endTime, counselorName, notes, creatorName, createdAt }) {
     const cal = getOrCreateCalendar_();
     const { start, end } = parseEventTimes_(date, startTime, endTime);
     const title = buildEventTitle_(room, counselorName, customRoom || '');
-    const desc  = buildEventDesc_(creatorName || counselorName || '', notes);
+    const desc  = buildEventDesc_(creatorName || counselorName || '', notes, createdAt);
     const event = cal.createEvent(title, start, end, { description: desc });
     return event.getId();
   }
 
-  function updateCalendarEvent_({ eventId, room, customRoom, date, startTime, endTime, counselorName, notes, creatorName }) {
+  function updateCalendarEvent_({ eventId, room, customRoom, date, startTime, endTime, counselorName, notes, creatorName, createdAt }) {
     const cal = getOrCreateCalendar_();
     const event = cal.getEventById(eventId);
     if (!event) throw new Error('Event not found: ' + eventId);
     const { start, end } = parseEventTimes_(date, startTime, endTime);
     event.setTitle(buildEventTitle_(room, counselorName, customRoom || ''));
-    event.setDescription(buildEventDesc_(creatorName || counselorName || '', notes));
+    event.setDescription(buildEventDesc_(creatorName || counselorName || '', notes, createdAt));
     event.setTime(start, end);
     return { ok: true };
   }
