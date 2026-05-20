@@ -7935,7 +7935,7 @@ async function apiFetch(url, options = {}) {
 // ══════════════════════════════════════════════
 //  稽核日誌
 // ══════════════════════════════════════════════
-function auditLog(action, caseId = null, recordId = null) {
+function auditLog(action, caseId = null, recordId = null, detail = null) {
   if (!currentUser) return;
   const entry = {
     t:      new Date().toISOString(),
@@ -7944,6 +7944,7 @@ function auditLog(action, caseId = null, recordId = null) {
     action,
     ...(caseId   ? { caseId }   : {}),
     ...(recordId ? { recordId } : {}),
+    ...(detail   ? { detail }   : {}),
   };
   (async () => {
     try {
@@ -8014,6 +8015,27 @@ async function renderAuditLog() {
   // 把 logs 存到全域讓 filterAuditLog 使用
   window._auditLogsCache = logs;
 
+  const isCaseId = s => /^\d{7}$/.test(s || '');
+  const mkDetail = l => {
+    const parts = [];
+    if (l.detail) {
+      parts.push(`<span style="color:#2d3748;">${escHtml(l.detail)}</span>`);
+    }
+    if (l.caseId) {
+      if (isCaseId(l.caseId)) {
+        const c = casesData.find(x => x.id === l.caseId);
+        const label = c ? `個案 ${l.caseId}（${c.name}）` : `個案 ${l.caseId}`;
+        parts.push(`<span style="color:#1a5276;cursor:pointer;text-decoration:underline;" onclick="showCaseDetail('${escHtml(l.caseId)}')">${escHtml(label)}</span>`);
+      } else {
+        parts.push(`<span style="color:#4a5568;">${escHtml(l.caseId)}</span>`);
+      }
+    }
+    if (l.recordId) {
+      parts.push(`<span style="color:#718096;font-size:.78rem;">› 晤談紀錄</span>`);
+    }
+    return parts.length ? parts.join(' ') : '<span style="color:#a0aec0;">—</span>';
+  };
+
   const mkTable = (entries) => {
     if (!entries.length) return `<div class="empty-state" style="padding:30px;"><div class="icon">📜</div><p>無符合條件的記錄</p></div>`;
     const rows = [...entries].reverse().map(l => `
@@ -8022,15 +8044,14 @@ async function renderAuditLog() {
         <td style="font-size:.85rem;">${escHtml(l.name || '—')}</td>
         <td style="font-size:.75rem;color:#a0aec0;">${escHtml(l.email || '—')}</td>
         <td style="font-size:.85rem;${actionColor(l.action)}">${escHtml(l.action)}</td>
-        <td style="font-size:.82rem;">${l.caseId ? `<span style="color:#1a5276;cursor:pointer;text-decoration:underline;" onclick="showCaseDetail('${escHtml(l.caseId)}')">${escHtml(l.caseId)}</span>` : '—'}</td>
-        <td style="font-size:.75rem;color:#a0aec0;">${escHtml(l.recordId || '—')}</td>
+        <td style="font-size:.82rem;">${mkDetail(l)}</td>
       </tr>`).join('');
     return `
       <div style="overflow-x:auto;">
         <table>
           <thead>
             <tr>
-              <th>時間</th><th>操作者</th><th>帳號</th><th>動作</th><th>個案編號</th><th>紀錄編號</th>
+              <th>時間</th><th>操作者</th><th>帳號</th><th>動作</th><th>更動事由</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -9717,7 +9738,9 @@ async function saveBooking() {
     }
 
     await saveBookings();
-    auditLog(_editingBookingId ? '編輯空間預約' : '新增空間預約', caseId || null);
+    const _bkRoomDisplay = room === '其他' ? (customRoom || '其他') : room;
+    const _bkDetail = `${_bkRoomDisplay}　${date}　${(start||'').slice(0,5)}–${(end||'').slice(0,5)}${counselorName ? '　' + counselorName : ''}`;
+    auditLog(_editingBookingId ? '編輯空間預約' : '新增空間預約', caseId || null, null, _bkDetail);
   } catch (e) {
     setAlert('bookings-alert', 'warn', '儲存失敗：' + e.message);
   }
@@ -9735,7 +9758,9 @@ async function deleteBooking(id) {
   try {
     await saveBookings();
     if (calEventId) proxyCall('deleteCalendarEvent', { eventId: calEventId }).catch(() => {});
-    auditLog('刪除空間預約', b.caseId || null);
+    const _delRoomDisplay = b.room === '其他' ? (b.customRoom || '其他') : b.room;
+    const _delDetail = `${_delRoomDisplay}　${b.date}　${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)}${b.counselorName ? '　' + b.counselorName : ''}`;
+    auditLog('刪除空間預約', b.caseId || null, null, _delDetail);
   } catch (e) {
     setAlert('bookings-alert', 'warn', '刪除失敗：' + e.message);
   }
