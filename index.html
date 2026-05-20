@@ -456,18 +456,17 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     .loading-bar {
-      width: 200px; height: 4px;
-      background: #e2e8f0; border-radius: 2px; overflow: hidden;
+      width: 220px;
     }
-    .loading-bar::after {
-      content: ''; display: block;
-      width: 40%; height: 100%;
-      background: #1a5276; border-radius: 2px;
-      animation: loadSlide 1.2s ease-in-out infinite;
+    .loading-bar-track {
+      height: 6px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin-bottom: 4px;
     }
-    @keyframes loadSlide {
-      0%   { transform: translateX(-150%); }
-      100% { transform: translateX(400%); }
+    .loading-bar-fill {
+      height: 100%; background: #1a5276; border-radius: 3px;
+      transition: width .25s ease; width: 0%;
+    }
+    .loading-bar-pct {
+      text-align: center; font-size: .75rem; color: #718096;
     }
 
     .alert {
@@ -762,7 +761,10 @@
 <div id="loading-overlay" style="display:none;">
   <div class="spinner"></div>
   <span id="loading-msg">載入中…</span>
-  <div class="loading-bar"></div>
+  <div class="loading-bar">
+    <div class="loading-bar-track"><div id="loading-bar-fill" class="loading-bar-fill"></div></div>
+    <div id="loading-bar-pct" class="loading-bar-pct">0%</div>
+  </div>
 </div>
 
 <!-- ── App Header ── -->
@@ -2240,14 +2242,16 @@ async function _doUserPrefWrite_() {
   if (!myEmail) return;
   // 寫入前先從 Drive 讀最新版，避免把記憶體中可能過舊的 users 寫回去
   const myLocalData = { ...(configData.users[myEmail] || {}) };
-  const fresh = await driveReadJson(CONFIG_FILE);
-  if (fresh?.users) {
-    const freshCount   = Object.keys(fresh.users).length;
-    const currentCount = Object.keys(configData.users || {}).length;
-    if (freshCount >= currentCount) configData.users = fresh.users;
-    // 確保自己最新的偏好設定蓋過 Drive 上的舊值
-    configData.users[myEmail] = { ...(configData.users[myEmail] || {}), ...myLocalData };
-  }
+  try {
+    const fresh = await driveReadJson(CONFIG_FILE);
+    if (fresh?.users) {
+      const freshCount   = Object.keys(fresh.users).length;
+      const currentCount = Object.keys(configData.users || {}).length;
+      if (freshCount >= currentCount) configData.users = fresh.users;
+    }
+  } catch (_) { /* fresh read 失敗時沿用記憶體狀態，確保 pin 仍能寫入 */ }
+  // 無論 fresh read 成敗，都把最新偏好蓋回去
+  configData.users[myEmail] = { ...(configData.users[myEmail] || {}), ...myLocalData };
   await driveUpdateJsonFile(CONFIG_FILE, configData);
 }
 function syncUserPref_(updates) {
@@ -2392,12 +2396,24 @@ let caseFilters = {
 // ══════════════════════════════════════════════
 //  UI helpers
 // ══════════════════════════════════════════════
-function showLoading(msg = '載入中…') {
+function setLoadingProgress(pct) {
+  const p = Math.min(100, Math.max(0, Math.round(pct)));
+  const fill = document.getElementById('loading-bar-fill');
+  const txt  = document.getElementById('loading-bar-pct');
+  if (fill) fill.style.width = p + '%';
+  if (txt)  txt.textContent  = p + '%';
+}
+function showLoading(msg = '載入中…', pct = 0) {
   document.getElementById('loading-msg').textContent = msg;
   document.getElementById('loading-overlay').style.display = 'flex';
+  setLoadingProgress(pct);
 }
 function hideLoading() {
-  document.getElementById('loading-overlay').style.display = 'none';
+  setLoadingProgress(100);
+  setTimeout(() => {
+    document.getElementById('loading-overlay').style.display = 'none';
+    setLoadingProgress(0);
+  }, 150);
 }
 
 function showPage(pageId, navEl) {
@@ -2616,7 +2632,7 @@ function handleCredentialResponse(response) {
 //  登入後流程
 // ══════════════════════════════════════════════
 async function afterLogin() {
-  showLoading('讀取使用者設定…');
+  showLoading('讀取使用者設定…', 0);
 
   // 更新 header（無論成功失敗都先顯示使用者資訊）
   document.getElementById('user-avatar').src = currentUser.picture;
@@ -2633,16 +2649,17 @@ async function afterLogin() {
       loadBookings(),
       loadTransfer(),
     ]);
+    setLoadingProgress(25);
     configData = cfg;
-    hideLoading();
     resolveUserRole();
     migrateConfigIfNeeded(); // 背景靜默修復已知損毀
     initSidebarDrag();
     renderNotifBell();
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-layout').style.display  = 'flex';
+    setLoadingProgress(30);
     checkPinSetup();
-    await loadCases();
+    await loadCases(); // loadCases 接手 30→100%
   } catch (err) {
     hideLoading();
     // 找不到設定檔 → 顯示初始化畫面
@@ -2709,7 +2726,7 @@ function resolveUserRole() {
 // ══════════════════════════════════════════════
 async function loadCases() {
   setAlert('cases-alert', 'info', '');
-  showLoading('載入個案資料…');
+  showLoading('載入個案資料…', 30);
   try {
     let manifest = null;
     let fileMap  = null;
@@ -2722,6 +2739,7 @@ async function loadCases() {
     } catch (e) {
       console.warn('[loadCases] 批次載入失敗，改用路徑方式:', e.message);
     }
+    setLoadingProgress(50);
 
     // fallback：逐層路徑查詢
     if (!manifest) {
@@ -2731,6 +2749,7 @@ async function loadCases() {
 
     if (manifest && Array.isArray(manifest.chunks) && manifest.chunks.length > 0) {
       casesManifest = manifest;
+      setLoadingProgress(60);
       const deletedSet = new Set(manifest.deletedIds || []);
       const results = await Promise.all(
         manifest.chunks.map(chunk => {
@@ -2751,6 +2770,7 @@ async function loadCases() {
             .catch(e => { console.warn('[loadCases] chunk 載入失敗:', chunkFile, e.message); return { cases: [] }; });
         })
       );
+      setLoadingProgress(90);
       // 過濾「墓碑」與重複 ID（同一個案 ID 若在多個 chunk 殘存，僅取第一筆）
       const seen = new Set();
       casesData = results.flatMap(r => r.cases || [])
@@ -10162,8 +10182,9 @@ function _checkBkConflict() {
           `<div style="font-weight:600;color:#744210;margin-bottom:4px;">⚠ ${escHtml(_bkSelectedLabel||_bkSelectedValue)} 已在此時段預約另一空間</div>` +
           `<div style="font-size:.875rem;color:#92400e;margin-bottom:8px;">目前已預約「${escHtml(pRoom)}」（${escHtml((personConflict.startTime||'').slice(0,5))}–${escHtml((personConflict.endTime||'').slice(0,5))}）</div>` +
           `<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.875rem;color:#744210;">` +
-          `<input type="checkbox" id="bk-person-conflict-ack" style="width:16px;height:16px;cursor:pointer;" onchange="if(this.checked) _bkForcePersonSave()">` +
+          `<input type="checkbox" id="bk-person-conflict-ack" style="width:16px;height:16px;cursor:pointer;" onchange="_bkAckPersonConflict()">` +
           `確認仍要為此人預約「${escHtml(room)}」</label>` +
+          `<div class="bk-conflict-hint" style="display:none;margin-top:6px;font-size:.82rem;color:#744210;">✔ 已確認，請繼續往下點「儲存」完成預約。</div>` +
           `</div>`;
       } else {
         personWarnEl.style.display = 'none';
@@ -10327,7 +10348,14 @@ function closeBookingModal() {
 }
 
 let _bkSkipPersonConflict = false;
-function _bkForcePersonSave() { _bkSkipPersonConflict = true; saveBooking(); }
+function _bkAckPersonConflict() {
+  _bkSkipPersonConflict = true;
+  const warn = document.getElementById('bk-person-conflict-warn');
+  if (warn) {
+    const hint = warn.querySelector('.bk-conflict-hint');
+    if (hint) hint.style.display = '';
+  }
+}
 
 async function saveBooking() {
   const saveBtn = document.getElementById('btn-save-booking');
@@ -10420,7 +10448,7 @@ async function saveBooking() {
   renderBookingsPage();
 
   // 背景：同步 Calendar + 儲存至 Drive
-  showLoading('同步行事曆與儲存中…');
+  showLoading('同步行事曆與儲存中…', 0);
   try {
     let calendarEventId = undefined;
     try {
@@ -10431,6 +10459,7 @@ async function saveBooking() {
         calendarEventId = await proxyCall('createCalendarEvent', calParams);
       }
     } catch (_) {}
+    setLoadingProgress(60);
 
     if (calendarEventId !== undefined) {
       const bk = bookingsData.find(x => x.id === newId);
@@ -10438,6 +10467,7 @@ async function saveBooking() {
     }
 
     await saveBookings();
+    setLoadingProgress(90);
     let _bkDetail;
     if (_editingBookingId && _oldBkSnap) {
       // 計算差異：只列出有變更的欄位

@@ -32,6 +32,7 @@
         case 'createCalendarEvent': result = createCalendarEvent_(params); break;
         case 'updateCalendarEvent': result = updateCalendarEvent_(params); break;
         case 'deleteCalendarEvent': result = deleteCalendarEvent_(params); break;
+        case 'listCalendarEvents': result = listCalendarEvents_(params); break;
         default: return jsonResp_({ error: 'Unknown action: ' + action });
       }
       return jsonResp_(result);
@@ -314,30 +315,42 @@
     return (room ? room.charAt(0) : '') + (counselorName || '');
   }
 
-  function buildEventDesc_(room, counselorName, caseId, caseName, notes) {
-    let desc = '空間：' + room + '\n主責：' + counselorName;
-    if (caseId)   desc += '\n個案編號：' + caseId;
-    if (caseName) desc += '\n個案姓名：' + caseName;
-    if (notes)    desc += '\n備註：' + notes;
-    return desc;
+  function fmtDt_(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const p = n => String(n).padStart(2, '0');
+    return d.getFullYear() + '/' + p(d.getMonth()+1) + '/' + p(d.getDate())
+         + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
   }
 
-  function createCalendarEvent_({ room, date, startTime, endTime, counselorName, caseId, caseName, notes }) {
+  // 格式：備註\n\n姓名 建立/編輯 YYYY/MM/DD HH:mm\n\n#流水號
+  function buildEventDesc_({ notes, creatorName, createdAt, updatedAt, isEdit, bkSerial }) {
+    const parts = [];
+    if (notes) parts.push(notes);
+    const actor  = creatorName || '';
+    const action = isEdit ? '編輯' : '建立';
+    const ts     = isEdit ? (updatedAt || createdAt) : (createdAt || updatedAt);
+    parts.push(actor + ' ' + action + ' ' + fmtDt_(ts));
+    if (bkSerial) parts.push('#' + bkSerial);
+    return parts.join('\n\n');
+  }
+
+  function createCalendarEvent_({ room, date, startTime, endTime, counselorName, caseId, caseName, notes, creatorName, createdAt, bkSerial }) {
     const cal = getOrCreateCalendar_();
     const { start, end } = parseEventTimes_(date, startTime, endTime);
     const title = buildEventTitle_(room, counselorName, caseName);
-    const desc  = buildEventDesc_(room, counselorName, caseId, caseName, notes);
+    const desc  = buildEventDesc_({ notes, creatorName, createdAt, isEdit: false, bkSerial });
     const event = cal.createEvent(title, start, end, { description: desc });
     return event.getId();
   }
 
-  function updateCalendarEvent_({ eventId, room, date, startTime, endTime, counselorName, caseId, caseName, notes }) {
+  function updateCalendarEvent_({ eventId, room, date, startTime, endTime, counselorName, caseId, caseName, notes, creatorName, createdAt, updatedAt, isEdit, bkSerial }) {
     const cal = getOrCreateCalendar_();
     const event = cal.getEventById(eventId);
     if (!event) throw new Error('Event not found: ' + eventId);
     const { start, end } = parseEventTimes_(date, startTime, endTime);
     event.setTitle(buildEventTitle_(room, counselorName, caseName));
-    event.setDescription(buildEventDesc_(room, counselorName, caseId, caseName, notes));
+    event.setDescription(buildEventDesc_({ notes, creatorName, createdAt, updatedAt, isEdit: !!isEdit, bkSerial }));
     event.setTime(start, end);
     return { ok: true };
   }
@@ -347,4 +360,20 @@
     const event = cal.getEventById(eventId);
     if (event) event.deleteEvent();
     return { ok: true };
+  }
+
+  function listCalendarEvents_({ startDate, endDate }) {
+    const TZ  = 'Asia/Taipei';
+    const cal = getOrCreateCalendar_();
+    const s   = new Date(startDate + 'T00:00:00+08:00');
+    const e   = new Date(endDate   + 'T23:59:59+08:00');
+    return cal.getEvents(s, e).map(ev => ({
+      id:           ev.getId(),
+      title:        ev.getTitle(),
+      date:         Utilities.formatDate(ev.getStartTime(), TZ, 'yyyy-MM-dd'),
+      startTime:    Utilities.formatDate(ev.getStartTime(), TZ, 'HH:mm'),
+      endTime:      Utilities.formatDate(ev.getEndTime(),   TZ, 'HH:mm'),
+      description:  ev.getDescription(),
+      lastModified: ev.getLastUpdated().toISOString(),
+    }));
   }
