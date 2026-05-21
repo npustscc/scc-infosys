@@ -1320,6 +1320,7 @@
         </div>
         <div id="detail-managers" style="display:none;border-top:1px solid #e2e8f0;margin-top:14px;padding-top:12px;"></div>
       </div>
+      <div id="detail-import-notes" style="display:none;"></div>
 
       <!-- 詳細資料區塊（動態產生） -->
       <div id="detail-body"></div>
@@ -2390,6 +2391,16 @@ function semesterMonths(prefix) {
     return [`${adYear+1}-02`,`${adYear+1}-03`,`${adYear+1}-04`,`${adYear+1}-05`,`${adYear+1}-06`,`${adYear+1}-07`];
   }
 }
+function semesterDateRange(prefix) {
+  if (!prefix || prefix.length < 4) return null;
+  const semType = prefix.slice(-1);
+  const adYear  = parseInt(prefix.slice(0, -1)) + 1911;
+  if (isNaN(adYear)) return null;
+  return semType === '1'
+    ? { first: `${adYear}-08-01`,     last: `${adYear + 1}-01-31` }
+    : { first: `${adYear + 1}-02-01`, last: `${adYear + 1}-07-31` };
+}
+
 let sortStatusLocked = localStorage.getItem('scc_sort_status_locked') !== 'false';
 let caseSort = { col: null, dir: 1 };
 let _updateAvailable = false;
@@ -3644,6 +3655,21 @@ function showCaseDetail(caseId) {
     (!c.counselorEmail && (c.counselorText || c.counselorName) ? ' <span style="font-size:.72rem;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1px 7px;color:#a0aec0;">未連結帳號</span>' : '') +
     `&nbsp;&nbsp;${statusBadge(c.status)}` +
     (c.deleted ? ` &nbsp;<span class="badge-case-deleted">已刪除 by ${escHtml(c.deletedByName || c.deletedBy || '?')}</span>` : '');
+
+  const notesEl = document.getElementById('detail-import-notes');
+  if (notesEl) {
+    if (c.importDateNotes?.length) {
+      notesEl.style.display = '';
+      notesEl.innerHTML =
+        `<div class="alert alert-warn" style="margin:0 0 12px;background:#fffbeb;border:1px solid #f6ad55;color:#744210;border-radius:8px;padding:12px 16px;">` +
+        `<strong>⚠ 匯入日期自動修正提示</strong>` +
+        c.importDateNotes.map(n => `<div style="margin-top:6px;font-size:.875rem;">• ${escHtml(n)}</div>`).join('') +
+        `</div>`;
+    } else {
+      notesEl.style.display = 'none';
+      notesEl.innerHTML = '';
+    }
+  }
 
   auditLog('查閱個案', caseId);
 
@@ -5995,9 +6021,26 @@ async function importCasesFromExcel(file) {
       const counselorName  = counselorEmail ? (formatCounselorLabel(counselorEmail) || counselorEmail) : counselorText;
 
       const closeDateRaw = String(r[27]||'').trim();
-      const closeDate    = closeDateRaw ? rocToAD(closeDateRaw) : '';
+      let   closeDate    = closeDateRaw ? rocToAD(closeDateRaw) : '';
 
-      const openDateAD = rocToAD(String(r[2]||'').trim());
+      const openDateRaw  = String(r[2]||'').trim();
+      let   openDateAD   = rocToAD(openDateRaw);
+      const caseSemPrefix = id.length >= 4 ? id.slice(0, 4) : '';
+      const semRange      = semesterDateRange(caseSemPrefix);
+      const importDateNotes = [];
+      if (semRange) {
+        if (!openDateAD || openDateAD < semRange.first || openDateAD > semRange.last) {
+          importDateNotes.push(`開案日期「${openDateRaw || '（空白）'}」不在學期範圍（${semRange.first} 至 ${semRange.last}），已自動修正為學期第一天 ${semRange.first}。`);
+          openDateAD = semRange.first;
+        }
+        if (closeDateRaw) {
+          if (!closeDate || closeDate < semRange.first || closeDate > semRange.last) {
+            importDateNotes.push(`結案日期「${closeDateRaw}」不在學期範圍（${semRange.first} 至 ${semRange.last}），已自動修正為學期最後一天 ${semRange.last}。`);
+            closeDate = semRange.last;
+          }
+        }
+      }
+
       imported.push({
         id,
         openDate:        openDateAD,
@@ -6044,6 +6087,7 @@ async function importCasesFromExcel(file) {
         })(),
         disability:'',
         isImported:      true,
+        importDateNotes: importDateNotes.length ? importDateNotes : undefined,
         createdAt: now, updatedAt: now,
       });
     }
