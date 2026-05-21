@@ -1103,11 +1103,17 @@
           </div>
           <div>
             <label class="field-label">PIN 碼（用於解鎖畫面）</label>
-            <input type="password" id="pref-pin" class="field-input" placeholder="輸入新 PIN 碼（留空不變更）" maxlength="12" autocomplete="new-password" />
+            <input type="password" id="pref-pin" class="field-input" placeholder="輸入新 PIN 碼" maxlength="12" autocomplete="new-password" />
           </div>
           <div>
             <label class="field-label">確認 PIN 碼</label>
             <input type="password" id="pref-pin-confirm" class="field-input" placeholder="再次輸入 PIN 碼" maxlength="12" autocomplete="new-password" />
+          </div>
+          <div>
+            <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;padding:10px 12px;background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;">
+              <input type="checkbox" id="pref-pin-skip" style="margin-top:2px;width:16px;height:16px;flex-shrink:0;" onchange="_onPrefPinSkipChange(this)">
+              <span style="font-size:.875rem;color:#744210;">我不需要 PIN 碼，我了解這樣做的資安風險，我會小心使用本系統。</span>
+            </label>
           </div>
           <div id="pref-current-pin-status" style="font-size:.82rem;color:#718096;"></div>
           <div id="pref-error" class="alert alert-error" style="display:none;margin:0;"></div>
@@ -1211,6 +1217,7 @@
             <button id="bk-span-5" class="btn btn-secondary btn-sm" onclick="setBkDaySpan(5)">5天</button>
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
+            <button class="btn btn-secondary btn-sm" onclick="refreshBookings()" title="從 Drive 重新讀取預約資料">重新整理</button>
             <button class="btn btn-secondary btn-sm" onclick="syncFromCalendar()" title="從 Google Calendar 同步時間變更">與Google日曆同步</button>
             <button class="btn btn-primary" onclick="openBookingModal()">＋ 新增預約</button>
             <button class="btn btn-secondary btn-sm" onclick="_toggleBkSection('bookings-body','bk-overview-icon')" title="收折/展開" style="padding:2px 7px;font-size:.85rem;"><span id="bk-overview-icon">▼</span></button>
@@ -2260,8 +2267,8 @@ function syncUserPref_(updates) {
   if (!configData.users[currentUser.email]) configData.users[currentUser.email] = {};
   Object.assign(configData.users[currentUser.email], updates);
   clearTimeout(_prefSyncTimer);
-  // PIN 變更：立即寫入（不走 debounce），確保跨裝置同步可靠；回傳 promise 供 savePrefs 顯示結果
-  if ('pin' in updates) {
+  // PIN 或 pinSkipped 變更：立即寫入（不走 debounce），確保跨裝置同步可靠；回傳 promise 供 savePrefs 顯示結果
+  if ('pin' in updates || 'pinSkipped' in updates) {
     return _doUserPrefWrite_();
   } else {
     _prefSyncTimer = setTimeout(
@@ -8612,7 +8619,6 @@ function tryUnlock() {
 // 若從未設定過則同步沿用使用者偏好（configData.users[email].pin），
 // 否則不再強迫顯示首次設定 Modal — 使用者可至偏好設定自行設定。
 function checkPinSetup() {
-  // 確保鎖定畫面與設定 Modal 都關閉，避免任何殘留狀態
   _isLocked = false;
   const lockEl = document.getElementById('lock-overlay');
   if (lockEl) lockEl.style.display = 'none';
@@ -8620,7 +8626,8 @@ function checkPinSetup() {
   if (setupEl) setupEl.style.display = 'none';
 
   let stored = localStorage.getItem(pinKey());
-  // 跨裝置同步：從 Drive user profile 回填 PIN 與 pinTmo 到 localStorage（lockScreen/resetAfkTimer 用）
+  let pinSkipped = false;
+  // 跨裝置同步：從 Drive user profile 回填 PIN 與 pinTmo 到 localStorage
   if (configData?.users?.[currentUser?.email]) {
     const u = configData.users[currentUser.email];
     if (u.pin !== undefined) {
@@ -8628,28 +8635,47 @@ function checkPinSetup() {
       if (u.pinTmo !== undefined) localStorage.setItem(pinTmoKey(), String(u.pinTmo));
       stored = u.pin;
     }
+    if (u.pinSkipped === true) pinSkipped = true;
   }
-  // 登入後若已設定 PIN，立即鎖定要求驗證
   if (stored && stored.length > 0) {
-    lockScreen();
+    lockScreen(); // 有 PIN → 登入即鎖定，要求驗證
+  } else if (pinSkipped) {
+    resetAfkTimer(); // 使用者明確選擇不使用 PIN
   } else {
-    resetAfkTimer();
+    // 尚未設定 PIN 也未選擇略過 → 顯示設定 modal
+    if (setupEl) setupEl.style.display = 'flex';
   }
 }
 
+function _onPinSetupSkipChange(cb) {
+  const pinEl = document.getElementById('pin-setup-value');
+  pinEl.disabled = cb.checked;
+  if (cb.checked) pinEl.value = '';
+}
+
 function savePinSetup() {
-  const pinVal  = document.getElementById('pin-setup-value').value.trim();
-  const tmoSel  = document.getElementById('pin-setup-timeout').value;
-  const tmoMins = tmoSel === 'custom'
+  const pinVal   = document.getElementById('pin-setup-value').value.trim();
+  const skipPIN  = document.getElementById('pin-setup-skip').checked;
+  const tmoSel   = document.getElementById('pin-setup-timeout').value;
+  const tmoMins  = tmoSel === 'custom'
     ? (parseInt(document.getElementById('pin-setup-custom').value) || 10)
     : parseInt(tmoSel);
+  const errEl = document.getElementById('pin-setup-error');
 
-  // 儲存（空字串代表使用者選擇不設定 PIN）
-  localStorage.setItem(pinKey(),    pinVal);
+  if (!skipPIN && !pinVal) {
+    errEl.textContent = '請輸入 PIN 碼，或勾選「我不需要 PIN 碼」。';
+    errEl.style.display = '';
+    return;
+  }
+  errEl.style.display = 'none';
+
+  const finalPin = skipPIN ? '' : pinVal;
+  localStorage.setItem(pinKey(),    finalPin);
   localStorage.setItem(pinTmoKey(), String(tmoMins));
-  syncUserPref_({ pin: pinVal, pinTmo: tmoMins });
+  syncUserPref_({ pin: finalPin, pinTmo: tmoMins, pinSkipped: skipPIN });
   document.getElementById('pin-setup-modal').style.display = 'none';
-  resetAfkTimer();
+  if (!skipPIN) lockScreen(); // 設完 PIN 立即鎖定，驗證是否正確
+  else resetAfkTimer();
 }
 
 // 將 PIN 同步寫入使用者 Drive profile，跨瀏覽器登入時可自動沿用
@@ -8669,13 +8695,24 @@ function toggleSetupCustom(sel) {
 }
 
 // ── 偏好設定頁面 ────────────────────────────
+function _onPrefPinSkipChange(cb) {
+  const pinEl = document.getElementById('pref-pin');
+  const pinConfEl = document.getElementById('pref-pin-confirm');
+  pinEl.disabled = cb.checked;
+  pinConfEl.disabled = cb.checked;
+  if (cb.checked) { pinEl.value = ''; pinConfEl.value = ''; }
+}
+
 function renderPrefsPage() {
-  const stored  = localStorage.getItem(pinKey());
-  const tmo     = String(_userPref_('pinTmo', 10));
-  const hasPIN  = stored !== null && stored.length > 0;
+  const stored     = localStorage.getItem(pinKey());
+  const tmo        = String(_userPref_('pinTmo', 10));
+  const hasPIN     = stored !== null && stored.length > 0;
+  const pinSkipped = configData?.users?.[currentUser?.email]?.pinSkipped === true;
 
   const statusEl = document.getElementById('pref-current-pin-status');
-  statusEl.textContent = hasPIN ? `目前 PIN 碼：已設定（${stored.length} 位）` : '目前 PIN 碼：未設定（畫面不會自動鎖定）';
+  statusEl.textContent = hasPIN
+    ? `目前 PIN 碼：已設定（${stored.length} 位）`
+    : (pinSkipped ? '目前 PIN 碼：未設定（已選擇不使用）' : '目前 PIN 碼：未設定');
 
   const selEl = document.getElementById('pref-timeout');
   const stdVals = ['0','1','3','5','10','20','30'];
@@ -8691,6 +8728,9 @@ function renderPrefsPage() {
 
   document.getElementById('pref-pin').value         = '';
   document.getElementById('pref-pin-confirm').value = '';
+  document.getElementById('pref-pin-skip').checked  = !hasPIN && pinSkipped;
+  document.getElementById('pref-pin').disabled      = !hasPIN && pinSkipped;
+  document.getElementById('pref-pin-confirm').disabled = !hasPIN && pinSkipped;
   document.getElementById('pref-error').style.display   = 'none';
   document.getElementById('pref-success').style.display = 'none';
   document.getElementById('pref-counselor-freq').checked = _userPref_('counselorFreqMode', true);
@@ -8724,18 +8764,36 @@ async function savePrefs() {
     ? (parseInt(document.getElementById('pref-timeout-custom').value) || 10)
     : parseInt(tmoSel);
 
+  const pinSkip    = document.getElementById('pref-pin-skip').checked;
+  const existingPin = localStorage.getItem(pinKey()) || '';
+
   if (pinVal && pinVal !== pinConfirm) {
     errEl.textContent = 'PIN 碼與確認 PIN 碼不一致。';
     errEl.style.display = '';
     return;
   }
+  if (!pinVal && !pinSkip && !existingPin) {
+    errEl.textContent = '請輸入 PIN 碼，或勾選「我不需要 PIN 碼」。';
+    errEl.style.display = '';
+    return;
+  }
 
-  if (pinVal) localStorage.setItem(pinKey(), pinVal);
-  // 若留空：保留舊 PIN（不變更）
+  let finalPin, finalPinSkipped;
+  if (pinVal) {
+    finalPin = pinVal;
+    finalPinSkipped = false;
+  } else if (pinSkip) {
+    finalPin = '';
+    finalPinSkipped = true;
+  } else {
+    finalPin = existingPin;
+    finalPinSkipped = false;
+  }
+
+  localStorage.setItem(pinKey(), finalPin);
   localStorage.setItem(pinTmoKey(), String(tmoMins));
   const freqMode = document.getElementById('pref-counselor-freq').checked;
-  const finalPin = pinVal || localStorage.getItem(pinKey()) || '';
-  const writePromise = syncUserPref_({ counselorFreqMode: freqMode, pinTmo: tmoMins, pin: finalPin });
+  const writePromise = syncUserPref_({ counselorFreqMode: freqMode, pinTmo: tmoMins, pin: finalPin, pinSkipped: finalPinSkipped });
 
   resetAfkTimer();
   renderPrefsPage();
@@ -8747,7 +8805,7 @@ async function savePrefs() {
       await writePromise;
       okEl.textContent = finalPin
         ? 'PIN 已同步至 Drive，其他裝置登入時將要求驗證。'
-        : '已清除 PIN，偏好設定已儲存。';
+        : (finalPinSkipped ? '已設定不使用 PIN，已同步至 Drive。' : '偏好設定已儲存。');
     } catch(e) {
       okEl.style.display = 'none';
       errEl.textContent = 'PIN 本機已儲存，但同步 Drive 失敗：' + e.message;
@@ -9469,6 +9527,18 @@ async function loadBookings() {
     bookingsData = [];
   }
   scheduleHourlyCalendarSync();
+}
+
+async function refreshBookings() {
+  showLoading('重新整理中…');
+  try {
+    await loadBookings();
+    renderBookingsPage();
+  } catch(e) {
+    alert('重新整理失敗：' + e.message);
+  } finally {
+    hideLoading();
+  }
 }
 
 // ── Google Calendar 同步 ────────────────────────────────
@@ -10309,6 +10379,7 @@ function _initBkPeriodSelect() {
 
 function openBookingModal(prefillCaseId) {
   _editingBookingId = null;
+  _bkSkipPersonConflict = false;
   _bkSelectedValue = ''; _bkSelectedLabel = '';
   document.getElementById('booking-modal-title').textContent = '新增預約';
   _bkSelectedRoom = '';
@@ -10334,6 +10405,7 @@ function openBookingModal(prefillCaseId) {
 function editBooking(id) {
   const b = bookingsData.find(x => x.id === id);
   if (!b) return;
+  _bkSkipPersonConflict = false;
   _editingBookingId = id;
   document.getElementById('booking-modal-title').textContent = '編輯預約';
   _populateBookingCounselorSelect(b.counselorEmail || b.counselorName || '');
@@ -10358,6 +10430,7 @@ function editBooking(id) {
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb2 = document.getElementById('btn-save-booking'); if (sb2) sb2.disabled = false;
   document.getElementById('booking-modal').style.display = 'flex';
+  _checkBkConflict();
 }
 
 function closeBookingModal() {
@@ -12121,13 +12194,14 @@ function restoreSidebarOrder() {
 
 <!-- 首次設定 PIN Modal -->
 <div id="pin-setup-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.7);z-index:9998;align-items:center;justify-content:center;">
-  <div style="background:#fff;padding:32px 28px;border-radius:14px;min-width:320px;max-width:420px;box-shadow:0 8px 32px rgba(0,0,0,.25);">
-    <h3 style="margin-bottom:8px;color:#1a202c;">設定畫面鎖定</h3>
-    <p style="color:#718096;font-size:.88rem;margin-bottom:20px;">首次使用請設定 PIN 碼與閒置鎖定時間。若不需要鎖定功能，可留空並選擇「不鎖定」。</p>
+  <div style="background:#fff;padding:32px 28px;border-radius:14px;min-width:320px;max-width:440px;box-shadow:0 8px 32px rgba(0,0,0,.25);">
+    <h3 style="margin-bottom:8px;color:#1a202c;">設定畫面鎖定 PIN 碼</h3>
+    <p style="color:#718096;font-size:.88rem;margin-bottom:20px;">設定 PIN 碼後，登入時或閒置逾時將鎖定畫面，防止他人查閱個案資料。<br>若環境安全、不需要鎖定功能，可選擇略過。</p>
+    <div id="pin-setup-error" class="alert alert-error" style="display:none;margin-bottom:12px;"></div>
     <div style="display:flex;flex-direction:column;gap:14px;">
       <div>
-        <label class="field-label">PIN 碼（選填）</label>
-        <input type="password" id="pin-setup-value" class="field-input" placeholder="留空則不啟用鎖定" maxlength="12" autocomplete="new-password" />
+        <label class="field-label">PIN 碼</label>
+        <input type="password" id="pin-setup-value" class="field-input" placeholder="請輸入 PIN 碼" maxlength="12" autocomplete="new-password" />
       </div>
       <div>
         <label class="field-label">閒置後自動鎖定</label>
@@ -12143,6 +12217,10 @@ function restoreSidebarOrder() {
         </select>
         <input type="number" id="pin-setup-custom" min="1" max="999" placeholder="分鐘" class="field-input" style="display:none;width:80px;margin-left:8px;" />
       </div>
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;padding:10px 12px;background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;">
+        <input type="checkbox" id="pin-setup-skip" style="margin-top:2px;width:16px;height:16px;flex-shrink:0;" onchange="_onPinSetupSkipChange(this)">
+        <span style="font-size:.875rem;color:#744210;">我不需要 PIN 碼。我了解這樣做的資安風險，我會小心使用本系統。</span>
+      </label>
       <button class="btn btn-primary" onclick="savePinSetup()">確認設定</button>
     </div>
   </div>
