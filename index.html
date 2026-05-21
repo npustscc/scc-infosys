@@ -903,6 +903,9 @@
       <div class="nav-item" data-nav-id="page-transfer" onclick="showPage('page-transfer', this); renderTransferPage()">
         <span class="icon">🔄</span> 轉銜管理 <span class="nav-drag-handle">⠿</span>
       </div>
+      <div class="nav-item" data-nav-id="page-unassigned-records" onclick="showPage('page-unassigned-records', this); renderUnassignedRecordsPage()">
+        <span class="icon">📂</span> 未歸屬記錄 <span class="nav-drag-handle">⠿</span>
+      </div>
     </div>
 
     <div class="sidebar-section">
@@ -1197,6 +1200,18 @@
             oninput="renderPendingList()" />
         </div>
         <div id="pending-list-body" style="padding:8px 0;min-height:60px;"></div>
+      </div>
+    </div>
+
+    <!-- 未歸屬輔導服務記錄 -->
+    <div id="page-unassigned-records" class="page">
+      <div class="page-title">未歸屬輔導服務記錄</div>
+      <div class="card">
+        <div class="card-header">
+          <h3>未歸屬記錄列表</h3>
+          <button class="btn btn-secondary btn-sm" onclick="renderUnassignedRecordsPage()">重新整理</button>
+        </div>
+        <div id="unassigned-records-body" style="padding:0;min-height:60px;"></div>
       </div>
     </div>
 
@@ -2187,6 +2202,7 @@ const CHUNK_SIZE      = 20;
 const AUDIT_LOG_FILE  = 'audit_log.json';
 const BOOKINGS_FILE   = 'bookings.json';
 const TRANSFER_FILE   = 'transfer.json';
+const UNASSIGNED_RECORDS_FILE = 'unassigned_records.json';
 const ROOMS = ['玉山', '雪山', '中央山脈', '阿里山', '海岸山脈', '團體諮商室', '會議室', '其他'];
 const BK_PERIODS = [
   { label: '第1節  08:10–09:00',  start: '08:10', end: '09:00' },
@@ -2455,7 +2471,7 @@ function updateFloatingBackBtn(pageId) {
     fab.onclick = () => handleFloatingBack();
     document.body.appendChild(fab);
   }
-  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings','page-recycle','page-transfer','page-psychiatry'];
+  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings','page-recycle','page-transfer','page-psychiatry','page-unassigned-records'];
   fab.style.display = showOn.includes(pageId) ? 'inline-block' : 'none';
   fab.dataset.fromPage = pageId;
 }
@@ -2667,6 +2683,7 @@ async function afterLogin() {
       loadPendingCases(),
       loadBookings(),
       loadTransfer(),
+      loadUnassignedRecords(),
     ]);
     setLoadingProgress(25);
     configData = cfg;
@@ -2679,6 +2696,7 @@ async function afterLogin() {
     setLoadingProgress(30);
     checkPinSetup();
     await loadCases(); // loadCases 接手 30→100%
+    scanUnassignedRecords().catch(() => {}); // 每日掃描未歸屬記錄（fire-and-forget）
   } catch (err) {
     hideLoading();
     // 找不到設定檔 → 顯示初始化畫面
@@ -3054,9 +3072,10 @@ function addNotificationToUser(toEmail, type, caseId, caseName) {
   const user = configData.users[toEmail];
   if (!user.notifications) user.notifications = [];
   const msgs = {
-    assigned_counselor: `您已被指派為個案「${caseName}（${caseId}）」的主責輔導人員`,
-    assigned_manager:   `您已被委任為個案「${caseName}（${caseId}）」的個案管理員`,
-    removed_manager:    `您已被移除個案「${caseName}（${caseId}）」的個案管理員身分`,
+    assigned_counselor:       `您已被指派為個案「${caseName}（${caseId}）」的主責輔導人員`,
+    assigned_manager:         `您已被委任為個案「${caseName}（${caseId}）」的個案管理員`,
+    removed_manager:          `您已被移除個案「${caseName}（${caseId}）」的個案管理員身分`,
+    unassigned_record_match:  `未歸屬輔導記錄找到可能對應的個案「${caseName}（${caseId}）」，請至未歸屬記錄管理頁確認`,
   };
   user.notifications.unshift({
     id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
@@ -3121,7 +3140,15 @@ async function notifClick(notifId, caseId) {
     }
   }
   document.getElementById('notif-panel').style.display = 'none';
-  if (caseId) showCaseDetail(caseId);
+  if (!caseId) return;
+  const notif = configData?.users?.[currentUser?.email]?.notifications?.find(x => x.id === notifId);
+  if (notif?.type === 'unassigned_record_match') {
+    const navEl = document.querySelector('[data-nav-id="page-unassigned-records"]');
+    showPage('page-unassigned-records', navEl);
+    renderUnassignedRecordsPage();
+  } else {
+    showCaseDetail(caseId);
+  }
 }
 
 async function markAllNotifRead() {
@@ -9327,13 +9354,35 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
         await saveCasesChunks(...modifiedCaseIds);
       }
 
+      // 未比對且未跳過 → 存入 unassigned_records.json
+      const unassignedToSave = unmatchedState.filter(s => !s.skip && !s.assignedCaseId);
+      if (unassignedToSave.length) {
+        prog.innerHTML = `<span style="color:#718096;">儲存 ${unassignedToSave.length} 筆未歸屬記錄…</span>`;
+        const now = new Date().toISOString();
+        for (const s of unassignedToSave) {
+          unassignedRecordsData.push({
+            id: `ur-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
+            name: s.studentName || s.record.counseleeName || '',
+            semester: fileSemPrefix || '',
+            serviceItems: s.record.serviceItems || [],
+            importedAt: now,
+            importedBy: currentUser?.email || '',
+            record: s.record,
+            resolved: false,
+            matchedCaseId: null,
+            matchedAt: null,
+          });
+        }
+        await saveUnassignedRecords();
+      }
+
       const skipped = unmatchedState.filter(s => s.skip).length + matchedState.filter(s => s.skip).length;
-      const autoSkipped = unmatchedState.filter(s => !s.skip && !s.assignedCaseId).length;
+      const autoSaved = unassignedToSave.length;
       prog.innerHTML = `<span style="color:#276749;font-weight:600;">✓ 成功匯入 ${added} 筆輔導記錄`
         + (skipped > 0 ? `，已跳過 ${skipped} 筆` : '')
-        + (autoSkipped > 0 ? `，${autoSkipped} 筆未指派略過` : '')
+        + (autoSaved > 0 ? `，${autoSaved} 筆無法比對已存入未歸屬記錄` : '')
         + `。</span>`;
-      auditLog(`批次匯入輔導服務記錄 ${added} 筆`);
+      auditLog(`批次匯入輔導服務記錄 ${added} 筆${autoSaved > 0 ? `，${autoSaved} 筆存入未歸屬記錄` : ''}`);
       resolve();
     };
 
@@ -9561,6 +9610,226 @@ async function savePendingCases() {
       await driveCreateJsonFile(PENDING_CASES_FILE, { cases: pendingCasesData }, DRIVE_FOLDER_ID);
     } else throw e;
   }
+}
+
+// ══════════════════════════════════════════════
+//  未歸屬輔導服務記錄
+// ══════════════════════════════════════════════
+let unassignedRecordsData = [];
+
+async function loadUnassignedRecords() {
+  try {
+    const data = await driveReadJson(UNASSIGNED_RECORDS_FILE);
+    unassignedRecordsData = Array.isArray(data?.records) ? data.records : [];
+  } catch (e) {
+    unassignedRecordsData = [];
+  }
+}
+
+async function saveUnassignedRecords() {
+  try {
+    await driveUpdateJsonFile(UNASSIGNED_RECORDS_FILE, { records: unassignedRecordsData });
+  } catch(e) {
+    if (e.message.includes('找不到')) {
+      await driveCreateJsonFile(UNASSIGNED_RECORDS_FILE, { records: unassignedRecordsData }, DRIVE_FOLDER_ID);
+    } else throw e;
+  }
+}
+
+async function scanUnassignedRecords() {
+  if (!unassignedRecordsData.length) return;
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const lastScan = localStorage.getItem('scc_unassigned_scan');
+  if (lastScan === todayKey) return;
+
+  const pending = unassignedRecordsData.filter(r => !r.resolved);
+  if (!pending.length) { localStorage.setItem('scc_unassigned_scan', todayKey); return; }
+
+  const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  let matched = 0;
+  let cfgChanged = false;
+
+  for (const rec of pending) {
+    const name = (rec.name || '').trim();
+    if (!name) continue;
+    const found = casesData.find(c => !c.deleted && c.name === name && !c.status?.includes('結案'));
+    if (!found) continue;
+
+    rec.matchedCaseId = found.id;
+    rec.matchedCaseName = found.name;
+    rec.matchedAt = new Date().toISOString();
+    matched++;
+
+    const targets = new Set();
+    if (found.counselorEmail) targets.add(found.counselorEmail);
+    (found.managers || []).forEach(e => targets.add(e));
+    if (isAdmin) targets.add(currentUser.email);
+
+    targets.forEach(email => {
+      if (email === currentUser.email) return;
+      cfgChanged = addNotificationToUser(email, 'unassigned_record_match',
+        found.id, found.name) || cfgChanged;
+    });
+
+    if (isAdmin) {
+      const me = configData?.users?.[currentUser.email];
+      if (me) {
+        if (!me.notifications) me.notifications = [];
+        me.notifications.unshift({
+          id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+          type: 'unassigned_record_match',
+          caseId: found.id,
+          caseName: found.name,
+          message: `未歸屬記錄「${name}」已找到可能對應的開案個案「${found.name}（${found.id}）」，請至未歸屬記錄管理頁確認`,
+          createdAt: new Date().toISOString(),
+          read: false,
+        });
+        cfgChanged = true;
+      }
+    }
+  }
+
+  if (matched > 0) {
+    await saveUnassignedRecords();
+    if (cfgChanged) await driveUpdateJsonFile(CONFIG_FILE, configData);
+    renderNotifBell();
+  }
+  localStorage.setItem('scc_unassigned_scan', todayKey);
+}
+
+function renderUnassignedRecordsPage() {
+  const body = document.getElementById('unassigned-records-body');
+  if (!body) return;
+
+  const pending  = unassignedRecordsData.filter(r => !r.resolved);
+  const resolved = unassignedRecordsData.filter(r => r.resolved);
+
+  if (!unassignedRecordsData.length) {
+    body.innerHTML = '<div style="padding:24px;text-align:center;color:#718096;font-size:.875rem;">目前沒有未歸屬記錄</div>';
+    return;
+  }
+
+  const renderRow = (r, isResolved) => {
+    const matchInfo = r.matchedCaseId
+      ? `<span style="color:#276749;font-size:.8rem;">✓ 比對到：${escHtml(r.matchedCaseName||r.matchedCaseId)}</span>`
+      : `<span style="color:#718096;font-size:.8rem;">尚未比對到開案個案</span>`;
+    const actions = isResolved ? '' : `
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        ${r.matchedCaseId ? `<button class="btn btn-primary btn-sm" onclick="assignUnassignedRecord('${escHtml(r.id)}','${escHtml(r.matchedCaseId)}')">指派至比對個案</button>` : ''}
+        <button class="btn btn-secondary btn-sm" onclick="openAssignUnassignedModal('${escHtml(r.id)}')">手動指派</button>
+        <button class="btn btn-secondary btn-sm" onclick="skipUnassignedRecord('${escHtml(r.id)}')">略過</button>
+      </div>`;
+    return `
+      <div style="padding:12px 16px;border-bottom:1px solid #e2e8f0;${isResolved ? 'opacity:.6;' : ''}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+          <div>
+            <div style="font-weight:600;color:#2d3748;">${escHtml(r.name || '（無姓名）')}</div>
+            <div style="font-size:.8rem;color:#718096;margin-top:2px;">
+              匯入時間：${escHtml((r.importedAt||'').slice(0,16).replace('T',' '))}
+              ${r.semester ? `・${escHtml(r.semester)}` : ''}
+              ${r.serviceItems?.length ? `・${escHtml(r.serviceItems.join('、'))}` : ''}
+            </div>
+            <div style="margin-top:4px;">${matchInfo}</div>
+            ${isResolved ? `<div style="font-size:.8rem;color:#276749;margin-top:2px;">已${r.resolvedAction==='skip'?'略過':'指派'}：${escHtml((r.resolvedAt||'').slice(0,16).replace('T',' '))}</div>` : ''}
+          </div>
+          ${actions}
+        </div>
+      </div>`;
+  };
+
+  let html = '';
+  if (pending.length) {
+    html += `<div style="padding:8px 16px;background:#fffbeb;border-bottom:1px solid #e2e8f0;font-size:.85rem;color:#744210;">
+      待處理 ${pending.length} 筆未歸屬記錄
+    </div>`;
+    html += pending.map(r => renderRow(r, false)).join('');
+  }
+  if (resolved.length) {
+    html += `<div style="padding:8px 16px;background:#f7fafc;border-bottom:1px solid #e2e8f0;font-size:.85rem;color:#718096;">
+      已處理 ${resolved.length} 筆
+    </div>`;
+    html += resolved.slice(0, 50).map(r => renderRow(r, true)).join('');
+  }
+  body.innerHTML = html;
+}
+
+async function assignUnassignedRecord(recId, caseId) {
+  const rec = unassignedRecordsData.find(r => r.id === recId);
+  if (!rec) return;
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+
+  if (!c.records) c.records = [];
+  c.records.push(rec.record);
+  c.updatedAt = new Date().toISOString();
+  rec.resolved = true;
+  rec.resolvedAt = new Date().toISOString();
+  rec.resolvedAction = 'assign';
+  rec.assignedCaseId = caseId;
+
+  await Promise.all([saveCasesChunks(caseId), saveUnassignedRecords()]);
+  auditLog(`未歸屬記錄「${rec.name}」指派至個案 ${caseId}`);
+  renderUnassignedRecordsPage();
+}
+
+function openAssignUnassignedModal(recId) {
+  const rec = unassignedRecordsData.find(r => r.id === recId);
+  if (!rec) return;
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:420px;">
+      <div class="modal-header"><h3>手動指派未歸屬記錄</h3></div>
+      <div class="modal-body" style="padding:16px;">
+        <div style="margin-bottom:8px;font-size:.875rem;color:#4a5568;">記錄姓名：<strong>${escHtml(rec.name||'（無）')}</strong></div>
+        <label style="font-size:.875rem;color:#4a5568;">搜尋個案（姓名 / 學號 / 案號）</label>
+        <input id="ua-search" type="text" placeholder="輸入搜尋..."
+          style="width:100%;padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;margin-top:6px;box-sizing:border-box;"
+          oninput="renderUaSearchResults('${escHtml(recId)}')" />
+        <div id="ua-search-results" style="max-height:220px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:6px;margin-top:8px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function renderUaSearchResults(recId) {
+  const q = document.getElementById('ua-search')?.value.trim().toLowerCase() || '';
+  const res = document.getElementById('ua-search-results');
+  if (!res) return;
+  if (!q) { res.innerHTML = ''; return; }
+  const hits = casesData.filter(c => !c.deleted && (
+    c.name?.toLowerCase().includes(q) ||
+    c.studentId?.toLowerCase().includes(q) ||
+    c.id?.toLowerCase().includes(q)
+  )).slice(0, 10);
+  if (!hits.length) { res.innerHTML = '<div style="padding:10px;color:#718096;font-size:.85rem;">無符合個案</div>'; return; }
+  res.innerHTML = hits.map(c => `
+    <div style="padding:8px 12px;cursor:pointer;border-bottom:1px solid #f0f4f8;font-size:.875rem;"
+      onmouseover="this.style.background='#ebf8ff'" onmouseout="this.style.background=''"
+      onclick="confirmAssignUa('${escHtml(recId)}','${escHtml(c.id)}','${escHtml(c.name)}')">
+      <strong>${escHtml(c.name)}</strong>
+      <span style="color:#718096;margin-left:8px;">${escHtml(c.id)}</span>
+      ${c.studentId ? `<span style="color:#a0aec0;margin-left:6px;">${escHtml(c.studentId)}</span>` : ''}
+    </div>`).join('');
+}
+
+async function confirmAssignUa(recId, caseId, caseName) {
+  document.querySelector('.modal-overlay')?.remove();
+  if (!confirm(`確定要將此記錄指派至個案「${caseName}（${caseId}）」嗎？`)) return;
+  await assignUnassignedRecord(recId, caseId);
+}
+
+async function skipUnassignedRecord(recId) {
+  const rec = unassignedRecordsData.find(r => r.id === recId);
+  if (!rec) return;
+  rec.resolved = true;
+  rec.resolvedAt = new Date().toISOString();
+  rec.resolvedAction = 'skip';
+  await saveUnassignedRecords();
+  renderUnassignedRecordsPage();
 }
 
 // ══════════════════════════════════════════════
