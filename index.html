@@ -2260,9 +2260,9 @@ function syncUserPref_(updates) {
   if (!configData.users[currentUser.email]) configData.users[currentUser.email] = {};
   Object.assign(configData.users[currentUser.email], updates);
   clearTimeout(_prefSyncTimer);
-  // PIN 變更：立即寫入（不走 debounce），確保跨裝置同步可靠
+  // PIN 變更：立即寫入（不走 debounce），確保跨裝置同步可靠；回傳 promise 供 savePrefs 顯示結果
   if ('pin' in updates) {
-    _doUserPrefWrite_().catch(e => console.warn('syncUserPref_ (PIN) failed', e));
+    return _doUserPrefWrite_();
   } else {
     _prefSyncTimer = setTimeout(
       () => _doUserPrefWrite_().catch(e => console.warn('syncUserPref_ failed', e)),
@@ -2616,6 +2616,7 @@ function handleCredentialResponse(response) {
   const tokenClient = google.accounts.oauth2.initTokenClient({
     client_id: CLIENT_ID,
     scope: SCOPES,
+    hint: currentUser.email,
     callback: async (tokenResponse) => {
       if (tokenResponse.error) {
         alert('取得 Drive 授權失敗：' + tokenResponse.error);
@@ -8710,7 +8711,7 @@ function prefResetCounselorFreqs() {
   renderPrefsPage();
 }
 
-function savePrefs() {
+async function savePrefs() {
   const errEl = document.getElementById('pref-error');
   const okEl  = document.getElementById('pref-success');
   errEl.style.display = 'none';
@@ -8734,12 +8735,28 @@ function savePrefs() {
   localStorage.setItem(pinTmoKey(), String(tmoMins));
   const freqMode = document.getElementById('pref-counselor-freq').checked;
   const finalPin = pinVal || localStorage.getItem(pinKey()) || '';
-  syncUserPref_({ counselorFreqMode: freqMode, pinTmo: tmoMins, pin: finalPin });
+  const writePromise = syncUserPref_({ counselorFreqMode: freqMode, pinTmo: tmoMins, pin: finalPin });
 
   resetAfkTimer();
   renderPrefsPage();
-  okEl.textContent = '偏好設定已儲存。';
-  okEl.style.display = '';
+
+  if (writePromise) {
+    okEl.textContent = 'PIN 同步中…';
+    okEl.style.display = '';
+    try {
+      await writePromise;
+      okEl.textContent = finalPin
+        ? 'PIN 已同步至 Drive，其他裝置登入時將要求驗證。'
+        : '已清除 PIN，偏好設定已儲存。';
+    } catch(e) {
+      okEl.style.display = 'none';
+      errEl.textContent = 'PIN 本機已儲存，但同步 Drive 失敗：' + e.message;
+      errEl.style.display = '';
+    }
+  } else {
+    okEl.textContent = '偏好設定已儲存。';
+    okEl.style.display = '';
+  }
 }
 
 // ══════════════════════════════════════════════
