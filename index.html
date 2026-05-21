@@ -9080,6 +9080,7 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
       ...item,
       assignedCaseId: '',  // 使用者手動指派的 case id
       skip: false,
+      saveToUnassigned: true, // 勾選 = 匯入後存入未歸屬記錄
     }));
     const matchedState = matchedItems.map(item => ({
       ...item,
@@ -9109,7 +9110,7 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
 
       const pendingConfirm = unmatchedState.filter(s => !s.skip && s.assignedCaseId).length
                            + matchedState.filter(s => !s.skip).length;
-      const pendingUnmatched = unmatchedState.filter(s => !s.skip && !s.assignedCaseId).length;
+      const pendingUnmatched = unmatchedState.filter(s => !s.skip && !s.assignedCaseId && s.saveToUnassigned).length;
 
       // case 搜尋選項（用於 unmatched 的 select）
       const caseOptions = casesData
@@ -9119,9 +9120,13 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
 
       const unmatchedRows = unmatchedVisible.map((s, vi) => {
         const realIdx = unmatchedState.indexOf(s);
-        const skipCls = s.skip ? 'opacity:.4;' : '';
-        const bgCls   = s.skip ? '#f7fafc' : s.assignedCaseId ? '#f0fff4' : '#fff5f5';
+        const skipCls  = s.skip ? 'opacity:.4;' : (!s.saveToUnassigned ? 'opacity:.55;' : '');
+        const bgCls    = s.skip ? '#f7fafc' : !s.saveToUnassigned ? '#f7fafc' : s.assignedCaseId ? '#f0fff4' : '#fff5f5';
+        const saveLbl  = s.saveToUnassigned ? '<span style="color:#276749;font-size:.75rem;">暫存</span>' : '<span style="color:#a0aec0;font-size:.75rem;">略過</span>';
         return `<tr data-type="unmatched" data-real-idx="${realIdx}" style="background:${bgCls};${skipCls}">
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;text-align:center;">
+            <input type="checkbox" ${s.saveToUnassigned?'checked':''} title="勾選後匯入時存入未歸屬記錄" onchange="ciToggleSave(${realIdx},this.checked)">
+          </td>
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;white-space:nowrap;color:#718096;">${escHtml(s.record.date)}</td>
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.88rem;font-weight:600;">${escHtml(s.studentName)}</td>
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;color:#4a5568;">
@@ -9140,7 +9145,7 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
             <button class="btn btn-secondary btn-sm" style="font-size:.78rem;padding:2px 8px;" onclick="ciToggleSkip('unmatched',${realIdx},event)">${s.skip ? '取消跳過' : '跳過'}</button>
           </td>
         </tr>`;
-      }).join('') || `<tr><td colspan="6" style="text-align:center;padding:20px;color:#a0aec0;">（無符合條件的記錄）</td></tr>`;
+      }).join('') || `<tr><td colspan="7" style="text-align:center;padding:20px;color:#a0aec0;">（無符合條件的記錄）</td></tr>`;
 
       const matchedRows = matchedVisible.map((s, vi) => {
         const realIdx = matchedState.indexOf(s);
@@ -9189,7 +9194,7 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
               <button type="button" class="btn btn-secondary btn-sm" onclick="ciSelAll(true)">全選</button>
             </div>
             ${pendingUnmatched > 0 ? `<div style="margin-top:8px;font-size:.82rem;color:#b7791f;background:#fffbeb;padding:6px 12px;border-radius:6px;border:1px solid #f6e05e;">
-              ℹ ${pendingUnmatched} 筆無法比對尚未指派個案，匯入時將略過這些筆。如需匯入請在下方「指派至個案」欄搜尋並選擇對應個案。
+              ℹ ${pendingUnmatched} 筆無法比對且勾選「暫存」，匯入後將存入未歸屬記錄待後續指派。如要直接匯入請在下方「指派至個案」欄搜尋並選擇對應個案；取消勾選則略過。
             </div>` : ''}
           </div>
 
@@ -9202,6 +9207,7 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
             <table style="width:100%;border-collapse:collapse;">
               <thead>
                 <tr style="background:#fff5f5;font-size:.78rem;color:#718096;text-align:left;">
+                  <th style="padding:7px 10px;border-bottom:2px solid #fed7d7;text-align:center;" title="勾選=匯入時存入未歸屬記錄">暫存</th>
                   <th style="padding:7px 10px;border-bottom:2px solid #fed7d7;white-space:nowrap;">日期</th>
                   <th style="padding:7px 10px;border-bottom:2px solid #fed7d7;">學生姓名</th>
                   <th style="padding:7px 10px;border-bottom:2px solid #fed7d7;">輔導人員</th>
@@ -9239,11 +9245,12 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
               ${unmatchedState.filter(s=>s.skip).length + matchedState.filter(s=>s.skip).length > 0
                 ? `，略過 <strong>${unmatchedState.filter(s=>s.skip).length + matchedState.filter(s=>s.skip).length}</strong> 筆`
                 : ''}
-              ${pendingUnmatched > 0 ? `，<span style="color:#b7791f;">${pendingUnmatched} 筆未指派將略過</span>` : ''}
+              ${pendingUnmatched > 0 ? `，<span style="color:#b7791f;">${pendingUnmatched} 筆存入未歸屬記錄</span>` : ''}
             </div>
+            <div id="ci-footer-info" style="display:none;"></div>
             <div style="display:flex;gap:8px;">
               <button class="btn btn-secondary" type="button" id="ci-cancel-btn">取消</button>
-              <button class="btn btn-primary" type="button" id="ci-confirm-btn" ${pendingConfirm===0?'disabled':''}>確認匯入 ${pendingConfirm} 筆</button>
+              <button class="btn btn-primary" type="button" id="ci-confirm-btn" ${(pendingConfirm===0&&pendingUnmatched===0)?'disabled':''}>確認匯入 ${pendingConfirm} 筆</button>
             </div>
           </div>
         </div>`;
@@ -9278,6 +9285,10 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
       _ciLastClick = { type, idx: realIdx };
       renderModal();
     };
+    window.ciToggleSave = (realIdx, val) => {
+      unmatchedState[realIdx].saveToUnassigned = val;
+      renderModal();
+    };
     window.ciSelAll = (select) => {
       const tab = modal.querySelector('#ci-tab-all')?.dataset.active === '1' ? 'all'
                 : modal.querySelector('#ci-tab-unmatched')?.dataset.active === '1' ? 'unmatched' : 'matched';
@@ -9299,10 +9310,10 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
       // 不重繪整個 modal，只更新 footer 計數
       const pendingConfirm = unmatchedState.filter(s => !s.skip && s.assignedCaseId).length
                            + matchedState.filter(s => !s.skip).length;
-      const pendingUnmatched = unmatchedState.filter(s => !s.skip && !s.assignedCaseId).length;
+      const pendingUnmatched = unmatchedState.filter(s => !s.skip && !s.assignedCaseId && s.saveToUnassigned).length;
       const confirmBtn = modal.querySelector('#ci-confirm-btn');
       if (confirmBtn) {
-        confirmBtn.disabled = pendingConfirm === 0;
+        confirmBtn.disabled = pendingConfirm === 0 && pendingUnmatched === 0;
         confirmBtn.textContent = `確認匯入 ${pendingConfirm} 筆`;
       }
       const footerInfo = modal.querySelector('#ci-footer-info');
@@ -9310,7 +9321,7 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
         footerInfo.innerHTML = `將匯入 <strong style="color:#2d3748;">${pendingConfirm}</strong> 筆`
           + (unmatchedState.filter(s=>s.skip).length + matchedState.filter(s=>s.skip).length > 0
               ? `，略過 <strong>${unmatchedState.filter(s=>s.skip).length + matchedState.filter(s=>s.skip).length}</strong> 筆` : '')
-          + (pendingUnmatched > 0 ? `，<span style="color:#b7791f;">${pendingUnmatched} 筆未指派將略過</span>` : '');
+          + (pendingUnmatched > 0 ? `，<span style="color:#b7791f;">${pendingUnmatched} 筆存入未歸屬記錄</span>` : '');
       }
       // 改變列背景色以給即時反饋
       const row = modal.querySelector(`tr[data-type="unmatched"][data-real-idx="${realIdx}"]`);
@@ -9354,8 +9365,8 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
         await saveCasesChunks(...modifiedCaseIds);
       }
 
-      // 未比對且未跳過 → 存入 unassigned_records.json
-      const unassignedToSave = unmatchedState.filter(s => !s.skip && !s.assignedCaseId);
+      // 未比對且未跳過且已勾選暫存 → 存入 unassigned_records.json
+      const unassignedToSave = unmatchedState.filter(s => !s.skip && !s.assignedCaseId && s.saveToUnassigned !== false);
       if (unassignedToSave.length) {
         prog.innerHTML = `<span style="color:#718096;">儲存 ${unassignedToSave.length} 筆未歸屬記錄…</span>`;
         const now = new Date().toISOString();
@@ -10320,10 +10331,10 @@ function renderBookingsPage() {
     let html = '';
     for (const room of _getBkDisplayRooms()) {
       const rb = dayBookings.filter(b => b.room === room).sort((a, b) => (a.startTime || '') < (b.startTime || '') ? -1 : 1);
-      html += `<div style="border-bottom:1px solid #e2e8f0;padding:10px 16px;">
+      html += `<div ondragover="bkDragOver(event)" ondrop="bkDrop(event,'${escHtml(room)}','${startDate}')" ondragenter="bkDragEnter(this)" ondragleave="bkDragLeave(this)" style="border-bottom:1px solid #e2e8f0;padding:10px 16px;transition:outline .1s;">
         <div style="font-weight:600;color:#2d3748;margin-bottom:6px;font-size:.9rem;">${escHtml(room)}</div>`;
       if (rb.length === 0) {
-        html += `<div style="color:#a0aec0;font-size:.85rem;padding:2px 0;">（無預約）</div>`;
+        html += `<div style="color:#a0aec0;font-size:.85rem;padding:2px 0;">（無預約，可拖曳至此）</div>`;
       } else {
         rb.forEach(b => {
           const caseTag = b.caseId ? `<span style="font-size:.8rem;color:#2471a3;margin-left:6px;">個案 ${escHtml(b.caseId)}${b.caseName ? ' '+escHtml(b.caseName) : ''}</span>` : '';
@@ -10331,7 +10342,7 @@ function renderBookingsPage() {
           const calTag = b.calendarEventId
             ? `<span title="已同步 Google Calendar" style="font-size:.85rem;">📅</span>`
             : `<button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:.75rem;" data-sync-id="${escHtml(b.id)}" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅 同步</button>`;
-          html += `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 8px;background:#edf2f7;border-radius:6px;margin-bottom:4px;">
+          html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 8px;background:#edf2f7;border-radius:6px;margin-bottom:4px;cursor:grab;">
             <span style="font-size:.85rem;font-weight:600;color:#2d3748;min-width:105px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</span>
             <span style="font-size:.875rem;color:#4a5568;">${escHtml(b.counselorName || '—')}</span>
             ${caseTag}${noteTag}${calTag}
@@ -10366,7 +10377,7 @@ function renderBookingsPage() {
       dates.forEach(d => {
         const tc = isToday(d);
         const rb = bookingsData.filter(b => b.date === d && b.room === room).sort((a, b) => (a.startTime||'') < (b.startTime||'') ? -1 : 1);
-        html += `<td style="padding:5px 7px;background:${tc?'#f0f9ff':''};border-bottom:1px solid #e2e8f0;border-right:1px solid #e2e8f0;vertical-align:top;">`;
+        html += `<td ondragover="bkDragOver(event)" ondrop="bkDrop(event,'${escHtml(room)}','${escHtml(d)}')" ondragenter="bkDragEnter(this)" ondragleave="bkDragLeave(this)" style="padding:5px 7px;background:${tc?'#f0f9ff':''};border-bottom:1px solid #e2e8f0;border-right:1px solid #e2e8f0;vertical-align:top;transition:outline .1s;">`;
         if (rb.length === 0) {
           html += `<span style="color:#cbd5e0;font-size:.75rem;">—</span>`;
         } else {
@@ -10374,7 +10385,7 @@ function renderBookingsPage() {
             const calTag = b.calendarEventId
               ? `<span title="已同步" style="font-size:.75rem;">📅</span>`
               : `<button class="btn btn-secondary btn-sm" style="padding:0 3px;font-size:.65rem;" data-sync-id="${escHtml(b.id)}" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅</button>`;
-            html += `<div style="padding:3px 5px;background:#edf2f7;border-radius:4px;margin-bottom:3px;font-size:.78rem;">` +
+            html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="padding:3px 5px;background:#edf2f7;border-radius:4px;margin-bottom:3px;font-size:.78rem;cursor:grab;">` +
               `<div style="font-weight:600;color:#2d3748;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</div>` +
               `<div style="color:#4a5568;">${escHtml(b.counselorName||'—')}</div>` +
               (b.caseId ? `<div style="color:#2471a3;font-size:.72rem;">${escHtml(b.caseId)}</div>` : '') +
@@ -10393,6 +10404,47 @@ function renderBookingsPage() {
     body.innerHTML = html;
   }
   renderBookingsAuditLog();
+}
+
+function bkDragStart(event, bookingId) {
+  event.dataTransfer.setData('bk-id', bookingId);
+  event.dataTransfer.effectAllowed = 'move';
+  event.currentTarget.style.opacity = '0.5';
+}
+function bkDragEnd(event) {
+  event.currentTarget.style.opacity = '';
+}
+function bkDragOver(event) {
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+}
+function bkDragEnter(el) {
+  el.dataset.dragOver = '1';
+  el.style.outline = '2px dashed #3182ce';
+}
+function bkDragLeave(el) {
+  if (el.dataset.dragOver) { delete el.dataset.dragOver; el.style.outline = ''; }
+}
+async function bkDrop(event, newRoom, newDate) {
+  event.preventDefault();
+  const dropEl = event.currentTarget;
+  dropEl.style.outline = '';
+  const bookingId = event.dataTransfer.getData('bk-id');
+  const b = bookingsData.find(x => x.id === bookingId);
+  if (!b) return;
+  const changed = (newRoom && b.room !== newRoom) || (newDate && b.date !== newDate);
+  if (!changed) return;
+  const oldRoom = b.room, oldDate = b.date;
+  if (newRoom) b.room = newRoom;
+  if (newDate) b.date = newDate;
+  try {
+    await saveBookings();
+    auditLog(`空間預約調整：${oldRoom}${oldDate !== (newDate||oldDate) ? ' '+oldDate : ''} → ${b.room}${b.date !== oldDate ? ' '+b.date : ''}（${b.counselorName || '—'}）`);
+    renderBookingsPage();
+  } catch(e) {
+    b.room = oldRoom; b.date = oldDate;
+    alert('儲存失敗：' + e.message);
+  }
 }
 
 function shiftBookingDate(delta) {
@@ -10537,6 +10589,15 @@ function _bkTimeBlur(inp) {
   if (digits.length === 3) inp.value = '0' + digits[0] + ':' + digits.slice(1);
   else if (digits.length === 4) inp.value = digits.slice(0,2) + ':' + digits.slice(2);
   _checkBkConflict();
+}
+
+function prFillPeriod() {
+  const val = document.getElementById('pr-period')?.value || '';
+  const p = BK_PERIODS.find(x => x.label === val);
+  if (p) {
+    document.getElementById('pr-start').value = p.start;
+    document.getElementById('pr-end').value   = p.end;
+  }
 }
 
 function onBkPeriodChange(sel) {
@@ -12173,6 +12234,7 @@ function openPsychiatristModal(caseId, recordId) {
   const existing = recordId ? (c.psychiatristRecords||[]).find(r => r.id === recordId) : null;
   const pr = existing || {
     date: new Date().toISOString().slice(0,10), timeStart:'', timeEnd:'',
+    sessionPeriod:'',
     intervieweeName: c.name||'', legalGender: c.legalGender||'',
     department: c.department||'', studentId: c.studentId||'',
     mainIssue:'', coreAssessment:'', intervention:'', recommendations:'',
@@ -12188,7 +12250,7 @@ function openPsychiatristModal(caseId, recordId) {
           <h3 style="font-size:1.1rem;">${existing?'編輯':'新增'}精神科醫師會談評估</h3>
           <button onclick="document.getElementById('psychiatrist-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
           <div><label class="field-label">與談者姓名</label><input type="text" class="field-input" id="pr-name" value="${escHtml(pr.intervieweeName)}"></div>
           <div><label class="field-label">法定性別</label><select class="field-input" id="pr-gender">
             <option value="">請選擇</option>
@@ -12198,15 +12260,23 @@ function openPsychiatristModal(caseId, recordId) {
           <div><label class="field-label">系級</label><input type="text" class="field-input" id="pr-dept" value="${escHtml(pr.department)}"></div>
           <div><label class="field-label">學號</label><input type="text" class="field-input" id="pr-sid" value="${escHtml(pr.studentId)}"></div>
           <div><label class="field-label">會談日期</label><input type="date" class="field-input" id="pr-date" value="${pr.date}"></div>
-          <div style="display:flex;gap:8px;">
-            <div style="flex:1;"><label class="field-label">開始</label><input type="time" class="field-input" id="pr-start" value="${pr.timeStart}"></div>
-            <div style="flex:1;"><label class="field-label">結束</label><input type="time" class="field-input" id="pr-end" value="${pr.timeEnd}"></div>
+          <div>
+            <label class="field-label">節次</label>
+            <select class="field-input" id="pr-period" onchange="prFillPeriod()">
+              <option value="">— 自填時間 —</option>
+              ${BK_PERIODS.map(p => `<option value="${escHtml(p.label)}" ${pr.sessionPeriod===p.label?'selected':''}>${escHtml(p.label)}</option>`).join('')}
+              <option value="其他" ${pr.sessionPeriod==='其他'?'selected':''}>其他（自填時間）</option>
+            </select>
           </div>
         </div>
-        <div style="margin-bottom:12px;"><label class="field-label">主述與會談資料</label><textarea class="field-input" id="pr-main" rows="4" style="resize:vertical;">${escHtml(pr.mainIssue)}</textarea></div>
-        <div style="margin-bottom:12px;"><label class="field-label">核心問題之評估與判斷</label><textarea class="field-input" id="pr-core" rows="4" style="resize:vertical;">${escHtml(pr.coreAssessment)}</textarea></div>
-        <div style="margin-bottom:12px;"><label class="field-label">介入處遇</label><textarea class="field-input" id="pr-interv" rows="3" style="resize:vertical;">${escHtml(pr.intervention)}</textarea></div>
-        <div style="margin-bottom:16px;"><label class="field-label">給學生諮商中心的建議</label><textarea class="field-input" id="pr-rec" rows="3" style="resize:vertical;">${escHtml(pr.recommendations)}</textarea></div>
+        <div style="display:flex;gap:12px;margin-bottom:16px;">
+          <div style="flex:1;"><label class="field-label">開始時間</label><input type="text" class="field-input" id="pr-start" maxlength="5" placeholder="HH:MM" value="${escHtml(pr.timeStart)}" onblur="_bkTimeBlur(this)"></div>
+          <div style="flex:1;"><label class="field-label">結束時間</label><input type="text" class="field-input" id="pr-end" maxlength="5" placeholder="HH:MM" value="${escHtml(pr.timeEnd)}" onblur="_bkTimeBlur(this)"></div>
+        </div>
+        <div style="margin-bottom:12px;"><label class="field-label">主述與會談資料<span class="req">*</span></label><textarea class="field-input" id="pr-main" rows="4" style="resize:vertical;">${escHtml(pr.mainIssue)}</textarea></div>
+        <div style="margin-bottom:12px;"><label class="field-label">核心問題之評估與判斷<span class="req">*</span></label><textarea class="field-input" id="pr-core" rows="4" style="resize:vertical;">${escHtml(pr.coreAssessment)}</textarea></div>
+        <div style="margin-bottom:12px;"><label class="field-label">介入處遇<span class="req">*</span></label><textarea class="field-input" id="pr-interv" rows="3" style="resize:vertical;">${escHtml(pr.intervention)}</textarea></div>
+        <div style="margin-bottom:16px;"><label class="field-label">給學生諮商中心的建議<span class="req">*</span></label><textarea class="field-input" id="pr-rec" rows="3" style="resize:vertical;">${escHtml(pr.recommendations)}</textarea></div>
         <div style="padding:14px;background:#f8fafc;border-radius:8px;margin-bottom:16px;">
           <div style="margin-bottom:10px;">
             <div style="font-weight:600;margin-bottom:6px;">是否符合精神疾患診斷標準？</div>
@@ -12246,10 +12316,24 @@ async function savePsychiatristRecord(caseId, recordId) {
   if (!c) return;
   const gV = id => document.getElementById(id)?.value?.trim()||'';
   const gR = n => { const el=document.querySelector(`[name="${n}"]:checked`); return el?el.value:''; };
+  const required = [
+    ['pr-main',  '主述與會談資料'],
+    ['pr-core',  '核心問題之評估與判斷'],
+    ['pr-interv','介入處遇'],
+    ['pr-rec',   '給學生諮商中心的建議'],
+  ];
+  for (const [id, label] of required) {
+    if (!gV(id)) {
+      alert(`「${label}」為必填欄位`);
+      document.getElementById(id)?.focus();
+      return;
+    }
+  }
   const data = {
     intervieweeName:gV('pr-name'), legalGender:gV('pr-gender'),
     department:gV('pr-dept'), studentId:gV('pr-sid'),
     date:gV('pr-date'), timeStart:gV('pr-start'), timeEnd:gV('pr-end'),
+    sessionPeriod:gV('pr-period'),
     mainIssue:gV('pr-main'), coreAssessment:gV('pr-core'),
     intervention:gV('pr-interv'), recommendations:gV('pr-rec'),
     diagnosisType:gR('pr_diag'), diagnosisName:gV('pr-diag-name'),
