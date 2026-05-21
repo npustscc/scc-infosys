@@ -332,8 +332,8 @@
       }
       actorLine = (actorName || '') + ' ' + verb + dtStr;
     }
-    if (actorLine) desc += (desc ? '\n\n' : '') + actorLine;
-    if (bkSerial) desc += '\n\n#' + String(bkSerial).padStart(4, '0');
+    if (actorLine) desc += (desc ? '\n---\n' : '---\n') + actorLine;
+    if (bkSerial) desc += '\n#' + String(bkSerial).padStart(4, '0');
     return desc;
   }
 
