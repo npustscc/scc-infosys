@@ -952,7 +952,7 @@
         <span class="icon">🧠</span> 精神科醫師評估 <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" data-nav-id="page-casenums" onclick="showPage('page-casenums', this); renderCaseNums()">
-        <span class="icon">🔢</span> 案號管理 <span class="nav-drag-handle">⠿</span>
+        <span class="icon">🔢</span> 案號查詢與管理 <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" data-nav-id="page-stats" onclick="showPage('page-stats', this); renderStats()">
         <span class="icon">📊</span> 統計分析 <span class="nav-drag-handle">⠿</span>
@@ -1138,7 +1138,7 @@
 
     <!-- 案號管理 -->
     <div id="page-casenums" class="page">
-      <div class="page-title">案號管理</div>
+      <div class="page-title">案號查詢與管理</div>
       <div id="casenums-body">
         <div class="empty-state"><div class="icon">🔢</div><p>載入中…</p></div>
       </div>
@@ -2323,6 +2323,7 @@
             <div id="ii-sup-skills-chips" class="ii-chip-row"></div>
           </div>
         </div>
+        <div id="ii-sup-45-section">
         <label class="field-label" style="margin-top:8px;">4. 空堂的適配性</label>
         <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:8px;">
           <label style="display:inline-flex;align-items:center;gap:6px;"><input type="checkbox" name="ii-vacancy" value="專任專輔人員" /> 專任專輔人員</label>
@@ -2331,10 +2332,11 @@
         </div>
         <label class="field-label">5. 其他<span style="font-size:.78rem;color:#718096;margin-left:6px;">（非必填）</span></label>
         <input type="text" class="field-input" id="ii-sup-other" />
+        </div>
       </div>
 
       <!-- 七 -->
-      <div class="form-section">
+      <div class="form-section" id="ii-section-seven">
         <div class="form-section-title">七、同儕督導會議結果：確認主責輔導人員<span class="req">*</span></div>
         <select class="field-select" id="ii-result-counselor" style="max-width:340px;">
           <option value="">— 請選擇主責輔導人員 —</option>
@@ -2342,7 +2344,7 @@
       </div>
 
       <!-- 八 -->
-      <div class="form-section">
+      <div class="form-section" id="ii-section-eight">
         <div class="form-section-title">八、備註<span style="font-size:.78rem;color:#718096;margin-left:6px;">（非必填）</span></div>
         <textarea class="field-input" id="ii-notes" rows="2" style="resize:vertical;" placeholder="其他補充說明…"></textarea>
       </div>
@@ -3948,7 +3950,19 @@ async function deleteUser(key) {
 //  個案詳細頁
 // ══════════════════════════════════════════════
 function toggleSection(id) {
-  document.getElementById(id).classList.toggle('collapsed');
+  const el = document.getElementById(id);
+  if (!el) return;
+  const nowCollapsed = !el.classList.contains('collapsed');
+  el.classList.toggle('collapsed', nowCollapsed);
+  // Persist state per user per case for case-detail sections
+  if (_detailCaseId && id.startsWith('cs-')) {
+    const key = `scc_sec_${currentUser?.email||''}_${_detailCaseId}`;
+    try {
+      const state = JSON.parse(localStorage.getItem(key) || '{}');
+      state[id] = nowCollapsed;
+      localStorage.setItem(key, JSON.stringify(state));
+    } catch (_) {}
+  }
 }
 
 function mkSection(id, title, bodyHtml, open = true) {
@@ -3965,6 +3979,7 @@ function mkSection(id, title, bodyHtml, open = true) {
 function showCaseDetail(caseId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
+  if (_detailCaseId !== caseId) { _recPage = 1; _detailCaseId = caseId; }
 
   document.getElementById('detail-name').textContent = c.name || '—';
   document.getElementById('detail-meta').innerHTML =
@@ -4149,13 +4164,31 @@ function showCaseDetail(caseId) {
       </div>`;
   };
 
-  // 排序後的記錄列表
+  // 排序後的記錄列表（含分頁）
   const sortedRecords = _recSortDesc
     ? [...visibleRecords].reverse()
     : [...visibleRecords];
-  const recordCards = visibleRecords.length === 0
+  const totalRecCount = sortedRecords.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecCount / _recPageSize));
+  if (_recPage > totalPages) _recPage = totalPages;
+  const pagedRecords = sortedRecords.slice((_recPage - 1) * _recPageSize, _recPage * _recPageSize);
+
+  const _pageSizeBtn = (n) =>
+    `<button class="btn btn-secondary btn-sm${_recPageSize===n?' active':''}" style="font-size:.78rem;${_recPageSize===n?'background:#bee3f8;border-color:#90cdf4;':''}min-width:28px;"
+      onclick="_recPageSize=${n};_recPage=1;localStorage.setItem('scc_rec_pagesize','${n}');showCaseDetail('${escHtml(c.id)}')">${n}</button>`;
+  const paginationHtml = totalRecCount === 0 ? '' : `
+    <div style="display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap;padding-top:8px;border-top:1px solid #f0f4f8;">
+      <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" ${_recPage<=1?'disabled':''} onclick="_recPage--;showCaseDetail('${escHtml(c.id)}')">◀</button>
+      <span style="font-size:.82rem;color:#718096;">${_recPage} / ${totalPages}</span>
+      <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" ${_recPage>=totalPages?'disabled':''} onclick="_recPage++;showCaseDetail('${escHtml(c.id)}')">▶</button>
+      <span style="font-size:.78rem;color:#a0aec0;margin-left:8px;">每頁：</span>
+      ${[5,10,15].map(_pageSizeBtn).join('')}
+      ${totalRecCount > _recPageSize ? `<span style="font-size:.78rem;color:#a0aec0;">（共 ${totalRecCount} 筆）</span>` : ''}
+    </div>`;
+
+  const recordCards = totalRecCount === 0
     ? `<div class="empty-state" style="padding:30px;"><div class="icon">📝</div><p>尚無晤談紀錄</p></div>`
-    : sortedRecords.map(renderRecordCard).join('');
+    : pagedRecords.map(renderRecordCard).join('') + paginationHtml;
 
   // 初次晤談折疊卡片（顯示在晤談紀錄列表中）
   const iiCardHtml = (() => {
@@ -4377,6 +4410,16 @@ function showCaseDetail(caseId) {
     iiReminderHtml +
     recordsHtml;
 
+  // Restore per-case section collapse states
+  const _secKey = `scc_sec_${currentUser?.email||''}_${caseId}`;
+  try {
+    const _secState = JSON.parse(localStorage.getItem(_secKey) || '{}');
+    Object.entries(_secState).forEach(([id, collapsed]) => {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('collapsed', !!collapsed);
+    });
+  } catch (_) {}
+
   showPage('page-case-detail', null);
 }
 
@@ -4461,6 +4504,9 @@ async function removeCaseManager(caseId, email) {
 let _recordCaseId   = null;
 let _editingRecordId = null;
 let _recSortDesc = true; // 晤談紀錄排序：true=新→舊，false=舊→新
+let _recPageSize = parseInt(localStorage.getItem('scc_rec_pagesize') || '5');
+let _recPage = 1;
+let _detailCaseId = null; // tracks which case is open; resets page when case changes
 
 function isEditable(createdAt) {
   if (!createdAt) return false;
@@ -5786,10 +5832,26 @@ function renderCaseNums() {
     return;
   }
 
-  const rows = visible.map(c => {
-    const statusCell = c.deleted
-      ? `<span class="badge-case-deleted">已刪除</span>`
-      : statusBadge(c.status);
+  // Build per-student semester history (using all casesData, not just visible)
+  const studentSems = {};
+  casesData.forEach(c => {
+    if (!c.studentId) return;
+    const sem = openDateToSemPrefix(c.openDate);
+    if (!sem) return;
+    if (!studentSems[c.studentId]) studentSems[c.studentId] = new Set();
+    studentSems[c.studentId].add(sem);
+  });
+
+  const q = document.getElementById('cn-search')?.value?.trim().toLowerCase() || '';
+  const filtered = q
+    ? visible.filter(c => (c.id||'').includes(q) || (c.name||'').includes(q) || (c.studentId||'').includes(q))
+    : visible;
+
+  const rows = filtered.map(c => {
+    const sems = c.studentId ? [...(studentSems[c.studentId] || [])].sort() : [];
+    const semChips = sems.map(s =>
+      `<span style="display:inline-block;background:#ebf8ff;border:1px solid #90cdf4;color:#2b6cb0;border-radius:10px;padding:1px 8px;font-size:.78rem;margin:1px 2px;">${escHtml(semesterLabel(s))}</span>`
+    ).join('') || '<span style="color:#a0aec0;">—</span>';
     const editBtn = !c.deleted
       ? `<button class="btn btn-secondary btn-sm" onclick="editCaseNum('${escHtml(c.id)}')">修改案號</button>`
       : '—';
@@ -5798,21 +5860,25 @@ function renderCaseNums() {
       <td><strong style="color:#1a5276;">${escHtml(c.id || '—')}</strong></td>
       <td>${escHtml(c.name || '—')}</td>
       <td>${escHtml(c.studentId || '—')}</td>
-      <td>${escHtml(c.openDate || '—')}</td>
-      <td>${statusCell}</td>
+      <td>${semChips}</td>
       <td>${editBtn}</td>
     </tr>`;
   }).join('');
 
   body.innerHTML = `
     <div class="card">
-      <div class="card-header"><h3>所有個案案號（共 ${visible.length} 筆）</h3></div>
+      <div class="card-header">
+        <h3>案號查詢（共 ${visible.length} 筆）</h3>
+        <input type="search" id="cn-search" class="field-input" placeholder="搜尋案號／姓名／學號…"
+          style="max-width:240px;padding:5px 10px;font-size:.87rem;"
+          value="${escHtml(q)}" oninput="renderCaseNums()" />
+      </div>
       <div style="overflow-x:auto;">
         <table>
           <thead>
-            <tr><th>案號</th><th>姓名</th><th>學號</th><th>開案日期</th><th>狀態</th><th>操作</th></tr>
+            <tr><th>案號</th><th>姓名</th><th>學號</th><th>開案學期歷史</th><th>操作</th></tr>
           </thead>
-          <tbody>${rows}</tbody>
+          <tbody>${rows || '<tr><td colspan="5" style="text-align:center;color:#a0aec0;padding:20px;">無符合結果</td></tr>'}</tbody>
         </table>
       </div>
     </div>`;
@@ -6972,7 +7038,14 @@ function iiProbMainChange(idx) {
 }
 
 function iiSupToggle(radio) {
-  document.getElementById('ii-sup-new-section')?.classList.toggle('ii-disabled', radio.value === '舊案');
+  const isOld = radio.value === '舊案';
+  ['ii-sup-new-section','ii-sup-45-section'].forEach(id =>
+    document.getElementById(id)?.classList.toggle('ii-disabled', isOld)
+  );
+  ['ii-section-seven','ii-section-eight'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.style.opacity = isOld ? '.4' : ''; el.style.pointerEvents = isOld ? 'none' : ''; }
+  });
 }
 
 function iiLoadFamilyImage(input) {
@@ -7198,27 +7271,22 @@ function openInitialInterviewPage(caseId) {
   _iiChipData = {};
   _iiFamilyImage = null;
 
-  // Build problem list with chips for subs
+  // Build problem list with chips for subs (all problems get a chip row for custom options)
   const probEl = document.getElementById('ii-problems-list');
-  probEl.innerHTML = II_PROBLEMS.map((p, i) => {
-    const chipsHtml = p.subs.length
-      ? `<div id="ii-prob-chips-${i}" class="ii-chip-row ii-disabled" style="margin-left:22px;margin-top:4px;"></div>`
-      : '';
-    return `<div>
+  probEl.innerHTML = II_PROBLEMS.map((p, i) =>
+    `<div>
       <label style="display:inline-flex;align-items:center;gap:6px;font-weight:600;">
         <input type="checkbox" name="ii-prob-main" value="${escHtml(p.key)}" onchange="iiProbMainChange(${i})" />
         ${escHtml(p.key)}
       </label>
-      ${chipsHtml}
-    </div>`;
-  }).join('');
+      <div id="ii-prob-chips-${i}" class="ii-chip-row ii-disabled" style="margin-left:22px;margin-top:4px;"></div>
+    </div>`
+  ).join('');
 
-  // Initialize chip groups for each problem's subs
+  // Initialize chip groups for all problems (empty subs still allow custom options)
   II_PROBLEMS.forEach((p, i) => {
-    if (p.subs.length) {
-      _iiInitChipGroup(`prob-${i}`, p.subs, [], []);
-      _iiRenderChipGroup(`prob-${i}`, `ii-prob-chips-${i}`);
-    }
+    _iiInitChipGroup(`prob-${i}`, p.subs, [], []);
+    _iiRenderChipGroup(`prob-${i}`, `ii-prob-chips-${i}`);
   });
 
   // Initialize and render sup chip groups
@@ -7248,7 +7316,13 @@ function openInitialInterviewPage(caseId) {
   if (defaultRisk) defaultRisk.checked = true;
   const defaultCaseType = document.querySelector('input[name="ii-case-type"][value="新案/轉案"]');
   if (defaultCaseType) defaultCaseType.checked = true;
-  document.getElementById('ii-sup-new-section')?.classList.remove('ii-disabled');
+  ['ii-sup-new-section','ii-sup-45-section'].forEach(id =>
+    document.getElementById(id)?.classList.remove('ii-disabled')
+  );
+  ['ii-section-seven','ii-section-eight'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.style.opacity = ''; el.style.pointerEvents = ''; }
+  });
 
   // Load custom service options into ii- lists
   _iiLoadCustomServiceOptions();
@@ -7283,18 +7357,25 @@ function restoreInitialInterview(d) {
 
   document.querySelectorAll('input[name="ii-risk"]').forEach(r => { r.checked = (d.risk === r.value); });
   document.querySelectorAll('input[name="ii-case-type"]').forEach(r => { r.checked = (d.caseType === r.value); });
-  if (d.caseType === '舊案') document.getElementById('ii-sup-new-section')?.classList.add('ii-disabled');
+  if (d.caseType === '舊案') {
+    ['ii-sup-new-section','ii-sup-45-section'].forEach(id =>
+      document.getElementById(id)?.classList.add('ii-disabled')
+    );
+    ['ii-section-seven','ii-section-eight'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) { el.style.opacity = '.4'; el.style.pointerEvents = 'none'; }
+    });
+  }
 
   // Restore vacancy checkboxes
   (d.vacancy || []).forEach(v => { const cb = document.querySelector(`input[name="ii-vacancy"][value="${CSS.escape(v)}"]`); if (cb) cb.checked = true; });
 
-  // Restore problem main checkboxes and chip groups
+  // Restore problem main checkboxes and chip groups (all problems, including those without default subs)
   (d.problemsMain || []).forEach(v => {
     const cb = document.querySelector(`input[name="ii-prob-main"][value="${CSS.escape(v)}"]`);
     if (cb) { cb.checked = true; const idx = II_PROBLEMS.findIndex(p => p.key === v); if (idx >= 0) iiProbMainChange(idx); }
   });
   II_PROBLEMS.forEach((p, i) => {
-    if (!p.subs.length) return;
     const savedSel = (d.problemSubs || []).filter(x => x.idx === i).map(x => x.value);
     const customEntry = (d.probCustomSubs || []).find(x => x.idx === i);
     _iiInitChipGroup(`prob-${i}`, p.subs, savedSel, customEntry?.values || []);
@@ -9029,24 +9110,37 @@ async function renderAuditLog() {
     return parts.length ? parts.join(' ') : '<span style="color:#a0aec0;">—</span>';
   };
 
-  const mkTable = (entries) => {
+  // 稽核欄位收折狀態（按欄序 1-5）
+  const _auditColKey = 'scc_audit_cols_' + (currentUser?.email || '');
+  if (!window._auditColsHidden) {
+    try { window._auditColsHidden = new Set(JSON.parse(localStorage.getItem(_auditColKey) || '[]')); }
+    catch { window._auditColsHidden = new Set(); }
+  }
+
+  const mkAuditTable = (entries) => {
     if (!entries.length) return `<div class="empty-state" style="padding:30px;"><div class="icon">📜</div><p>無符合條件的記錄</p></div>`;
+    const colHid = window._auditColsHidden;
+    const colStyle = (n) => colHid.has(n) ? 'display:none;' : '';
+    const fmtDate = iso => { if (!iso) return '—'; const d = new Date(iso); return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`; };
+    const fmtClock = iso => { if (!iso) return ''; const d = new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; };
+    const colBtn = (n, label) => {
+      const hid = colHid.has(n);
+      return `<th style="${colStyle(n)}cursor:pointer;user-select:none;white-space:nowrap;" onclick="auditToggleCol(${n})" title="點擊收折/展開">${hid ? label.slice(0,1)+'…' : label} <span style="font-size:.7rem;opacity:.5;">${hid?'▷':'◁'}</span></th>`;
+    };
     const rows = [...entries].reverse().map(l => `
       <tr>
-        <td style="white-space:nowrap;font-size:.8rem;color:#718096;">${fmtTime(l.t)}</td>
-        <td style="font-size:.85rem;">${escHtml(l.name || '—')}</td>
-        <td style="font-size:.75rem;color:#a0aec0;">${escHtml(l.email || '—')}</td>
-        <td style="font-size:.85rem;${actionColor(l.action)}">${escHtml(l.action)}</td>
-        <td style="font-size:.82rem;">${mkDetail(l)}</td>
+        <td style="${colStyle(1)}font-size:.8rem;color:#718096;min-width:52px;">${fmtDate(l.t)}<br><span style="color:#a0aec0;">${fmtClock(l.t)}</span></td>
+        <td style="${colStyle(2)}font-size:.85rem;">${escHtml(l.name || '—')}</td>
+        <td style="${colStyle(3)}font-size:.75rem;color:#a0aec0;">${escHtml(l.email || '—')}</td>
+        <td style="${colStyle(4)}font-size:.85rem;${actionColor(l.action)}">${escHtml(l.action)}</td>
+        <td style="${colStyle(5)}font-size:.82rem;">${mkDetail(l)}</td>
       </tr>`).join('');
     return `
       <div style="overflow-x:auto;">
         <table>
-          <thead>
-            <tr>
-              <th>時間</th><th>操作者</th><th>帳號</th><th>動作</th><th>更動事由</th>
-            </tr>
-          </thead>
+          <thead><tr>
+            ${colBtn(1,'時間')}${colBtn(2,'操作者')}${colBtn(3,'帳號')}${colBtn(4,'動作')}${colBtn(5,'更動事由')}
+          </tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>`;
@@ -9057,7 +9151,7 @@ async function renderAuditLog() {
       <div class="card-header"><h3>稽核日誌（共 ${logs.length} 筆）</h3></div>
       <div style="padding:16px;">
         ${filterBar}
-        <div id="audit-table-wrap">${mkTable(logs)}</div>
+        <div id="audit-table-wrap">${mkAuditTable(logs)}</div>
       </div>
     </div>`;
 
@@ -9124,25 +9218,59 @@ function filterAuditLog() {
     return;
   }
 
+  // Re-use the shared detail builder from renderAuditLog scope
+  const isCaseId2 = s => /^\d{7}$/.test(s || '');
+  const mkDetail2 = l => {
+    const parts = [];
+    if (l.detail) parts.push(`<span style="color:#2d3748;">${escHtml(l.detail)}</span>`);
+    if (l.caseId) {
+      if (isCaseId2(l.caseId)) {
+        const c2 = casesData.find(x => x.id === l.caseId);
+        const label2 = c2 ? `個案 ${l.caseId}（${c2.name}）` : `個案 ${l.caseId}`;
+        parts.push(`<span style="color:#1a5276;cursor:pointer;text-decoration:underline;" onclick="showCaseDetail('${escHtml(l.caseId)}')">${escHtml(label2)}</span>`);
+      } else { parts.push(`<span style="color:#4a5568;">${escHtml(l.caseId)}</span>`); }
+    }
+    if (l.recordId) parts.push(`<span style="color:#718096;font-size:.78rem;">› 晤談紀錄</span>`);
+    return parts.length ? parts.join(' ') : '<span style="color:#a0aec0;">—</span>';
+  };
+
+  const colHid = window._auditColsHidden || new Set();
+  const colStyle2 = n => colHid.has(n) ? 'display:none;' : '';
+  const fmtDate2 = iso => { if (!iso) return '—'; const d = new Date(iso); return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`; };
+  const fmtClock2 = iso => { if (!iso) return ''; const d = new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; };
+  const colBtn2 = (n, label) => {
+    const hid = colHid.has(n);
+    return `<th style="${colStyle2(n)}cursor:pointer;user-select:none;white-space:nowrap;" onclick="auditToggleCol(${n})" title="點擊收折/展開">${hid ? label.slice(0,1)+'…' : label} <span style="font-size:.7rem;opacity:.5;">${hid?'▷':'◁'}</span></th>`;
+  };
+
   const rows = [...filtered].reverse().map(l => `
     <tr>
-      <td style="white-space:nowrap;font-size:.8rem;color:#718096;">${fmtTime(l.t)}</td>
-      <td style="font-size:.85rem;">${escHtml(l.name || '—')}</td>
-      <td style="font-size:.75rem;color:#a0aec0;">${escHtml(l.email || '—')}</td>
-      <td style="font-size:.85rem;${actionColor(l.action)}">${escHtml(l.action)}</td>
-      <td style="font-size:.82rem;">${l.caseId ? `<span style="color:#1a5276;cursor:pointer;text-decoration:underline;" onclick="showCaseDetail('${escHtml(l.caseId)}')">${escHtml(l.caseId)}</span>` : '—'}</td>
-      <td style="font-size:.75rem;color:#a0aec0;">${escHtml(l.recordId || '—')}</td>
+      <td style="${colStyle2(1)}font-size:.8rem;color:#718096;min-width:52px;">${fmtDate2(l.t)}<br><span style="color:#a0aec0;">${fmtClock2(l.t)}</span></td>
+      <td style="${colStyle2(2)}font-size:.85rem;">${escHtml(l.name || '—')}</td>
+      <td style="${colStyle2(3)}font-size:.75rem;color:#a0aec0;">${escHtml(l.email || '—')}</td>
+      <td style="${colStyle2(4)}font-size:.85rem;${actionColor(l.action)}">${escHtml(l.action)}</td>
+      <td style="${colStyle2(5)}font-size:.82rem;">${mkDetail2(l)}</td>
     </tr>`).join('');
 
   wrap.innerHTML = `
     <div style="overflow-x:auto;">
       <table>
-        <thead>
-          <tr><th>時間</th><th>操作者</th><th>帳號</th><th>動作</th><th>個案編號</th><th>紀錄編號</th></tr>
-        </thead>
+        <thead><tr>
+          ${colBtn2(1,'時間')}${colBtn2(2,'操作者')}${colBtn2(3,'帳號')}${colBtn2(4,'動作')}${colBtn2(5,'更動事由')}
+        </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
+}
+
+function auditToggleCol(n) {
+  if (!window._auditColsHidden) window._auditColsHidden = new Set();
+  if (window._auditColsHidden.has(n)) window._auditColsHidden.delete(n);
+  else window._auditColsHidden.add(n);
+  try {
+    localStorage.setItem('scc_audit_cols_' + (currentUser?.email || ''), JSON.stringify([...window._auditColsHidden]));
+  } catch (_) {}
+  filterAuditLog();
 }
 
 // ══════════════════════════════════════════════
