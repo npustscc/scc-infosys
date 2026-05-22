@@ -108,6 +108,7 @@
     .ii-chip-new input { border:none; outline:none; font-size:.82rem; background:transparent; width:68px; }
     .ii-chip-new button { background:none; border:none; cursor:pointer; color:#2b6cb0; font-weight:700; padding:0; font-size:.95rem; }
     #ii-sup-new-section.ii-disabled { opacity:.4; pointer-events:none; }
+    #ii-sup-45-section.ii-disabled { opacity:.4; pointer-events:none; }
     #btn-logout {
       background: transparent;
       border: 1px solid rgba(255,255,255,.6);
@@ -4284,7 +4285,7 @@ function showCaseDetail(caseId) {
   const listContent = iiCardHtml + recordCards;
 
   const recordsHtml = `
-    <div class="card" style="margin-bottom:20px;">
+    <div class="card" id="detail-records-card" style="margin-bottom:20px;">
       <div class="card-header">
         <h3>${countLabel}</h3>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -4420,7 +4421,13 @@ function showCaseDetail(caseId) {
     });
   } catch (_) {}
 
+  const _alreadyOnDetail = document.getElementById('page-case-detail')?.classList.contains('active');
   showPage('page-case-detail', null);
+  if (_alreadyOnDetail) {
+    requestAnimationFrame(() => {
+      document.getElementById('detail-records-card')?.scrollIntoView({ behavior: 'instant', block: 'start' });
+    });
+  }
 }
 
 function renderCaseManagersBody(c) {
@@ -9023,6 +9030,59 @@ const AUDIT_PAGE_CATEGORIES = {
   '系統管理':     a => ['搬移至共用','整合學年','重組 cases','清除逾期','整併主責','連結主責'].some(k => a.includes(k)),
 };
 
+function _auditActionColor(a) {
+  if (a.includes('刪除')) return 'color:#c0392b;font-weight:600;';
+  if (a.includes('復原')) return 'color:#27ae60;font-weight:600;';
+  if (a.includes('新增') || a.includes('建立')) return 'color:#2980b9;font-weight:600;';
+  if (a.includes('結案')) return 'color:#8e44ad;font-weight:600;';
+  return '';
+}
+
+function _mkAuditDetail(l) {
+  const isCaseId = s => /^\d{7}$/.test(s || '');
+  const parts = [];
+  if (l.detail) parts.push(`<span style="color:#2d3748;">${escHtml(l.detail)}</span>`);
+  if (l.caseId) {
+    if (isCaseId(l.caseId)) {
+      const c = casesData.find(x => x.id === l.caseId);
+      const label = c ? `個案 ${l.caseId}（${c.name}）` : `個案 ${l.caseId}`;
+      parts.push(`<span style="color:#1a5276;cursor:pointer;text-decoration:underline;" onclick="showCaseDetail('${escHtml(l.caseId)}')">${escHtml(label)}</span>`);
+    } else { parts.push(`<span style="color:#4a5568;">${escHtml(l.caseId)}</span>`); }
+  }
+  if (l.recordId) parts.push(`<span style="color:#718096;font-size:.78rem;">› 晤談紀錄</span>`);
+  return parts.length ? parts.join(' ') : '<span style="color:#a0aec0;">—</span>';
+}
+
+function _mkAuditTable(entries) {
+  if (!entries.length) return `<div class="empty-state" style="padding:30px;"><div class="icon">📜</div><p>無符合條件的記錄</p></div>`;
+  const colHid = window._auditColsHidden || new Set();
+  const thStyle = n => colHid.has(n) ? 'width:26px;min-width:26px;max-width:26px;padding:4px 2px;overflow:hidden;' : '';
+  const tdStyle = n => colHid.has(n) ? 'display:none;' : '';
+  const fmtDate = iso => { if (!iso) return '—'; const d = new Date(iso); return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`; };
+  const fmtClock = iso => { if (!iso) return ''; const d = new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; };
+  const colBtn = (n, label) => {
+    const hid = colHid.has(n);
+    return `<th style="${thStyle(n)}cursor:pointer;user-select:none;white-space:nowrap;" onclick="auditToggleCol(${n})" title="${hid?'展開':'收折'}">${hid ? '' : label + ' '}<span style="font-size:.7rem;opacity:.5;">${hid?'▷':'◁'}</span></th>`;
+  };
+  const rows = [...entries].reverse().map(l => `
+    <tr>
+      <td style="${tdStyle(1)}font-size:.8rem;color:#718096;min-width:52px;">${fmtDate(l.t)}<br><span style="color:#a0aec0;">${fmtClock(l.t)}</span></td>
+      <td style="${tdStyle(2)}font-size:.85rem;">${escHtml(l.name || '—')}</td>
+      <td style="${tdStyle(3)}font-size:.75rem;color:#a0aec0;">${escHtml(l.email || '—')}</td>
+      <td style="${tdStyle(4)}font-size:.85rem;${_auditActionColor(l.action)}">${escHtml(l.action)}</td>
+      <td style="${tdStyle(5)}font-size:.82rem;">${_mkAuditDetail(l)}</td>
+    </tr>`).join('');
+  return `
+    <div style="overflow-x:auto;">
+      <table>
+        <thead><tr>
+          ${colBtn(1,'時間')}${colBtn(2,'操作者')}${colBtn(3,'帳號')}${colBtn(4,'動作')}${colBtn(5,'更動事由')}
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 async function renderAuditLog() {
   const body = document.getElementById('audit-body');
   body.innerHTML = `<div class="empty-state"><div class="icon">⏳</div><p>讀取稽核日誌中…</p></div>`;
@@ -9035,21 +9095,6 @@ async function renderAuditLog() {
     body.innerHTML = `<div class="alert alert-error">讀取失敗：${escHtml(e.message)}</div>`;
     return;
   }
-
-  const fmtTime = iso => {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    const pad = n => String(n).padStart(2, '0');
-    return `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  };
-
-  const actionColor = a => {
-    if (a.includes('刪除')) return 'color:#c0392b;font-weight:600;';
-    if (a.includes('復原')) return 'color:#27ae60;font-weight:600;';
-    if (a.includes('新增') || a.includes('建立')) return 'color:#2980b9;font-weight:600;';
-    if (a.includes('結案')) return 'color:#8e44ad;font-weight:600;';
-    return '';
-  };
 
   // 篩選控制列
   const actions = [...new Set(logs.map(l => l.action))].sort();
@@ -9089,27 +9134,6 @@ async function renderAuditLog() {
   // 把 logs 存到全域讓 filterAuditLog 使用
   window._auditLogsCache = logs;
 
-  const isCaseId = s => /^\d{7}$/.test(s || '');
-  const mkDetail = l => {
-    const parts = [];
-    if (l.detail) {
-      parts.push(`<span style="color:#2d3748;">${escHtml(l.detail)}</span>`);
-    }
-    if (l.caseId) {
-      if (isCaseId(l.caseId)) {
-        const c = casesData.find(x => x.id === l.caseId);
-        const label = c ? `個案 ${l.caseId}（${c.name}）` : `個案 ${l.caseId}`;
-        parts.push(`<span style="color:#1a5276;cursor:pointer;text-decoration:underline;" onclick="showCaseDetail('${escHtml(l.caseId)}')">${escHtml(label)}</span>`);
-      } else {
-        parts.push(`<span style="color:#4a5568;">${escHtml(l.caseId)}</span>`);
-      }
-    }
-    if (l.recordId) {
-      parts.push(`<span style="color:#718096;font-size:.78rem;">› 晤談紀錄</span>`);
-    }
-    return parts.length ? parts.join(' ') : '<span style="color:#a0aec0;">—</span>';
-  };
-
   // 稽核欄位收折狀態（按欄序 1-5）
   const _auditColKey = 'scc_audit_cols_' + (currentUser?.email || '');
   if (!window._auditColsHidden) {
@@ -9117,41 +9141,12 @@ async function renderAuditLog() {
     catch { window._auditColsHidden = new Set(); }
   }
 
-  const mkAuditTable = (entries) => {
-    if (!entries.length) return `<div class="empty-state" style="padding:30px;"><div class="icon">📜</div><p>無符合條件的記錄</p></div>`;
-    const colHid = window._auditColsHidden;
-    const colStyle = (n) => colHid.has(n) ? 'display:none;' : '';
-    const fmtDate = iso => { if (!iso) return '—'; const d = new Date(iso); return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`; };
-    const fmtClock = iso => { if (!iso) return ''; const d = new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; };
-    const colBtn = (n, label) => {
-      const hid = colHid.has(n);
-      return `<th style="${colStyle(n)}cursor:pointer;user-select:none;white-space:nowrap;" onclick="auditToggleCol(${n})" title="點擊收折/展開">${hid ? label.slice(0,1)+'…' : label} <span style="font-size:.7rem;opacity:.5;">${hid?'▷':'◁'}</span></th>`;
-    };
-    const rows = [...entries].reverse().map(l => `
-      <tr>
-        <td style="${colStyle(1)}font-size:.8rem;color:#718096;min-width:52px;">${fmtDate(l.t)}<br><span style="color:#a0aec0;">${fmtClock(l.t)}</span></td>
-        <td style="${colStyle(2)}font-size:.85rem;">${escHtml(l.name || '—')}</td>
-        <td style="${colStyle(3)}font-size:.75rem;color:#a0aec0;">${escHtml(l.email || '—')}</td>
-        <td style="${colStyle(4)}font-size:.85rem;${actionColor(l.action)}">${escHtml(l.action)}</td>
-        <td style="${colStyle(5)}font-size:.82rem;">${mkDetail(l)}</td>
-      </tr>`).join('');
-    return `
-      <div style="overflow-x:auto;">
-        <table>
-          <thead><tr>
-            ${colBtn(1,'時間')}${colBtn(2,'操作者')}${colBtn(3,'帳號')}${colBtn(4,'動作')}${colBtn(5,'更動事由')}
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>`;
-  };
-
   body.innerHTML = `
     <div class="card">
       <div class="card-header"><h3>稽核日誌（共 ${logs.length} 筆）</h3></div>
       <div style="padding:16px;">
         ${filterBar}
-        <div id="audit-table-wrap">${mkAuditTable(logs)}</div>
+        <div id="audit-table-wrap">${_mkAuditTable(logs)}</div>
       </div>
     </div>`;
 
@@ -9194,73 +9189,11 @@ function filterAuditLog() {
     return true;
   });
 
-  const fmtTime = iso => {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    const pad = n => String(n).padStart(2, '0');
-    return `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  };
-  const actionColor = a => {
-    if (a.includes('刪除')) return 'color:#c0392b;font-weight:600;';
-    if (a.includes('復原')) return 'color:#27ae60;font-weight:600;';
-    if (a.includes('新增') || a.includes('建立')) return 'color:#2980b9;font-weight:600;';
-    if (a.includes('結案')) return 'color:#8e44ad;font-weight:600;';
-    return '';
-  };
-
   const wrap = document.getElementById('audit-table-wrap');
   if (!wrap) return;
 
   document.getElementById('af-count').textContent = `${filtered.length} 筆`;
-
-  if (!filtered.length) {
-    wrap.innerHTML = `<div class="empty-state" style="padding:30px;"><div class="icon">📜</div><p>無符合條件的記錄</p></div>`;
-    return;
-  }
-
-  // Re-use the shared detail builder from renderAuditLog scope
-  const isCaseId2 = s => /^\d{7}$/.test(s || '');
-  const mkDetail2 = l => {
-    const parts = [];
-    if (l.detail) parts.push(`<span style="color:#2d3748;">${escHtml(l.detail)}</span>`);
-    if (l.caseId) {
-      if (isCaseId2(l.caseId)) {
-        const c2 = casesData.find(x => x.id === l.caseId);
-        const label2 = c2 ? `個案 ${l.caseId}（${c2.name}）` : `個案 ${l.caseId}`;
-        parts.push(`<span style="color:#1a5276;cursor:pointer;text-decoration:underline;" onclick="showCaseDetail('${escHtml(l.caseId)}')">${escHtml(label2)}</span>`);
-      } else { parts.push(`<span style="color:#4a5568;">${escHtml(l.caseId)}</span>`); }
-    }
-    if (l.recordId) parts.push(`<span style="color:#718096;font-size:.78rem;">› 晤談紀錄</span>`);
-    return parts.length ? parts.join(' ') : '<span style="color:#a0aec0;">—</span>';
-  };
-
-  const colHid = window._auditColsHidden || new Set();
-  const colStyle2 = n => colHid.has(n) ? 'display:none;' : '';
-  const fmtDate2 = iso => { if (!iso) return '—'; const d = new Date(iso); return `${d.getFullYear()}/${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}`; };
-  const fmtClock2 = iso => { if (!iso) return ''; const d = new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; };
-  const colBtn2 = (n, label) => {
-    const hid = colHid.has(n);
-    return `<th style="${colStyle2(n)}cursor:pointer;user-select:none;white-space:nowrap;" onclick="auditToggleCol(${n})" title="點擊收折/展開">${hid ? label.slice(0,1)+'…' : label} <span style="font-size:.7rem;opacity:.5;">${hid?'▷':'◁'}</span></th>`;
-  };
-
-  const rows = [...filtered].reverse().map(l => `
-    <tr>
-      <td style="${colStyle2(1)}font-size:.8rem;color:#718096;min-width:52px;">${fmtDate2(l.t)}<br><span style="color:#a0aec0;">${fmtClock2(l.t)}</span></td>
-      <td style="${colStyle2(2)}font-size:.85rem;">${escHtml(l.name || '—')}</td>
-      <td style="${colStyle2(3)}font-size:.75rem;color:#a0aec0;">${escHtml(l.email || '—')}</td>
-      <td style="${colStyle2(4)}font-size:.85rem;${actionColor(l.action)}">${escHtml(l.action)}</td>
-      <td style="${colStyle2(5)}font-size:.82rem;">${mkDetail2(l)}</td>
-    </tr>`).join('');
-
-  wrap.innerHTML = `
-    <div style="overflow-x:auto;">
-      <table>
-        <thead><tr>
-          ${colBtn2(1,'時間')}${colBtn2(2,'操作者')}${colBtn2(3,'帳號')}${colBtn2(4,'動作')}${colBtn2(5,'更動事由')}
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`;
+  wrap.innerHTML = _mkAuditTable(filtered);
 }
 
 function auditToggleCol(n) {
