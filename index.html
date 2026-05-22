@@ -10751,12 +10751,9 @@ let _bkHourlySyncScheduled = false;
 function scheduleHourlyCalendarSync() {
   if (_bkHourlySyncScheduled) return;
   _bkHourlySyncScheduled = true;
-  const now = new Date();
-  const msToNextHour = (60 - now.getMinutes()) * 60000 - now.getSeconds() * 1000 - now.getMilliseconds();
-  setTimeout(() => {
-    syncFromCalendar(true);
-    setInterval(() => syncFromCalendar(true), 3600000);
-  }, msToNextHour);
+  // First sync 60s after login (let initial data load finish), then every hour
+  setTimeout(() => syncFromCalendar(true), 60000);
+  setInterval(() => syncFromCalendar(true), 3600000);
 }
 
 function _buildBkExpectedTitle(b) {
@@ -11887,16 +11884,28 @@ async function deleteBooking(id) {
   const _delRoomD = b.room === '其他' ? (b.customRoom || '其他') : b.room;
   if (!confirm(`確定刪除 ${_delRoomD} ${b.date} ${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)} 的預約？`)) return;
   const calEventId = b.calendarEventId;
+  const _delRoomDisplay = b.room === '其他' ? (b.customRoom || '其他') : b.room;
+  const _delDetail = `${_delRoomDisplay}　${b.date}　${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)}${b.counselorName ? '　' + b.counselorName : ''}`;
+
+  // Remove from memory first; GC delete is fire-and-forget (404 = already gone, that's fine)
   bookingsData = bookingsData.filter(x => x.id !== id);
+  if (calEventId) proxyCall('deleteCalendarEvent', { eventId: calEventId }).catch(() => {});
+
   showLoading('刪除中…');
   try {
     await saveBookings();
-    if (calEventId) proxyCall('deleteCalendarEvent', { eventId: calEventId }).catch(() => {});
-    const _delRoomDisplay = b.room === '其他' ? (b.customRoom || '其他') : b.room;
-    const _delDetail = `${_delRoomDisplay}　${b.date}　${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)}${b.counselorName ? '　' + b.counselorName : ''}`;
     auditLog('刪除空間預約', b.caseId || null, null, _delDetail);
   } catch (e) {
-    setAlert('bookings-alert', 'warn', '刪除失敗：' + e.message);
+    // Transient Apps Script error (e.g. 404): retry silently in background after 5s.
+    // The hourly GC sync will reconcile any remaining inconsistency.
+    setTimeout(async () => {
+      try {
+        await saveBookings();
+        auditLog('刪除空間預約', b.caseId || null, null, _delDetail);
+      } catch (_) {
+        setAlert('bookings-alert', 'warn', '預約已從畫面移除，但雲端儲存暫時失敗，將於下次同步自動修正。若持續出現請手動重新整理。');
+      }
+    }, 5000);
   }
   hideLoading();
   renderBookingsPage();
