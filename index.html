@@ -47,10 +47,11 @@
       padding:4px 13px; font-size:.82rem; cursor:pointer; font-weight:600;
       transition:background .15s; }
     #header-back-btn:hover { background:rgba(255,255,255,.3); }
-    #header-scroll-top { white-space:nowrap; flex-shrink:0;
+    #header-scroll-top { white-space:nowrap;
       background:rgba(255,255,255,.18); border:none; color:#fff; border-radius:20px;
       padding:4px 13px; font-size:.82rem; cursor:pointer; font-weight:600;
-      transition:background .15s; }
+      transition:background .15s;
+      position:absolute; left:50%; transform:translateX(-50%); }
     #header-scroll-top:hover { background:rgba(255,255,255,.3); }
     #notif-bell { position:relative; cursor:pointer; padding:4px 8px; border-radius:6px; transition:background .15s; display:flex; align-items:center; }
     #notif-bell:hover { background:rgba(255,255,255,.15); }
@@ -827,9 +828,9 @@
       <div style="font-size:.9rem;" id="user-name"></div>
       <div style="font-size:.75rem;opacity:.8;" id="user-role"></div>
     </div>
-    <button id="header-scroll-top" onclick="scrollToTop()" title="回到頂端" style="display:none;">↑ 頂端</button>
     <button id="btn-logout" onclick="signOut()">登出</button>
   </div>
+  <button id="header-scroll-top" onclick="scrollToTop()" title="回到頂端" style="display:none;">↑ 頂端</button>
 </header>
 <div id="notif-panel">
   <div style="border-bottom:1px solid #e2e8f0;">
@@ -10143,25 +10144,26 @@ async function syncFromCalendar(silent = false) {
       // 比對標題、時間與說明
       const bStart = (b.startTime || '').slice(0, 5);
       const bEnd   = (b.endTime   || '').slice(0, 5);
-      // 解析 GC description（支援新舊格式）
-      // 新格式：{備註}\n\nOOO 建立/編輯 YYYY/MM/DD HH:mm\n\n#NNNN
-      // 舊格式：OOO 建立 ...\n{備註}
+      // 解析 GC description
+      // 格式：{備註}\n---\n{actor} 建立/編輯 YYYY/MM/DD HH:mm\n#{serial}
       const _rawDesc = gcE.description || '';
       let gcSerial = null;
       let gcNotes = '';
-      const _serialMatch = _rawDesc.match(/\n\n#(\d+)\s*$/);
+      const _serialMatch = _rawDesc.match(/\n#(\d+)\s*$/);
       if (_serialMatch) {
-        // 新格式：有流水號 → 從末尾往前剝
         gcSerial = parseInt(_serialMatch[1]);
         let _body = _rawDesc.slice(0, _rawDesc.length - _serialMatch[0].length);
-        // 剝除最後的 actor line（如「陳大明 建立 2026/05/20 14:30」）
-        const _actorMatch = _body.match(/\n\n.+ (建立|編輯) \d{4}\/\d{2}\/\d{2} \d{2}:\d{2}\s*$/);
-        if (_actorMatch) _body = _body.slice(0, _body.length - _actorMatch[0].length);
+        const _sepIdx = _body.lastIndexOf('\n---\n');
+        if (_sepIdx >= 0) _body = _body.slice(0, _sepIdx);
         gcNotes = _body.trim();
       } else {
-        // 舊格式：第一行為 creator/actor，其餘為備註
-        const _descLines = _rawDesc.split('\n');
-        gcNotes = _descLines.slice(1).join('\n').trim();
+        // 無流水號：嘗試以 ---\n 分隔符取備註
+        const _sepIdx = _rawDesc.lastIndexOf('\n---\n');
+        if (_sepIdx >= 0) {
+          gcNotes = _rawDesc.slice(0, _sepIdx).trim();
+        } else {
+          gcNotes = _rawDesc.trim();
+        }
       }
       // 流水號對不上 → 排入還原佇列
       if (b.bkSerial && gcSerial !== b.bkSerial) serialRestoreQueue.push(b.id);
