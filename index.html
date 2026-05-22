@@ -3721,7 +3721,7 @@ function showCaseDetail(caseId) {
     actionsHtml += ` <button class="btn btn-secondary" onclick="openEditCasePage('${cid}')">編輯</button>`;
     actionsHtml += isActive
       ? ` <button class="btn btn-danger" onclick="closeCaseConfirm('${cid}')">結案</button>`
-      : ` <button class="btn btn-secondary" onclick="reopenCase('${cid}')">重新開案</button>`;
+      : ` <button class="btn btn-secondary" onclick="reopenCase('${cid}')">取消結案</button>`;
     if (isAdminUser) {
       actionsHtml += ` <button class="btn btn-danger" onclick="deleteCase('${cid}')">刪除個案</button>`;
       actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【錯誤建案處理流程】\\n\\n若此個案為錯誤建立，請依下列步驟操作：\\n1. 點擊「刪除個案」，將個案標記為已刪除（可復原）\\n2. 確認無誤後，再由主任或管理者點擊「永久刪除」\\n   → 個案紀錄與身分資料將完全移除，無法復原')">？</button>`;
@@ -3962,7 +3962,9 @@ function showCaseDetail(caseId) {
         <h3>${countLabel}</h3>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           ${sortBtn}
-          ${isActive && !caseIsDeleted ? `<button class="btn btn-primary" onclick="openNewRecordPage('${escHtml(c.id)}')">＋ 新增紀錄</button>` : ''}
+          ${!caseIsDeleted ? (isActive
+            ? `<button class="btn btn-primary" onclick="openNewRecordPage('${escHtml(c.id)}')">＋ 新增紀錄</button>`
+            : `<span style="font-size:.82rem;color:#718096;font-style:italic;padding:4px 0;">取消結案以新增記錄</span>`) : ''}
         </div>
       </div>
       <div style="padding:16px;">${listContent}</div>
@@ -5352,7 +5354,7 @@ function closeCaseConfirm(caseId) {
 }
 
 async function reopenCase(caseId) {
-  if (!confirm('確定要重新開案嗎？')) return;
+  if (!confirm('確定要取消結案嗎？')) return;
   await updateCaseStatus(caseId, 'active');
 }
 
@@ -5365,7 +5367,7 @@ async function updateCaseStatus(caseId, status) {
   showLoading('更新狀態…');
   try {
     await saveCasesChunks(caseId);
-    auditLog(status === 'active' ? '重新開案' : '更新案件狀態', caseId);
+    auditLog(status === 'active' ? '取消結案' : '更新案件狀態', caseId);
     hideLoading();
     showCaseDetail(caseId);
     renderCases();
@@ -8782,6 +8784,8 @@ function _onPrefPinSkipChange(cb) {
   const pinConfEl = document.getElementById('pref-pin-confirm');
   pinEl.disabled = cb.checked;
   pinConfEl.disabled = cb.checked;
+  const grayStyle = cb.checked ? '#e2e8f0' : '';
+  pinEl.style.background = grayStyle; pinConfEl.style.background = grayStyle;
   if (cb.checked) { pinEl.value = ''; pinConfEl.value = ''; }
 }
 
@@ -8811,8 +8815,11 @@ function renderPrefsPage() {
   document.getElementById('pref-pin').value         = '';
   document.getElementById('pref-pin-confirm').value = '';
   document.getElementById('pref-pin-skip').checked  = !hasPIN && pinSkipped;
-  document.getElementById('pref-pin').disabled      = !hasPIN && pinSkipped;
-  document.getElementById('pref-pin-confirm').disabled = !hasPIN && pinSkipped;
+  const _pinGray = (!hasPIN && pinSkipped) ? '#e2e8f0' : '';
+  document.getElementById('pref-pin').disabled           = !hasPIN && pinSkipped;
+  document.getElementById('pref-pin-confirm').disabled   = !hasPIN && pinSkipped;
+  document.getElementById('pref-pin').style.background          = _pinGray;
+  document.getElementById('pref-pin-confirm').style.background  = _pinGray;
   document.getElementById('pref-error').style.display   = 'none';
   document.getElementById('pref-success').style.display = 'none';
   document.getElementById('pref-counselor-freq').checked = _userPref_('counselorFreqMode', true);
@@ -10425,6 +10432,32 @@ function bkDragEnter(el) {
 function bkDragLeave(el) {
   if (el.dataset.dragOver) { delete el.dataset.dragOver; el.style.outline = ''; }
 }
+
+// GC 背景同步佇列（Map 確保同一筆快速拖曳只推送最終狀態）
+const _bkGcQueue = new Map();
+let _bkGcRunning = false;
+async function _bkGcFlush() {
+  if (_bkGcRunning || _bkGcQueue.size === 0) return;
+  _bkGcRunning = true;
+  while (_bkGcQueue.size > 0) {
+    const [id, snap] = _bkGcQueue.entries().next().value;
+    _bkGcQueue.delete(id);
+    if (!snap.calendarEventId) continue;
+    const creatorName = configData?.users?.[snap.creatorEmail]?.name || snap.creatorName || '';
+    try {
+      await proxyCall('updateCalendarEvent', {
+        eventId: snap.calendarEventId,
+        room: snap.room, customRoom: snap.customRoom,
+        date: snap.date, startTime: snap.startTime, endTime: snap.endTime,
+        counselorName: snap.counselorName, notes: snap.notes,
+        creatorName, createdAt: snap.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(), isEdit: true, bkSerial: snap.bkSerial,
+      });
+    } catch(_) { /* 靜默失敗，不影響本機資料 */ }
+  }
+  _bkGcRunning = false;
+}
+
 async function bkDrop(event, newRoom, newDate) {
   event.preventDefault();
   const dropEl = event.currentTarget;
@@ -10437,12 +10470,21 @@ async function bkDrop(event, newRoom, newDate) {
   const oldRoom = b.room, oldDate = b.date;
   if (newRoom) b.room = newRoom;
   if (newDate) b.date = newDate;
+
+  // 立即更新畫面（不顯示 loading）
+  renderBookingsPage();
+
   try {
     await saveBookings();
     auditLog(`空間預約調整：${oldRoom}${oldDate !== (newDate||oldDate) ? ' '+oldDate : ''} → ${b.room}${b.date !== oldDate ? ' '+b.date : ''}（${b.counselorName || '—'}）`);
-    renderBookingsPage();
+    // 背景同步 GC（不阻塞 UI）
+    if (b.calendarEventId) {
+      _bkGcQueue.set(bookingId, { ...b });
+      _bkGcFlush();
+    }
   } catch(e) {
     b.room = oldRoom; b.date = oldDate;
+    renderBookingsPage();
     alert('儲存失敗：' + e.message);
   }
 }
@@ -12298,7 +12340,6 @@ function openPsychiatristModal(caseId, recordId) {
           </div>
         </div>
         <div style="margin-bottom:12px;"><label class="field-label">其他注意事項</label><textarea class="field-input" id="pr-notes" rows="2" style="resize:vertical;">${escHtml(pr.otherNotes)}</textarea></div>
-        <div style="margin-bottom:20px;"><label class="field-label">精神科醫師簽名</label><input type="text" class="field-input" id="pr-sig" value="${escHtml(pr.doctorSignature)}"></div>
         <div style="display:flex;gap:10px;">
           <button class="btn btn-primary" onclick="savePsychiatristRecord('${escHtml(caseId)}','${existing?escHtml(recordId):'__new__'}')">儲存</button>
           ${existing ? `<button class="btn btn-secondary" onclick="printPsychiatristRecord('${escHtml(caseId)}','${escHtml(recordId)}')">列印</button>` : ''}
@@ -12338,7 +12379,7 @@ async function savePsychiatristRecord(caseId, recordId) {
     intervention:gV('pr-interv'), recommendations:gV('pr-rec'),
     diagnosisType:gR('pr_diag'), diagnosisName:gV('pr-diag-name'),
     medicationAdvice:gR('pr_med'), hospitalizationAdvice:gR('pr_hosp'),
-    otherNotes:gV('pr-notes'), doctorSignature:gV('pr-sig'),
+    otherNotes:gV('pr-notes'),
     updatedAt:new Date().toISOString(), updatedBy:currentUser?.email, updatedByName:currentUser?.name,
   };
   if (!c.psychiatristRecords) c.psychiatristRecords = [];
@@ -12403,7 +12444,6 @@ function printPsychiatristRecord(caseId, recordId) {
       <tr><th>是否建議藥物治療</th><td colspan="3">${medHtml}</td></tr>
       <tr><th>是否建議住院治療</th><td colspan="3">${hospHtml}</td></tr>
       <tr><th>其他注意事項</th><td colspan="3" style="min-height:50px;white-space:pre-wrap;">${escHtml(pr.otherNotes||'')}</td></tr>
-      <tr><th>精神科醫師簽名</th><td colspan="3" style="min-height:40px;">${escHtml(pr.doctorSignature||'')}</td></tr>
     </table>
     </body></html>`);
   w.document.close(); setTimeout(() => w.print(), 600);
