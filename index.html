@@ -25,7 +25,7 @@
       align-items: center;
       justify-content: space-between;
       box-shadow: 0 2px 6px rgba(0,0,0,.25);
-      transition: height .2s ease, padding .2s ease;
+      transition: padding .2s ease;
       flex-shrink: 0;
       position: sticky;
       top: 0;
@@ -9733,12 +9733,19 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener(evt, resetAfkTimer, { passive: true })
   );
 
-  // Banner compact：window 捲動時縮小 header，並控制置頂按鈕
+  // Banner compact：hysteresis 防止 sticky header 高度縮小後 scrollY 反彈造成閃爍
+  let _hdrCompact = false;
   window.addEventListener('scroll', () => {
-    const scrolled = window.scrollY > 30;
-    document.getElementById('app-header')?.classList.toggle('compact', scrolled);
+    const sy = window.scrollY;
+    if (!_hdrCompact && sy > 80) {
+      _hdrCompact = true;
+      document.getElementById('app-header')?.classList.add('compact');
+    } else if (_hdrCompact && sy < 50) {
+      _hdrCompact = false;
+      document.getElementById('app-header')?.classList.remove('compact');
+    }
     const scrollBtn = document.getElementById('header-scroll-top');
-    if (scrollBtn) scrollBtn.style.display = scrolled ? '' : 'none';
+    if (scrollBtn) scrollBtn.style.display = _hdrCompact ? '' : 'none';
   }, { passive: true });
 });
 
@@ -11549,10 +11556,11 @@ function renderBookingsPage() {
             <span style="font-size:.85rem;font-weight:600;color:#2d3748;min-width:105px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</span>
             <span style="font-size:.875rem;color:#4a5568;">${escHtml(b.counselorName || '—')}</span>
             ${caseTag}${noteTag}${calTag}
-            <span style="margin-left:auto;display:flex;gap:4px;align-items:center;">
+            <span style="margin-left:auto;display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
               <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="editBooking('${escHtml(b.id)}')">編輯</button>
+              <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="copyBooking('${escHtml(b.id)}')">複製</button>
+              <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="bkFillRecord('${escHtml(b.id)}')">填寫記錄</button>
               <button class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="deleteBooking('${escHtml(b.id)}')">刪除</button>
-              <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="_bkCtxMenu(event,'${escHtml(b.id)}')">⋯</button>
             </span>
           </div>`;
         });
@@ -12076,9 +12084,13 @@ function editBooking(id) {
   document.getElementById('bk-room-conflict-warn').style.display = 'none';
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb2 = document.getElementById('btn-save-booking'); if (sb2) sb2.disabled = false;
-  // 編輯時隱藏「重複預約」區塊
+  // 編輯/複製時也顯示重複預約（可選擇再新增後續）
   const _erw = document.getElementById('bk-repeat-wrap');
-  if (_erw) _erw.style.display = 'none';
+  if (_erw) _erw.style.display = '';
+  const _ert = document.getElementById('bk-repeat-toggle');
+  if (_ert) _ert.checked = false;
+  const _erp = document.getElementById('bk-repeat-panel');
+  if (_erp) _erp.style.display = 'none';
   _bkEditScope = 'this';
   // 若屬系列，先選範圍
   if (b.seriesId) {
@@ -12139,6 +12151,13 @@ function _bkCopyOpenModal() {
   document.getElementById('bk-room-conflict-warn').style.display = 'none';
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
+  const _crw = document.getElementById('bk-repeat-wrap');
+  if (_crw) _crw.style.display = '';
+  const _crt = document.getElementById('bk-repeat-toggle');
+  if (_crt) _crt.checked = false;
+  const _crp = document.getElementById('bk-repeat-panel');
+  if (_crp) _crp.style.display = 'none';
+  _bkEditScope = 'this';
   document.getElementById('booking-modal').style.display = 'flex';
   _checkBkConflict();
 }
@@ -12373,30 +12392,53 @@ async function saveBooking() {
   })();
 }
 
+let _bkDeletingId = null;
+
 async function deleteBooking(id) {
   const b = bookingsData.find(x => x.id === id);
   if (!b) return;
+  if (b.seriesId) {
+    _bkDeletingId = id;
+    const _dRoomD = b.room === '其他' ? (b.customRoom||'其他') : b.room;
+    const infoEl = document.getElementById('bk-series-delete-info');
+    if (infoEl) infoEl.textContent = `${_dRoomD} ${b.date} ${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)}`;
+    document.getElementById('bk-series-delete-modal').style.display = 'flex';
+    return;
+  }
   const _delRoomD = b.room === '其他' ? (b.customRoom || '其他') : b.room;
   if (!confirm(`確定刪除 ${_delRoomD} ${b.date} ${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)} 的預約？`)) return;
-  const calEventId = b.calendarEventId;
-  const _delRoomDisplay = b.room === '其他' ? (b.customRoom || '其他') : b.room;
-  const _delDetail = `${_delRoomDisplay}　${b.date}　${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)}${b.counselorName ? '　' + b.counselorName : ''}`;
+  await _doDeleteBookings([id], b);
+}
 
-  // Remove from memory first; GC delete is fire-and-forget (404 = already gone, that's fine)
-  bookingsData = bookingsData.filter(x => x.id !== id);
-  if (calEventId) proxyCall('deleteCalendarEvent', { eventId: calEventId }).catch(() => {});
+async function _bkConfirmDeleteSeries(scope) {
+  document.getElementById('bk-series-delete-modal').style.display = 'none';
+  const id = _bkDeletingId; _bkDeletingId = null;
+  if (!id) return;
+  const b = bookingsData.find(x => x.id === id);
+  if (!b) return;
+  const idsToDelete = bookingsData
+    .filter(x => x.seriesId === b.seriesId && (scope === 'all' || (scope === 'future' ? x.date >= b.date : x.id === id)))
+    .map(x => x.id);
+  if (!confirm(`確定刪除 ${idsToDelete.length} 筆預約？`)) return;
+  await _doDeleteBookings(idsToDelete, b);
+}
 
+async function _doDeleteBookings(idsToDelete, primaryB) {
+  const calEventIds = idsToDelete.map(id => bookingsData.find(x => x.id === id)?.calendarEventId).filter(Boolean);
+  const _delRoomD = primaryB.room === '其他' ? (primaryB.customRoom||'其他') : primaryB.room;
+  const _delDetail = `${_delRoomD}　${primaryB.date}　${(primaryB.startTime||'').slice(0,5)}–${(primaryB.endTime||'').slice(0,5)}${primaryB.counselorName ? '　' + primaryB.counselorName : ''}`;
+  bookingsData = bookingsData.filter(x => !idsToDelete.includes(x.id));
+  calEventIds.forEach(evId => proxyCall('deleteCalendarEvent', { eventId: evId }).catch(() => {}));
   showLoading('刪除中…');
+  const _suffix = idsToDelete.length > 1 ? ` (共${idsToDelete.length}筆)` : '';
   try {
     await saveBookings();
-    auditLog('刪除空間預約', b.caseId || null, null, _delDetail);
+    auditLog('刪除空間預約', primaryB.caseId || null, null, _delDetail + _suffix);
   } catch (e) {
-    // Transient Apps Script error (e.g. 404): retry silently in background after 5s.
-    // The hourly GC sync will reconcile any remaining inconsistency.
     setTimeout(async () => {
       try {
         await saveBookings();
-        auditLog('刪除空間預約', b.caseId || null, null, _delDetail);
+        auditLog('刪除空間預約', primaryB.caseId || null, null, _delDetail + _suffix);
       } catch (_) {
         setAlert('bookings-alert', 'warn', '預約已從畫面移除，但雲端儲存暫時失敗，將於下次同步自動修正。若持續出現請手動重新整理。');
       }
@@ -14215,6 +14257,22 @@ function restoreSidebarOrder() {
 <div id="bk-ctx-menu" style="display:none;position:absolute;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);z-index:2000;min-width:144px;padding:4px 0;" onclick="event.stopPropagation()">
   <div style="padding:8px 14px;cursor:pointer;font-size:.85rem;white-space:nowrap;border-radius:4px;" onmouseenter="this.style.background='#f7fafc'" onmouseleave="this.style.background=''" onclick="_bkCtxAction('copy')">📋 複製</div>
   <div style="padding:8px 14px;cursor:pointer;font-size:.85rem;white-space:nowrap;border-radius:4px;" onmouseenter="this.style.background='#f7fafc'" onmouseleave="this.style.background=''" onclick="_bkCtxAction('fill')">📝 填寫記錄</div>
+</div>
+
+<!-- T3：系列預約刪除範圍 Modal -->
+<div id="bk-series-delete-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10001;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:12px;max-width:360px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+    <h3 style="margin:0 0 8px;font-size:1rem;color:#c53030;">刪除系列預約</h3>
+    <p id="bk-series-delete-info" style="font-size:.875rem;color:#718096;margin-bottom:16px;"></p>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button class="btn btn-danger" onclick="_bkConfirmDeleteSeries('this')">僅刪除此筆</button>
+      <button class="btn btn-danger" onclick="_bkConfirmDeleteSeries('future')">刪除此筆及之後的所有預約</button>
+      <button class="btn btn-danger" onclick="_bkConfirmDeleteSeries('all')">刪除全部系列預約</button>
+    </div>
+    <div style="margin-top:14px;text-align:right;">
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bk-series-delete-modal').style.display='none'">取消</button>
+    </div>
+  </div>
 </div>
 
 <!-- T3：系列預約編輯範圍 Modal -->
