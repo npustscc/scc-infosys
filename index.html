@@ -2116,12 +2116,34 @@
               <input type="date" class="field-input" id="rec-next-bk-date">
             </div>
             <div>
-              <label class="field-label">開始時間</label>
-              <input type="text" class="field-input" id="rec-next-bk-start" maxlength="5" placeholder="09:10">
+              <label class="field-label">節次</label>
+              <select class="field-select" id="rec-next-bk-period" onchange="toggleRecNextBkPeriod(this)">
+                <option value="">— 請選擇 —</option>
+                <option>第1節 08:10-09:00</option>
+                <option>第2節 09:10-10:00</option>
+                <option>第3節 10:15-11:05</option>
+                <option>第4節 11:10-12:00</option>
+                <option>第5節 13:30-14:20</option>
+                <option>第6節 14:30-15:20</option>
+                <option>第7節 15:30-16:20</option>
+                <option>第8節 16:30-17:20</option>
+                <option>第9節 18:00-18:50</option>
+                <option>第10節 18:55-19:45</option>
+                <option>第11節 19:50-20:40</option>
+                <option value="其他">其他（自填時間）</option>
+              </select>
             </div>
-            <div>
-              <label class="field-label">結束時間</label>
-              <input type="text" class="field-input" id="rec-next-bk-end" maxlength="5" placeholder="09:10">
+            <div id="rec-next-bk-time-row" style="display:none;grid-column:1/-1;">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                <div>
+                  <label class="field-label">開始時間</label>
+                  <input type="text" class="field-input" id="rec-next-bk-start" maxlength="5" placeholder="09:10">
+                </div>
+                <div>
+                  <label class="field-label">結束時間</label>
+                  <input type="text" class="field-input" id="rec-next-bk-end" maxlength="5" placeholder="09:10">
+                </div>
+              </div>
             </div>
           </div>
           <div id="rec-next-bk-conflict" style="display:none;margin-top:8px;" class="alert alert-warn"></div>
@@ -4022,6 +4044,7 @@ function showCaseDetail(caseId) {
   let actionsHtml = '';
   if (!caseIsDeleted && isActive) {
     actionsHtml += `<button class="btn btn-primary" onclick="openNewRecordPage('${cid}')">＋ 新增記錄</button> `;
+    actionsHtml += `<button class="btn btn-secondary" onclick="openNewRecordPage('${cid}',null,'事件處理記錄')">＋ 事件處理記錄</button> `;
   }
   actionsHtml += `<button class="btn btn-secondary" onclick="window.print()">列印</button>`;
   actionsHtml += ` <button class="btn btn-secondary" onclick="printAllRecords('${cid}')">列印晤談彙整</button>`;
@@ -4163,6 +4186,7 @@ function showCaseDetail(caseId) {
         <div class="record-card-header">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <span class="record-date">${escHtml(r.date)}${timeDisplay}</span>
+            ${r.recordKind === '事件處理記錄' ? '<span class="badge badge-orange" style="font-size:.73rem;">事件處理</span>' : ''}
             ${deletedLabel}
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -4328,7 +4352,8 @@ function showCaseDetail(caseId) {
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           ${sortBtn}
           ${!caseIsDeleted ? (isActive
-            ? `<button class="btn btn-primary" onclick="openNewRecordPage('${escHtml(c.id)}')">＋ 新增紀錄</button>`
+            ? `<button class="btn btn-primary" onclick="openNewRecordPage('${escHtml(c.id)}')">＋ 新增紀錄</button>
+               <button class="btn btn-secondary btn-sm" onclick="openNewRecordPage('${escHtml(c.id)}',null,'事件處理記錄')">＋ 事件處理記錄</button>`
             : `<span style="font-size:.82rem;color:#718096;font-style:italic;padding:4px 0;">取消結案以新增記錄</span>`) : ''}
         </div>
       </div>
@@ -4574,6 +4599,7 @@ async function removeCaseManager(caseId, email) {
 // ══════════════════════════════════════════════
 let _recordCaseId   = null;
 let _editingRecordId = null;
+let _recordKind = '晤談記錄';
 let _recSortDesc = true; // 晤談紀錄排序：true=新→舊，false=舊→新
 let _recPageSize = parseInt(localStorage.getItem('scc_rec_pagesize') || '5');
 let _recPage = 1;
@@ -4585,7 +4611,9 @@ function isEditable(createdAt) {
 }
 
 function editRecord(caseId, recordId) {
-  openNewRecordPage(caseId, recordId);
+  const c = casesData.find(x => x.id === caseId);
+  const rec = (c?.records || []).find(r => r.id === recordId);
+  openNewRecordPage(caseId, recordId, rec?.recordKind || '晤談記錄');
 }
 
 async function deleteRecord(caseId, recordId) {
@@ -4672,21 +4700,30 @@ async function restoreRecord(caseId, recordId) {
   }
 }
 
-function openNewRecordPage(caseId, recordId = null) {
+function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄') {
   _recordCaseId    = caseId;
   _editingRecordId = recordId || null;
+  _recordKind      = recordKind;
   const c = casesData.find(x => x.id === caseId);
   const existingRec = recordId ? (c?.records || []).find(r => r.id === recordId) : null;
   _draftKey = `scc_draft_record_${currentUser?.email || ''}_${caseId}_${recordId || 'new'}`;
 
   document.getElementById('new-record-page-title').textContent =
-    recordId ? '編輯晤談紀錄' : '新增晤談紀錄';
+    recordId ? `編輯${existingRec?.recordKind||'晤談紀錄'}` : `新增${_recordKind}`;
   document.getElementById('new-record-case-info').textContent =
     `個案：${c?.name || '—'}（${caseId}）`;
 
   // ── 先全部清空 ──
   document.getElementById('rec-time-other').style.display = 'none';
   document.getElementById('rec-time-other').value = '';
+  const _nbPeriodEl = document.getElementById('rec-next-bk-period');
+  if (_nbPeriodEl) _nbPeriodEl.value = '';
+  const _nbTimeRow = document.getElementById('rec-next-bk-time-row');
+  if (_nbTimeRow) _nbTimeRow.style.display = 'none';
+  const _nbStart = document.getElementById('rec-next-bk-start');
+  if (_nbStart) _nbStart.value = '';
+  const _nbEnd = document.getElementById('rec-next-bk-end');
+  if (_nbEnd) _nbEnd.value = '';
   document.querySelectorAll('input[name="rec-topic"]').forEach(cb => cb.checked = false);
   document.getElementById('rec-topic-other').style.display = 'none';
   document.getElementById('rec-topic-other').value = '';
@@ -4815,14 +4852,12 @@ function renderRecCounselorChips() {
     const chip = document.createElement('span');
     chip.style.cssText = `display:inline-flex;align-items:center;gap:6px;background:${isCreator?'#bee3f8':'#edf2f7'};color:#2d3748;border-radius:14px;padding:4px 10px;font-size:.85rem;`;
     chip.innerHTML = `${escHtml(cc.label)}${isCreator ? ' <span style="font-size:.7rem;color:#1a5276;font-weight:700;">建立者</span>' : ''}`;
-    if (!isCreator) {
-      const x = document.createElement('button');
-      x.type = 'button';
-      x.style.cssText = 'background:none;border:none;cursor:pointer;color:#718096;font-weight:700;padding:0 2px;';
-      x.innerHTML = '×';
-      x.onclick = () => { _recCounselors.splice(idx, 1); renderRecCounselorChips(); syncRecCounselorHidden(); };
-      chip.appendChild(x);
-    }
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.style.cssText = 'background:none;border:none;cursor:pointer;color:#718096;font-weight:700;padding:0 2px;';
+    x.innerHTML = '×';
+    x.onclick = () => { _recCounselors.splice(idx, 1); renderRecCounselorChips(); syncRecCounselorHidden(); };
+    chip.appendChild(x);
     box.appendChild(chip);
   });
   // 重建下拉選項，排除已加入者
@@ -4909,6 +4944,27 @@ function toggleNextBookingFields() {
   if (!show) {
     const c = document.getElementById('rec-next-bk-conflict');
     if (c) c.style.display = 'none';
+  }
+}
+
+function toggleRecNextBkPeriod(sel) {
+  const val = sel.value;
+  const timeRow = document.getElementById('rec-next-bk-time-row');
+  if (val === '其他') {
+    document.getElementById('rec-next-bk-start').value = '';
+    document.getElementById('rec-next-bk-end').value   = '';
+    if (timeRow) timeRow.style.display = 'block';
+  } else if (val) {
+    const p = BK_PERIODS.find(x => x.label === val);
+    if (p) {
+      document.getElementById('rec-next-bk-start').value = p.start;
+      document.getElementById('rec-next-bk-end').value   = p.end;
+    }
+    if (timeRow) timeRow.style.display = 'none';
+  } else {
+    document.getElementById('rec-next-bk-start').value = '';
+    document.getElementById('rec-next-bk-end').value   = '';
+    if (timeRow) timeRow.style.display = 'none';
   }
 }
 
@@ -5560,8 +5616,14 @@ async function saveRecord() {
   if (wantNextBooking) {
     nextBkRoom  = _recNextBkRoom;
     nextBkDate  = document.getElementById('rec-next-bk-date')?.value  || '';
-    nextBkStart = document.getElementById('rec-next-bk-start')?.value || '';
-    nextBkEnd   = document.getElementById('rec-next-bk-end')?.value   || '';
+    const _nbPeriodVal = document.getElementById('rec-next-bk-period')?.value || '';
+    if (_nbPeriodVal && _nbPeriodVal !== '其他') {
+      const _nbP = BK_PERIODS.find(x => x.label === _nbPeriodVal);
+      if (_nbP) { nextBkStart = _nbP.start; nextBkEnd = _nbP.end; }
+    } else {
+      nextBkStart = document.getElementById('rec-next-bk-start')?.value || '';
+      nextBkEnd   = document.getElementById('rec-next-bk-end')?.value   || '';
+    }
     if (!nextBkRoom || !nextBkDate || !nextBkStart || !nextBkEnd) {
       _recAlert('已勾選「預約下次諮商空間」，請填寫空間、日期、開始與結束時間。'); return;
     }
@@ -5629,6 +5691,7 @@ async function saveRecord() {
       date, time, creatorEmail: currentUser.email, counselorEmail: currentUser.email,
       counselorName, counselors: counselorList, interventionMode, interviewees,
       topics, serviceItems, summary, assessment, nextPlan, notes,
+      recordKind: _recordKind,
       createdAt: new Date().toISOString(),
     };
     casesData[cidx].records.push(newRecord);
@@ -11628,9 +11691,13 @@ function _bkTimeBlur(inp) {
 function prFillPeriod() {
   const val = document.getElementById('pr-period')?.value || '';
   const p = BK_PERIODS.find(x => x.label === val);
+  const timeRow = document.getElementById('pr-time-row');
   if (p) {
     document.getElementById('pr-start').value = p.start;
     document.getElementById('pr-end').value   = p.end;
+    if (timeRow) timeRow.style.display = 'none';
+  } else {
+    if (timeRow) timeRow.style.display = 'flex';
   }
 }
 
@@ -13436,7 +13503,7 @@ function openPsychiatristModal(caseId, recordId) {
             </select>
           </div>
         </div>
-        <div style="display:flex;gap:12px;margin-bottom:16px;">
+        <div id="pr-time-row" style="display:${(pr.sessionPeriod && pr.sessionPeriod !== '其他') ? 'none' : 'flex'};gap:12px;margin-bottom:16px;">
           <div style="flex:1;"><label class="field-label">開始時間</label><input type="text" class="field-input" id="pr-start" maxlength="5" placeholder="HH:MM" value="${escHtml(pr.timeStart)}" onblur="_bkTimeBlur(this)"></div>
           <div style="flex:1;"><label class="field-label">結束時間</label><input type="text" class="field-input" id="pr-end" maxlength="5" placeholder="HH:MM" value="${escHtml(pr.timeEnd)}" onblur="_bkTimeBlur(this)"></div>
         </div>
