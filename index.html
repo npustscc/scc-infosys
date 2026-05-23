@@ -4201,23 +4201,36 @@ function showCaseDetail(caseId) {
     ? `<div class="empty-state" style="padding:30px;"><div class="icon">📝</div><p>尚無晤談紀錄</p></div>`
     : pagedRecords.map(renderRecordCard).join('') + paginationHtml;
 
-  // 初次晤談折疊卡片（顯示在晤談紀錄列表中）
+  // 初次晤談獨立卡片（獨立於晤談紀錄列表，置於精神科評估之上）
   const iiCardHtml = (() => {
     if (caseIsDeleted) return '';
     const ii = c.initialInterview;
     const iiId = `ii-card-${escHtml(c.id)}`;
+    const cid = escHtml(c.id);
+
+    // 動作列（需填寫 / 已刪除時顯示）
+    const _iiActionBtns = (showRestore) => `
+      <div id="ii-needs-buttons-${cid}" style="display:flex;gap:8px;flex-wrap:wrap;padding:8px 0 4px;">
+        <button class="btn btn-primary btn-sm" onclick="openInitialInterviewPage('${cid}')">填寫</button>
+        <button class="btn btn-secondary btn-sm" onclick="showIiContinuationPanel('${cid}')">舊案延續</button>
+        <button class="btn btn-secondary btn-sm" onclick="pickRecordAsInitialInterview('${cid}')">採用現有紀錄</button>
+        ${showRestore ? `<button class="btn btn-secondary btn-sm" onclick="restoreInitialInterview('${cid}')">復原已刪除之初次晤談表</button>` : ''}
+      </div>
+      <div id="ii-continuation-panel-${cid}" style="display:none;"></div>`;
+
     if (needsInitialInterview(c)) {
+      const isDeleted = ii?.deleted;
+      const canRestore = isDeleted && (isAdminUser || ii.createdBy === currentUser?.email);
+      const deletedBadge = isDeleted && canRestore
+        ? `<div style="font-size:.8rem;color:#a0aec0;margin-bottom:6px;">（已刪除 by ${escHtml(ii.deletedByName||ii.deletedBy||'—')}${isAdminUser ? '' : ''}）
+           ${isAdminUser ? `<button class="btn btn-danger btn-sm" style="font-size:.75rem;margin-left:8px;" onclick="purgeInitialInterview('${cid}')" title="徹底移除">徹底移除</button>` : ''}</div>`
+        : '';
       return `
         <div class="record-card" id="${iiId}" style="border:1.5px dashed #f6c00b;background:#fffbeb;">
-          <div class="record-card-header">
-            <div style="display:flex;align-items:center;gap:8px;">
-              <span style="font-weight:700;color:#8a6d3b;">⚠ 初次晤談紀錄表（未填寫）</span>
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;">
-              <button class="btn btn-primary btn-sm" onclick="openInitialInterviewPage('${escHtml(c.id)}')">填寫</button>
-              <button class="btn btn-secondary btn-sm" onclick="markInitialInterviewAsContinuation('${escHtml(c.id)}')">舊案延續</button>
-              <button class="btn btn-secondary btn-sm" onclick="pickRecordAsInitialInterview('${escHtml(c.id)}')">採用現有紀錄</button>
-            </div>
+          <div style="padding:10px 16px 12px;">
+            <span style="font-weight:700;color:#8a6d3b;">⚠ 初次晤談紀錄表（未填寫）</span>
+            ${deletedBadge}
+            ${_iiActionBtns(canRestore)}
           </div>
         </div>`;
     }
@@ -4227,41 +4240,29 @@ function showCaseDetail(caseId) {
         <div class="record-card" id="${iiId}" style="border:1.5px solid #c6f6d5;background:#f0fff4;">
           <div class="record-card-header">
             <span style="font-weight:700;color:#276749;">🗂 初次晤談紀錄表（舊案延續）</span>
-            <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${escHtml(c.id)}')" style="font-size:.78rem;">清除標記</button>
+            <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${cid}')" style="font-size:.78rem;">清除標記</button>
           </div>
           ${ii.note ? `<div style="padding:0 16px 10px;font-size:.85rem;color:#4a5568;">${escHtml(ii.note)}</div>` : ''}
         </div>`;
     }
     if (ii.type === 'linkedRecord') {
       const lr = (c.records || []).find(x => x.id === ii.recordId);
+      const lrContent = lr ? `
+        <div style="padding:8px 16px 12px;font-size:.85rem;color:#4a5568;border-top:1px solid #bee3f8;">
+          <div style="margin-bottom:4px;"><span style="font-size:.78rem;color:#a0aec0;">晤談日期：</span>${escHtml(lr.date||'—')} ${escHtml(lr.time||'')}</div>
+          <div style="margin-bottom:4px;"><span style="font-size:.78rem;color:#a0aec0;">晤談者：</span>${escHtml(lr.counselorName||lr.counselorEmail||'—')}</div>
+          ${lr.summary ? `<div><span style="font-size:.78rem;color:#a0aec0;">摘要：</span>${renderMaybeHtml(lr.summary)}</div>` : ''}
+        </div>` : '';
       return `
         <div class="record-card" id="${iiId}" style="border:1.5px solid #bee3f8;background:#ebf8ff;">
           <div class="record-card-header">
-            <span style="font-weight:700;color:#2b6cb0;">🔗 初次晤談紀錄表（沿用 ${escHtml(lr?.date || '某筆')} 晤談紀錄）</span>
-            <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${escHtml(c.id)}')" style="font-size:.78rem;">清除標記</button>
+            <span style="font-weight:700;color:#2b6cb0;">🔗 初次晤談紀錄表（採用 ${escHtml(lr?.date || '某筆')} 晤談紀錄）</span>
+            <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${cid}')" style="font-size:.78rem;">清除標記</button>
           </div>
+          ${lrContent}
         </div>`;
     }
-    // 已填寫的初次晤談表（含軟刪除狀態）
-    if (ii.deleted) {
-      if (!isAdminUser && ii.createdBy !== currentUser?.email) return '';
-      let adminBtns = '';
-      if (isAdminUser) {
-        adminBtns = `
-          <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="restoreInitialInterview('${escHtml(c.id)}')">復原</button>
-          <button class="btn btn-danger btn-sm" style="font-size:.78rem;" onclick="purgeInitialInterview('${escHtml(c.id)}')" title="徹底移除痕跡">徹底移除</button>`;
-      }
-      return `
-        <div class="record-card deleted" id="${iiId}" style="border:1.5px solid #e2e8f0;">
-          <div class="record-card-header">
-            <div style="display:flex;align-items:center;gap:8px;">
-              <span style="font-weight:700;color:#a0aec0;">📋 初次晤談紀錄表</span>
-              <span class="deleted-badge">已刪除 by ${escHtml(ii.deletedByName||ii.deletedBy||'—')}</span>
-            </div>
-            <div style="display:flex;gap:6px;">${adminBtns}</div>
-          </div>
-        </div>`;
-    }
+    // 已填寫
     const probBadges = (ii.problemsMain || []).map(p => `<span class="badge badge-gray" style="margin-right:4px;">${escHtml(p)}</span>`).join('');
     const riskColor = ii.risk === '高' ? '#c53030' : ii.risk === '中' ? '#b7791f' : '#276749';
     const riskBadge = ii.risk ? `<span class="badge" style="background:#fff;border:1px solid ${riskColor};color:${riskColor};margin-left:6px;">風險：${escHtml(ii.risk)}</span>` : '';
@@ -4299,11 +4300,11 @@ function showCaseDetail(caseId) {
           <span style="font-weight:700;color:#276749;">📋 初次晤談紀錄表</span>
           <div style="display:flex;gap:6px;align-items:center;">
             ${iiEditable
-              ? `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="openInitialInterviewPage('${escHtml(c.id)}')">編輯</button>`
+              ? `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="openInitialInterviewPage('${cid}')">編輯</button>`
               : `<span style="font-size:.78rem;color:#a0aec0;">超過2週，不可編輯</span>`}
-            <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="printInitialInterview('${escHtml(c.id)}')">列印</button>
-            ${iiCanDelete && !caseIsDeleted ? `<button class="btn btn-danger btn-sm" style="font-size:.78rem;" onclick="deleteInitialInterview('${escHtml(c.id)}')">刪除</button>` : ''}
-            <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${escHtml(c.id)}')" style="font-size:.78rem;">清除</button>
+            <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="printInitialInterview('${cid}')">列印</button>
+            ${iiCanDelete && !caseIsDeleted ? `<button class="btn btn-danger btn-sm" style="font-size:.78rem;" onclick="deleteInitialInterview('${cid}')">刪除</button>` : ''}
+            <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${cid}')" style="font-size:.78rem;">清除</button>
             <button class="rec-toggle-btn" onclick="toggleRecordExpand('${iiId}')">展開 ▼</button>
           </div>
         </div>
@@ -4318,7 +4319,7 @@ function showCaseDetail(caseId) {
   const sortLabel = _recSortDesc ? '新→舊' : '舊→新';
   const sortBtn = `<button class="btn btn-secondary btn-sm" style="font-size:.8rem;" onclick="_recSortDesc=!_recSortDesc;showCaseDetail('${escHtml(c.id)}')">排序：${sortLabel}</button>`;
 
-  const listContent = iiCardHtml + recordCards;
+  const listContent = recordCards;
 
   const recordsHtml = `
     <div class="card" id="detail-records-card" style="margin-bottom:20px;">
@@ -4470,8 +4471,8 @@ function showCaseDetail(caseId) {
       ${field('主訴問題', (c.topics || []).join('、') || '—')}
     </div>`) +
     evalHtml +
+    (iiCardHtml ? `<div style="margin-bottom:20px;">${iiCardHtml}</div>` : '') +
     psyHtml +
-    iiReminderHtml +
     recordsHtml;
 
   // Restore per-case section collapse states
@@ -7332,7 +7333,8 @@ function needsInitialInterview(c) {
   if (!c) return false;
   const ii = c.initialInterview;
   if (!ii) return true;
-  if (ii.type === 'continuation') return false; // 標記為舊案延續
+  if (ii.deleted) return true; // 刪除後重新顯示填寫選項
+  if (ii.type === 'continuation') return false;
   if (ii.type === 'linkedRecord' && ii.recordId) return false;
   if (ii.type === 'filled' || ii.problemsMain || ii.summary || ii.mainIssue) return false;
   return true;
@@ -7415,7 +7417,7 @@ function openInitialInterviewPage(caseId) {
   });
 
   const existing = c.initialInterview;
-  if (existing && existing.type !== 'continuation' && existing.type !== 'linkedRecord') _iiPopulateForm(existing);
+  if (existing && !existing.deleted && existing.type !== 'continuation' && existing.type !== 'linkedRecord') _iiPopulateForm(existing);
 
   setAlert('initial-interview-alert', '', '');
   showPage('page-initial-interview', null);
@@ -7583,29 +7585,80 @@ function cancelInitialInterview() {
   if (_initialInterviewCaseId) showCaseDetail(_initialInterviewCaseId);
 }
 
-// 「此為舊案延續，無初次晤談」
-async function markInitialInterviewAsContinuation(caseId) {
-  const note = prompt('請說明（選填）：例如「為 113-2 學期之延續，原主責 OOO」', '');
-  if (note === null) return;
+// 舊案延續：在卡片內展示過往初次晤談表 chips 供選擇
+function showIiContinuationPanel(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const panel = document.getElementById(`ii-continuation-panel-${caseId}`);
+  const btns  = document.getElementById(`ii-needs-buttons-${caseId}`);
+  if (!panel || !btns) return;
+
+  // 找同一學生（相同學號，或無學號時比對姓名）的其他案件中已填寫的初次晤談表
+  const prevCases = casesData.filter(x =>
+    x.id !== caseId &&
+    (c.studentId ? x.studentId === c.studentId : x.name === c.name) &&
+    x.initialInterview && !x.initialInterview.deleted &&
+    (x.initialInterview.type === 'filled' || x.initialInterview.problemsMain || x.initialInterview.mainIssue)
+  );
+
+  if (!prevCases.length) {
+    alert('查無此學生的舊有初次晤談表，無法使用舊案延續。');
+    return;
+  }
+
+  btns.style.display = 'none';
+  panel.style.display = 'block';
+
+  const chips = prevCases.map(x => {
+    const sem = semesterLabel(openDateToSemPrefix(x.openDate));
+    const creatorEmail = x.initialInterview.createdBy;
+    const creatorName = configData?.users?.[creatorEmail]?.name || creatorEmail || '未知';
+    return `<span class="ii-chip" data-ref-caseid="${escHtml(x.id)}" onclick="this.classList.toggle('ii-chip-sel')">${escHtml(sem)}　${escHtml(creatorName)}建立之初次晤談表</span>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <div style="font-size:.88rem;color:#4a5568;margin-bottom:8px;">請選擇此案所延續的初次晤談表：</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;">${chips}</div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-primary btn-sm" onclick="confirmIiContinuation('${escHtml(caseId)}')">確認舊案延續</button>
+      <button class="btn btn-secondary btn-sm" onclick="cancelIiContinuationPanel('${escHtml(caseId)}')">取消</button>
+    </div>`;
+}
+
+function cancelIiContinuationPanel(caseId) {
+  const panel = document.getElementById(`ii-continuation-panel-${caseId}`);
+  const btns  = document.getElementById(`ii-needs-buttons-${caseId}`);
+  if (panel) { panel.style.display = 'none'; panel.innerHTML = ''; }
+  if (btns)  btns.style.display = '';
+}
+
+async function confirmIiContinuation(caseId) {
+  const panel = document.getElementById(`ii-continuation-panel-${caseId}`);
+  if (!panel) return;
+  const sel = panel.querySelector('.ii-chip.ii-chip-sel');
+  if (!sel) { alert('請點選一個舊有初次晤談表'); return; }
+  const refCaseId = sel.dataset.refCaseid;
+  const refCase = casesData.find(x => x.id === refCaseId);
+  const sem = semesterLabel(openDateToSemPrefix(refCase?.openDate));
+  const creatorEmail = refCase?.initialInterview?.createdBy;
+  const creatorName = configData?.users?.[creatorEmail]?.name || creatorEmail || '';
+  const note = `延續 ${sem}　${creatorName}建立之初次晤談表`;
   const cidx = casesData.findIndex(c => c.id === caseId);
   if (cidx === -1) return;
   const prev = casesData[cidx].initialInterview;
   casesData[cidx].initialInterview = {
-    type: 'continuation', note: note || '舊案延續，無初次晤談',
-    createdAt: new Date().toISOString(),
-    createdBy: currentUser?.email,
+    type: 'continuation', note, refCaseId,
+    createdAt: new Date().toISOString(), createdBy: currentUser?.email,
   };
   casesData[cidx].updatedAt = new Date().toISOString();
   showLoading('儲存中…');
   try {
     await saveCasesChunks(caseId);
     auditLog('標記初次晤談為舊案延續', caseId);
-    hideLoading();
-    showCaseDetail(caseId);
+    hideLoading(); showCaseDetail(caseId);
   } catch (err) {
     casesData[cidx].initialInterview = prev;
-    hideLoading();
-    alert('儲存失敗：' + err.message);
+    hideLoading(); alert('儲存失敗：' + err.message);
   }
 }
 
@@ -9279,11 +9332,14 @@ async function renderAuditLog() {
   // 把 logs 存到全域讓 filterAuditLog 使用
   window._auditLogsCache = logs;
 
-  // 稽核欄位收折狀態（按欄序 1-5）
+  // 稽核欄位收折狀態（按欄序 1-5）：優先從 Drive configData 讀取，回退 localStorage
   const _auditColKey = 'scc_audit_cols_' + (currentUser?.email || '');
   if (!window._auditColsHidden) {
-    try { window._auditColsHidden = new Set(JSON.parse(localStorage.getItem(_auditColKey) || '[]')); }
-    catch { window._auditColsHidden = new Set(); }
+    try {
+      const driveVal = configData?.users?.[currentUser?.email]?.auditColsHidden;
+      const raw = driveVal ?? JSON.parse(localStorage.getItem(_auditColKey) || '[]');
+      window._auditColsHidden = new Set(raw);
+    } catch { window._auditColsHidden = new Set(); }
   }
 
   body.innerHTML = `
@@ -9345,9 +9401,9 @@ function auditToggleCol(n) {
   if (!window._auditColsHidden) window._auditColsHidden = new Set();
   if (window._auditColsHidden.has(n)) window._auditColsHidden.delete(n);
   else window._auditColsHidden.add(n);
-  try {
-    localStorage.setItem('scc_audit_cols_' + (currentUser?.email || ''), JSON.stringify([...window._auditColsHidden]));
-  } catch (_) {}
+  const colArr = [...window._auditColsHidden];
+  try { localStorage.setItem('scc_audit_cols_' + (currentUser?.email || ''), JSON.stringify(colArr)); } catch (_) {}
+  syncUserPref_({ auditColsHidden: colArr });
   filterAuditLog();
 }
 
