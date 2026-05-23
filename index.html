@@ -2310,6 +2310,12 @@
           <label style="display:inline-flex;align-items:center;gap:6px;margin-right:18px;"><input type="radio" name="ii-case-type" value="舊案" onchange="iiSupToggle(this)" /> (一)舊案，原主責續接</label>
           <label style="display:inline-flex;align-items:center;gap:6px;"><input type="radio" name="ii-case-type" value="新案/轉案" checked onchange="iiSupToggle(this)" /> (二)新案/轉案</label>
         </div>
+        <div id="ii-sup-old-counselor-row" style="display:none;margin-bottom:10px;">
+          <label class="field-label">原主責輔導人員<span class="req">*</span></label>
+          <select class="field-select" id="ii-sup-old-counselor" style="max-width:340px;">
+            <option value="">— 請選擇原主責輔導人員 —</option>
+          </select>
+        </div>
         <div id="ii-sup-new-section">
           <div style="margin-bottom:8px;">
             <label class="field-label">1. 風險評估<span class="req">*</span></label>
@@ -2338,7 +2344,7 @@
 
       <!-- 七 -->
       <div class="form-section" id="ii-section-seven">
-        <div class="form-section-title">七、同儕督導會議結果：確認主責輔導人員<span class="req">*</span></div>
+        <div class="form-section-title">七、同儕督導會議結果：確認主責輔導人員<span class="req" id="ii-section-seven-req">*</span><span id="ii-section-seven-opt" style="display:none;font-size:.78rem;color:#718096;margin-left:6px;">（非必填）</span></div>
         <select class="field-select" id="ii-result-counselor" style="max-width:340px;">
           <option value="">— 請選擇主責輔導人員 —</option>
         </select>
@@ -2674,7 +2680,7 @@ function updateFloatingBackBtn(pageId) {
   const btn = document.getElementById('header-back-btn');
   if (!btn) return;
   const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings','page-recycle','page-transfer','page-psychiatry','page-unassigned-records'];
-  btn.style.display = showOn.includes(pageId) ? '' : 'none';
+  btn.style.display = showOn.includes(pageId) ? 'inline-block' : 'none';
   btn.dataset.fromPage = pageId;
 }
 
@@ -4272,6 +4278,7 @@ function showCaseDetail(caseId) {
       <div class="rec-full-view">
         ${(ii.problemsMain||[]).length ? `<div style="margin-bottom:8px;"><span style="font-size:.75rem;color:#a0aec0;">問題評估：</span>${probBadges}${riskBadge}</div>` : ''}
         ${iiField('個案類型', ii.caseType)}
+        ${ii.oldMainCounselor ? iiField('原主責輔導人員', formatCounselorLabel(ii.oldMainCounselor)||ii.oldMainCounselor) : ''}
         ${iiField('家庭背景', ii.family)}
         ${iiField('主訴問題', ii.mainIssue)}
         ${iiField('問題摘要', ii.summary)}
@@ -7110,6 +7117,12 @@ function iiSupToggle(radio) {
     const el = document.getElementById(id);
     if (el) { el.style.opacity = isOld ? '.4' : ''; el.style.pointerEvents = isOld ? 'none' : ''; }
   });
+  const oldRow = document.getElementById('ii-sup-old-counselor-row');
+  if (oldRow) oldRow.style.display = isOld ? 'block' : 'none';
+  const sevenReq = document.getElementById('ii-section-seven-req');
+  const sevenOpt = document.getElementById('ii-section-seven-opt');
+  if (sevenReq) sevenReq.style.display = isOld ? 'none' : '';
+  if (sevenOpt) sevenOpt.style.display = isOld ? '' : 'none';
 }
 
 function iiLoadFamilyImage(input) {
@@ -7397,7 +7410,7 @@ function openInitialInterviewPage(caseId) {
     Object.keys(users).filter(e => users[e]?.name).map(e =>
       `<option value="${escHtml(e)}">${escHtml(formatCounselorLabel(e))}</option>`
     ).join('');
-  ['ii-result-counselor','ii-transfer-counselor'].forEach(id => {
+  ['ii-result-counselor','ii-transfer-counselor','ii-sup-old-counselor'].forEach(id => {
     const sel = document.getElementById(id); if (sel) sel.innerHTML = counselorOpts;
   });
 
@@ -7429,7 +7442,16 @@ function restoreInitialInterview(d) {
       const el = document.getElementById(id);
       if (el) { el.style.opacity = '.4'; el.style.pointerEvents = 'none'; }
     });
+    const oldRow = document.getElementById('ii-sup-old-counselor-row');
+    if (oldRow) oldRow.style.display = 'block';
+    const sevenReq = document.getElementById('ii-section-seven-req');
+    const sevenOpt = document.getElementById('ii-section-seven-opt');
+    if (sevenReq) sevenReq.style.display = 'none';
+    if (sevenOpt) sevenOpt.style.display = '';
   }
+  // Restore old main counselor
+  const oldSel = document.getElementById('ii-sup-old-counselor');
+  if (oldSel && d.oldMainCounselor) oldSel.value = d.oldMainCounselor;
 
   // Restore vacancy checkboxes
   (d.vacancy || []).forEach(v => { const cb = document.querySelector(`input[name="ii-vacancy"][value="${CSS.escape(v)}"]`); if (cb) cb.checked = true; });
@@ -7505,6 +7527,7 @@ function snapshotInitialInterview() {
     supSkills: _supSel('sup-skill'),  supSkillsCustom: _supCustom('sup-skill'),
     vacancy: checked('ii-vacancy'),
     supOther: get('ii-sup-other'),
+    oldMainCounselor: get('ii-sup-old-counselor'),
     resultCounselor: get('ii-result-counselor'),
     notes: get('ii-notes'),
     familyImage: _iiFamilyImage || null,
@@ -7523,12 +7546,14 @@ async function saveInitialInterview() {
   if (!snap.plan) errs.push('四、個別化服務計畫');
   if (!(snap.serviceItems || []).length) errs.push('五、此次服務項目（至少選一項）');
   if (!snap.caseType) errs.push('六、同儕督導會議（請選擇新案/轉案或舊案）');
-  if (snap.caseType !== '舊案') {
+  if (snap.caseType === '舊案') {
+    if (!snap.oldMainCounselor) errs.push('六、原主責輔導人員（請選擇）');
+  } else {
     if (!(snap.supRisks || []).length)  errs.push('六-1. 風險評估（至少選一項）');
     if (!(snap.supTopics || []).length) errs.push('六-2. 主訴議題（至少選一項）');
     if (!(snap.supSkills || []).length) errs.push('六-3. 輔導人員專長（至少選一項）');
+    if (!snap.resultCounselor) errs.push('七、確認主責輔導人員（請選擇）');
   }
-  if (!snap.resultCounselor) errs.push('七、確認主責輔導人員（請選擇）');
   if (errs.length) { setAlert('initial-interview-alert', 'error', '請填寫必填項目：\n• ' + errs.join('\n• ')); document.getElementById('initial-interview-alert')?.scrollIntoView({behavior:'smooth',block:'center'}); return; }
 
   const cidx = casesData.findIndex(c => c.id === _initialInterviewCaseId);
@@ -7769,6 +7794,10 @@ function printInitialInterview(caseId) {
   const supSkillBlock = _supBlock(II_SUP_SKILLS,   d.supSkills,  d.supSkillsCustom);
   const vacancyBlock  = ['專任專輔人員','兼任專輔人員','義輔老師'].map(v => `${cb((d.vacancy||[]).includes(v))} ${esc(v)}`).join('　');
 
+  // 六: old main counselor (for 舊案)
+  const oldCounselorEmail = d.oldMainCounselor || '';
+  const oldCounselorName = oldCounselorEmail ? (formatCounselorLabel(oldCounselorEmail) || oldCounselorEmail) : '';
+
   // 七: single counselor
   const resultEmail = d.resultCounselor || '';
   const resultName = resultEmail ? (formatCounselorLabel(resultEmail) || resultEmail)
@@ -7818,6 +7847,7 @@ ${d.familyImage ? `<div style="margin-top:6px;"><img src="${d.familyImage}" styl
 <div class="row" style="margin-top:8px;"><b>接案晤談者：</b>${esc(printerName)}</div>
 <div class="sec-title">六、同儕督導會議</div>
 <div>${cb(d.caseType === '舊案')} (一)舊案，原主責續接　${cb(d.caseType === '新案/轉案')} (二)新案/轉案</div>
+${d.caseType === '舊案' && oldCounselorName ? `<div class="row" style="margin-top:4px;"><b>原主責輔導人員：</b>${esc(oldCounselorName)}</div>` : ''}
 <div class="row"><b>1. 風險評估：</b>${supRiskBlock}</div>
 <div class="row"><b>2. 個案主訴議題：</b>${supTopicBlock}</div>
 <div class="row"><b>3. 適切之輔導人員專長：</b>${supSkillBlock}</div>
