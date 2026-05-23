@@ -977,7 +977,7 @@
     </div>
 
     <div class="sidebar-section">
-      <h3>個人</h3>
+      <h3>設定與工具</h3>
       <div class="nav-item" data-nav-id="page-issues" onclick="showPage('page-issues', this); renderIssuesPage()">
         <span class="icon">🐛</span> 錯誤回報 <span class="nav-drag-handle">⠿</span>
       </div>
@@ -11959,8 +11959,29 @@ function editBooking(id) {
   _checkBkConflict();
 }
 
+let _copyingBkId = null;
+
+function _bkAddDays(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00');
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
 function copyBooking(id) {
+  _copyingBkId = id;
   const b = bookingsData.find(x => x.id === id);
+  if (!b) return;
+  const nextDate = _bkAddDays(b.date, 7);
+  const btn = document.getElementById('bk-copy-next-week-btn');
+  if (btn) btn.textContent = `📅 複製到下週同一時間（${nextDate}）`;
+  const conflictEl = document.getElementById('bk-copy-conflict-msg');
+  if (conflictEl) conflictEl.style.display = 'none';
+  document.getElementById('bk-copy-options-modal').style.display = 'flex';
+}
+
+function _bkCopyOpenModal() {
+  const b = bookingsData.find(x => x.id === _copyingBkId);
+  document.getElementById('bk-copy-options-modal').style.display = 'none';
   if (!b) return;
   _bkSkipPersonConflict = false;
   _editingBookingId = null;
@@ -11988,6 +12009,52 @@ function copyBooking(id) {
   const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
   document.getElementById('booking-modal').style.display = 'flex';
   _checkBkConflict();
+}
+
+function _bkCopyToNextWeek() {
+  const b = bookingsData.find(x => x.id === _copyingBkId);
+  if (!b) return;
+  const newDate = _bkAddDays(b.date, 7);
+  const roomConflict = bookingsData.find(x =>
+    x.id !== b.id && x.room === b.room && x.date === newDate &&
+    x.startTime < b.endTime && x.endTime > b.startTime
+  );
+  if (roomConflict) {
+    const el = document.getElementById('bk-copy-conflict-msg');
+    if (el) {
+      el.style.display = '';
+      el.innerHTML = `<div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:6px;padding:8px 12px;font-size:.85rem;color:#744210;">
+        ⚠ ${escHtml(b.room)} 在 ${escHtml(newDate)} ${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)} 已有預約（${escHtml(roomConflict.counselorName||'—')}），仍要複製？
+        <div style="display:flex;gap:6px;margin-top:8px;">
+          <button class="btn btn-primary btn-sm" onclick="_bkCopyToNextWeekConfirm()">仍然複製</button>
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bk-copy-options-modal').style.display='none'">取消</button>
+        </div></div>`;
+    }
+    return;
+  }
+  _bkCopyToNextWeekConfirm();
+}
+
+async function _bkCopyToNextWeekConfirm() {
+  const b = bookingsData.find(x => x.id === _copyingBkId);
+  if (!b) return;
+  document.getElementById('bk-copy-options-modal').style.display = 'none';
+  const newDate = _bkAddDays(b.date, 7);
+  showLoading('複製中…');
+  try {
+    const newBk = { ...b, id: `bk_${Date.now()}`, bkSerial: _bkNextSerial(),
+      date: newDate, calendarEventId: null, createdAt: new Date().toISOString(), createdBy: currentUser?.email };
+    bookingsData.push(newBk);
+    await saveBookings();
+    auditLog(`空間預約 複製到下週`, null, null, `${b.room} ${newDate} ${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)}`);
+    renderBookingsPage();
+    setAlert('bookings-alert', 'ok', `已複製到 ${newDate}。`);
+  } catch (e) {
+    bookingsData.pop();
+    alert('複製失敗：' + e.message);
+  } finally {
+    hideLoading();
+  }
 }
 
 function closeBookingModal() {
@@ -13966,6 +14033,21 @@ function restoreSidebarOrder() {
   </div>
 </div>
 
+<!-- 空間預約複製選項 Modal -->
+<div id="bk-copy-options-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10000;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:12px;max-width:380px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+    <h3 style="margin:0 0 16px;font-size:1rem;color:#2d3748;">複製預約</h3>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <button class="btn btn-secondary" onclick="_bkCopyOpenModal()">✏️ 編輯後新增（開啟表單）</button>
+      <button class="btn btn-primary" id="bk-copy-next-week-btn" onclick="_bkCopyToNextWeek()">📅 複製到下週同一時間</button>
+    </div>
+    <div id="bk-copy-conflict-msg" style="display:none;margin-top:10px;"></div>
+    <div style="margin-top:14px;text-align:right;">
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bk-copy-options-modal').style.display='none'">取消</button>
+    </div>
+  </div>
+</div>
+
 <!-- 錯誤回報 Modal -->
 <div id="issue-submit-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10000;align-items:center;justify-content:center;padding:20px;">
   <div style="background:#fff;border-radius:12px;max-width:520px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
@@ -14073,21 +14155,43 @@ async function submitIssue() {
   }
 }
 
-async function updateIssueStatus(issueId, newStatus, resolution) {
+async function updateIssueStatus(issueId, newStatus) {
   const issue = issuesData.find(x => x.id === issueId);
   if (!issue) return;
-  const prev = { status: issue.status, resolution: issue.resolution };
+  const prev = issue.status;
   issue.status = newStatus;
-  issue.resolution = resolution || '';
-  issue.resolvedBy = currentUser?.email || '';
-  issue.resolvedAt = new Date().toISOString();
   showLoading('儲存中…');
   try {
     await _saveIssues();
     renderIssuesPage();
   } catch (e) {
-    issue.status = prev.status;
-    issue.resolution = prev.resolution;
+    issue.status = prev;
+    alert('儲存失敗：' + e.message);
+  } finally {
+    hideLoading();
+  }
+}
+
+async function addIssueComment(issueId, content) {
+  content = (content || '').trim();
+  if (!content) { alert('請填寫留言內容'); return; }
+  const issue = issuesData.find(x => x.id === issueId);
+  if (!issue) return;
+  if (!issue.comments) issue.comments = [];
+  const comment = {
+    id: 'c_' + Date.now(),
+    content,
+    authorEmail: currentUser?.email || '',
+    authorName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
+    createdAt: new Date().toISOString(),
+  };
+  issue.comments.push(comment);
+  showLoading('儲存中…');
+  try {
+    await _saveIssues();
+    renderIssuesPage();
+  } catch (e) {
+    issue.comments.pop();
     alert('儲存失敗：' + e.message);
   } finally {
     hideLoading();
@@ -14114,20 +14218,44 @@ function renderIssuesPage() {
 
   el.innerHTML = sorted.map(issue => {
     const sid = escHtml(issue.id);
-    const adminControls = isAdmin ? `
-      <div style="margin-top:8px;padding-top:8px;border-top:1px solid #e2e8f0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+
+    // 留言串（兼容舊 resolution 欄位）
+    const comments = issue.comments || [];
+    const allComments = [...comments];
+    if (issue.resolution && !comments.length) {
+      allComments.push({ id:'legacy', content: issue.resolution,
+        authorEmail: issue.resolvedBy || '', authorName: '（舊格式）', createdAt: issue.resolvedAt || '' });
+    }
+    const commentsHtml = allComments.length ? `
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid #e2e8f0;">
+        ${allComments.map(c => `
+          <div style="margin-bottom:6px;padding:7px 10px;background:#f7fafc;border-radius:6px;font-size:.85rem;">
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;font-size:.78rem;color:#718096;">
+              <span style="font-weight:600;color:#4a5568;">${escHtml(c.authorName||c.authorEmail||'—')}</span>
+              <span>${c.createdAt ? new Date(c.createdAt).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : ''}</span>
+            </div>
+            <div style="color:#2d3748;white-space:pre-wrap;">${escHtml(c.content)}</div>
+          </div>`).join('')}
+      </div>` : '';
+
+    const adminStatusControl = isAdmin ? `
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-top:8px;border-top:1px solid #e2e8f0;">
         <select id="issue-status-${sid}" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;background:#fff;">
           <option value="open"        ${issue.status==='open'?'selected':''}>待處理</option>
           <option value="in_progress" ${issue.status==='in_progress'?'selected':''}>處理中</option>
           <option value="resolved"    ${issue.status==='resolved'?'selected':''}>已解決</option>
         </select>
-        <input id="issue-res-${sid}" type="text" placeholder="處理說明（選填）" value="${escHtml(issue.resolution||'')}"
-               style="flex:1;min-width:140px;padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;">
-        <button class="btn btn-primary btn-sm"
-          onclick="updateIssueStatus('${sid}',document.getElementById('issue-status-${sid}').value,document.getElementById('issue-res-${sid}').value)">儲存</button>
-      </div>` : (issue.resolution
-        ? `<div style="margin-top:6px;font-size:.83rem;color:#4a5568;"><span style="color:#a0aec0;">處理說明：</span>${escHtml(issue.resolution)}</div>`
-        : '');
+        <button class="btn btn-secondary btn-sm"
+          onclick="updateIssueStatus('${sid}',document.getElementById('issue-status-${sid}').value)">更新狀態</button>
+      </div>` : '';
+
+    const commentInput = `
+      <div style="margin-top:8px;display:flex;gap:6px;align-items:flex-start;">
+        <textarea id="issue-comment-${sid}" rows="2" placeholder="新增留言…"
+          style="flex:1;padding:6px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;resize:vertical;"></textarea>
+        <button class="btn btn-primary btn-sm" style="white-space:nowrap;margin-top:1px;"
+          onclick="addIssueComment('${sid}',document.getElementById('issue-comment-${sid}').value)">送出</button>
+      </div>`;
 
     const dateStr = issue.submittedAt
       ? new Date(issue.submittedAt).toLocaleString('zh-TW', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })
@@ -14142,7 +14270,9 @@ function renderIssuesPage() {
           <span style="font-size:.78rem;color:#a0aec0;">${dateStr}</span>
         </div>
         <div style="font-size:.88rem;color:#2d3748;white-space:pre-wrap;">${escHtml(issue.description)}</div>
-        ${adminControls}
+        ${commentsHtml}
+        ${adminStatusControl}
+        ${commentInput}
       </div>`;
   }).join('');
 }
