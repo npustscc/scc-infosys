@@ -14172,6 +14172,64 @@ async function updateIssueStatus(issueId, newStatus) {
   }
 }
 
+function editIssueComment(issueId, commentId) {
+  const issue = issuesData.find(x => x.id === issueId);
+  if (!issue) return;
+  const c = (issue.comments || []).find(x => x.id === commentId);
+  if (!c) return;
+  const domId = `${issueId}-${commentId}`;
+  const textEl = document.getElementById(`issue-comment-text-${domId}`);
+  if (!textEl) return;
+  textEl.innerHTML = `
+    <textarea id="issue-comment-edit-${domId}" style="width:100%;padding:5px 7px;border:1px solid #cbd5e0;border-radius:5px;font-size:.85rem;resize:vertical;box-sizing:border-box;">${escHtml(c.content)}</textarea>
+    <div style="display:flex;gap:5px;margin-top:4px;">
+      <button class="btn btn-primary btn-sm" onclick="saveIssueCommentEdit('${escHtml(issueId)}','${escHtml(commentId)}')">儲存</button>
+      <button class="btn btn-secondary btn-sm" onclick="renderIssuesPage()">取消</button>
+    </div>`;
+  textEl.querySelector('textarea').focus();
+}
+
+async function saveIssueCommentEdit(issueId, commentId) {
+  const issue = issuesData.find(x => x.id === issueId);
+  if (!issue) return;
+  const c = (issue.comments || []).find(x => x.id === commentId);
+  if (!c) return;
+  const newContent = (document.getElementById(`issue-comment-edit-${issueId}-${commentId}`)?.value || '').trim();
+  if (!newContent) { alert('留言內容不可為空'); return; }
+  const prev = { content: c.content, editedAt: c.editedAt };
+  c.content = newContent;
+  c.editedAt = new Date().toISOString();
+  showLoading('儲存中…');
+  try {
+    await _saveIssues();
+    renderIssuesPage();
+  } catch (e) {
+    c.content = prev.content; c.editedAt = prev.editedAt;
+    alert('儲存失敗：' + e.message);
+  } finally {
+    hideLoading();
+  }
+}
+
+async function deleteIssueComment(issueId, commentId) {
+  if (!confirm('確定刪除此留言？')) return;
+  const issue = issuesData.find(x => x.id === issueId);
+  if (!issue) return;
+  const idx = (issue.comments || []).findIndex(x => x.id === commentId);
+  if (idx === -1) return;
+  const removed = issue.comments.splice(idx, 1)[0];
+  showLoading('刪除中…');
+  try {
+    await _saveIssues();
+    renderIssuesPage();
+  } catch (e) {
+    issue.comments.splice(idx, 0, removed);
+    alert('刪除失敗：' + e.message);
+  } finally {
+    hideLoading();
+  }
+}
+
 async function addIssueComment(issueId, content) {
   content = (content || '').trim();
   if (!content) { alert('請填寫留言內容'); return; }
@@ -14228,14 +14286,26 @@ function renderIssuesPage() {
     }
     const commentsHtml = allComments.length ? `
       <div style="margin-top:10px;padding-top:10px;border-top:1px solid #e2e8f0;">
-        ${allComments.map(c => `
-          <div style="margin-bottom:6px;padding:7px 10px;background:#f7fafc;border-radius:6px;font-size:.85rem;">
+        ${allComments.map(c => {
+          const cid = escHtml(c.id);
+          const isOwn = c.authorEmail === currentUser?.email;
+          const canEdit   = isOwn && c.id !== 'legacy';
+          const canDelete = (isOwn || isAdmin) && c.id !== 'legacy';
+          const actBtns = (canEdit || canDelete) ? `<span style="margin-left:auto;display:flex;gap:3px;">
+            ${canEdit   ? `<button class="btn btn-secondary btn-sm" style="padding:0 5px;font-size:.7rem;" onclick="editIssueComment('${sid}','${cid}')">編輯</button>` : ''}
+            ${canDelete ? `<button class="btn btn-danger btn-sm" style="padding:0 5px;font-size:.7rem;" onclick="deleteIssueComment('${sid}','${cid}')">刪除</button>` : ''}
+          </span>` : '';
+          const editedMark = c.editedAt ? `<span style="font-size:.7rem;color:#a0aec0;">（已編輯）</span>` : '';
+          return `
+          <div id="issue-comment-card-${sid}-${cid}" style="margin-bottom:6px;padding:7px 10px;background:#f7fafc;border-radius:6px;font-size:.85rem;">
             <div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;font-size:.78rem;color:#718096;">
               <span style="font-weight:600;color:#4a5568;">${escHtml(c.authorName||c.authorEmail||'—')}</span>
               <span>${c.createdAt ? new Date(c.createdAt).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : ''}</span>
+              ${editedMark}${actBtns}
             </div>
-            <div style="color:#2d3748;white-space:pre-wrap;">${escHtml(c.content)}</div>
-          </div>`).join('')}
+            <div id="issue-comment-text-${sid}-${cid}" style="color:#2d3748;white-space:pre-wrap;">${escHtml(c.content)}</div>
+          </div>`;
+        }).join('')}
       </div>` : '';
 
     const adminStatusControl = isAdmin ? `
