@@ -978,6 +978,9 @@
 
     <div class="sidebar-section">
       <h3>個人</h3>
+      <div class="nav-item" data-nav-id="page-issues" onclick="showPage('page-issues', this); renderIssuesPage()">
+        <span class="icon">🐛</span> 錯誤回報 <span class="nav-drag-handle">⠿</span>
+      </div>
       <div class="nav-item" data-nav-id="page-audit" onclick="showPage('page-audit', this); renderAuditLog()">
         <span class="icon">📜</span> 稽核日誌 <span class="nav-drag-handle">⠿</span>
       </div>
@@ -1283,6 +1286,18 @@
           <button class="btn btn-secondary btn-sm" onclick="renderUnassignedRecordsPage()">重新整理</button>
         </div>
         <div id="unassigned-records-body" style="padding:0;min-height:60px;"></div>
+      </div>
+    </div>
+
+    <!-- 錯誤回報 -->
+    <div id="page-issues" class="page">
+      <div class="page-title">錯誤回報</div>
+      <div class="card">
+        <div class="card-header">
+          <h3>回報列表</h3>
+          <button class="btn btn-primary" onclick="openIssueModal()">＋ 回報問題</button>
+        </div>
+        <div id="issues-body" style="padding:0;min-height:60px;"></div>
       </div>
     </div>
 
@@ -2439,6 +2454,7 @@ const CASES_MANIFEST  = 'cases/manifest.json';
 const CHUNK_SIZE      = 20;
 const AUDIT_LOG_FILE  = 'audit_log.json';
 const BOOKINGS_FILE   = 'bookings.json';
+const ISSUES_FILE     = 'issues.json';
 const TRANSFER_FILE   = 'transfer.json';
 const UNASSIGNED_RECORDS_FILE = 'unassigned_records.json';
 const ROOMS = ['玉山', '雪山', '中央山脈', '阿里山', '海岸山脈', '團體諮商室', '會議室', '其他'];
@@ -2701,7 +2717,7 @@ function showPage(pageId, navEl) {
 function updateFloatingBackBtn(pageId) {
   const btn = document.getElementById('header-back-btn');
   if (!btn) return;
-  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings','page-recycle','page-transfer','page-psychiatry','page-unassigned-records'];
+  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings','page-recycle','page-transfer','page-psychiatry','page-unassigned-records','page-issues'];
   btn.style.display = showOn.includes(pageId) ? 'inline-block' : 'none';
   btn.dataset.fromPage = pageId;
 }
@@ -2918,6 +2934,7 @@ async function afterLogin() {
       loadBookings(),
       loadTransfer(),
       loadUnassignedRecords(),
+      loadIssues(),
     ]);
     setLoadingProgress(25);
     configData = cfg;
@@ -11352,6 +11369,7 @@ function _bkRenderDayColumn(date) {
           : `<button class="btn btn-secondary btn-sm" style="padding:1px 5px;font-size:.72rem;" data-sync-id="${escHtml(b.id)}" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅</button>`;
         const actBtns = `<span style="display:flex;gap:3px;margin-top:3px;">
           <button class="btn btn-secondary btn-sm" style="padding:1px 6px;font-size:.72rem;" onclick="editBooking('${escHtml(b.id)}')">編輯</button>
+          <button class="btn btn-secondary btn-sm" style="padding:1px 6px;font-size:.72rem;" onclick="copyBooking('${escHtml(b.id)}')">複製</button>
           <button class="btn btn-danger btn-sm" style="padding:1px 6px;font-size:.72rem;" onclick="deleteBooking('${escHtml(b.id)}')">刪除</button>
           ${calTag}
         </span>`;
@@ -11421,6 +11439,7 @@ function renderBookingsPage() {
             ${caseTag}${noteTag}${calTag}
             <span style="margin-left:auto;display:flex;gap:4px;">
               <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="editBooking('${escHtml(b.id)}')">編輯</button>
+              <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="copyBooking('${escHtml(b.id)}')">複製</button>
               <button class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="deleteBooking('${escHtml(b.id)}')">刪除</button>
             </span>
           </div>`;
@@ -11465,6 +11484,7 @@ function renderBookingsPage() {
               (b.notes ? `<div style="color:#718096;font-size:.72rem;">${escHtml(b.notes.slice(0,20))}${b.notes.length>20?'…':''}</div>` : '') +
               `<div style="display:flex;gap:2px;margin-top:2px;">` +
               `<button class="btn btn-secondary btn-sm" style="padding:0 5px;font-size:.67rem;" onclick="editBooking('${escHtml(b.id)}')">編輯</button>` +
+              `<button class="btn btn-secondary btn-sm" style="padding:0 5px;font-size:.67rem;" onclick="copyBooking('${escHtml(b.id)}')">複製</button>` +
               `<button class="btn btn-danger btn-sm" style="padding:0 5px;font-size:.67rem;" onclick="deleteBooking('${escHtml(b.id)}')">刪除</button>` +
               calTag + `</div></div>`;
           });
@@ -11935,6 +11955,37 @@ function editBooking(id) {
   document.getElementById('bk-room-conflict-warn').style.display = 'none';
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb2 = document.getElementById('btn-save-booking'); if (sb2) sb2.disabled = false;
+  document.getElementById('booking-modal').style.display = 'flex';
+  _checkBkConflict();
+}
+
+function copyBooking(id) {
+  const b = bookingsData.find(x => x.id === id);
+  if (!b) return;
+  _bkSkipPersonConflict = false;
+  _editingBookingId = null;
+  document.getElementById('booking-modal-title').textContent = '複製預約';
+  _populateBookingCounselorSelect(b.counselorEmail || b.counselorName || '');
+  _populateBookingCaseDatalist();
+  _initBkPeriodSelect();
+  let _copyRoom = b.room || '';
+  if (_copyRoom === '其他') {
+    _copyRoom = b.customRoom || '其他';
+    if (_copyRoom && _copyRoom !== '其他') {
+      const _cr = _getBkCustomRooms();
+      if (!_cr.includes(_copyRoom) && !ROOMS.includes(_copyRoom)) { _cr.push(_copyRoom); _saveBkCustomRooms(_cr); }
+    }
+  }
+  _populateBookingRoomChips(_copyRoom);
+  document.getElementById('bk-date').value = b.date || '';
+  _restoreBkPeriod(b.startTime, b.endTime);
+  document.getElementById('bk-case-id').value = b.caseId || '';
+  document.getElementById('bk-case-hint').style.display = 'none';
+  document.getElementById('bk-notes').value = b.notes || '';
+  document.getElementById('booking-conflict-warn').style.display = 'none';
+  document.getElementById('bk-room-conflict-warn').style.display = 'none';
+  document.getElementById('bk-person-conflict-warn').style.display = 'none';
+  const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
   document.getElementById('booking-modal').style.display = 'flex';
   _checkBkConflict();
 }
@@ -13915,6 +13966,18 @@ function restoreSidebarOrder() {
   </div>
 </div>
 
+<!-- 錯誤回報 Modal -->
+<div id="issue-submit-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10000;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:12px;max-width:520px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+    <h3 style="margin:0 0 14px;color:#1a5276;font-size:1.05rem;">回報問題或錯誤</h3>
+    <textarea id="issue-desc" rows="5" style="width:100%;padding:10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.88rem;resize:vertical;box-sizing:border-box;" placeholder="請描述問題，例如：在哪個頁面、做了什麼動作、出現了什麼狀況…"></textarea>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
+      <button class="btn btn-secondary" type="button" onclick="document.getElementById('issue-submit-modal').style.display='none'">取消</button>
+      <button class="btn btn-primary" type="button" onclick="submitIssue()">送出</button>
+    </div>
+  </div>
+</div>
+
 <!-- 首次設定 PIN Modal -->
 <div id="pin-setup-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.7);z-index:9998;align-items:center;justify-content:center;">
   <div style="background:#fff;padding:32px 28px;border-radius:14px;min-width:320px;max-width:440px;box-shadow:0 8px 32px rgba(0,0,0,.25);">
@@ -13948,6 +14011,142 @@ function restoreSidebarOrder() {
     </div>
   </div>
 </div>
+
+
+<script>
+// ══════════════════════════════════════════════
+//  錯誤回報（T10）
+// ══════════════════════════════════════════════
+let issuesData = [];
+
+function _issueNextSerial() {
+  return issuesData.reduce((m, x) => Math.max(m, x.serial || 0), 0) + 1;
+}
+
+async function loadIssues() {
+  try {
+    const data = await driveReadJson(ISSUES_FILE);
+    issuesData = Array.isArray(data?.issues) ? data.issues : [];
+  } catch (e) {
+    issuesData = [];
+  }
+}
+
+async function _saveIssues() {
+  try {
+    await driveUpdateJsonFile(ISSUES_FILE, { issues: issuesData });
+  } catch (e) {
+    await driveCreateJsonFile(ISSUES_FILE, { issues: issuesData }, DRIVE_FOLDER_ID);
+  }
+}
+
+function openIssueModal() {
+  document.getElementById('issue-desc').value = '';
+  document.getElementById('issue-submit-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('issue-desc').focus(), 50);
+}
+
+async function submitIssue() {
+  const desc = document.getElementById('issue-desc').value.trim();
+  if (!desc) { alert('請填寫問題說明'); return; }
+  showLoading('送出中…');
+  const issue = {
+    id: 'issue_' + Date.now(),
+    serial: _issueNextSerial(),
+    description: desc,
+    submittedBy: currentUser?.email || '',
+    submittedByName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
+    submittedAt: new Date().toISOString(),
+    status: 'open',
+    resolution: '',
+  };
+  issuesData.push(issue);
+  try {
+    await _saveIssues();
+    document.getElementById('issue-submit-modal').style.display = 'none';
+    renderIssuesPage();
+  } catch (e) {
+    issuesData.pop();
+    alert('送出失敗：' + e.message);
+  } finally {
+    hideLoading();
+  }
+}
+
+async function updateIssueStatus(issueId, newStatus, resolution) {
+  const issue = issuesData.find(x => x.id === issueId);
+  if (!issue) return;
+  const prev = { status: issue.status, resolution: issue.resolution };
+  issue.status = newStatus;
+  issue.resolution = resolution || '';
+  issue.resolvedBy = currentUser?.email || '';
+  issue.resolvedAt = new Date().toISOString();
+  showLoading('儲存中…');
+  try {
+    await _saveIssues();
+    renderIssuesPage();
+  } catch (e) {
+    issue.status = prev.status;
+    issue.resolution = prev.resolution;
+    alert('儲存失敗：' + e.message);
+  } finally {
+    hideLoading();
+  }
+}
+
+function renderIssuesPage() {
+  const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  const el = document.getElementById('issues-body');
+  if (!el) return;
+
+  const statusBadge = s => {
+    if (s === 'resolved')    return '<span class="badge" style="background:#c6f6d5;color:#276749;border:1px solid #9ae6b4;">已解決</span>';
+    if (s === 'in_progress') return '<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;">處理中</span>';
+    return '<span class="badge" style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;">待處理</span>';
+  };
+
+  const sorted = [...issuesData].sort((a, b) => (b.submittedAt || '') > (a.submittedAt || '') ? 1 : -1);
+
+  if (!sorted.length) {
+    el.innerHTML = '<div class="empty-state" style="padding:24px;"><p>尚無回報紀錄</p></div>';
+    return;
+  }
+
+  el.innerHTML = sorted.map(issue => {
+    const sid = escHtml(issue.id);
+    const adminControls = isAdmin ? `
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid #e2e8f0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <select id="issue-status-${sid}" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;background:#fff;">
+          <option value="open"        ${issue.status==='open'?'selected':''}>待處理</option>
+          <option value="in_progress" ${issue.status==='in_progress'?'selected':''}>處理中</option>
+          <option value="resolved"    ${issue.status==='resolved'?'selected':''}>已解決</option>
+        </select>
+        <input id="issue-res-${sid}" type="text" placeholder="處理說明（選填）" value="${escHtml(issue.resolution||'')}"
+               style="flex:1;min-width:140px;padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;">
+        <button class="btn btn-primary btn-sm"
+          onclick="updateIssueStatus('${sid}',document.getElementById('issue-status-${sid}').value,document.getElementById('issue-res-${sid}').value)">儲存</button>
+      </div>` : (issue.resolution
+        ? `<div style="margin-top:6px;font-size:.83rem;color:#4a5568;"><span style="color:#a0aec0;">處理說明：</span>${escHtml(issue.resolution)}</div>`
+        : '');
+
+    const dateStr = issue.submittedAt
+      ? new Date(issue.submittedAt).toLocaleString('zh-TW', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })
+      : '—';
+
+    return `
+      <div style="padding:12px 16px;border-bottom:1px solid #f0f4f8;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-weight:700;color:#2d3748;">#${String(issue.serial).padStart(3,'0')}</span>
+          ${statusBadge(issue.status)}
+          <span style="font-size:.8rem;color:#718096;">${escHtml(issue.submittedByName||issue.submittedBy||'—')}</span>
+          <span style="font-size:.78rem;color:#a0aec0;">${dateStr}</span>
+        </div>
+        <div style="font-size:.88rem;color:#2d3748;white-space:pre-wrap;">${escHtml(issue.description)}</div>
+        ${adminControls}
+      </div>`;
+  }).join('');
+}
+</script>
 
 </body>
 </html>
