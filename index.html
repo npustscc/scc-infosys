@@ -4232,7 +4232,26 @@ function showCaseDetail(caseId) {
           </div>
         </div>`;
     }
-    // 已填寫的初次晤談表 — 折疊卡片
+    // 已填寫的初次晤談表（含軟刪除狀態）
+    if (ii.deleted) {
+      if (!isAdminUser && ii.createdBy !== currentUser?.email) return '';
+      let adminBtns = '';
+      if (isAdminUser) {
+        adminBtns = `
+          <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="restoreInitialInterview('${escHtml(c.id)}')">復原</button>
+          <button class="btn btn-danger btn-sm" style="font-size:.78rem;" onclick="purgeInitialInterview('${escHtml(c.id)}')" title="徹底移除痕跡">徹底移除</button>`;
+      }
+      return `
+        <div class="record-card deleted" id="${iiId}" style="border:1.5px solid #e2e8f0;">
+          <div class="record-card-header">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="font-weight:700;color:#a0aec0;">📋 初次晤談紀錄表</span>
+              <span class="deleted-badge">已刪除 by ${escHtml(ii.deletedByName||ii.deletedBy||'—')}</span>
+            </div>
+            <div style="display:flex;gap:6px;">${adminBtns}</div>
+          </div>
+        </div>`;
+    }
     const probBadges = (ii.problemsMain || []).map(p => `<span class="badge badge-gray" style="margin-right:4px;">${escHtml(p)}</span>`).join('');
     const riskColor = ii.risk === '高' ? '#c53030' : ii.risk === '中' ? '#b7791f' : '#276749';
     const riskBadge = ii.risk ? `<span class="badge" style="background:#fff;border:1px solid ${riskColor};color:${riskColor};margin-left:6px;">風險：${escHtml(ii.risk)}</span>` : '';
@@ -4260,6 +4279,7 @@ function showCaseDetail(caseId) {
         ${iiField('備註', ii.notes || ii.attendees)}
         ${ii.updatedAt ? `<div style="font-size:.75rem;color:#a0aec0;margin-top:6px;">更新：${new Date(ii.updatedAt).toLocaleString('zh-TW')}</div>` : ''}
       </div>`;
+    const iiCanDelete = isAdminUser || ii.createdBy === currentUser?.email;
     return `
       <div class="record-card" id="${iiId}" style="border:1.5px solid #b2d8b2;background:#f6fbf6;">
         <div class="record-card-header">
@@ -4267,6 +4287,7 @@ function showCaseDetail(caseId) {
           <div style="display:flex;gap:6px;align-items:center;">
             <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="openInitialInterviewPage('${escHtml(c.id)}')">編輯</button>
             <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="printInitialInterview('${escHtml(c.id)}')">列印</button>
+            ${iiCanDelete && !caseIsDeleted ? `<button class="btn btn-danger btn-sm" style="font-size:.78rem;" onclick="deleteInitialInterview('${escHtml(c.id)}')">刪除</button>` : ''}
             <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${escHtml(c.id)}')" style="font-size:.78rem;">清除</button>
             <button class="rec-toggle-btn" onclick="toggleRecordExpand('${iiId}')">展開 ▼</button>
           </div>
@@ -4302,9 +4323,32 @@ function showCaseDetail(caseId) {
 
   // 精神科醫師評估區塊
   const psyHtml = (() => {
-    const records = (c.psychiatristRecords || []);
-    const cards = records.map(pr => `
-      <div class="record-card" style="margin-bottom:10px;">
+    const allPsy = (c.psychiatristRecords || []);
+    const visiblePsy = allPsy.filter(pr => {
+      if (!pr.deleted) return true;
+      if (isAdminUser) return true;
+      if (pr.createdBy === currentUser?.email) return true;
+      return false;
+    });
+    const activeCount = allPsy.filter(pr => !pr.deleted).length;
+    const deletedCount = allPsy.filter(pr => pr.deleted).length;
+    const cards = visiblePsy.map(pr => {
+      const isCreator = pr.createdBy === currentUser?.email;
+      let btnHtml = '';
+      if (!caseIsDeleted) {
+        if (!pr.deleted) {
+          btnHtml += `<button class="btn btn-secondary btn-sm" onclick="openPsychiatristModal('${escHtml(c.id)}','${escHtml(pr.id)}')">編輯</button>`;
+          btnHtml += `<button class="btn btn-secondary btn-sm" onclick="printPsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')">列印</button>`;
+          if (isAdminUser || isCreator)
+            btnHtml += `<button class="btn btn-danger btn-sm" onclick="deletePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')">刪除</button>`;
+        } else if (isAdminUser) {
+          btnHtml += `<button class="btn btn-secondary btn-sm" onclick="restorePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')">復原</button>`;
+          btnHtml += `<button class="btn btn-danger btn-sm" onclick="purgePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')" title="徹底移除痕跡">徹底移除</button>`;
+        }
+      }
+      const deletedBadge = pr.deleted ? `<span class="deleted-badge">已刪除 by ${escHtml(pr.deletedByName||pr.deletedBy||'—')}</span>` : '';
+      return `
+      <div class="record-card${pr.deleted?' deleted':''}" style="margin-bottom:10px;">
         <div class="record-card-header">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <span style="font-weight:600;">🩺 ${escHtml(pr.date||'—')}</span>
@@ -4312,18 +4356,19 @@ function showCaseDetail(caseId) {
             ${pr.diagnosisType==='specific' ? `<span class="badge badge-orange">${escHtml(pr.diagnosisName||'確診')}</span>` : ''}
             ${pr.medicationAdvice==='yes' ? '<span class="badge badge-red">建議藥物</span>' : ''}
             ${pr.hospitalizationAdvice==='yes' ? '<span class="badge badge-red">建議住院</span>' : ''}
+            ${deletedBadge}
           </div>
-          <div style="display:flex;gap:6px;">
-            <button class="btn btn-secondary btn-sm" onclick="openPsychiatristModal('${escHtml(c.id)}','${escHtml(pr.id)}')">編輯</button>
-            <button class="btn btn-secondary btn-sm" onclick="printPsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')">列印</button>
-            ${!caseIsDeleted && (isAdmin() || pr.createdBy === currentUser?.email) ? `<button class="btn btn-danger btn-sm" onclick="deletePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')">刪除</button>` : ''}
-          </div>
+          <div style="display:flex;gap:6px;">${btnHtml}</div>
         </div>
-        ${pr.recommendations ? `<div style="padding:8px 12px;font-size:.85rem;color:#4a5568;border-top:1px solid #f0f4f8;">諮商中心建議：${escHtml(pr.recommendations)}</div>` : ''}
-      </div>`).join('');
+        ${pr.recommendations && !pr.deleted ? `<div style="padding:8px 12px;font-size:.85rem;color:#4a5568;border-top:1px solid #f0f4f8;">諮商中心建議：${escHtml(pr.recommendations)}</div>` : ''}
+      </div>`;
+    }).join('');
     const addBtn = !caseIsDeleted ? `<button class="btn btn-primary" onclick="openPsychiatristModal('${escHtml(c.id)}')">＋ 新增評估</button>` : '';
-    const emptyMsg = records.length === 0 ? '<div style="color:#718096;font-size:.88rem;padding:8px 0;">尚無精神科評估紀錄</div>' : '';
-    return mkSection('psychiatrist', `精神科醫師評估（${records.length} 筆）`,
+    const countLabel = isAdminUser && deletedCount > 0
+      ? `精神科醫師評估（${activeCount} 筆，含 ${deletedCount} 筆已刪除）`
+      : `精神科醫師評估（${activeCount} 筆）`;
+    const emptyMsg = activeCount === 0 && deletedCount === 0 ? '<div style="color:#718096;font-size:.88rem;padding:8px 0;">尚無精神科評估紀錄</div>' : '';
+    return mkSection('psychiatrist', countLabel,
       `<div style="margin-bottom:10px;">${addBtn}</div><div>${emptyMsg}${cards}</div>`);
   })();
 
@@ -7480,6 +7525,7 @@ async function saveInitialInterview() {
   snap.updatedBy = currentUser?.email;
   const prev = casesData[cidx].initialInterview;
   snap.createdAt = prev?.createdAt || snap.updatedAt;
+  snap.createdBy = prev?.createdBy || currentUser?.email;
   casesData[cidx].initialInterview = snap;
   casesData[cidx].updatedAt = snap.updatedAt;
 
@@ -7606,6 +7652,67 @@ async function clearInitialInterviewMark(caseId) {
     casesData[cidx].initialInterview = prev;
     hideLoading();
     alert('儲存失敗：' + err.message);
+  }
+}
+
+async function deleteInitialInterview(caseId) {
+  const cidx = casesData.findIndex(c => c.id === caseId);
+  if (cidx === -1) return;
+  const ii = casesData[cidx].initialInterview;
+  if (!ii || ii.deleted) return;
+  if (!isAdmin() && ii.createdBy !== currentUser?.email) { alert('僅建立者或管理者可刪除初次晤談表'); return; }
+  if (!confirm('確定刪除此初次晤談表？\n\n刪除後仍會在建立者與管理者介面留下「痕跡」，管理者可執行「徹底移除」。')) return;
+  const prev = { deleted: ii.deleted, deletedAt: ii.deletedAt, deletedBy: ii.deletedBy, deletedByName: ii.deletedByName };
+  ii.deleted = true;
+  ii.deletedAt = new Date().toISOString();
+  ii.deletedBy = currentUser?.email;
+  ii.deletedByName = configData?.users?.[currentUser?.email]?.name || currentUser?.name;
+  showLoading('刪除中…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('刪除初次晤談表', caseId);
+    hideLoading(); showCaseDetail(caseId);
+  } catch(e) {
+    Object.assign(ii, prev);
+    hideLoading(); alert('刪除失敗：'+e.message);
+  }
+}
+
+async function restoreInitialInterview(caseId) {
+  if (!confirm('確定要復原此初次晤談表？')) return;
+  const cidx = casesData.findIndex(c => c.id === caseId);
+  if (cidx === -1) return;
+  const ii = casesData[cidx].initialInterview;
+  if (!ii) return;
+  const prev = { deleted: ii.deleted, deletedAt: ii.deletedAt, deletedBy: ii.deletedBy, deletedByName: ii.deletedByName };
+  delete ii.deleted; delete ii.deletedAt; delete ii.deletedBy; delete ii.deletedByName;
+  showLoading('復原中…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('復原初次晤談表', caseId);
+    hideLoading(); showCaseDetail(caseId);
+  } catch(e) {
+    Object.assign(ii, prev);
+    hideLoading(); alert('操作失敗：'+e.message);
+  }
+}
+
+async function purgeInitialInterview(caseId) {
+  if (!isAdmin()) { alert('僅管理者可徹底移除初次晤談表。'); return; }
+  if (!confirm('確定要徹底移除此初次晤談表？此動作不可復原，將清除「已刪除」痕跡。')) return;
+  const cidx = casesData.findIndex(c => c.id === caseId);
+  if (cidx === -1) return;
+  const prev = casesData[cidx].initialInterview;
+  delete casesData[cidx].initialInterview;
+  casesData[cidx].updatedAt = new Date().toISOString();
+  showLoading('徹底移除…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('徹底移除初次晤談表', caseId);
+    hideLoading(); showCaseDetail(caseId);
+  } catch(e) {
+    casesData[cidx].initialInterview = prev;
+    hideLoading(); alert('操作失敗：'+e.message);
   }
 }
 
@@ -12462,14 +12569,23 @@ function renderRecycleBin() {
   casesData.forEach(c => {
     (c.records||[]).filter(r=>r.deleted).forEach(r => deletedRecs.push({ caseId:c.id, caseName:c.name||'—', caseAlsoDeleted:!!c.deleted, record:r }));
   });
+  const deletedPsy = [];
+  casesData.forEach(c => {
+    (c.psychiatristRecords||[]).filter(pr=>pr.deleted).forEach(pr => deletedPsy.push({ caseId:c.id, caseName:c.name||'—', caseAlsoDeleted:!!c.deleted, record:pr }));
+  });
+  const deletedIi = casesData.filter(c => c.initialInterview?.deleted).map(c => ({ caseId:c.id, caseName:c.name||'—', caseAlsoDeleted:!!c.deleted, ii:c.initialInterview }));
 
   const tab = window._recycleTab || 'cases';
   const expiredCount = deletedCases.filter(c => daysLeft(c.deletedAt) <= 0).length
-    + deletedRecs.filter(({record}) => daysLeft(record.deletedAt) <= 0).length;
+    + deletedRecs.filter(({record}) => daysLeft(record.deletedAt) <= 0).length
+    + deletedPsy.filter(({record}) => daysLeft(record.deletedAt) <= 0).length
+    + deletedIi.filter(({ii}) => daysLeft(ii.deletedAt) <= 0).length;
 
   const daysBadge = (d) => d <= 0
     ? '<span style="color:#c53030;font-size:.78rem;font-weight:700;">已逾期</span>'
     : `<span style="font-size:.82rem;color:${d<=7?'#e53e3e':'#4a5568'};">${d} 天</span>`;
+
+  const tabBtn = (key, label) => `<button type="button" onclick="window._recycleTab='${key}';renderRecycleBin()" style="padding:7px 16px;border:1.5px solid ${tab===key?'#3182ce':'#e2e8f0'};background:${tab===key?'#ebf8ff':'#fff'};color:${tab===key?'#2b6cb0':'#4a5568'};border-radius:6px;cursor:pointer;font-size:.86rem;font-weight:${tab===key?'600':'400'};">${label}</button>`;
 
   const caseRows = deletedCases.map(c => {
     const d = daysLeft(c.deletedAt);
@@ -12504,37 +12620,86 @@ function renderRecycleBin() {
     </tr>`;
   }).join('') || '<tr><td colspan="8" style="text-align:center;padding:20px;color:#a0aec0;">（無已刪除晤談記錄）</td></tr>';
 
+  const psyRows = deletedPsy.map(({caseId, caseName, caseAlsoDeleted, record:pr}) => {
+    const d = daysLeft(pr.deletedAt);
+    return `<tr style="${d<=0?'background:#fff5f5;':''}">
+      <td style="padding:6px 10px;font-size:.8rem;color:#4a5568;">${escHtml(caseId)}</td>
+      <td style="padding:6px 10px;font-size:.84rem;">${escHtml(caseName)}</td>
+      <td style="padding:6px 10px;font-size:.8rem;color:#718096;white-space:nowrap;">${escHtml(pr.date||'—')}</td>
+      <td style="padding:6px 10px;font-size:.8rem;color:#718096;">${escHtml(pr.deletedByName||pr.deletedBy||'—')}</td>
+      <td style="padding:6px 10px;font-size:.8rem;color:#718096;white-space:nowrap;">${escHtml(fmt(pr.deletedAt))}</td>
+      <td style="padding:6px 10px;text-align:center;">${daysBadge(d)}</td>
+      <td style="padding:6px 10px;text-align:center;white-space:nowrap;">
+        ${d>0&&!caseAlsoDeleted?`<button class="btn btn-secondary btn-sm" style="margin-right:4px;" onclick="rbRestorePsy('${escHtml(caseId)}','${escHtml(pr.id)}')">復原</button>`:''}
+        <button class="btn btn-danger btn-sm" onclick="rbPurgePsy('${escHtml(caseId)}','${escHtml(pr.id)}')">立即永久刪除</button>
+      </td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="7" style="text-align:center;padding:20px;color:#a0aec0;">（無已刪除精神科評估）</td></tr>';
+
+  const iiRows = deletedIi.map(({caseId, caseName, caseAlsoDeleted, ii}) => {
+    const d = daysLeft(ii.deletedAt);
+    return `<tr style="${d<=0?'background:#fff5f5;':''}">
+      <td style="padding:6px 10px;font-size:.8rem;color:#4a5568;">${escHtml(caseId)}</td>
+      <td style="padding:6px 10px;font-size:.84rem;">${escHtml(caseName)}</td>
+      <td style="padding:6px 10px;font-size:.8rem;color:#718096;">${escHtml(ii.deletedByName||ii.deletedBy||'—')}</td>
+      <td style="padding:6px 10px;font-size:.8rem;color:#718096;white-space:nowrap;">${escHtml(fmt(ii.deletedAt))}</td>
+      <td style="padding:6px 10px;text-align:center;">${daysBadge(d)}</td>
+      <td style="padding:6px 10px;text-align:center;white-space:nowrap;">
+        ${d>0&&!caseAlsoDeleted?`<button class="btn btn-secondary btn-sm" style="margin-right:4px;" onclick="rbRestoreIi('${escHtml(caseId)}')">復原</button>`:''}
+        <button class="btn btn-danger btn-sm" onclick="rbPurgeIi('${escHtml(caseId)}')">立即永久刪除</button>
+      </td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" style="text-align:center;padding:20px;color:#a0aec0;">（無已刪除初次晤談表）</td></tr>';
+
+  const tableForTab = {
+    cases: `<table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="background:#edf2f7;text-align:left;">
+        <th style="padding:7px 10px;font-size:.8rem;">案號</th><th style="padding:7px 10px;font-size:.8rem;">姓名</th>
+        <th style="padding:7px 10px;font-size:.8rem;">學號</th><th style="padding:7px 10px;font-size:.8rem;">刪除者</th>
+        <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">刪除時間</th>
+        <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">剩餘天數</th>
+        <th style="padding:7px 10px;font-size:.8rem;text-align:center;">操作</th>
+      </tr></thead><tbody>${caseRows}</tbody></table>`,
+    records: `<table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="background:#edf2f7;text-align:left;">
+        <th style="padding:7px 10px;font-size:.8rem;">案號</th><th style="padding:7px 10px;font-size:.8rem;">個案</th>
+        <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">晤談日期</th><th style="padding:7px 10px;font-size:.8rem;">晤談者</th>
+        <th style="padding:7px 10px;font-size:.8rem;">刪除者</th>
+        <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">刪除時間</th>
+        <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">剩餘天數</th>
+        <th style="padding:7px 10px;font-size:.8rem;text-align:center;">操作</th>
+      </tr></thead><tbody>${recRows}</tbody></table>`,
+    psy: `<table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="background:#edf2f7;text-align:left;">
+        <th style="padding:7px 10px;font-size:.8rem;">案號</th><th style="padding:7px 10px;font-size:.8rem;">個案</th>
+        <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">評估日期</th>
+        <th style="padding:7px 10px;font-size:.8rem;">刪除者</th>
+        <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">刪除時間</th>
+        <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">剩餘天數</th>
+        <th style="padding:7px 10px;font-size:.8rem;text-align:center;">操作</th>
+      </tr></thead><tbody>${psyRows}</tbody></table>`,
+    ii: `<table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="background:#edf2f7;text-align:left;">
+        <th style="padding:7px 10px;font-size:.8rem;">案號</th><th style="padding:7px 10px;font-size:.8rem;">個案</th>
+        <th style="padding:7px 10px;font-size:.8rem;">刪除者</th>
+        <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">刪除時間</th>
+        <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">剩餘天數</th>
+        <th style="padding:7px 10px;font-size:.8rem;text-align:center;">操作</th>
+      </tr></thead><tbody>${iiRows}</tbody></table>`,
+  };
+
   document.getElementById('recycle-body').innerHTML = `
     <div style="display:flex;gap:8px;margin-bottom:14px;align-items:center;flex-wrap:wrap;">
-      <button type="button" onclick="window._recycleTab='cases';renderRecycleBin()" style="padding:7px 16px;border:1.5px solid ${tab==='cases'?'#3182ce':'#e2e8f0'};background:${tab==='cases'?'#ebf8ff':'#fff'};color:${tab==='cases'?'#2b6cb0':'#4a5568'};border-radius:6px;cursor:pointer;font-size:.86rem;font-weight:${tab==='cases'?'600':'400'};">個案（${deletedCases.length}）</button>
-      <button type="button" onclick="window._recycleTab='records';renderRecycleBin()" style="padding:7px 16px;border:1.5px solid ${tab==='records'?'#3182ce':'#e2e8f0'};background:${tab==='records'?'#ebf8ff':'#fff'};color:${tab==='records'?'#2b6cb0':'#4a5568'};border-radius:6px;cursor:pointer;font-size:.86rem;font-weight:${tab==='records'?'600':'400'};">晤談記錄（${deletedRecs.length}）</button>
+      ${tabBtn('cases', `個案（${deletedCases.length}）`)}
+      ${tabBtn('records', `晤談記錄（${deletedRecs.length}）`)}
+      ${tabBtn('psy', `精神科評估（${deletedPsy.length}）`)}
+      ${tabBtn('ii', `初次晤談表（${deletedIi.length}）`)}
       ${expiredCount>0?`<button class="btn btn-danger btn-sm" style="margin-left:auto;" onclick="rbPurgeAll()">清除所有逾期項目（${expiredCount}）</button>`:''}
     </div>
     <div style="background:#fff8e1;border:1px solid #f6d860;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:.83rem;color:#7d4e00;">
       刪除的項目保留 <strong>30 天</strong>後永久刪除，期間可復原。點「立即永久刪除」可提前清除單一項目。
     </div>
-    <div class="card"><div style="overflow-x:auto;">
-      ${tab==='cases'?`
-      <table style="width:100%;border-collapse:collapse;">
-        <thead><tr style="background:#edf2f7;text-align:left;">
-          <th style="padding:7px 10px;font-size:.8rem;">案號</th><th style="padding:7px 10px;font-size:.8rem;">姓名</th>
-          <th style="padding:7px 10px;font-size:.8rem;">學號</th><th style="padding:7px 10px;font-size:.8rem;">刪除者</th>
-          <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">刪除時間</th>
-          <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">剩餘天數</th>
-          <th style="padding:7px 10px;font-size:.8rem;text-align:center;">操作</th>
-        </tr></thead><tbody>${caseRows}</tbody>
-      </table>`:
-      `<table style="width:100%;border-collapse:collapse;">
-        <thead><tr style="background:#edf2f7;text-align:left;">
-          <th style="padding:7px 10px;font-size:.8rem;">案號</th><th style="padding:7px 10px;font-size:.8rem;">個案</th>
-          <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">晤談日期</th><th style="padding:7px 10px;font-size:.8rem;">晤談者</th>
-          <th style="padding:7px 10px;font-size:.8rem;">刪除者</th>
-          <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">刪除時間</th>
-          <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">剩餘天數</th>
-          <th style="padding:7px 10px;font-size:.8rem;text-align:center;">操作</th>
-        </tr></thead><tbody>${recRows}</tbody>
-      </table>`}
-    </div></div>`;
+    <div class="card"><div style="overflow-x:auto;">${tableForTab[tab] || tableForTab.cases}</div></div>`;
 }
 
 async function rbPurgeCase(caseId) {
@@ -12593,6 +12758,64 @@ async function rbPurgeRecord(caseId, recordId) {
   }
 }
 
+async function rbRestorePsy(caseId, recordId) {
+  const c = casesData.find(c => c.id === caseId);
+  if (!c) return;
+  const pr = (c.psychiatristRecords||[]).find(r => r.id === recordId);
+  if (!pr) return;
+  const prev = { deleted:pr.deleted, deletedAt:pr.deletedAt, deletedBy:pr.deletedBy, deletedByName:pr.deletedByName };
+  delete pr.deleted; delete pr.deletedAt; delete pr.deletedBy; delete pr.deletedByName;
+  showLoading('復原精神科評估…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('復原精神科評估', caseId, recordId);
+    hideLoading(); renderRecycleBin();
+  } catch(e) { Object.assign(pr, prev); hideLoading(); alert('復原失敗：'+e.message); }
+}
+
+async function rbPurgePsy(caseId, recordId) {
+  if (!confirm('確定立即永久刪除此精神科評估紀錄？此操作不可復原。')) return;
+  const c = casesData.find(c => c.id === caseId);
+  if (!c) return;
+  const idx = (c.psychiatristRecords||[]).findIndex(r => r.id === recordId);
+  if (idx < 0) return;
+  const removed = c.psychiatristRecords.splice(idx, 1)[0];
+  showLoading('永久刪除精神科評估…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('永久刪除精神科評估', caseId, recordId);
+    hideLoading(); renderRecycleBin();
+  } catch(e) { c.psychiatristRecords.splice(idx, 0, removed); hideLoading(); alert('永久刪除失敗：'+e.message); }
+}
+
+async function rbRestoreIi(caseId) {
+  const c = casesData.find(c => c.id === caseId);
+  if (!c || !c.initialInterview) return;
+  const ii = c.initialInterview;
+  const prev = { deleted:ii.deleted, deletedAt:ii.deletedAt, deletedBy:ii.deletedBy, deletedByName:ii.deletedByName };
+  delete ii.deleted; delete ii.deletedAt; delete ii.deletedBy; delete ii.deletedByName;
+  showLoading('復原初次晤談表…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('復原初次晤談表', caseId);
+    hideLoading(); renderRecycleBin();
+  } catch(e) { Object.assign(ii, prev); hideLoading(); alert('復原失敗：'+e.message); }
+}
+
+async function rbPurgeIi(caseId) {
+  if (!confirm('確定立即永久刪除此初次晤談表？此操作不可復原。')) return;
+  const cidx = casesData.findIndex(c => c.id === caseId);
+  if (cidx < 0) return;
+  const prev = casesData[cidx].initialInterview;
+  delete casesData[cidx].initialInterview;
+  showLoading('永久刪除初次晤談表…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('永久刪除初次晤談表', caseId);
+    hideLoading(); renderRecycleBin();
+  } catch(e) { casesData[cidx].initialInterview = prev; hideLoading(); alert('永久刪除失敗：'+e.message); }
+}
+
 async function rbPurgeAll() {
   if (!confirm('確定清除所有已逾期（超過30天）的刪除項目？此操作不可復原。')) return;
   const threshold = new Date(Date.now() - 30*86400000).toISOString();
@@ -12600,6 +12823,8 @@ async function rbPurgeAll() {
   try {
     casesData.forEach(c => {
       if (c.records) c.records = c.records.filter(r => !r.deleted || !r.deletedAt || r.deletedAt > threshold);
+      if (c.psychiatristRecords) c.psychiatristRecords = c.psychiatristRecords.filter(pr => !pr.deleted || !pr.deletedAt || pr.deletedAt > threshold);
+      if (c.initialInterview?.deleted && c.initialInterview.deletedAt && c.initialInterview.deletedAt <= threshold) delete c.initialInterview;
     });
     const toHardDel = casesData.filter(c => c.deleted && c.deletedAt && c.deletedAt <= threshold);
     if (toHardDel.length > 0) {
@@ -13226,11 +13451,59 @@ async function deletePsychiatristRecord(caseId, recordId) {
   const pr = (c.psychiatristRecords||[]).find(r => r.id === recordId);
   if (!pr) return;
   if (!isAdmin() && pr.createdBy !== currentUser?.email) { alert('僅建立者或管理者可刪除此紀錄'); return; }
-  if (!confirm('確定刪除此精神科評估紀錄？')) return;
-  c.psychiatristRecords = (c.psychiatristRecords||[]).filter(r => r.id !== recordId);
+  if (!confirm('確定刪除此精神科評估紀錄？\n\n刪除後仍會在建立者與管理者介面留下「痕跡」，管理者可執行「徹底移除」。')) return;
+  const prev = { deleted: pr.deleted, deletedAt: pr.deletedAt, deletedBy: pr.deletedBy, deletedByName: pr.deletedByName };
+  pr.deleted = true;
+  pr.deletedAt = new Date().toISOString();
+  pr.deletedBy = currentUser?.email;
+  pr.deletedByName = configData?.users?.[currentUser?.email]?.name || currentUser?.name;
   showLoading('刪除中…');
-  try { await saveCasesChunks(caseId); hideLoading(); showCaseDetail(caseId); }
-  catch(e) { hideLoading(); alert('刪除失敗：'+e.message); }
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('刪除精神科評估', caseId, recordId);
+    hideLoading(); showCaseDetail(caseId);
+  } catch(e) {
+    Object.assign(pr, prev);
+    hideLoading(); alert('刪除失敗：'+e.message);
+  }
+}
+
+async function purgePsychiatristRecord(caseId, recordId) {
+  if (!isAdmin()) { alert('僅管理者可徹底移除紀錄。'); return; }
+  if (!confirm('確定要徹底移除此精神科評估紀錄？此動作不可復原，將清除「已刪除」痕跡。')) return;
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const idx = (c.psychiatristRecords||[]).findIndex(r => r.id === recordId);
+  if (idx < 0) return;
+  const removed = c.psychiatristRecords.splice(idx, 1)[0];
+  showLoading('徹底移除…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('徹底移除精神科評估', caseId, recordId);
+    hideLoading(); showCaseDetail(caseId);
+  } catch(e) {
+    c.psychiatristRecords.splice(idx, 0, removed);
+    hideLoading(); alert('操作失敗：'+e.message);
+  }
+}
+
+async function restorePsychiatristRecord(caseId, recordId) {
+  if (!confirm('確定要復原這筆精神科評估紀錄？')) return;
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const pr = (c.psychiatristRecords||[]).find(r => r.id === recordId);
+  if (!pr) return;
+  const prev = { deleted: pr.deleted, deletedAt: pr.deletedAt, deletedBy: pr.deletedBy, deletedByName: pr.deletedByName };
+  delete pr.deleted; delete pr.deletedAt; delete pr.deletedBy; delete pr.deletedByName;
+  showLoading('復原中…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('復原精神科評估', caseId, recordId);
+    hideLoading(); showCaseDetail(caseId);
+  } catch(e) {
+    Object.assign(pr, prev);
+    hideLoading(); alert('操作失敗：'+e.message);
+  }
 }
 
 function printPsychiatristRecord(caseId, recordId) {
