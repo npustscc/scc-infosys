@@ -831,8 +831,8 @@
 <!-- ── App Header ── -->
 <header id="app-header">
   <div style="display:flex;align-items:center;gap:10px;min-width:0;overflow:hidden;">
-    <h1>🏫 國立屏東科技大學學生諮商中心資訊系統</h1>
     <button id="header-back-btn" onclick="handleFloatingBack()">← 返回</button>
+    <h1 style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">🏫 國立屏東科技大學學生諮商中心資訊系統</h1>
   </div>
   <div id="user-info" style="display:none;">
     <div id="header-lock-btn" onclick="lockScreen(true)" title="鎖定畫面" style="display:none;cursor:pointer;padding:4px 8px;border-radius:6px;transition:background .15s;align-items:center;font-size:1.25rem;line-height:1;" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background=''">🔒</div>
@@ -4013,7 +4013,11 @@ function showCaseDetail(caseId) {
   const caseIsDeleted = !!c.deleted;
   const cid = escHtml(c.id);
 
-  let actionsHtml = `<button class="btn btn-secondary" onclick="window.print()">列印</button>`;
+  let actionsHtml = '';
+  if (!caseIsDeleted && isActive) {
+    actionsHtml += `<button class="btn btn-primary" onclick="openNewRecordPage('${cid}')">＋ 新增記錄</button> `;
+  }
+  actionsHtml += `<button class="btn btn-secondary" onclick="window.print()">列印</button>`;
   actionsHtml += ` <button class="btn btn-secondary" onclick="printAllRecords('${cid}')">列印晤談彙整</button>`;
   actionsHtml += ` <button class="btn btn-secondary" onclick="openInitialInterviewPage('${cid}')">初次晤談表</button>`;
   actionsHtml += ` <button class="btn btn-secondary" onclick="openPsychiatristModal('${cid}')">精神科評估</button>`;
@@ -4206,7 +4210,7 @@ function showCaseDetail(caseId) {
             <div style="display:flex;gap:8px;flex-wrap:wrap;">
               <button class="btn btn-primary btn-sm" onclick="openInitialInterviewPage('${escHtml(c.id)}')">填寫</button>
               <button class="btn btn-secondary btn-sm" onclick="markInitialInterviewAsContinuation('${escHtml(c.id)}')">舊案延續</button>
-              <button class="btn btn-secondary btn-sm" onclick="pickRecordAsInitialInterview('${escHtml(c.id)}')">沿用現有紀錄</button>
+              <button class="btn btn-secondary btn-sm" onclick="pickRecordAsInitialInterview('${escHtml(c.id)}')">採用現有紀錄</button>
             </div>
           </div>
         </div>`;
@@ -4279,13 +4283,17 @@ function showCaseDetail(caseId) {
         ${iiField('備註', ii.notes || ii.attendees)}
         ${ii.updatedAt ? `<div style="font-size:.75rem;color:#a0aec0;margin-top:6px;">更新：${new Date(ii.updatedAt).toLocaleString('zh-TW')}</div>` : ''}
       </div>`;
-    const iiCanDelete = isAdminUser || ii.createdBy === currentUser?.email;
+    const iiIsCreator = ii.createdBy === currentUser?.email;
+    const iiEditable = !ii.createdAt || isEditable(ii.createdAt);
+    const iiCanDelete = isAdminUser || (iiIsCreator && iiEditable);
     return `
       <div class="record-card" id="${iiId}" style="border:1.5px solid #b2d8b2;background:#f6fbf6;">
         <div class="record-card-header">
           <span style="font-weight:700;color:#276749;">📋 初次晤談紀錄表</span>
           <div style="display:flex;gap:6px;align-items:center;">
-            <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="openInitialInterviewPage('${escHtml(c.id)}')">編輯</button>
+            ${iiEditable
+              ? `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="openInitialInterviewPage('${escHtml(c.id)}')">編輯</button>`
+              : `<span style="font-size:.78rem;color:#a0aec0;">超過2週，不可編輯</span>`}
             <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="printInitialInterview('${escHtml(c.id)}')">列印</button>
             ${iiCanDelete && !caseIsDeleted ? `<button class="btn btn-danger btn-sm" style="font-size:.78rem;" onclick="deleteInitialInterview('${escHtml(c.id)}')">刪除</button>` : ''}
             <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${escHtml(c.id)}')" style="font-size:.78rem;">清除</button>
@@ -4334,12 +4342,15 @@ function showCaseDetail(caseId) {
     const deletedCount = allPsy.filter(pr => pr.deleted).length;
     const cards = visiblePsy.map(pr => {
       const isCreator = pr.createdBy === currentUser?.email;
+      const psyEditable = !pr.createdAt || isEditable(pr.createdAt);
       let btnHtml = '';
       if (!caseIsDeleted) {
         if (!pr.deleted) {
-          btnHtml += `<button class="btn btn-secondary btn-sm" onclick="openPsychiatristModal('${escHtml(c.id)}','${escHtml(pr.id)}')">編輯</button>`;
+          btnHtml += psyEditable
+            ? `<button class="btn btn-secondary btn-sm" onclick="openPsychiatristModal('${escHtml(c.id)}','${escHtml(pr.id)}')">編輯</button>`
+            : `<span style="font-size:.78rem;color:#a0aec0;">超過2週，不可編輯</span>`;
           btnHtml += `<button class="btn btn-secondary btn-sm" onclick="printPsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')">列印</button>`;
-          if (isAdminUser || isCreator)
+          if (isAdminUser || (isCreator && psyEditable))
             btnHtml += `<button class="btn btn-danger btn-sm" onclick="deletePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')">刪除</button>`;
         } else if (isAdminUser) {
           btnHtml += `<button class="btn btn-secondary btn-sm" onclick="restorePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')">復原</button>`;
@@ -7049,11 +7060,12 @@ function _iiRenderChipGroup(gk, cid) {
   const chips = d.opts.map(opt => {
     const sel = d.sel.has(opt);
     const del = d.custom.has(opt)
-      ? `<button class="ii-chip-del" onclick="event.stopPropagation();iiChipRemove(${JSON.stringify(gk)},${JSON.stringify(cid)},${JSON.stringify(opt)})" title="刪除">×</button>`
+      ? `<button class="ii-chip-del" data-gk="${escHtml(gk)}" data-cid="${escHtml(cid)}" data-opt="${escHtml(opt)}" onclick="event.stopPropagation();iiChipRemove(this.dataset.gk,this.dataset.cid,this.dataset.opt)" title="刪除">×</button>`
       : '';
-    return `<span class="ii-chip${sel?' ii-chip-sel':''}" onclick="iiChipToggle(${JSON.stringify(gk)},${JSON.stringify(cid)},${JSON.stringify(opt)})">${escHtml(opt)}${del}</span>`;
+    return `<span class="ii-chip${sel?' ii-chip-sel':''}" data-gk="${escHtml(gk)}" data-cid="${escHtml(cid)}" data-opt="${escHtml(opt)}" onclick="iiChipToggle(this.dataset.gk,this.dataset.cid,this.dataset.opt)">${escHtml(opt)}${del}</span>`;
   }).join('');
-  el.innerHTML = chips + `<span class="ii-chip-new"><input id="ii-chip-input-${gk}" placeholder="新增…" onkeydown="if(event.key==='Enter'){event.preventDefault();iiChipAdd(${JSON.stringify(gk)},${JSON.stringify(cid)})}" /><button type="button" onclick="iiChipAdd(${JSON.stringify(gk)},${JSON.stringify(cid)})">＋</button></span>`;
+  const egk = escHtml(gk), ecid = escHtml(cid);
+  el.innerHTML = chips + `<span class="ii-chip-new"><input id="ii-chip-input-${egk}" placeholder="新增…" data-gk="${egk}" data-cid="${ecid}" onkeydown="if(event.key==='Enter'){event.preventDefault();iiChipAdd(this.dataset.gk,this.dataset.cid)}" /><button type="button" data-gk="${egk}" data-cid="${ecid}" onclick="iiChipAdd(this.dataset.gk,this.dataset.cid)">＋</button></span>`;
 }
 
 function iiChipToggle(gk, cid, value) {
@@ -7517,7 +7529,7 @@ async function saveInitialInterview() {
     if (!(snap.supSkills || []).length) errs.push('六-3. 輔導人員專長（至少選一項）');
   }
   if (!snap.resultCounselor) errs.push('七、確認主責輔導人員（請選擇）');
-  if (errs.length) { setAlert('initial-interview-alert', 'error', '請填寫必填項目：\n• ' + errs.join('\n• ')); return; }
+  if (errs.length) { setAlert('initial-interview-alert', 'error', '請填寫必填項目：\n• ' + errs.join('\n• ')); document.getElementById('initial-interview-alert')?.scrollIntoView({behavior:'smooth',block:'center'}); return; }
 
   const cidx = casesData.findIndex(c => c.id === _initialInterviewCaseId);
   if (cidx === -1) return;
