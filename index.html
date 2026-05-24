@@ -1783,11 +1783,11 @@
         <div class="form-grid">
           <div>
             <label class="field-label">晤談日期<span class="req">*</span></label>
-            <input type="date" class="field-input" id="rec-date" />
+            <input type="date" class="field-input" id="rec-date" onchange="_checkRecBkConflict()" />
           </div>
           <div>
             <label class="field-label">晤談時間<span class="req">*</span></label>
-            <select class="field-select" id="rec-time" onchange="toggleRecTimeOther(this)">
+            <select class="field-select" id="rec-time" onchange="toggleRecTimeOther(this);_checkRecBkConflict()">
               <option value="">— 請選擇 —</option>
               <option value="其他">其他（自填時間）</option>
               <option>第1節 08:10-09:00</option>
@@ -1805,7 +1805,7 @@
             <input type="text" class="field-input" id="rec-time-other"
               style="display:none;margin-top:6px;max-width:160px;"
               placeholder="xx:xx-xx:xx" maxlength="11"
-              oninput="formatTimeInput(this)" />
+              oninput="formatTimeInput(this);_checkRecBkConflict()" />
           </div>
           <div>
             <label class="field-label">晤談者<span class="req">*</span></label>
@@ -1843,6 +1843,8 @@
             </div>
           </div>
         </div>
+        <div id="rec-bk-room-conflict-warn" style="display:none;margin-top:8px;background:#fff5f5;border:1px solid #fc8181;border-radius:6px;padding:8px 12px;font-size:.85rem;color:#742a2a;"></div>
+        <div id="rec-bk-person-conflict-warn" style="display:none;margin-top:6px;background:#fffbeb;border:1px solid #f6ad55;border-radius:6px;padding:8px 12px;font-size:.85rem;color:#744210;"></div>
       </div>
 
       <!-- 會談主題 -->
@@ -4805,6 +4807,8 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
   setAlert('new-record-alert', '', '');
   _clearAllSvcHints();
   document.getElementById('btn-save-record').disabled = false;
+  _recFromBkRoom = '';
+  _recFromBkId   = '';
 
   if (existingRec) {
     // ── 編輯模式：填入現有資料 ──
@@ -4864,6 +4868,8 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
         renderRecCounselorChips();
       }
     }
+    _recFromBkRoom = prefill.room || '';
+    _recFromBkId   = prefill.bookingId || '';
   }
   // 重置預約下次欄位
   const nbToggle = document.getElementById('rec-next-bk-toggle');
@@ -4876,6 +4882,7 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
   _populateRecNextBkRoomChips('');
 
   showPage('page-new-record', null);
+  _checkRecBkConflict();
 
   // ── 草稿還原 ──
   try {
@@ -4898,6 +4905,8 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
 let _draftKey = null;
 let _draftTimer = null;
 let _recCounselors = []; // [{email, label}]
+let _recFromBkRoom = '';
+let _recFromBkId   = '';
 
 // 渲染晤談者 chips 與下拉
 function renderRecCounselorChips() {
@@ -4913,7 +4922,7 @@ function renderRecCounselorChips() {
     x.type = 'button';
     x.style.cssText = 'background:none;border:none;cursor:pointer;color:#718096;font-weight:700;padding:0 2px;';
     x.innerHTML = '×';
-    x.onclick = () => { _recCounselors.splice(idx, 1); renderRecCounselorChips(); syncRecCounselorHidden(); };
+    x.onclick = () => { _recCounselors.splice(idx, 1); renderRecCounselorChips(); syncRecCounselorHidden(); _checkRecBkConflict(); };
     chip.appendChild(x);
     box.appendChild(chip);
   });
@@ -4948,6 +4957,7 @@ function addRecCounselor() {
   recordCounselorUsage(email);
   sel.value = '';
   renderRecCounselorChips();
+  _checkRecBkConflict();
 }
 
 function initRecCounselorsForNew() {
@@ -11022,7 +11032,9 @@ function bkFillRecord(id) {
     date: b.date,
     startTime: b.startTime || '',
     endTime:   b.endTime   || '',
-    counselorEmail: b.counselorEmail || ''
+    counselorEmail: b.counselorEmail || '',
+    room: b.room === '其他' ? (b.customRoom || '其他') : (b.room || ''),
+    bookingId: b.id
   });
 }
 
@@ -11926,6 +11938,56 @@ function _checkBkConflict() {
       }
     } else {
       personWarnEl.style.display = 'none';
+    }
+  }
+}
+
+// T1：填寫記錄頁空間／人員衝突即時提醒
+function _checkRecBkConflict() {
+  const roomWarnEl   = document.getElementById('rec-bk-room-conflict-warn');
+  const personWarnEl = document.getElementById('rec-bk-person-conflict-warn');
+  if (roomWarnEl)   roomWarnEl.style.display = 'none';
+  if (personWarnEl) personWarnEl.style.display = 'none';
+  if (!_recFromBkRoom) return;
+
+  const date    = document.getElementById('rec-date')?.value;
+  const timeVal = document.getElementById('rec-time')?.value || '';
+  let start, end;
+  if (timeVal === '其他') {
+    const other = document.getElementById('rec-time-other')?.value || '';
+    const m = other.match(/^(\d{2}:\d{2})-(\d{2}:\d{2})$/);
+    if (m) { start = m[1]; end = m[2]; }
+  } else if (timeVal) {
+    const m = timeVal.match(/(\d{2}:\d{2})[-–](\d{2}:\d{2})/);
+    if (m) { start = m[1]; end = m[2]; }
+  }
+  if (!date || !start || !end || start >= end) return;
+
+  const room = _recFromBkRoom;
+  // 空間衝突
+  if (roomWarnEl) {
+    const rc = bookingsData.find(b =>
+      b.id !== _recFromBkId && b.room === room && b.date === date &&
+      b.startTime < end && b.endTime > start
+    );
+    if (rc) {
+      const rcRoom = rc.room === '其他' ? (rc.customRoom || '其他') : rc.room;
+      roomWarnEl.style.display = '';
+      roomWarnEl.textContent = `⚠ 空間衝突：${rcRoom} 在 ${(rc.startTime||'').slice(0,5)}–${(rc.endTime||'').slice(0,5)} 已由 ${rc.counselorName || '—'} 預約。`;
+    }
+  }
+  // 人員衝突
+  if (personWarnEl && _recCounselors.length > 0) {
+    const emails = new Set(_recCounselors.map(c => c.email));
+    const pc = bookingsData.find(b =>
+      b.id !== _recFromBkId && b.room !== room && b.date === date &&
+      emails.has(b.counselorEmail) && b.startTime < end && b.endTime > start
+    );
+    if (pc) {
+      const pRoom = pc.room === '其他' ? (pc.customRoom || '其他') : pc.room;
+      const conflictName = (_recCounselors.find(c => c.email === pc.counselorEmail)?.label) || pc.counselorName || '—';
+      personWarnEl.style.display = '';
+      personWarnEl.textContent = `⚠ 人員衝突：${conflictName} 已在此時段預約「${pRoom}」（${(pc.startTime||'').slice(0,5)}–${(pc.endTime||'').slice(0,5)}）。`;
     }
   }
 }
