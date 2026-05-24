@@ -3620,7 +3620,9 @@ td+td{padding-left:12pt}
 <div class="sec"><div class="sh">四、當次介入處遇</div><div class="svc-grid">${svcCbs}</div></div>
 <div class="sec"><div class="sh">五、後續處遇計畫</div><div class="box sm">${
   (() => {
-    const nextBk = bookingsData.find(b => b.caseId === r.caseId && b.date > r.date);
+    const nextBk = r.nextBkId
+      ? bookingsData.find(b => b.id === r.nextBkId)
+      : bookingsData.find(b => b.caseId === r.caseId && b.date > r.date);
     const bkLine = nextBk ? `【下次預約】${nextBk.date} ${(nextBk.startTime||'').slice(0,5)}–${(nextBk.endTime||'').slice(0,5)} ${nextBk.room}` : '';
     return safe(r.nextPlan) + (bkLine && r.nextPlan ? '<br>' : '') + safe(bkLine);
   })()
@@ -4881,6 +4883,34 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
   _recNextBkRoom = '';
   _populateRecNextBkRoomChips('');
 
+  // 編輯模式：若記錄有 nextBkId，還原「預約下次諮商空間」區塊
+  if (existingRec?.nextBkId) {
+    const _linkedBk = bookingsData.find(b => b.id === existingRec.nextBkId);
+    if (_linkedBk) {
+      const _nbTgl = document.getElementById('rec-next-bk-toggle');
+      if (_nbTgl) { _nbTgl.checked = true; toggleNextBookingFields(); }
+      const _nbDt = document.getElementById('rec-next-bk-date');
+      if (_nbDt) _nbDt.value = _linkedBk.date || '';
+      _recNextBkRoom = _linkedBk.room === '其他' ? (_linkedBk.customRoom || '其他') : (_linkedBk.room || '');
+      _populateRecNextBkRoomChips(_recNextBkRoom);
+      const _pSel = document.getElementById('rec-next-bk-period');
+      const _tRow = document.getElementById('rec-next-bk-time-row');
+      const _sH = (_linkedBk.startTime || '').slice(0, 5);
+      const _eH = (_linkedBk.endTime   || '').slice(0, 5);
+      let _matched = false;
+      if (_pSel) {
+        for (const opt of _pSel.options) {
+          const m = opt.value.match(/(\d{2}:\d{2})[-–](\d{2}:\d{2})/);
+          if (m && m[1] === _sH && m[2] === _eH) { _pSel.value = opt.value; _matched = true; break; }
+        }
+      }
+      document.getElementById('rec-next-bk-start').value = _sH;
+      document.getElementById('rec-next-bk-end').value   = _eH;
+      if (_tRow) _tRow.style.display = _matched ? 'none' : (_sH && _eH ? 'block' : 'none');
+      if (!_matched && _pSel && _sH && _eH) _pSel.value = '其他';
+    }
+  }
+
   showPage('page-new-record', null);
   _checkRecBkConflict();
 
@@ -5724,9 +5754,24 @@ async function saveRecord() {
     }
     const prev = { ...casesData[cidx].records[ridx] };
     const editedId = _editingRecordId;
+    // 決定 nextBkId：有填預約則沿用舊 ID 或新建；未勾選則清空
+    let _editNextBkId = '';
+    let _editBkAction = 'none'; // 'create' | 'update' | 'none'
+    if (wantNextBooking && nextBkRoom && nextBkDate && nextBkStart && nextBkEnd) {
+      const oldBkId = prev.nextBkId || '';
+      const oldBkStillExists = oldBkId && bookingsData.find(b => b.id === oldBkId);
+      if (oldBkStillExists) {
+        _editNextBkId = oldBkId;
+        _editBkAction = 'update';
+      } else {
+        _editNextBkId = `bk_${Date.now()}`;
+        _editBkAction = 'create';
+      }
+    }
     Object.assign(casesData[cidx].records[ridx], {
       date, time, topics, serviceItems, summary, assessment, nextPlan, notes,
       counselorName, counselors: counselorList, interventionMode, interviewees,
+      nextBkId: _editNextBkId,
       updatedAt: new Date().toISOString(), updatedBy: currentUser.email,
     });
     casesData[cidx].updatedAt = new Date().toISOString();
@@ -5737,6 +5782,29 @@ async function saveRecord() {
       try {
         bgJobProgress(jobId, 40);
         await saveCasesChunks(_recordCaseId);
+        bgJobProgress(jobId, 75);
+        if (_editBkAction !== 'none') {
+          const myName = configData?.users?.[currentUser.email]?.name || currentUser.email || '';
+          const _nbNow = new Date().toISOString();
+          if (_editBkAction === 'create') {
+            const newBk = { id: _editNextBkId, bkSerial: _bkNextSerial(), room: nextBkRoom,
+              date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
+              counselorEmail: currentUser.email, counselorName: myName,
+              caseId: _recordCaseId, caseName: casesData[cidx]?.name || '',
+              notes: '', createdAt: _nbNow, updatedAt: _nbNow };
+            bookingsData.push(newBk);
+            _bkGcQueue.set(newBk.id, { ...newBk });
+          } else {
+            const bkIdx = bookingsData.findIndex(b => b.id === _editNextBkId);
+            if (bkIdx >= 0) {
+              Object.assign(bookingsData[bkIdx], { room: nextBkRoom, date: nextBkDate,
+                startTime: nextBkStart, endTime: nextBkEnd, updatedAt: _nbNow });
+              _bkGcQueue.set(bookingsData[bkIdx].id, { ...bookingsData[bkIdx] });
+            }
+          }
+          await saveBookings().catch(e => console.warn('預約儲存失敗:', e));
+          _bkGcFlush();
+        }
         bgJobProgress(jobId, 90);
         auditLog('編輯晤談紀錄', _recordCaseId, editedId);
         bgJobDone(jobId);
@@ -5747,12 +5815,15 @@ async function saveRecord() {
     })();
   } else {
     // ── 新增紀錄 ──
+    const _newBkId = (wantNextBooking && nextBkRoom && nextBkDate && nextBkStart && nextBkEnd)
+      ? `bk_${Date.now()}` : '';
     const newRecord = {
       id: `REC-${Date.now()}`,
       date, time, creatorEmail: currentUser.email, counselorEmail: currentUser.email,
       counselorName, counselors: counselorList, interventionMode, interviewees,
       topics, serviceItems, summary, assessment, nextPlan, notes,
       recordKind: _recordKind,
+      nextBkId: _newBkId,
       createdAt: new Date().toISOString(),
     };
     casesData[cidx].records.push(newRecord);
@@ -5765,11 +5836,11 @@ async function saveRecord() {
         bgJobProgress(jobId, 40);
         await saveCasesChunks(_recordCaseId);
         bgJobProgress(jobId, 75);
-        if (wantNextBooking && nextBkRoom && nextBkDate && nextBkStart && nextBkEnd) {
+        if (_newBkId) {
           const myName = configData?.users?.[currentUser.email]?.name || currentUser.email || '';
           const caseObj = casesData[cidx];
           const _nbNow = new Date().toISOString();
-          const newBk = { id: `bk_${Date.now()}`, bkSerial: _bkNextSerial(), room: nextBkRoom,
+          const newBk = { id: _newBkId, bkSerial: _bkNextSerial(), room: nextBkRoom,
             date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
             counselorEmail: currentUser.email, counselorName: myName,
             caseId: _recordCaseId, caseName: caseObj?.name || '',
