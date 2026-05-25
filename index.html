@@ -8980,9 +8980,13 @@ async function driveSaveJsonInCases(fileName, content) {
   }
 }
 
-async function saveCasesChunks(...caseIds) {
-  const chunkNames = [...new Set(caseIds.filter(Boolean).map(getCaseChunkName))];
-  const modifiedIds = new Set(caseIds.filter(Boolean));
+async function saveCasesChunks(...args) {
+  // 最後一個參數若為 function，視為 onProgress(done, total) callback
+  let onProgress = null;
+  if (args.length && typeof args[args.length - 1] === 'function') onProgress = args.pop();
+  const caseIds = args.filter(Boolean);
+  const chunkNames = [...new Set(caseIds.map(getCaseChunkName))];
+  const modifiedIds = new Set(caseIds);
   let manifestChanged = false;
   for (const name of chunkNames) {
     if (!casesManifest.chunks.includes(name)) {
@@ -8992,6 +8996,7 @@ async function saveCasesChunks(...caseIds) {
     }
   }
   if (manifestChanged) await driveSaveJsonInCases('manifest.json', casesManifest);
+  let done = 0;
   await Promise.all(chunkNames.map(async name => {
     // 先讀 Drive 最新版，避免覆蓋同時期其他人的改動
     const driveMap = new Map();
@@ -9005,7 +9010,9 @@ async function saveCasesChunks(...caseIds) {
     });
     // 移除已永久刪除的個案（manifest.deletedIds）
     (casesManifest.deletedIds || []).forEach(id => driveMap.delete(id));
-    return driveSaveJsonInCases(`${name}.json`, { cases: [...driveMap.values()] });
+    await driveSaveJsonInCases(`${name}.json`, { cases: [...driveMap.values()] });
+    done++;
+    if (onProgress) onProgress(done, chunkNames.length);
   }));
 }
 
@@ -13252,7 +13259,7 @@ async function openSemesterDeleteModal() {
   const totalRecs = toProcess.reduce((s, {recs}) => s + recs.length, 0);
   if (!confirm(`確定要軟刪除以下資料？\n\n學期：${selectedSems.map(s => semesterLabel(s)).join('、')}\n個案：${toProcess.length} 筆\n晤談記錄：${totalRecs} 筆\n\n資料將移至資源回收桶，30 天後永久刪除。`)) return;
 
-  showLoading('批次刪除中…');
+  showLoading('批次刪除：標記資料中…', 5);
   try {
     const deletedBy = currentUser.email;
     const deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
@@ -13261,7 +13268,14 @@ async function openSemesterDeleteModal() {
       recs.forEach(r => { r.deleted = true; r.deletedAt = now; r.deletedBy = deletedBy; r.deletedByName = deletedByName; });
       c.updatedAt = now;
     }
-    await saveCasesChunks(...toProcess.map(({ c }) => c.id));
+    const allIds = toProcess.map(({ c }) => c.id);
+    const totalChunks = new Set(allIds.map(getCaseChunkName)).size;
+    setLoadingProgress(10);
+    await saveCasesChunks(...allIds, (done, total) => {
+      const pct = 10 + Math.round(done / total * 85);
+      showLoading(`批次刪除：寫入 ${done}/${total} 個資料段…`, pct);
+    });
+    showLoading('批次刪除：完成收尾…', 97);
     auditLog(`批次軟刪除學期 ${selectedSems.join('、')} 記錄 ${totalRecs} 筆`);
     // Step 2: find cases with all records deleted
     const emptyCases = toProcess.map(({c}) => c).filter(c => (c.records||[]).every(r => r.deleted));
