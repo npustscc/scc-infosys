@@ -8982,6 +8982,7 @@ async function driveSaveJsonInCases(fileName, content) {
 
 async function saveCasesChunks(...caseIds) {
   const chunkNames = [...new Set(caseIds.filter(Boolean).map(getCaseChunkName))];
+  const modifiedIds = new Set(caseIds.filter(Boolean));
   let manifestChanged = false;
   for (const name of chunkNames) {
     if (!casesManifest.chunks.includes(name)) {
@@ -8991,9 +8992,20 @@ async function saveCasesChunks(...caseIds) {
     }
   }
   if (manifestChanged) await driveSaveJsonInCases('manifest.json', casesManifest);
-  await Promise.all(chunkNames.map(name => {
-    const chunkCases = casesData.filter(c => c.id && getCaseChunkName(c.id) === name);
-    return driveSaveJsonInCases(`${name}.json`, { cases: chunkCases });
+  await Promise.all(chunkNames.map(async name => {
+    // 先讀 Drive 最新版，避免覆蓋同時期其他人的改動
+    const driveMap = new Map();
+    try {
+      const fresh = await driveReadJson(`cases/${name}.json`);
+      (fresh?.cases || []).forEach(c => { if (c.id) driveMap.set(c.id, c); });
+    } catch (_) { /* 新 chunk，Drive 尚無此檔 */ }
+    // 覆蓋：本次被修改的個案 + Drive 沒有的新個案，用記憶體版本
+    casesData.filter(c => c.id && getCaseChunkName(c.id) === name).forEach(c => {
+      if (modifiedIds.has(c.id) || !driveMap.has(c.id)) driveMap.set(c.id, c);
+    });
+    // 移除已永久刪除的個案（manifest.deletedIds）
+    (casesManifest.deletedIds || []).forEach(id => driveMap.delete(id));
+    return driveSaveJsonInCases(`${name}.json`, { cases: [...driveMap.values()] });
   }));
 }
 
