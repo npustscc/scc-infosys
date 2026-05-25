@@ -2751,6 +2751,23 @@ function hideLoading() {
   }, 150);
 }
 
+function showToast(msg, type = 'success', duration = 3500) {
+  let box = document.getElementById('_toast_box');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = '_toast_box';
+    box.style.cssText = 'position:fixed;bottom:28px;right:24px;z-index:10000;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
+    document.body.appendChild(box);
+  }
+  const t = document.createElement('div');
+  const bg = type === 'error' ? '#fc8181' : type === 'warn' ? '#f6ad55' : '#68d391';
+  t.style.cssText = `background:${bg};color:#1a202c;padding:10px 18px;border-radius:8px;font-size:.88rem;font-weight:500;box-shadow:0 2px 10px rgba(0,0,0,.18);opacity:0;transition:opacity .25s;max-width:340px;line-height:1.4;pointer-events:auto;`;
+  t.textContent = msg;
+  box.appendChild(t);
+  requestAnimationFrame(() => { t.style.opacity = '1'; });
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, duration);
+}
+
 function showPage(pageId, navEl) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -4722,17 +4739,15 @@ async function deleteRecord(caseId, recordId) {
   rec.deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
   casesData[cidx].updatedAt = new Date().toISOString();
 
-  showLoading('刪除紀錄…');
-  try {
-    await saveCasesChunks(caseId);
+  showCaseDetail(caseId);
+  saveCasesChunks(caseId).then(() => {
     auditLog('刪除晤談紀錄', caseId, recordId);
-    hideLoading();
-    showCaseDetail(caseId);
-  } catch (err) {
+    showToast('晤談紀錄已刪除');
+  }).catch(err => {
     delete rec.deleted; delete rec.deletedAt; delete rec.deletedBy; delete rec.deletedByName;
-    hideLoading();
-    alert('操作失敗：' + err.message);
-  }
+    showCaseDetail(caseId);
+    showToast('刪除失敗：' + err.message, 'error');
+  });
 }
 
 // 徹底移除已刪除紀錄（僅管理者）
@@ -6048,19 +6063,17 @@ async function deleteCase(caseId) {
   casesData[idx].deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
   casesData[idx].deletedAt     = new Date().toISOString();
   casesData[idx].updatedAt     = new Date().toISOString();
-  showLoading('刪除個案…');
-  try {
-    await saveCasesChunks(caseId);
+  backToCaseList();
+  renderCases();
+  saveCasesChunks(caseId).then(() => {
     auditLog('刪除個案', caseId);
-    hideLoading();
-    backToCaseList();
-    renderCases();
-  } catch (err) {
+    showToast('個案已刪除');
+  }).catch(err => {
     Object.assign(casesData[idx], prev);
     if (!prev.deleted) { delete casesData[idx].deleted; delete casesData[idx].deletedBy; delete casesData[idx].deletedByName; delete casesData[idx].deletedAt; }
-    hideLoading();
-    alert('刪除失敗：' + err.message);
-  }
+    renderCases();
+    showToast('刪除失敗：' + err.message, 'error');
+  });
 }
 
 async function restoreCaseAdmin(caseId) {
@@ -7996,15 +8009,15 @@ async function deleteInitialInterview(caseId) {
   ii.deletedAt = new Date().toISOString();
   ii.deletedBy = currentUser?.email;
   ii.deletedByName = configData?.users?.[currentUser?.email]?.name || currentUser?.name;
-  showLoading('刪除中…');
-  try {
-    await saveCasesChunks(caseId);
+  showCaseDetail(caseId);
+  saveCasesChunks(caseId).then(() => {
     auditLog('刪除初次晤談表', caseId);
-    hideLoading(); showCaseDetail(caseId);
-  } catch(e) {
+    showToast('初次晤談表已刪除');
+  }).catch(e => {
     Object.assign(ii, prev);
-    hideLoading(); alert('刪除失敗：'+e.message);
-  }
+    showCaseDetail(caseId);
+    showToast('刪除失敗：' + e.message, 'error');
+  });
 }
 
 async function restoreInitialInterview(caseId) {
@@ -14144,7 +14157,10 @@ function renderPsychiatryPage() {
   for (const c of casesData) {
     if (c.deleted) continue;
     for (const pr of (c.psychiatristRecords || [])) {
-      if (pr.deleted) continue;
+      const isCreator = pr.createdBy === currentUser?.email;
+      const isPrimary = c.counselorEmail === currentUser?.email;
+      const canSeeDeleted = isAdminUser || isCreator || isPrimary;
+      if (pr.deleted && !canSeeDeleted) continue;
       if (q && !c.name.toLowerCase().includes(q) && !(c.studentId||'').includes(q) &&
           !c.id.includes(q) && !(pr.diagnosisName||'').toLowerCase().includes(q) &&
           !(pr.recommendations||'').toLowerCase().includes(q)) continue;
@@ -14156,7 +14172,10 @@ function renderPsychiatryPage() {
       rows.push({ c, pr });
     }
   }
-  rows.sort((a, b) => (a.pr.date||'') < (b.pr.date||'') ? 1 : -1);
+  rows.sort((a, b) => {
+    if (a.pr.deleted !== b.pr.deleted) return a.pr.deleted ? 1 : -1;
+    return (a.pr.date||'') < (b.pr.date||'') ? 1 : -1;
+  });
 
   const body  = document.getElementById('psychiatry-body');
   const count = document.getElementById('psychiatry-count');
@@ -14178,21 +14197,33 @@ function renderPsychiatryPage() {
     const tags = [pr.medicationAdvice==='yes'?'建議藥物':'', pr.hospitalizationAdvice==='yes'?'建議住院':''].filter(Boolean);
     const isCreator  = pr.createdBy === currentUser?.email;
     const psyEditable = !pr.createdAt || isEditable(pr.createdAt);
-    const canDelete  = isAdminUser || (isCreator && psyEditable);
-    const delBtn = canDelete
-      ? `<button class="btn btn-danger btn-sm" onclick="deletePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}',renderPsychiatryPage)" style="font-size:.78rem;">刪除</button>`
+
+    let actionBtns = '';
+    if (pr.deleted) {
+      if (isAdminUser) {
+        actionBtns = `<button class="btn btn-secondary btn-sm" onclick="restorePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}',renderPsychiatryPage)" style="font-size:.78rem;">復原</button>
+        <button class="btn btn-danger btn-sm" onclick="purgePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}',renderPsychiatryPage)" style="font-size:.78rem;" title="徹底移除">徹底移除</button>`;
+      }
+    } else {
+      actionBtns = `<button class="btn btn-secondary btn-sm" onclick="openPsychiatristModal('${escHtml(c.id)}','${escHtml(pr.id)}')" style="font-size:.78rem;">編輯</button>`;
+      if (isAdminUser || (isCreator && psyEditable))
+        actionBtns += `<button class="btn btn-danger btn-sm" onclick="deletePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}',renderPsychiatryPage)" style="font-size:.78rem;">刪除</button>`;
+    }
+
+    const deletedBadge = pr.deleted
+      ? `<span style="background:#fed7d7;color:#c53030;padding:2px 8px;border-radius:10px;font-size:.75rem;white-space:nowrap;">已刪除 by ${escHtml(pr.deletedByName||pr.deletedBy||'—')}</span>`
       : '';
-    return `<div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid #e2e8f0;flex-wrap:wrap;">
+    const rowOpacity = pr.deleted ? 'opacity:.45;' : '';
+
+    return `<div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid #e2e8f0;flex-wrap:wrap;${rowOpacity}">
       <div style="min-width:90px;font-weight:600;color:#2d3748;font-size:.88rem;">${escHtml(pr.date||'—')}</div>
       <div style="flex:1;min-width:120px;">
         <div style="font-size:.9rem;color:#2d3748;font-weight:600;">${escHtml(c.name||'—')} <span style="color:#718096;font-weight:400;font-size:.78rem;">${escHtml(c.id)}</span></div>
         <div style="font-size:.82rem;color:#4a5568;">${diagLabel}</div>
       </div>
       ${tags.length ? `<div style="display:flex;gap:4px;">${tags.map(t=>`<span style="background:#fed7d7;color:#c53030;padding:2px 8px;border-radius:10px;font-size:.75rem;">${t}</span>`).join('')}</div>` : ''}
-      <div style="display:flex;gap:6px;">
-        <button class="btn btn-secondary btn-sm" onclick="openPsychiatristModal('${escHtml(c.id)}','${escHtml(pr.id)}')" style="font-size:.78rem;">編輯</button>
-        ${delBtn}
-      </div>
+      ${deletedBadge}
+      <div style="display:flex;gap:6px;">${actionBtns}</div>
     </div>`;
   }).join('');
 }
@@ -14398,20 +14429,20 @@ async function deletePsychiatristRecord(caseId, recordId, onSuccess) {
   pr.deletedAt = new Date().toISOString();
   pr.deletedBy = currentUser?.email;
   pr.deletedByName = configData?.users?.[currentUser?.email]?.name || currentUser?.name;
-  showLoading('刪除中…');
-  try {
-    await saveCasesChunks(caseId);
+  if (typeof onSuccess === 'function') onSuccess();
+  else showCaseDetail(caseId);
+  saveCasesChunks(caseId).then(() => {
     auditLog('刪除精神科評估', caseId, recordId);
-    hideLoading();
+    showToast('精神科評估已刪除');
+  }).catch(e => {
+    Object.assign(pr, prev);
     if (typeof onSuccess === 'function') onSuccess();
     else showCaseDetail(caseId);
-  } catch(e) {
-    Object.assign(pr, prev);
-    hideLoading(); alert('刪除失敗：'+e.message);
-  }
+    showToast('刪除失敗：' + e.message, 'error');
+  });
 }
 
-async function purgePsychiatristRecord(caseId, recordId) {
+async function purgePsychiatristRecord(caseId, recordId, onSuccess) {
   if (!isAdmin()) { alert('僅管理者可徹底移除紀錄。'); return; }
   if (!confirm('確定要徹底移除此精神科評估紀錄？此動作不可復原，將清除「已刪除」痕跡。')) return;
   const c = casesData.find(x => x.id === caseId);
@@ -14423,14 +14454,15 @@ async function purgePsychiatristRecord(caseId, recordId) {
   try {
     await saveCasesChunks(caseId);
     auditLog('徹底移除精神科評估', caseId, recordId);
-    hideLoading(); showCaseDetail(caseId);
+    hideLoading();
+    if (typeof onSuccess === 'function') onSuccess(); else showCaseDetail(caseId);
   } catch(e) {
     c.psychiatristRecords.splice(idx, 0, removed);
     hideLoading(); alert('操作失敗：'+e.message);
   }
 }
 
-async function restorePsychiatristRecord(caseId, recordId) {
+async function restorePsychiatristRecord(caseId, recordId, onSuccess) {
   if (!confirm('確定要復原這筆精神科評估紀錄？')) return;
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
@@ -14442,7 +14474,8 @@ async function restorePsychiatristRecord(caseId, recordId) {
   try {
     await saveCasesChunks(caseId);
     auditLog('復原精神科評估', caseId, recordId);
-    hideLoading(); showCaseDetail(caseId);
+    hideLoading();
+    if (typeof onSuccess === 'function') onSuccess(); else showCaseDetail(caseId);
   } catch(e) {
     Object.assign(pr, prev);
     hideLoading(); alert('操作失敗：'+e.message);
