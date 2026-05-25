@@ -852,8 +852,9 @@
 <div id="notif-panel">
   <div style="border-bottom:1px solid #e2e8f0;">
     <div style="display:flex;">
-      <button id="ntab-notifs" class="ntab ntab-active" onclick="setNotifTab('notifs')">提醒</button>
-      <button id="ntab-jobs"   class="ntab"             onclick="setNotifTab('jobs')">工作執行</button>
+      <button id="ntab-notifs"   class="ntab ntab-active" onclick="setNotifTab('notifs')">提醒</button>
+      <button id="ntab-jobs"     class="ntab"             onclick="setNotifTab('jobs')">工作執行</button>
+      <button id="ntab-autosave" class="ntab"             onclick="setNotifTab('autosave')">自動備援 <span id="autosave-notif-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 5px;font-size:.72rem;margin-left:2px;"></span></button>
     </div>
     <div style="padding:3px 14px 6px;display:flex;justify-content:flex-end;">
       <button id="notif-panel-action-btn" onclick="_notifPanelAction()" style="font-size:.78rem;color:#2471a3;border:none;background:none;cursor:pointer;padding:0;">全部標為已讀</button>
@@ -861,6 +862,7 @@
   </div>
   <div id="ntab-content-notifs"><div id="notif-list"></div></div>
   <div id="ntab-content-jobs" style="display:none;"><div id="notif-job-list"></div></div>
+  <div id="ntab-content-autosave" style="display:none;"><div id="notif-autosave-list"></div></div>
 </div>
 
 <!-- ── Login Screen ── -->
@@ -957,6 +959,9 @@
       </div>
       <div class="nav-item" data-nav-id="page-stats" onclick="showPage('page-stats', this); renderStats()">
         <span class="icon">📊</span> 統計分析 <span class="nav-drag-handle">⠿</span>
+      </div>
+      <div class="nav-item" data-nav-id="page-todos" onclick="showPage('page-todos', this); renderTodosPage()">
+        <span class="icon">✅</span> 待辦事項 <span id="todos-nav-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 4px;font-size:.72rem;margin-left:2px;min-width:16px;text-align:center;"></span> <span class="nav-drag-handle">⠿</span>
       </div>
     </div>
 
@@ -1817,8 +1822,9 @@
     <!-- 新增晤談紀錄（全頁面） -->
     <div id="page-new-record" class="page">
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px;flex-wrap:wrap;">
-        <button class="btn btn-secondary" onclick="cancelRecordForm()">← 返回</button>
+        <button class="btn btn-secondary" onclick="exitRecordForm()">← 返回</button>
         <div class="page-title" style="margin:0;border:none;padding:0;" id="new-record-page-title">新增晤談紀錄</div>
+        <button onclick="exitRecordForm()" title="離開" style="margin-left:auto;background:none;border:none;font-size:1.5rem;cursor:pointer;color:#a0aec0;line-height:1;padding:0 4px;">×</button>
       </div>
       <div id="new-record-case-info" class="alert alert-info" style="margin-bottom:16px;"></div>
       <div id="new-record-alert"></div>
@@ -2218,14 +2224,18 @@
       </div>
 
       <div class="form-actions">
-        <button class="btn btn-secondary" onclick="cancelRecordForm()">取消</button>
+        <button class="btn btn-secondary" onclick="draftRecord()">暫存</button>
+        <button class="btn btn-secondary" onclick="discardRecord()">不儲存</button>
         <button class="btn btn-primary" id="btn-save-record" onclick="saveRecord()">儲存紀錄</button>
       </div>
     </div>
 
     <!-- 初次晤談紀錄表頁面 -->
     <div id="page-initial-interview" class="page">
-      <div class="page-title" id="initial-interview-title">初次晤談紀錄表</div>
+      <div style="display:flex;align-items:center;margin-bottom:8px;">
+        <div class="page-title" id="initial-interview-title" style="flex:1;margin:0;border:none;padding:0;">初次晤談紀錄表</div>
+        <button onclick="exitIIForm()" title="離開" style="background:none;border:none;font-size:1.5rem;cursor:pointer;color:#a0aec0;line-height:1;padding:0 4px;">×</button>
+      </div>
       <div id="initial-interview-case-info" style="margin-bottom:14px;color:#718096;"></div>
       <div id="initial-interview-alert"></div>
 
@@ -2446,10 +2456,37 @@
       </div>
 
       <div class="form-actions">
-        <button class="btn btn-secondary" onclick="cancelInitialInterview()">取消</button>
+        <button class="btn btn-secondary" onclick="draftInitialInterview()">暫存</button>
+        <button class="btn btn-secondary" onclick="discardInitialInterview()">不儲存</button>
         <button class="btn btn-secondary" onclick="printInitialInterview()">列印</button>
         <button class="btn btn-primary" onclick="saveInitialInterview()">儲存初次晤談表</button>
       </div>
+    </div>
+
+    <!-- 待辦事項 -->
+    <div id="page-todos" class="page">
+      <div class="page-title">待辦事項</div>
+      <div id="todos-filter-bar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center;">
+        <input type="text" class="field-input" id="todos-search" placeholder="搜尋個案名稱／案號…" oninput="renderTodosPage()" style="max-width:200px;min-width:120px;">
+        <select class="field-select" id="todos-filter-type" onchange="renderTodosPage()" style="max-width:170px;">
+          <option value="">所有類型</option>
+          <option value="record">晤談記錄草稿</option>
+          <option value="initial_interview">初談表草稿</option>
+          <option value="psychiatrist">精神科評估草稿</option>
+          <option value="autosave">自動備援</option>
+          <option value="manual">手動待辦</option>
+        </select>
+        <select class="field-select" id="todos-filter-status" onchange="renderTodosPage()" style="max-width:130px;">
+          <option value="pending">未完成</option>
+          <option value="done">已完成</option>
+          <option value="">全部</option>
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="_resetTodosFilter()">重置</button>
+        <div style="flex:1;"></div>
+        <label style="font-size:.85rem;cursor:pointer;user-select:none;"><input type="checkbox" id="todos-select-all" onchange="_toggleTodosSelectAll(this)"> 全選</label>
+        <button class="btn btn-sm" id="todos-batch-delete-btn" style="display:none;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_batchDeleteTodos()">刪除選取</button>
+      </div>
+      <div id="todos-body"></div>
     </div>
 
   </main>
@@ -3017,6 +3054,7 @@ async function afterLogin() {
       loadTransfer(),
       loadUnassignedRecords(),
       loadIssues(),
+      loadUserTodos(),
     ]);
     setLoadingProgress(25);
     configData = cfg;
@@ -3031,6 +3069,7 @@ async function afterLogin() {
     checkPinSetup();
     await loadCases(); // loadCases 接手 30→100%
     scanUnassignedRecords().catch(() => {}); // 每日掃描未歸屬記錄（fire-and-forget）
+    _migrateLocalStorageDrafts(); // 把 localStorage crash 草稿轉成待辦事項（fire-and-forget）
   } catch (err) {
     hideLoading();
     // 找不到設定檔 → 顯示初始化畫面
@@ -3464,7 +3503,8 @@ function _syncBellBadge() {
   const unread  = notifs.filter(n => !n.read).length + (_updateAvailable ? 1 : 0);
   const failed  = _bgJobs.filter(j => j.state === 'failed').length;
   const running = _bgJobs.filter(j => j.state === 'running').length;
-  const total   = unread + failed;
+  const autosaveUnread = todosData.filter(t => t.origin === 'autosave' && !t.notifRead && !t.done).length;
+  const total   = unread + failed + autosaveUnread;
   badge.textContent = total > 99 ? '99+' : (total || '');
   badge.style.display = (total > 0 || running > 0) ? 'flex' : 'none';
   badge.style.background = failed > 0 ? '#c53030' : running > 0 ? '#2b6cb0' : '#e53e3e';
@@ -3472,6 +3512,11 @@ function _syncBellBadge() {
   if (jobTab) {
     const pending = running + failed;
     jobTab.textContent = pending > 0 ? `工作執行 (${pending})` : '工作執行';
+  }
+  const autosaveBadge = document.getElementById('autosave-notif-badge');
+  if (autosaveBadge) {
+    autosaveBadge.textContent = autosaveUnread > 99 ? '99+' : autosaveUnread;
+    autosaveBadge.style.display = autosaveUnread > 0 ? 'inline' : 'none';
   }
 }
 function renderJobList() {
@@ -3497,19 +3542,29 @@ function renderJobList() {
 }
 function setNotifTab(tab) {
   _notifTab = tab;
-  ['notifs', 'jobs'].forEach(t => {
+  ['notifs', 'jobs', 'autosave'].forEach(t => {
     const btn     = document.getElementById('ntab-' + t);
     const content = document.getElementById('ntab-content-' + t);
     if (btn) btn.classList.toggle('ntab-active', t === tab);
     if (content) content.style.display = t === tab ? '' : 'none';
   });
   const actionBtn = document.getElementById('notif-panel-action-btn');
-  if (actionBtn) actionBtn.textContent = tab === 'notifs' ? '全部標為已讀' : '清除已完成';
+  if (actionBtn) {
+    if (tab === 'notifs') actionBtn.textContent = '全部標為已讀';
+    else if (tab === 'autosave') actionBtn.textContent = '全部標為已讀';
+    else actionBtn.textContent = '清除已完成';
+  }
   if (tab === 'jobs') renderJobList();
+  if (tab === 'autosave') renderTodosNotifList();
 }
 function _notifPanelAction() {
   if (_notifTab === 'notifs') {
     markAllNotifRead();
+  } else if (_notifTab === 'autosave') {
+    todosData.filter(t => t.origin === 'autosave' && !t.notifRead).forEach(t => { t.notifRead = true; });
+    saveUserTodos().catch(() => {});
+    _syncBellBadge();
+    renderTodosNotifList();
   } else {
     _bgJobs = _bgJobs.filter(j => j.state !== 'done');
     _syncBellBadge();
@@ -4287,18 +4342,26 @@ function showCaseDetail(caseId) {
       ? `<button class="rec-toggle-btn" onclick="toggleRecordExpand('${escHtml(r.id)}')">展開 ▼</button>`
       : '';
 
+    const isPending = r.status === 'pending';
+    const pendingStyle = isPending ? ' style="background:#fffff0;border-color:#f6e05e;"' : '';
+    const pendingBadge = isPending ? '<span class="badge badge-orange" style="font-size:.73rem;background:#fefcbf;color:#744210;border:1px solid #f6e05e;">草稿</span>' : '';
+    const pendingEditBtn = isPending
+      ? `<button class="btn-rec" style="background:#fefcbf;border-color:#f6e05e;color:#744210;" onclick="openNewRecordPage('${rcid}','${rid}','${escHtml(r.recordKind||'晤談記錄')}')">繼續編輯</button>`
+      : '';
+
     return `
-      <div class="record-card${showDeleted ? ' deleted' : ''}" id="rec-card-${escHtml(r.id)}"${isLinkedAsII ? ' style="background:#ebf8ff;border-color:#90cdf4;"' : ''}>
+      <div class="record-card${showDeleted ? ' deleted' : ''}" id="rec-card-${escHtml(r.id)}"${isLinkedAsII ? ' style="background:#ebf8ff;border-color:#90cdf4;"' : (isPending ? pendingStyle : '')}>
         <div class="record-card-header">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <span class="record-date">${escHtml(r.date)}${timeDisplay}</span>
+            <span class="record-date">${escHtml(r.date || '草稿')}${timeDisplay}</span>
+            ${pendingBadge}
             ${r.recordKind === '事件處理記錄' ? '<span class="badge badge-orange" style="font-size:.73rem;">事件處理</span>' : ''}
             ${isLinkedAsII ? '<span class="badge" style="background:#bee3f8;color:#2b6cb0;border:1px solid #90cdf4;font-size:.73rem;">📋 初談記錄表</span>' : ''}
             ${deletedLabel}
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <span class="record-counselor">${escHtml(r.counselorName || r.counselorEmail)}</span>
-            <div class="record-card-actions">${actions}</div>
+            <span class="record-counselor">${escHtml(r.counselorName || r.counselorEmail || '')}</span>
+            <div class="record-card-actions">${pendingEditBtn}${actions}</div>
             ${toggleBtn}
           </div>
         </div>
@@ -4991,21 +5054,7 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
   showPage('page-new-record', null);
   _checkRecBkConflict();
 
-  // ── 草稿還原 ──
-  try {
-    const raw = _draftKey ? localStorage.getItem(_draftKey) : null;
-    if (raw) {
-      const draft = JSON.parse(raw);
-      const when = draft._savedAt ? new Date(draft._savedAt).toLocaleString('zh-TW') : '稍早';
-      if (confirm(`偵測到未完成的晤談紀錄草稿（${when}），是否還原？`)) {
-        restoreRecordDraft(draft);
-      } else {
-        localStorage.removeItem(_draftKey);
-      }
-    }
-  } catch (e) { console.warn('draft restore failed', e); }
-
-  // 啟動自動儲存
+  // 啟動自動儲存（crash recovery；草稿還原改由登入時 _migrateLocalStorageDrafts 處理）
   startRecordDraftAutosave();
 }
 
@@ -5220,13 +5269,7 @@ function clearRecordDraft() {
   _draftKey = null;
 }
 
-function cancelRecordForm() {
-  if (confirm('確定要離開？未儲存的內容會保留為草稿，下次回到此頁可選擇還原。')) {
-    stopRecordDraftAutosave();
-    if (_recordCaseId) showCaseDetail(_recordCaseId);
-    else backToCaseList();
-  }
-}
+function cancelRecordForm() { exitRecordForm(); }
 
 function toggleServiceSubpanel(checkbox, panelId) {
   document.getElementById(panelId).classList.toggle('active', checkbox.checked);
@@ -5851,6 +5894,11 @@ async function saveRecord() {
       nextBkId: _editNextBkId,
       updatedAt: new Date().toISOString(), updatedBy: currentUser.email,
     });
+    delete casesData[cidx].records[ridx].status;
+    delete casesData[cidx].records[ridx].draftSavedAt;
+    // mark corresponding todo as done
+    const _draftTodo = todosData.find(t => t.recordId === _editingRecordId && t.type === 'record' && !t.done);
+    if (_draftTodo) { _draftTodo.done = true; _draftTodo.doneAt = new Date().toISOString(); saveUserTodos().catch(()=>{}); _syncTodoBadge(); }
     casesData[cidx].updatedAt = new Date().toISOString();
     clearRecordDraft();
     showCaseDetail(_recordCaseId);
@@ -7697,20 +7745,7 @@ function openInitialInterviewPage(caseId) {
   stopIIDraftAutosave();
   if (!(existing && !existing.deleted && existing.type !== 'continuation' && existing.type !== 'linkedRecord')) {
     _iiDraftKey = `scc_draft_ii_${currentUser?.email||''}_${caseId}`;
-    try {
-      const raw = localStorage.getItem(_iiDraftKey);
-      if (raw) {
-        const draft = JSON.parse(raw);
-        const when = draft._savedAt ? new Date(draft._savedAt).toLocaleString('zh-TW') : '稍早';
-        if (confirm(`偵測到未完成的初次晤談表草稿（${when}），是否還原？`)) {
-          _iiPopulateForm(draft);
-        } else {
-          try { localStorage.removeItem(_iiDraftKey); } catch(_) {}
-          _iiDraftKey = null;
-        }
-      }
-    } catch(e) { console.warn('ii draft restore failed', e); }
-    if (_iiDraftKey) startIIDraftAutosave();
+    startIIDraftAutosave();
   } else {
     _iiDraftKey = null;
   }
@@ -7858,8 +7893,12 @@ async function saveInitialInterview() {
   const prev = casesData[cidx].initialInterview;
   snap.createdAt = prev?.createdAt || snap.updatedAt;
   snap.createdBy = prev?.createdBy || currentUser?.email;
+  delete snap.status; delete snap.draftSavedAt;
   casesData[cidx].initialInterview = snap;
   casesData[cidx].updatedAt = snap.updatedAt;
+  // mark corresponding todo as done
+  const _iiTodo = todosData.find(t => t.caseId === _initialInterviewCaseId && t.type === 'initial_interview' && !t.done);
+  if (_iiTodo) { _iiTodo.done = true; _iiTodo.doneAt = new Date().toISOString(); saveUserTodos().catch(()=>{}); _syncTodoBadge(); }
 
   const jobId = bgJobAdd('儲存初次晤談表…');
   try {
@@ -7875,10 +7914,7 @@ async function saveInitialInterview() {
   }
 }
 
-function cancelInitialInterview() {
-  stopIIDraftAutosave();
-  if (_initialInterviewCaseId) showCaseDetail(_initialInterviewCaseId);
-}
+function cancelInitialInterview() { exitIIForm(); }
 
 function startIIDraftAutosave() {
   stopIIDraftAutosave();
@@ -9056,7 +9092,578 @@ async function getCasesFolderId() {
   return _casesFolderIdCache;
 }
 
-// 支援 "fileName" 或 "subfolder/fileName"（fileName 已含 .json 副檔名）
+// ══════════════════════════════════════════════
+//  待辦事項（todos）基礎建設
+// ══════════════════════════════════════════════
+
+let todosData = [];
+let _usersFolderIdCache = null;
+const _USERS_FOLDER_LS_KEY = 'scc_users_folder_id_' + DRIVE_FOLDER_ID;
+
+async function getUsersFolderId() {
+  if (!_usersFolderIdCache) {
+    _usersFolderIdCache = localStorage.getItem(_USERS_FOLDER_LS_KEY) || null;
+  }
+  if (!_usersFolderIdCache) {
+    const q = `name='users' and mimeType='application/vnd.google-apps.folder' and '${DRIVE_FOLDER_ID}' in parents and trashed=false`;
+    const res = await driveQuery(q, 'id');
+    if (res.files && res.files.length) {
+      _usersFolderIdCache = res.files[0].id;
+    } else {
+      _usersFolderIdCache = await driveCreateFolder('users', DRIVE_FOLDER_ID);
+    }
+    localStorage.setItem(_USERS_FOLDER_LS_KEY, _usersFolderIdCache);
+  }
+  return _usersFolderIdCache;
+}
+
+async function loadUserTodos() {
+  const email = currentUser?.email;
+  if (!email) return;
+  try {
+    const usersId = await getUsersFolderId();
+    const fileName = `todos_${email}.json`;
+    const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
+    const res = await driveQuery(q, 'id');
+    if (res.files && res.files.length) {
+      const raw = await driveReadJsonById(res.files[0].id);
+      todosData = Array.isArray(raw?.todos) ? raw.todos : [];
+    } else {
+      todosData = [];
+    }
+    _cleanupOldTodos();
+  } catch (e) {
+    console.warn('loadUserTodos failed:', e);
+    todosData = [];
+  }
+}
+
+async function saveUserTodos() {
+  const email = currentUser?.email;
+  if (!email) return;
+  const fileName = `todos_${email}.json`;
+  const content = { todos: todosData, updatedAt: new Date().toISOString() };
+  try {
+    await driveUpdateJsonFile(`users/${fileName}`, content);
+  } catch (e) {
+    if (!e.message.includes('找不到')) throw e;
+    const usersId = await getUsersFolderId();
+    await driveCreateJsonFile(fileName, content, usersId);
+  }
+}
+
+function _cleanupOldTodos() {
+  const twoWeeksAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
+  todosData = todosData.filter(t => {
+    if (t.done && t.doneAt) return new Date(t.doneAt).getTime() > twoWeeksAgo;
+    return true;
+  });
+}
+
+function _genTodoId() {
+  return `todo_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
+}
+
+function _putTodoItem(item) {
+  const idx = todosData.findIndex(t => t.id === item.id);
+  if (idx >= 0) todosData[idx] = item;
+  else todosData.push(item);
+  _syncTodoBadge();
+}
+
+function _removeTodoItem(id) {
+  todosData = todosData.filter(t => t.id !== id);
+  _syncTodoBadge();
+}
+
+function _syncTodoBadge() {
+  const pending = todosData.filter(t => !t.done).length;
+  const badge = document.getElementById('todos-nav-badge');
+  if (badge) {
+    badge.textContent = pending > 99 ? '99+' : pending;
+    badge.style.display = pending > 0 ? 'inline-flex' : 'none';
+  }
+  _syncBellBadge();
+}
+
+function _migrateLocalStorageDrafts() {
+  const email = currentUser?.email || '';
+  const keys = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('scc_draft_') && k.includes(email)) keys.push(k);
+    }
+  } catch (_) {}
+  if (!keys.length) return;
+  let changed = false;
+  for (const key of keys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const draft = JSON.parse(raw);
+      if (!draft || typeof draft !== 'object') continue;
+      const savedAt = draft._savedAt || new Date().toISOString();
+      // skip if already migrated
+      if (todosData.find(t => t.draftKey === key)) continue;
+      let type = 'autosave', label = '自動備援草稿';
+      if (key.includes('scc_draft_psy_')) { type = 'psychiatrist'; label = '精神科評估草稿'; }
+      else if (key.includes('scc_draft_ii_')) { type = 'initial_interview'; label = '初次晤談表草稿'; }
+      else if (key.includes('scc_draft_record_')) { type = 'record'; label = '晤談記錄草稿'; }
+      // extract caseId: key format scc_draft_record_{email}_{caseId}_{recordId}
+      const parts = key.split('_');
+      const emailParts = email.split('@');
+      let caseId = '';
+      const emailIdx = parts.findIndex(p => p === emailParts[0] || key.includes(email));
+      // simpler: find caseId as the part that starts with letter/year pattern
+      const afterEmail = key.replace(`scc_draft_`, '').replace(/^(record|psy|ii)_/, '').replace(email + '_', '');
+      caseId = afterEmail.split('_')[0] || '';
+      // find case name
+      const caseObj = casesData.find(c => c.id === caseId);
+      const caseLabel = caseObj ? `${caseObj.name}（${caseId}）` : caseId;
+      _putTodoItem({
+        id: _genTodoId(),
+        type,
+        label,
+        caseId,
+        caseLabel,
+        draftKey: key,
+        draftData: draft,
+        origin: 'autosave',
+        notifRead: false,
+        done: false,
+        createdAt: savedAt,
+      });
+      changed = true;
+    } catch (_) {}
+  }
+  if (changed) {
+    saveUserTodos().catch(e => console.warn('saveUserTodos after migrate failed:', e));
+    _syncBellBadge();
+  }
+}
+
+// ── 待辦事項：退出表單對話框 ──
+
+function _showExitDialog(title, onSave, onDraft, onDiscard) {
+  document.getElementById('exit-dialog-overlay')?.remove();
+  const el = document.createElement('div');
+  el.id = 'exit-dialog-overlay';
+  el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:900;display:flex;align-items:center;justify-content:center;padding:20px;';
+  el.innerHTML = `
+    <div style="background:#fff;border-radius:12px;padding:28px 24px;width:100%;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+      <div style="font-size:1rem;font-weight:700;margin-bottom:6px;">${escHtml(title)}</div>
+      <div style="font-size:.875rem;color:#718096;margin-bottom:20px;">請選擇離開方式：</div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <button class="btn btn-primary" id="exit-dlg-save" style="text-align:left;padding:10px 14px;">儲存 — 驗證並正式儲存</button>
+        <button class="btn btn-secondary" id="exit-dlg-draft" style="text-align:left;padding:10px 14px;">暫存 — 儲存草稿至待辦事項</button>
+        <button class="btn btn-secondary" id="exit-dlg-discard" style="text-align:left;padding:10px 14px;color:#c53030;border-color:#fc8181;">不儲存 — 放棄並離開</button>
+        <button class="btn btn-secondary" id="exit-dlg-cancel" style="text-align:left;padding:10px 14px;">取消 — 繼續編輯</button>
+      </div>
+    </div>`;
+  document.body.appendChild(el);
+  document.getElementById('exit-dlg-save').onclick    = () => { el.remove(); onSave(); };
+  document.getElementById('exit-dlg-draft').onclick   = () => { el.remove(); onDraft(); };
+  document.getElementById('exit-dlg-discard').onclick = () => { el.remove(); onDiscard(); };
+  document.getElementById('exit-dlg-cancel').onclick  = () => el.remove();
+}
+
+// ── 晤談記錄：退出 / 暫存 / 不儲存 ──
+
+function exitRecordForm() {
+  _showExitDialog('離開晤談紀錄',
+    () => saveRecord(),
+    () => draftRecord(),
+    () => discardRecord()
+  );
+}
+
+function _snapshotRecordFormPartial() {
+  const date    = document.getElementById('rec-date')?.value || '';
+  const rawTime = document.getElementById('rec-time')?.value || '';
+  const time    = rawTime === '其他' ? (document.getElementById('rec-time-other')?.value || '') : rawTime;
+  const summary = getRichTextValue('rec-summary');
+  const assessment = document.getElementById('rec-assessment')?.value || '';
+  const nextPlan   = document.getElementById('rec-next-plan')?.value || '';
+  const notes      = document.getElementById('rec-notes')?.value || '';
+  const topics = [...document.querySelectorAll('input[name="rec-topic"]:checked')].map(cb => cb.value);
+  const serviceItems = _collectServiceItems();
+  const interviewees = [...document.querySelectorAll('input[name="rec-interviewee"]:checked')].map(cb => cb.value);
+  const interventionMode = document.getElementById('rec-intervention-mode')?.value || '';
+  const counselors = [..._recCounselors];
+  const counselorName = counselors.map(c => c.label).join('、');
+  return { date, time, summary, assessment, nextPlan, notes, topics, serviceItems, interviewees, interventionMode, counselors, counselorName, recordKind: _recordKind };
+}
+
+function draftRecord() {
+  const snap = _snapshotRecordFormPartial();
+  const cidx = casesData.findIndex(c => c.id === _recordCaseId);
+  if (cidx === -1) { showToast('無法暫存：個案不存在', 'error'); return; }
+  if (!casesData[cidx].records) casesData[cidx].records = [];
+
+  let draftRecordId;
+  if (_editingRecordId) {
+    draftRecordId = _editingRecordId;
+    const ridx = casesData[cidx].records.findIndex(r => r.id === draftRecordId);
+    if (ridx >= 0) {
+      Object.assign(casesData[cidx].records[ridx], snap, { status: 'pending', draftSavedAt: new Date().toISOString() });
+    }
+  } else {
+    draftRecordId = `REC_DRAFT_${Date.now()}`;
+    casesData[cidx].records.push({
+      id: draftRecordId, ...snap,
+      status: 'pending',
+      creatorEmail: currentUser?.email,
+      createdAt: new Date().toISOString(),
+      draftSavedAt: new Date().toISOString(),
+    });
+  }
+
+  const caseObj = casesData[cidx];
+  const caseLabel = `${caseObj.name}（${_recordCaseId}）`;
+  const existingTodo = todosData.find(t => t.recordId === draftRecordId && t.type === 'record');
+  const todoId = existingTodo?.id || _genTodoId();
+  _putTodoItem({
+    id: todoId, type: 'record', label: '晤談記錄草稿',
+    caseId: _recordCaseId, caseLabel, recordId: draftRecordId,
+    origin: 'manual', notifRead: true, done: false,
+    createdAt: existingTodo?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  stopRecordDraftAutosave();
+  clearRecordDraft();
+  showCaseDetail(_recordCaseId);
+  showToast('已暫存草稿至待辦事項', 'success');
+
+  const jobId = bgJobAdd('暫存晤談記錄草稿…');
+  Promise.all([
+    saveCasesChunks(_recordCaseId),
+    saveUserTodos(),
+  ]).then(() => bgJobDone(jobId, '草稿已儲存'))
+    .catch(e => bgJobFail(jobId, e.message));
+}
+
+function discardRecord() {
+  stopRecordDraftAutosave();
+  clearRecordDraft();
+  if (_recordCaseId) showCaseDetail(_recordCaseId);
+  else backToCaseList();
+}
+
+// ── 初次晤談表：退出 / 暫存 / 不儲存 ──
+
+function exitIIForm() {
+  _showExitDialog('離開初次晤談表',
+    () => saveInitialInterview(),
+    () => draftInitialInterview(),
+    () => discardInitialInterview()
+  );
+}
+
+function draftInitialInterview() {
+  const caseId = _initialInterviewCaseId;
+  const cidx = casesData.findIndex(c => c.id === caseId);
+  if (cidx === -1) { showToast('無法暫存：個案不存在', 'error'); return; }
+  const snap = snapshotInitialInterview();
+  snap.status = 'pending';
+  snap.draftSavedAt = new Date().toISOString();
+  const prev = casesData[cidx].initialInterview;
+  casesData[cidx].initialInterview = { ...(prev || {}), ...snap };
+
+  const caseObj = casesData[cidx];
+  const caseLabel = `${caseObj.name}（${caseId}）`;
+  const existingTodo = todosData.find(t => t.caseId === caseId && t.type === 'initial_interview');
+  const todoId = existingTodo?.id || _genTodoId();
+  _putTodoItem({
+    id: todoId, type: 'initial_interview', label: '初次晤談表草稿',
+    caseId, caseLabel, origin: 'manual', notifRead: true, done: false,
+    createdAt: existingTodo?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  stopIIDraftAutosave();
+  clearIIDraft();
+  showCaseDetail(caseId);
+  showToast('已暫存草稿至待辦事項', 'success');
+
+  const jobId = bgJobAdd('暫存初次晤談表草稿…');
+  Promise.all([
+    saveCasesChunks(caseId),
+    saveUserTodos(),
+  ]).then(() => bgJobDone(jobId, '草稿已儲存'))
+    .catch(e => bgJobFail(jobId, e.message));
+}
+
+function discardInitialInterview() {
+  stopIIDraftAutosave();
+  clearIIDraft();
+  if (_initialInterviewCaseId) showCaseDetail(_initialInterviewCaseId);
+}
+
+// ── 精神科評估：退出 / 暫存 / 不儲存 ──
+
+function exitPsyForm(caseId, recordId) {
+  _showExitDialog('離開精神科醫師評估',
+    () => savePsychiatristRecord(caseId, recordId),
+    () => draftPsychiatristRecord(caseId, recordId),
+    () => discardPsychiatristRecord(caseId)
+  );
+}
+
+function draftPsychiatristRecord(caseId, recordId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) { showToast('無法暫存：個案不存在', 'error'); return; }
+  const gV = id => document.getElementById(id)?.value?.trim() || '';
+  const gR = n => { const el = document.querySelector(`[name="${n}"]:checked`); return el ? el.value : ''; };
+  const snap = {
+    intervieweeName: gV('pr-name'), legalGender: gV('pr-gender'),
+    department: gV('pr-dept'), studentId: gV('pr-sid'),
+    date: gV('pr-date'), timeStart: gV('pr-start'), timeEnd: gV('pr-end'),
+    sessionPeriod: gV('pr-period'),
+    mainIssue: gV('pr-main'), coreAssessment: gV('pr-core'),
+    intervention: gV('pr-interv'), recommendations: gV('pr-rec'),
+    diagnosisType: gR('pr_diag'), diagnosisName: gV('pr-diag-name'),
+    medicationAdvice: gR('pr_med'), hospitalizationAdvice: gR('pr_hosp'),
+    otherNotes: gV('pr-notes'),
+    status: 'pending', draftSavedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(), updatedBy: currentUser?.email,
+  };
+  if (!c.psychiatristRecords) c.psychiatristRecords = [];
+  let draftId = recordId === '__new__' ? null : recordId;
+  if (draftId) {
+    const idx = c.psychiatristRecords.findIndex(r => r.id === draftId);
+    if (idx >= 0) Object.assign(c.psychiatristRecords[idx], snap);
+    else { snap.id = draftId; snap.createdAt = new Date().toISOString(); c.psychiatristRecords.push(snap); }
+  } else {
+    draftId = `psy_draft_${Date.now()}`;
+    snap.id = draftId; snap.createdAt = new Date().toISOString(); snap.createdBy = currentUser?.email;
+    c.psychiatristRecords.push(snap);
+  }
+
+  const caseLabel = `${c.name}（${caseId}）`;
+  const existingTodo = todosData.find(t => t.recordId === draftId && t.type === 'psychiatrist');
+  const todoId = existingTodo?.id || _genTodoId();
+  _putTodoItem({
+    id: todoId, type: 'psychiatrist', label: '精神科評估草稿',
+    caseId, caseLabel, recordId: draftId,
+    origin: 'manual', notifRead: true, done: false,
+    createdAt: existingTodo?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  clearPsyDraft();
+  stopPsyDraftAutosave();
+  document.getElementById('psychiatrist-modal')?.remove();
+  showCaseDetail(caseId);
+  showToast('已暫存草稿至待辦事項', 'success');
+
+  const jobId = bgJobAdd('暫存精神科評估草稿…');
+  Promise.all([
+    saveCasesChunks(caseId),
+    saveUserTodos(),
+  ]).then(() => bgJobDone(jobId, '草稿已儲存'))
+    .catch(e => bgJobFail(jobId, e.message));
+}
+
+function discardPsychiatristRecord(caseId) {
+  clearPsyDraft();
+  stopPsyDraftAutosave();
+  document.getElementById('psychiatrist-modal')?.remove();
+  if (caseId) showCaseDetail(caseId);
+}
+
+// ── 待辦事項頁面渲染 ──
+
+function renderTodosPage() {
+  const search     = (document.getElementById('todos-search')?.value || '').trim().toLowerCase();
+  const typeFilter = document.getElementById('todos-filter-type')?.value || '';
+  const statusF    = document.getElementById('todos-filter-status')?.value;
+  const statusFilter = statusF === undefined || statusF === null ? 'pending' : statusF;
+
+  const filtered = todosData.filter(t => {
+    if (statusFilter === 'pending' && t.done) return false;
+    if (statusFilter === 'done' && !t.done) return false;
+    if (typeFilter && t.type !== typeFilter) return false;
+    if (search) {
+      const hay = `${t.caseLabel || ''} ${t.caseId || ''} ${t.label || ''}`.toLowerCase();
+      if (!hay.includes(search)) return false;
+    }
+    return true;
+  });
+
+  filtered.sort((a, b) => {
+    if (a.done !== b.done) return a.done ? 1 : -1;
+    return (b.updatedAt || b.createdAt || '') > (a.updatedAt || a.createdAt || '') ? 1 : -1;
+  });
+
+  const body = document.getElementById('todos-body');
+  if (!body) return;
+
+  const batchBtn = document.getElementById('todos-batch-delete-btn');
+  const selectAll = document.getElementById('todos-select-all');
+  if (selectAll) selectAll.checked = false;
+  if (batchBtn) batchBtn.style.display = 'none';
+
+  if (!filtered.length) {
+    body.innerHTML = `<div style="padding:32px;text-align:center;color:#718096;font-size:.9rem;">目前沒有${statusFilter === 'pending' ? '未完成的' : statusFilter === 'done' ? '已完成的' : ''}待辦事項。</div>`;
+    return;
+  }
+
+  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', autosave: '自動備援', manual: '手動' };
+
+  body.innerHTML = filtered.map(t => {
+    const tLabel = typeLabels[t.type] || t.type;
+    const createdAt = t.createdAt ? new Date(t.createdAt).toLocaleString('zh-TW', { dateStyle:'short', timeStyle:'short' }) : '';
+    const doneAt = t.doneAt ? new Date(t.doneAt).toLocaleString('zh-TW', { dateStyle:'short', timeStyle:'short' }) : '';
+    const bgColor = t.done ? '#f7fafc' : (t.origin === 'autosave' ? '#fffaf0' : '#fff');
+    const borderColor = t.done ? '#e2e8f0' : (t.origin === 'autosave' ? '#fbd38d' : '#e2e8f0');
+
+    const continueBtn = !t.done ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">繼續編輯</button>` : '';
+    const doneBtn = !t.done
+      ? `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoDone('${t.id}')">完成</button>`
+      : `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoUndone('${t.id}')">恢復</button>`;
+    const deleteBtn = `<button class="btn btn-sm" style="font-size:.78rem;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_deleteTodo('${t.id}')">刪除</button>`;
+
+    return `<div class="todo-item" data-id="${t.id}" style="background:${bgColor};border:1px solid ${borderColor};border-radius:8px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:flex-start;gap:10px;">
+      <input type="checkbox" class="todo-select-cb" data-id="${t.id}" onchange="_updateTodoBatchBtn()" style="margin-top:3px;flex-shrink:0;">
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+          <span style="font-weight:600;font-size:.9rem;${t.done?'text-decoration:line-through;color:#a0aec0;':''}">${escHtml(t.label)}</span>
+          <span class="badge" style="background:#e2e8f0;color:#4a5568;font-size:.72rem;">${escHtml(tLabel)}</span>
+          ${t.origin === 'autosave' ? '<span class="badge badge-orange" style="font-size:.72rem;">自動備援</span>' : ''}
+          ${t.done ? '<span class="badge badge-green" style="font-size:.72rem;">已完成</span>' : ''}
+        </div>
+        ${t.caseLabel ? `<div style="font-size:.82rem;color:#718096;margin-bottom:4px;">個案：${escHtml(t.caseLabel)}</div>` : ''}
+        <div style="font-size:.78rem;color:#a0aec0;">${createdAt}${t.done && doneAt ? `　完成：${doneAt}` : ''}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;align-items:center;">
+        ${continueBtn}${doneBtn}${deleteBtn}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function _resetTodosFilter() {
+  const s = document.getElementById('todos-search'); if (s) s.value = '';
+  const t = document.getElementById('todos-filter-type'); if (t) t.value = '';
+  const st = document.getElementById('todos-filter-status'); if (st) st.value = 'pending';
+  renderTodosPage();
+}
+
+function _updateTodoBatchBtn() {
+  const checked = document.querySelectorAll('.todo-select-cb:checked').length;
+  const btn = document.getElementById('todos-batch-delete-btn');
+  if (btn) btn.style.display = checked > 0 ? 'inline-flex' : 'none';
+}
+
+function _toggleTodosSelectAll(el) {
+  document.querySelectorAll('.todo-select-cb').forEach(cb => { cb.checked = el.checked; });
+  _updateTodoBatchBtn();
+}
+
+function _batchDeleteTodos() {
+  const ids = [...document.querySelectorAll('.todo-select-cb:checked')].map(cb => cb.dataset.id);
+  if (!ids.length) return;
+  const incomplete = ids.filter(id => !todosData.find(t => t.id === id)?.done);
+  const msg = incomplete.length
+    ? `選取了 ${ids.length} 個待辦事項（其中 ${incomplete.length} 個未完成）。\n確定要全部刪除？`
+    : `確定要刪除 ${ids.length} 個已完成的待辦事項？`;
+  if (!confirm(msg)) return;
+  ids.forEach(id => _removeTodoItem(id));
+  saveUserTodos().catch(() => {});
+  renderTodosPage();
+}
+
+function _deleteTodo(id) {
+  const t = todosData.find(x => x.id === id);
+  if (!t) return;
+  if (!t.done && !confirm(`確定要刪除此草稿待辦事項？\n「${t.label}」${t.caseLabel ? `（${t.caseLabel}）` : ''}`)) return;
+  _removeTodoItem(id);
+  saveUserTodos().catch(() => {});
+  renderTodosPage();
+}
+
+function _markTodoDone(id) {
+  const t = todosData.find(x => x.id === id);
+  if (!t) return;
+  t.done = true;
+  t.doneAt = new Date().toISOString();
+  _syncTodoBadge();
+  saveUserTodos().catch(() => {});
+  renderTodosPage();
+}
+
+function _markTodoUndone(id) {
+  const t = todosData.find(x => x.id === id);
+  if (!t) return;
+  t.done = false;
+  t.doneAt = null;
+  _syncTodoBadge();
+  saveUserTodos().catch(() => {});
+  renderTodosPage();
+}
+
+function _continueTodo(id) {
+  const t = todosData.find(x => x.id === id);
+  if (!t) return;
+  // mark autosave as read when user acts on it
+  if (t.origin === 'autosave') { t.notifRead = true; saveUserTodos().catch(() => {}); _syncBellBadge(); }
+  if (t.type === 'record') {
+    if (t.recordId && t.caseId) {
+      // edit mode with existing pending record
+      const c = casesData.find(x => x.id === t.caseId);
+      const rec = c?.records?.find(r => r.id === t.recordId);
+      if (rec) { openNewRecordPage(t.caseId, t.recordId, rec.recordKind || '晤談記錄'); return; }
+    }
+    if (t.draftData && t.caseId) {
+      // crash recovery: open new form and restore from draftData
+      openNewRecordPage(t.caseId);
+      setTimeout(() => { try { restoreRecordDraft(t.draftData); } catch(_) {} }, 300);
+      return;
+    }
+    if (t.caseId) openNewRecordPage(t.caseId);
+  } else if (t.type === 'initial_interview') {
+    if (t.caseId) openInitialInterviewPage(t.caseId);
+  } else if (t.type === 'psychiatrist') {
+    if (t.recordId && t.caseId) { openPsychiatristModal(t.caseId, t.recordId); return; }
+    if (t.caseId) openPsychiatristModal(t.caseId);
+  } else if (t.draftData) {
+    // generic autosave with draftData — best-effort restore
+    if (t.caseId) openNewRecordPage(t.caseId);
+  }
+}
+
+// ── 自動備援通知列表 ──
+
+function renderTodosNotifList() {
+  const el = document.getElementById('notif-autosave-list');
+  if (!el) return;
+  const items = todosData.filter(t => t.origin === 'autosave' && !t.done);
+  if (!items.length) {
+    el.innerHTML = '<div style="padding:24px;text-align:center;color:#718096;font-size:.875rem;">沒有未完成的自動備援草稿。</div>';
+    return;
+  }
+  el.innerHTML = items.map(t => {
+    const when = t.createdAt ? new Date(t.createdAt).toLocaleString('zh-TW', { dateStyle:'short', timeStyle:'short' }) : '';
+    const unread = !t.notifRead;
+    return `<div style="padding:12px 16px;border-bottom:1px solid #f0f4f8;background:${unread?'#fffaf0':'#fff'};">
+      <div style="display:flex;align-items:flex-start;gap:10px;">
+        <div style="flex:1;">
+          <div style="font-size:.875rem;font-weight:${unread?'600':'400'};">${escHtml(t.label)}${t.caseLabel ? ` — ${escHtml(t.caseLabel)}` : ''}</div>
+          <div style="font-size:.78rem;color:#a0aec0;margin-top:2px;">${when}</div>
+        </div>
+        <button class="btn btn-primary btn-sm" style="font-size:.75rem;flex-shrink:0;" onclick="
+          document.getElementById('notif-panel').style.display='none';
+          _continueTodo('${t.id}')
+        ">繼續編輯</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════
+//  支援 "fileName" 或 "subfolder/fileName"（fileName 已含 .json 副檔名）
 async function driveSaveJsonInCases(fileName, content) {
   const slashIdx = fileName.indexOf('/');
   let parentId, leafName;
@@ -14471,16 +15078,18 @@ function renderPsychiatryPage() {
         actionBtns += `<button class="btn btn-danger btn-sm" onclick="deletePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}',renderPsychiatryPage)" style="font-size:.78rem;">刪除</button>`;
     }
 
+    const isPending = pr.status === 'pending';
     const deletedBadge = pr.deleted
       ? `<span style="background:#fed7d7;color:#c53030;padding:2px 8px;border-radius:10px;font-size:.75rem;white-space:nowrap;">已刪除 by ${escHtml(pr.deletedByName||pr.deletedBy||'—')}</span>`
-      : '';
+      : isPending ? `<span style="background:#fefcbf;color:#744210;padding:2px 8px;border-radius:10px;font-size:.75rem;white-space:nowrap;">草稿</span>` : '';
     const rowOpacity = pr.deleted ? 'opacity:.45;' : '';
+    const rowBg = isPending ? 'background:#fffff0;' : '';
 
-    return `<div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid #e2e8f0;flex-wrap:wrap;${rowOpacity}">
-      <div style="min-width:90px;font-weight:600;color:#2d3748;font-size:.88rem;">${escHtml(pr.date||'—')}</div>
+    return `<div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid #e2e8f0;flex-wrap:wrap;${rowOpacity}${rowBg}">
+      <div style="min-width:90px;font-weight:600;color:#2d3748;font-size:.88rem;">${escHtml(pr.date||'草稿')}</div>
       <div style="flex:1;min-width:120px;">
         <div style="font-size:.9rem;color:#2d3748;font-weight:600;">${escHtml(c.name||'—')} <span style="color:#718096;font-weight:400;font-size:.78rem;">${escHtml(c.id)}</span></div>
-        <div style="font-size:.82rem;color:#4a5568;">${diagLabel}</div>
+        <div style="font-size:.82rem;color:#4a5568;">${isPending ? '（草稿未儲存）' : diagLabel}</div>
       </div>
       ${tags.length ? `<div style="display:flex;gap:4px;">${tags.map(t=>`<span style="background:#fed7d7;color:#c53030;padding:2px 8px;border-radius:10px;font-size:.75rem;">${t}</span>`).join('')}</div>` : ''}
       ${deletedBadge}
@@ -14554,7 +15163,7 @@ function openPsychiatristModal(caseId, recordId) {
       <div style="background:#fff;border-radius:12px;padding:28px;width:95%;max-width:700px;margin:auto;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
           <h3 style="font-size:1.1rem;">${existing?'編輯':'新增'}精神科醫師會談評估</h3>
-          <button onclick="stopPsyDraftAutosave();document.getElementById('psychiatrist-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+          <button onclick="exitPsyForm('${escHtml(caseId)}','${existing?escHtml(recordId):'__new__'}')" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#a0aec0;">&times;</button>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
           <div><label class="field-label">與談者姓名</label><input type="text" class="field-input" id="pr-name" value="${escHtml(pr.intervieweeName)}"></div>
@@ -14604,10 +15213,11 @@ function openPsychiatristModal(caseId, recordId) {
           </div>
         </div>
         <div style="margin-bottom:12px;"><label class="field-label">其他注意事項</label><textarea class="field-input" id="pr-notes" rows="2" style="resize:vertical;">${escHtml(pr.otherNotes)}</textarea></div>
-        <div style="display:flex;gap:10px;">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
           <button class="btn btn-primary" onclick="savePsychiatristRecord('${escHtml(caseId)}','${existing?escHtml(recordId):'__new__'}')">儲存</button>
           ${existing ? `<button class="btn btn-secondary" onclick="printPsychiatristRecord('${escHtml(caseId)}','${escHtml(recordId)}')">列印</button>` : ''}
-          <button class="btn btn-secondary" onclick="stopPsyDraftAutosave();document.getElementById('psychiatrist-modal').remove()">取消</button>
+          <button class="btn btn-secondary" onclick="draftPsychiatristRecord('${escHtml(caseId)}','${existing?escHtml(recordId):'__new__'}')">暫存</button>
+          <button class="btn btn-secondary" onclick="discardPsychiatristRecord('${escHtml(caseId)}')">不儲存</button>
         </div>
       </div>
     </div>`);
@@ -14618,20 +15228,7 @@ function openPsychiatristModal(caseId, recordId) {
   stopPsyDraftAutosave();
   if (!existing) {
     _psyDraftKey = `scc_draft_psy_${currentUser?.email||''}_${caseId}`;
-    try {
-      const raw = localStorage.getItem(_psyDraftKey);
-      if (raw) {
-        const draft = JSON.parse(raw);
-        const when = draft._savedAt ? new Date(draft._savedAt).toLocaleString('zh-TW') : '稍早';
-        if (confirm(`偵測到未完成的精神科醫師評估表草稿（${when}），是否還原？`)) {
-          psyRestoreDraft(draft);
-        } else {
-          try { localStorage.removeItem(_psyDraftKey); } catch(_) {}
-          _psyDraftKey = null;
-        }
-      }
-    } catch(e) { console.warn('psy draft restore failed', e); }
-    if (_psyDraftKey) startPsyDraftAutosave();
+    startPsyDraftAutosave();
   } else {
     _psyDraftKey = null;
   }
@@ -14667,17 +15264,26 @@ async function savePsychiatristRecord(caseId, recordId) {
     otherNotes:gV('pr-notes'),
     updatedAt:new Date().toISOString(), updatedBy:currentUser?.email, updatedByName:currentUser?.name,
   };
+  delete data.status; delete data.draftSavedAt;
   if (!c.psychiatristRecords) c.psychiatristRecords = [];
   const now = new Date().toISOString();
   if (recordId === '__new__') {
+    // check if this started as a draft (opening form from a draft record)
     data.id = 'psy_'+Date.now()+'_'+Math.random().toString(36).slice(2);
     data.createdAt = now; data.createdBy = currentUser?.email; data.createdByName = currentUser?.name;
     c.psychiatristRecords.push(data);
   } else {
     const idx = c.psychiatristRecords.findIndex(r => r.id === recordId);
-    if (idx >= 0) c.psychiatristRecords[idx] = { ...c.psychiatristRecords[idx], ...data };
-    else c.psychiatristRecords.push({ ...data, id:recordId, createdAt:now });
+    if (idx >= 0) {
+      c.psychiatristRecords[idx] = { ...c.psychiatristRecords[idx], ...data };
+      delete c.psychiatristRecords[idx].status;
+      delete c.psychiatristRecords[idx].draftSavedAt;
+    } else c.psychiatristRecords.push({ ...data, id:recordId, createdAt:now });
   }
+  // mark corresponding todo as done
+  const _savedRecId = recordId !== '__new__' ? recordId : data.id;
+  const _psyTodo = todosData.find(t => t.recordId === _savedRecId && t.type === 'psychiatrist' && !t.done);
+  if (_psyTodo) { _psyTodo.done = true; _psyTodo.doneAt = now; saveUserTodos().catch(()=>{}); _syncTodoBadge(); }
   clearPsyDraft();
   document.getElementById('psychiatrist-modal')?.remove();
   showCaseDetail(caseId);
