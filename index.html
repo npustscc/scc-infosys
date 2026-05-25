@@ -1336,15 +1336,18 @@
       <div class="card" style="margin-bottom:20px;">
         <div class="card-header" style="flex-wrap:wrap;gap:8px;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-secondary btn-sm" onclick="shiftBookingDate(-1)" style="font-size:1.1rem;padding:3px 10px;">‹</button>
-            <input type="date" id="booking-date" style="padding:5px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;" onchange="renderBookingsPage()">
-            <button class="btn btn-secondary btn-sm" onclick="shiftBookingDate(1)" style="font-size:1.1rem;padding:3px 10px;">›</button>
-            <button class="btn btn-secondary btn-sm" onclick="setBookingDateToday()">今天</button>
+            <span id="bk-date-controls" style="display:flex;align-items:center;gap:8px;">
+              <button class="btn btn-secondary btn-sm" onclick="shiftBookingDate(-1)" style="font-size:1.1rem;padding:3px 10px;">‹</button>
+              <input type="date" id="booking-date" style="padding:5px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;" onchange="renderBookingsPage()">
+              <button class="btn btn-secondary btn-sm" onclick="shiftBookingDate(1)" style="font-size:1.1rem;padding:3px 10px;">›</button>
+              <button class="btn btn-secondary btn-sm" onclick="setBookingDateToday()">今天</button>
+            </span>
             <select id="bk-view-select" onchange="setBkViewSelect(this.value)" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;cursor:pointer;">
               <option value="1">1天</option>
               <option value="3">3天</option>
               <option value="5">5天</option>
               <option value="week">週</option>
+              <option value="list">列表檢視</option>
             </select>
             <button id="bk-prev-week" class="btn btn-secondary btn-sm" onclick="shiftBkWeek(-1)" style="display:none;">上週</button>
             <button id="bk-next-week" class="btn btn-secondary btn-sm" onclick="shiftBkWeek(1)" style="display:none;">下週</button>
@@ -1355,6 +1358,21 @@
             <button class="btn btn-primary" onclick="openBookingModal()">＋ 新增預約</button>
             <button class="btn btn-secondary btn-sm" onclick="_toggleBkSection('bookings-body','bk-overview-icon')" title="收折/展開" style="padding:2px 7px;font-size:.85rem;"><span id="bk-overview-icon">▼</span></button>
           </div>
+        </div>
+        <div id="bk-list-filter-bar" style="display:none;padding:10px 16px;background:#f7fafc;border-bottom:1px solid #e2e8f0;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="date" id="bk-list-from" class="field-input" style="width:auto;" title="日期起" onchange="renderBookingsPage()">
+          <span style="color:#718096;font-size:.85rem;align-self:center;">至</span>
+          <input type="date" id="bk-list-to" class="field-input" style="width:auto;" title="日期迄" onchange="renderBookingsPage()">
+          <select id="bk-list-room" class="field-input" style="width:auto;" onchange="renderBookingsPage()"><option value="">全部空間</option></select>
+          <select id="bk-list-counselor" class="field-input" style="width:auto;" onchange="renderBookingsPage()"><option value="">全部主責</option></select>
+          <select id="bk-list-sort" class="field-input" style="width:auto;" onchange="renderBookingsPage()">
+            <option value="time-asc">時間（舊→新）</option>
+            <option value="time-desc">時間（新→舊）</option>
+            <option value="room">依空間</option>
+            <option value="counselor">依主責</option>
+          </select>
+          <button class="btn btn-secondary btn-sm" onclick="resetBkListFilters()">重設</button>
+          <span id="bk-list-count" style="color:#718096;font-size:.85rem;align-self:center;"></span>
         </div>
         <div id="bookings-body" style="padding:0;min-height:60px;"></div>
       </div>
@@ -11196,6 +11214,7 @@ function _bkNextSerial() {
 
 let transferData = [];  // loaded from transfer.json
 let _bkDaySpan = parseInt(localStorage.getItem('scc_bk_span') || '1') || 1;
+let _bkListView = false;
 let _bkAuditPage = 0;
 let _bkAuditTotalPages = 1;
 let _bkAuditFilter = { dateFrom: '', dateTo: '', operator: '', room: '' };
@@ -11597,7 +11616,16 @@ function _bkGetMondayOf(dateStr) {
   return _bkFmtDate(date);
 }
 
+function setBkListView() {
+  _bkListView = true;
+  _bkWeekMode = false;
+  const fromEl = document.getElementById('bk-list-from');
+  if (fromEl && !fromEl.value) fromEl.value = new Date().toISOString().slice(0, 10);
+  renderBookingsPage();
+}
+
 function setBkWeekView() {
+  _bkListView = false;
   _bkWeekMode = true;
   _bkDaySpan = 5;
   const el = document.getElementById('booking-date');
@@ -11622,10 +11650,13 @@ function shiftBkWeek(delta) {
 }
 
 function setBkViewSelect(val) {
-  if (val === 'week') { setBkWeekView(); } else { setBkDaySpan(parseInt(val)); }
+  if (val === 'week') { setBkWeekView(); }
+  else if (val === 'list') { setBkListView(); }
+  else { setBkDaySpan(parseInt(val)); }
 }
 
 function setBkDaySpan(n) {
+  _bkListView = false;
   _bkWeekMode = false;
   _bkDaySpan = n;
   localStorage.setItem('scc_bk_span', n);
@@ -11683,13 +11714,19 @@ function renderBookingsPage() {
   const body = document.getElementById('bookings-body');
   if (!body) return;
 
-  // 更新下拉選單與上週/下週按鈕顯示
+  // 更新下拉選單與控制項顯示
   const viewSel = document.getElementById('bk-view-select');
-  if (viewSel) viewSel.value = _bkWeekMode ? 'week' : String(_bkDaySpan);
+  if (viewSel) viewSel.value = _bkListView ? 'list' : _bkWeekMode ? 'week' : String(_bkDaySpan);
   const prevWeekBtn = document.getElementById('bk-prev-week');
   const nextWeekBtn = document.getElementById('bk-next-week');
-  if (prevWeekBtn) prevWeekBtn.style.display = _bkWeekMode ? '' : 'none';
-  if (nextWeekBtn) nextWeekBtn.style.display = _bkWeekMode ? '' : 'none';
+  if (prevWeekBtn) prevWeekBtn.style.display = (!_bkListView && _bkWeekMode) ? '' : 'none';
+  if (nextWeekBtn) nextWeekBtn.style.display = (!_bkListView && _bkWeekMode) ? '' : 'none';
+  const dateCtrl = document.getElementById('bk-date-controls');
+  if (dateCtrl) dateCtrl.style.display = _bkListView ? 'none' : '';
+  const filterBar = document.getElementById('bk-list-filter-bar');
+  if (filterBar) filterBar.style.display = _bkListView ? 'flex' : 'none';
+
+  if (_bkListView) { renderBkListView(body); renderBookingsAuditLog(); return; }
 
   const WD = ['日','一','二','三','四','五','六'];
   const addDays = (dateStr, n) => _bkAddDays(dateStr, n);
@@ -11783,6 +11820,109 @@ function renderBookingsPage() {
     body.innerHTML = html;
   }
   renderBookingsAuditLog();
+}
+
+function renderBkListView(body) {
+  const from       = document.getElementById('bk-list-from')?.value      || '';
+  const to         = document.getElementById('bk-list-to')?.value        || '';
+  const roomFilter = document.getElementById('bk-list-room')?.value      || '';
+  const cnslFilter = document.getElementById('bk-list-counselor')?.value || '';
+  const sort       = document.getElementById('bk-list-sort')?.value      || 'time-asc';
+
+  // 動態填充空間選單
+  const roomSel = document.getElementById('bk-list-room');
+  if (roomSel) {
+    const cur = roomSel.value;
+    roomSel.innerHTML = '<option value="">全部空間</option>' +
+      _getBkDisplayRooms().map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
+    roomSel.value = cur;
+  }
+
+  // 動態填充主責選單
+  const cnslSel = document.getElementById('bk-list-counselor');
+  if (cnslSel) {
+    const cur = cnslSel.value;
+    const names = [...new Set(bookingsData.map(b => b.counselorName || '').filter(Boolean))].sort();
+    cnslSel.innerHTML = '<option value="">全部主責</option>' +
+      names.map(n => `<option value="${escHtml(n)}">${escHtml(n)}</option>`).join('');
+    cnslSel.value = cur;
+  }
+
+  // 篩選
+  let rows = bookingsData.filter(b => {
+    if (from && (b.date || '') < from) return false;
+    if (to   && (b.date || '') > to)   return false;
+    if (roomFilter && b.room !== roomFilter) return false;
+    if (cnslFilter && (b.counselorName || '') !== cnslFilter) return false;
+    return true;
+  });
+
+  // 排序
+  const key = b => (b.date || '') + (b.startTime || '') + (b.room || '');
+  rows.sort((a, b) => {
+    if (sort === 'time-desc') return key(b) < key(a) ? -1 : 1;
+    if (sort === 'room')      return (a.room || '') < (b.room || '') ? -1 : (a.room || '') > (b.room || '') ? 1 : key(a) < key(b) ? -1 : 1;
+    if (sort === 'counselor') return (a.counselorName || '') < (b.counselorName || '') ? -1 : (a.counselorName || '') > (b.counselorName || '') ? 1 : key(a) < key(b) ? -1 : 1;
+    return key(a) < key(b) ? -1 : 1; // time-asc default
+  });
+
+  const countEl = document.getElementById('bk-list-count');
+  if (countEl) countEl.textContent = `共 ${rows.length} 筆`;
+
+  if (rows.length === 0) {
+    body.innerHTML = '<div style="padding:24px;text-align:center;color:#718096;">無符合條件的預約</div>';
+    return;
+  }
+
+  const WD = ['日','一','二','三','四','五','六'];
+  const fmtT = t => (t || '').slice(0, 5);
+  const today = new Date().toISOString().slice(0, 10);
+  const fmtDate = ds => {
+    const d = new Date(ds + 'T00:00:00');
+    return `${d.getFullYear()-1911}/${d.getMonth()+1}/${d.getDate()} (${WD[d.getDay()]})`;
+  };
+
+  body.innerHTML = rows.map(b => {
+    const isPast   = b.date < today;
+    const isTdy    = b.date === today;
+    const rowBg    = isTdy ? '#ebf8ff' : isPast ? '#f9fafb' : '#fff';
+    const dateClr  = isTdy ? '#2b6cb0' : isPast ? '#a0aec0' : '#2d3748';
+    const caseTag  = b.caseId ? `${escHtml(b.caseId)}${b.caseName ? ' ' + escHtml(b.caseName) : ''}` : '';
+    const calTag   = b.calendarEventId
+      ? `<span title="已同步 Google Calendar" style="font-size:.85rem;">📅</span>`
+      : `<button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:.75rem;" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅 同步</button>`;
+    return `<div style="display:flex;align-items:flex-start;gap:12px;padding:12px 16px;border-bottom:1px solid #e2e8f0;background:${rowBg};flex-wrap:wrap;">
+      <div style="min-width:140px;">
+        <div style="font-weight:700;font-size:.88rem;color:${dateClr};">${fmtDate(b.date)}</div>
+        <div style="font-size:.85rem;color:#4a5568;margin-top:2px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</div>
+      </div>
+      <div style="min-width:90px;">
+        <div style="font-size:.75rem;color:#718096;">空間</div>
+        <div style="font-size:.88rem;color:#2d3748;font-weight:600;">${escHtml(b.room || '—')}</div>
+      </div>
+      <div style="min-width:90px;">
+        <div style="font-size:.75rem;color:#718096;">主責</div>
+        <div style="font-size:.88rem;color:#2d3748;">${escHtml(b.counselorName || '—')}</div>
+      </div>
+      ${caseTag ? `<div style="min-width:90px;"><div style="font-size:.75rem;color:#718096;">個案</div><div style="font-size:.88rem;color:#2471a3;">${caseTag}</div></div>` : ''}
+      ${b.notes ? `<div style="flex:1;min-width:100px;"><div style="font-size:.75rem;color:#718096;">備註</div><div style="font-size:.85rem;color:#4a5568;">${escHtml(b.notes.slice(0,60))}${b.notes.length>60?'…':''}</div></div>` : ''}
+      <div style="margin-left:auto;display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
+        ${calTag}
+        <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="editBooking('${escHtml(b.id)}')">編輯</button>
+        <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="copyBooking('${escHtml(b.id)}')">複製</button>
+        <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="bkFillRecord('${escHtml(b.id)}')">填寫記錄</button>
+        <button class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="deleteBooking('${escHtml(b.id)}')">刪除</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function resetBkListFilters() {
+  ['bk-list-from', 'bk-list-to'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  ['bk-list-room', 'bk-list-counselor'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const sortEl = document.getElementById('bk-list-sort');
+  if (sortEl) sortEl.value = 'time-asc';
+  renderBookingsPage();
 }
 
 function bkDragStart(event, bookingId) {
