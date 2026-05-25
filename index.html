@@ -1027,7 +1027,7 @@
         <div id="cases-filter-bar" style="display:flex;flex-wrap:wrap;gap:8px;padding:12px 16px;border-bottom:1px solid #e2e8f0;align-items:center;">
           <select id="cf-semester"
             style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
-            onchange="caseFilters.semester=this.value;localStorage.setItem('scc_semester_pref',this.value);renderCases()">
+            onchange="caseFilters.semester=this.value;localStorage.setItem('scc_semester_pref',this.value);syncUserPref_({semesterPref:this.value});renderCases()">
             <option value="">全部學期</option>
           </select>
           <input id="cf-q" type="text" placeholder="搜尋姓名 / 學號 / 案號"
@@ -1136,6 +1136,19 @@
           <p style="font-size:.88rem;color:#718096;margin-bottom:12px;">將匯入個案的「主責人員」文字名稱連結至系統帳號，連結後將自動移除「未連結帳號」標示。</p>
           <button class="btn btn-primary" onclick="renderCounselorLinkTool()">掃描未連結個案</button>
           <div id="counselor-link-result" style="margin-top:14px;"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:20px;">
+        <div class="card-header"><h3>個案資料刪除</h3></div>
+        <div style="padding:16px 20px;">
+          <p style="font-size:.88rem;color:#718096;margin-bottom:12px;">依案號、姓名或學號搜尋個案，選擇要刪除的學期後執行軟刪除（可於資源回收桶復原）。</p>
+          <div style="display:flex;gap:8px;margin-bottom:14px;">
+            <input type="text" id="case-delete-q" class="field-input" placeholder="輸入案號 / 姓名 / 學號…"
+              style="flex:1;max-width:360px;" oninput="searchCaseForDelete(this.value)" />
+            <button class="btn btn-secondary" onclick="document.getElementById('case-delete-q').value='';searchCaseForDelete('')">清除</button>
+          </div>
+          <div id="case-delete-results"></div>
         </div>
       </div>
     </div>
@@ -2559,6 +2572,19 @@ function _userPref_(key, def) {
   return u ? (u[key] ?? def) : def;
 }
 
+function applyDrivePrefs() {
+  const sp = _userPref_('semesterPref');
+  if (sp) { caseFilters.semester = sp; try { localStorage.setItem('scc_semester_pref', sp); } catch(_) {} }
+  const sl = _userPref_('sortStatusLocked');
+  if (sl !== undefined) { sortStatusLocked = Boolean(sl); try { localStorage.setItem('scc_sort_status_locked', String(sl)); } catch(_) {} }
+  const rps = _userPref_('recPageSize');
+  if (rps != null) { _recPageSize = parseInt(rps) || 5; try { localStorage.setItem('scc_rec_pagesize', String(rps)); } catch(_) {} }
+  const bds = _userPref_('bkDaySpan');
+  if (bds != null) { _bkDaySpan = parseInt(bds) || 1; try { localStorage.setItem('scc_bk_span', String(bds)); } catch(_) {} }
+  const usd = _userPref_('unassignedScanDate');
+  if (usd) { try { localStorage.setItem('scc_unassigned_scan', usd); } catch(_) {} }
+}
+
 // 傳入 filterFn([email, info]) 過濾，依使用頻率（開啟記憶時）或職別+筆畫排序
 function getSortedCounselorEntries(filterFn) {
   const entries = Object.entries(configData?.users || {}).filter(filterFn);
@@ -2946,6 +2972,7 @@ async function afterLogin() {
     configData = cfg;
     resolveUserRole();
     migrateConfigIfNeeded(); // 背景靜默修復已知損毀
+    applyDrivePrefs();
     initSidebarDrag();
     renderNotifBell();
     document.getElementById('login-screen').style.display = 'none';
@@ -3312,6 +3339,7 @@ function resetCaseFilters() {
   caseFilters = { q: '', status: '', semester: sem, counselor: '', dateFrom: '', dateTo: '' };
   caseSort = { col: null, dir: 1 };
   localStorage.setItem('scc_semester_pref', sem);
+  syncUserPref_({ semesterPref: sem });
   ['cf-q', 'cf-status', 'cf-counselor', 'cf-date-from', 'cf-date-to'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
   });
@@ -3690,6 +3718,7 @@ function toggleRecordExpand(rid) {
 function toggleSortLock() {
   sortStatusLocked = !sortStatusLocked;
   localStorage.setItem('scc_sort_status_locked', sortStatusLocked);
+  syncUserPref_({ sortStatusLocked });
   renderCases();
 }
 function setCaseSort(col) {
@@ -4238,7 +4267,7 @@ function showCaseDetail(caseId) {
 
   const _pageSizeBtn = (n) =>
     `<button class="btn btn-secondary btn-sm${_recPageSize===n?' active':''}" style="font-size:.78rem;${_recPageSize===n?'background:#bee3f8;border-color:#90cdf4;':''}min-width:28px;"
-      onclick="_recPageSize=${n};_recPage=1;localStorage.setItem('scc_rec_pagesize','${n}');showCaseDetail('${escHtml(c.id)}')">${n}</button>`;
+      onclick="_recPageSize=${n};_recPage=1;localStorage.setItem('scc_rec_pagesize','${n}');syncUserPref_({recPageSize:${n}});showCaseDetail('${escHtml(c.id)}')">${n}</button>`;
   const paginationHtml = totalRecCount === 0 ? '' : `
     <div style="display:flex;align-items:center;gap:6px;margin-top:10px;flex-wrap:wrap;padding-top:8px;border-top:1px solid #f0f4f8;">
       <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" ${_recPage<=1?'disabled':''} onclick="_recPage--;showCaseDetail('${escHtml(c.id)}')">◀</button>
@@ -9597,7 +9626,6 @@ function auditToggleCol(n) {
   if (window._auditColsHidden.has(n)) window._auditColsHidden.delete(n);
   else window._auditColsHidden.add(n);
   const colArr = [...window._auditColsHidden];
-  try { localStorage.setItem('scc_audit_cols_' + (currentUser?.email || ''), JSON.stringify(colArr)); } catch (_) {}
   syncUserPref_({ auditColsHidden: colArr });
   filterAuditLog();
 }
@@ -10850,11 +10878,11 @@ async function saveUnassignedRecords() {
 async function scanUnassignedRecords() {
   if (!unassignedRecordsData.length) return;
   const todayKey = new Date().toISOString().slice(0, 10);
-  const lastScan = localStorage.getItem('scc_unassigned_scan');
+  const lastScan = _userPref_('unassignedScanDate') || localStorage.getItem('scc_unassigned_scan');
   if (lastScan === todayKey) return;
 
   const pending = unassignedRecordsData.filter(r => !r.resolved);
-  if (!pending.length) { localStorage.setItem('scc_unassigned_scan', todayKey); return; }
+  if (!pending.length) { localStorage.setItem('scc_unassigned_scan', todayKey); syncUserPref_({ unassignedScanDate: todayKey }); return; }
 
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   let matched = 0;
@@ -10906,6 +10934,7 @@ async function scanUnassignedRecords() {
     renderNotifBell();
   }
   localStorage.setItem('scc_unassigned_scan', todayKey);
+  syncUserPref_({ unassignedScanDate: todayKey });
 }
 
 function renderUnassignedRecordsPage() {
@@ -11542,6 +11571,7 @@ function setBkDaySpan(n) {
   _bkWeekMode = false;
   _bkDaySpan = n;
   localStorage.setItem('scc_bk_span', n);
+  syncUserPref_({ bkDaySpan: n });
   renderBookingsPage();
 }
 
@@ -13038,6 +13068,106 @@ function showPsychTestPreviewModal(rows, prog) {
 // ══════════════════════════════════════════════
 //  學期批次刪除
 // ══════════════════════════════════════════════
+function searchCaseForDelete(q) {
+  const wrap = document.getElementById('case-delete-results');
+  if (!wrap) return;
+  const v = (q || '').trim();
+  if (!v) { wrap.innerHTML = ''; return; }
+
+  const matches = casesData.filter(c =>
+    c.id.includes(v) ||
+    (c.name || '').includes(v) ||
+    (c.studentId || '').includes(v)
+  );
+
+  if (!matches.length) {
+    wrap.innerHTML = '<p style="font-size:.88rem;color:#718096;padding:4px 0;">找不到符合的個案。</p>';
+    return;
+  }
+
+  // 依姓名+學號分組（同一個人）
+  const groups = new Map();
+  matches.forEach(c => {
+    const key = (c.studentId || '') + '|' + (c.name || '');
+    if (!groups.has(key)) groups.set(key, { name: c.name, studentId: c.studentId, cases: [] });
+    groups.get(key).cases.push(c);
+  });
+
+  let html = '';
+  groups.forEach(({ name, studentId, cases }) => {
+    cases.sort((a, b) => (b.openDate || '').localeCompare(a.openDate || ''));
+    const rows = cases.map(c => {
+      const sem = openDateToSemPrefix(c.openDate);
+      const semLabel = sem ? semesterLabel(sem) + ' 學期' : '（無開案日期）';
+      const recCount = (c.records || []).filter(r => !r.deleted).length;
+      const isDeleted = c.deleted;
+      const deletedBadge = isDeleted ? `<span class="badge badge-red" style="font-size:.75rem;margin-left:4px;">已刪除</span>` : '';
+      return `<tr>
+        <td style="padding:7px 12px;font-size:.86rem;font-family:monospace;">${escHtml(c.id)}</td>
+        <td style="padding:7px 12px;font-size:.86rem;">${escHtml(semLabel)}${deletedBadge}</td>
+        <td style="padding:7px 12px;font-size:.86rem;color:#718096;">${recCount} 筆記錄</td>
+        <td style="padding:7px 12px;">
+          <button class="btn btn-danger btn-sm" style="font-size:.78rem;${isDeleted ? 'opacity:.4;cursor:not-allowed;' : ''}"
+            ${isDeleted ? 'disabled' : `onclick="confirmDeleteCaseFromAdmin('${escHtml(c.id)}')"`}>
+            刪除此學期
+          </button>
+        </td>
+      </tr>`;
+    }).join('');
+    html += `<div style="margin-bottom:14px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+      <div style="background:#f7fafc;padding:10px 14px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:10px;">
+        <strong style="font-size:.95rem;">${escHtml(name || '（無姓名）')}</strong>
+        ${studentId ? `<span style="color:#718096;font-size:.84rem;">學號：${escHtml(studentId)}</span>` : ''}
+        <span style="color:#a0aec0;font-size:.8rem;">${cases.length} 筆個案</span>
+      </div>
+      <table style="width:100%;border-collapse:collapse;">
+        <thead><tr style="background:#fafafa;">
+          <th style="padding:6px 12px;font-size:.8rem;text-align:left;color:#718096;font-weight:500;">案號</th>
+          <th style="padding:6px 12px;font-size:.8rem;text-align:left;color:#718096;font-weight:500;">學期</th>
+          <th style="padding:6px 12px;font-size:.8rem;text-align:left;color:#718096;font-weight:500;">晤談記錄</th>
+          <th style="padding:6px 12px;font-size:.8rem;text-align:left;color:#718096;font-weight:500;">操作</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  });
+  wrap.innerHTML = html;
+}
+
+async function confirmDeleteCaseFromAdmin(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c || c.deleted) return;
+  const sem = openDateToSemPrefix(c.openDate);
+  const semLabel = sem ? `（${semesterLabel(sem)} 學期）` : '';
+  if (!confirm(`確定要刪除個案「${c.name}（${c.id}）」${semLabel}？\n\n此個案將標記為已刪除，管理者可在個案列表中復原。`)) return;
+
+  const idx = casesData.findIndex(x => x.id === caseId);
+  const prev = { deleted: c.deleted, deletedBy: c.deletedBy, deletedByName: c.deletedByName, deletedAt: c.deletedAt };
+  casesData[idx].deleted       = true;
+  casesData[idx].deletedBy     = currentUser.email;
+  casesData[idx].deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
+  casesData[idx].deletedAt     = new Date().toISOString();
+  casesData[idx].updatedAt     = new Date().toISOString();
+  showLoading('刪除個案…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('刪除個案', caseId);
+    hideLoading();
+    const q = document.getElementById('case-delete-q')?.value || '';
+    searchCaseForDelete(q);
+    renderCases();
+    setAlert('admin-alert', 'success', `個案「${c.name}（${c.id}）」已刪除。`);
+  } catch (err) {
+    Object.assign(casesData[idx], prev);
+    if (!prev.deleted) {
+      delete casesData[idx].deleted; delete casesData[idx].deletedBy;
+      delete casesData[idx].deletedByName; delete casesData[idx].deletedAt;
+    }
+    hideLoading();
+    alert('刪除失敗：' + err.message);
+  }
+}
+
 async function openSemesterDeleteModal() {
   const semMap = new Map();
   casesData.filter(c => !c.deleted).forEach(c => {
@@ -14219,19 +14349,22 @@ function saveSidebarOrder() {
   document.querySelectorAll('.sidebar-section').forEach((section, si) => {
     const ids = [...section.querySelectorAll('.nav-item')].map(n => n.dataset.navId).filter(Boolean);
     localStorage.setItem('scc_nav_order_' + si, JSON.stringify(ids));
+    syncUserPref_({ ['navOrder_' + si]: ids });
   });
 }
 
 function restoreSidebarOrder() {
   document.querySelectorAll('.sidebar-section').forEach((section, si) => {
-    const saved = localStorage.getItem('scc_nav_order_' + si);
-    if (!saved) return;
-    try {
-      const ids = JSON.parse(saved);
-      const itemMap = {};
-      section.querySelectorAll('.nav-item').forEach(n => { if (n.dataset.navId) itemMap[n.dataset.navId] = n; });
-      ids.forEach(id => { if (itemMap[id]) section.appendChild(itemMap[id]); });
-    } catch(_) {}
+    let ids = _userPref_('navOrder_' + si);
+    if (!ids) {
+      const saved = localStorage.getItem('scc_nav_order_' + si);
+      if (!saved) return;
+      try { ids = JSON.parse(saved); } catch(_) { return; }
+    }
+    if (!ids?.length) return;
+    const itemMap = {};
+    section.querySelectorAll('.nav-item').forEach(n => { if (n.dataset.navId) itemMap[n.dataset.navId] = n; });
+    ids.forEach(id => { if (itemMap[id]) section.appendChild(itemMap[id]); });
   });
 }
 </script>
