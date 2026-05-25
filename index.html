@@ -1360,12 +1360,12 @@
           </div>
         </div>
         <div id="bk-list-filter-bar" style="display:none;padding:10px 16px;background:#f7fafc;border-bottom:1px solid #e2e8f0;gap:8px;align-items:center;flex-wrap:wrap;">
-          <input type="date" id="bk-list-from" class="field-input" style="width:auto;" title="日期起" onchange="renderBookingsPage()">
+          <input type="date" id="bk-list-from" class="field-input" style="width:auto;" title="日期起" onchange="_bkListPage=1;renderBookingsPage()">
           <span style="color:#718096;font-size:.85rem;align-self:center;">至</span>
-          <input type="date" id="bk-list-to" class="field-input" style="width:auto;" title="日期迄" onchange="renderBookingsPage()">
-          <select id="bk-list-room" class="field-input" style="width:auto;" onchange="renderBookingsPage()"><option value="">全部空間</option></select>
-          <select id="bk-list-counselor" class="field-input" style="width:auto;" onchange="renderBookingsPage()"><option value="">全部主責</option></select>
-          <select id="bk-list-sort" class="field-input" style="width:auto;" onchange="renderBookingsPage()">
+          <input type="date" id="bk-list-to" class="field-input" style="width:auto;" title="日期迄" onchange="_bkListPage=1;renderBookingsPage()">
+          <select id="bk-list-room" class="field-input" style="width:auto;" onchange="_bkListPage=1;renderBookingsPage()"><option value="">全部空間</option></select>
+          <select id="bk-list-counselor" class="field-input" style="width:auto;" onchange="_bkListPage=1;renderBookingsPage()"><option value="">全部主責</option></select>
+          <select id="bk-list-sort" class="field-input" style="width:auto;" onchange="_bkListPage=1;renderBookingsPage()">
             <option value="time-asc">時間（舊→新）</option>
             <option value="time-desc">時間（新→舊）</option>
             <option value="room">依空間</option>
@@ -7279,6 +7279,8 @@ async function finalizeImport(imported, prog) {
 //  初次晤談紀錄表
 // ══════════════════════════════════════════════
 let _initialInterviewCaseId = null;
+let _iiDraftKey  = null;
+let _iiDraftTimer = null;
 
 const II_PROBLEMS = [
   { key: '1.自我探索', subs: ['不知存在的意義','不知能力為何','不知興趣為何'] },
@@ -7691,6 +7693,27 @@ function openInitialInterviewPage(caseId) {
 
   setAlert('initial-interview-alert', '', '');
   showPage('page-initial-interview', null);
+
+  stopIIDraftAutosave();
+  if (!(existing && !existing.deleted && existing.type !== 'continuation' && existing.type !== 'linkedRecord')) {
+    _iiDraftKey = `scc_draft_ii_${currentUser?.email||''}_${caseId}`;
+    try {
+      const raw = localStorage.getItem(_iiDraftKey);
+      if (raw) {
+        const draft = JSON.parse(raw);
+        const when = draft._savedAt ? new Date(draft._savedAt).toLocaleString('zh-TW') : '稍早';
+        if (confirm(`偵測到未完成的初次晤談表草稿（${when}），是否還原？`)) {
+          _iiPopulateForm(draft);
+        } else {
+          try { localStorage.removeItem(_iiDraftKey); } catch(_) {}
+          _iiDraftKey = null;
+        }
+      }
+    } catch(e) { console.warn('ii draft restore failed', e); }
+    if (_iiDraftKey) startIIDraftAutosave();
+  } else {
+    _iiDraftKey = null;
+  }
 }
 
 function _iiPopulateForm(d) {
@@ -7843,6 +7866,7 @@ async function saveInitialInterview() {
     await saveCasesChunks(_initialInterviewCaseId);
     auditLog('儲存初次晤談表', _initialInterviewCaseId);
     bgJobDone(jobId, '初次晤談表已儲存');
+    clearIIDraft();
     showCaseDetail(_initialInterviewCaseId);
   } catch (err) {
     casesData[cidx].initialInterview = prev;
@@ -7852,7 +7876,34 @@ async function saveInitialInterview() {
 }
 
 function cancelInitialInterview() {
+  stopIIDraftAutosave();
   if (_initialInterviewCaseId) showCaseDetail(_initialInterviewCaseId);
+}
+
+function startIIDraftAutosave() {
+  stopIIDraftAutosave();
+  if (!_iiDraftKey) return;
+  _iiDraftTimer = setInterval(() => {
+    try {
+      const page = document.getElementById('page-initial-interview');
+      if (!page?.classList.contains('active')) return;
+      const snap = snapshotInitialInterview();
+      delete snap.familyImage; // skip base64 image to avoid quota issues
+      snap._savedAt = new Date().toISOString();
+      if (snap.family || snap.mainIssue || snap.summary || snap.plan || (snap.problemsMain||[]).length)
+        localStorage.setItem(_iiDraftKey, JSON.stringify(snap));
+    } catch(e) { console.warn('ii draft autosave failed', e); }
+  }, 5000);
+}
+
+function stopIIDraftAutosave() {
+  if (_iiDraftTimer) { clearInterval(_iiDraftTimer); _iiDraftTimer = null; }
+}
+
+function clearIIDraft() {
+  stopIIDraftAutosave();
+  if (_iiDraftKey) { try { localStorage.removeItem(_iiDraftKey); } catch(_) {} }
+  _iiDraftKey = null;
 }
 
 // 舊案延續：在卡片內展示過往初次晤談表 chips 供選擇
@@ -11215,6 +11266,8 @@ function _bkNextSerial() {
 let transferData = [];  // loaded from transfer.json
 let _bkDaySpan = parseInt(localStorage.getItem('scc_bk_span') || '1') || 1;
 let _bkListView = false;
+let _bkListPage = 1;
+const _BK_LIST_PAGE_SIZE = 15;
 let _bkAuditPage = 0;
 let _bkAuditTotalPages = 1;
 let _bkAuditFilter = { dateFrom: '', dateTo: '', operator: '', room: '' };
@@ -11619,6 +11672,7 @@ function _bkGetMondayOf(dateStr) {
 function setBkListView() {
   _bkListView = true;
   _bkWeekMode = false;
+  _bkListPage = 1;
   const fromEl = document.getElementById('bk-list-from');
   if (fromEl && !fromEl.value) fromEl.value = new Date().toISOString().slice(0, 10);
   renderBookingsPage();
@@ -11866,10 +11920,15 @@ function renderBkListView(body) {
     return key(a) < key(b) ? -1 : 1; // time-asc default
   });
 
-  const countEl = document.getElementById('bk-list-count');
-  if (countEl) countEl.textContent = `共 ${rows.length} 筆`;
+  const total = rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / _BK_LIST_PAGE_SIZE));
+  _bkListPage = Math.min(Math.max(1, _bkListPage), totalPages);
+  const pageRows = rows.slice((_bkListPage - 1) * _BK_LIST_PAGE_SIZE, _bkListPage * _BK_LIST_PAGE_SIZE);
 
-  if (rows.length === 0) {
+  const countEl = document.getElementById('bk-list-count');
+  if (countEl) countEl.textContent = `共 ${total} 筆`;
+
+  if (total === 0) {
     body.innerHTML = '<div style="padding:24px;text-align:center;color:#718096;">無符合條件的預約</div>';
     return;
   }
@@ -11882,7 +11941,7 @@ function renderBkListView(body) {
     return `${d.getFullYear()-1911}/${d.getMonth()+1}/${d.getDate()} (${WD[d.getDay()]})`;
   };
 
-  body.innerHTML = rows.map(b => {
+  body.innerHTML = pageRows.map(b => {
     const isPast   = b.date < today;
     const isTdy    = b.date === today;
     const rowBg    = isTdy ? '#ebf8ff' : isPast ? '#f9fafb' : '#fff';
@@ -11914,14 +11973,24 @@ function renderBkListView(body) {
         <button class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="deleteBooking('${escHtml(b.id)}')">刪除</button>
       </div>
     </div>`;
-  }).join('');
+  }).join('') + (totalPages > 1 ? `
+  <div style="display:flex;align-items:center;justify-content:center;gap:8px;padding:12px 16px;border-top:1px solid #e2e8f0;background:#f7fafc;flex-wrap:wrap;">
+    <button class="btn btn-secondary btn-sm" onclick="_bkListGo(1)" ${_bkListPage===1?'disabled':''}>«</button>
+    <button class="btn btn-secondary btn-sm" onclick="_bkListGo(${_bkListPage-1})" ${_bkListPage===1?'disabled':''}>‹</button>
+    <span style="font-size:.85rem;color:#4a5568;">第 ${_bkListPage} / ${totalPages} 頁（共 ${total} 筆）</span>
+    <button class="btn btn-secondary btn-sm" onclick="_bkListGo(${_bkListPage+1})" ${_bkListPage===totalPages?'disabled':''}>›</button>
+    <button class="btn btn-secondary btn-sm" onclick="_bkListGo(${totalPages})" ${_bkListPage===totalPages?'disabled':''}>»</button>
+  </div>` : '');
 }
+
+function _bkListGo(page) { _bkListPage = page; renderBookingsPage(); }
 
 function resetBkListFilters() {
   ['bk-list-from', 'bk-list-to'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   ['bk-list-room', 'bk-list-counselor'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   const sortEl = document.getElementById('bk-list-sort');
   if (sortEl) sortEl.value = 'time-asc';
+  _bkListPage = 1;
   renderBookingsPage();
 }
 
@@ -14285,6 +14354,58 @@ function printTransferAssessment(transferId) {
 // ══════════════════════════════════════════════
 //  精神科醫師評估
 // ══════════════════════════════════════════════
+let _psyDraftKey  = null;
+let _psyDraftTimer = null;
+
+function snapshotPsyDraft() {
+  const gV = id => document.getElementById(id)?.value?.trim() || '';
+  const gR = n  => document.querySelector(`[name="${n}"]:checked`)?.value || '';
+  return {
+    _savedAt: new Date().toISOString(),
+    name:gV('pr-name'), gender:gV('pr-gender'), dept:gV('pr-dept'), sid:gV('pr-sid'),
+    date:gV('pr-date'), period:gV('pr-period'), start:gV('pr-start'), end:gV('pr-end'),
+    main:gV('pr-main'), core:gV('pr-core'), interv:gV('pr-interv'), rec:gV('pr-rec'),
+    diagType:gR('pr_diag'), diagName:gV('pr-diag-name'),
+    med:gR('pr_med'), hosp:gR('pr_hosp'), notes:gV('pr-notes'),
+  };
+}
+
+function psyRestoreDraft(d) {
+  const sV = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+  const sR = (n, v) => { if (!v) return; const el = document.querySelector(`[name="${n}"][value="${CSS.escape(v)}"]`); if (el) el.checked = true; };
+  sV('pr-name',d.name); sV('pr-gender',d.gender); sV('pr-dept',d.dept); sV('pr-sid',d.sid);
+  sV('pr-date',d.date); sV('pr-period',d.period); sV('pr-start',d.start); sV('pr-end',d.end);
+  sV('pr-main',d.main); sV('pr-core',d.core); sV('pr-interv',d.interv); sV('pr-rec',d.rec);
+  sV('pr-diag-name',d.diagName); sV('pr-notes',d.notes);
+  if (d.diagType) { sR('pr_diag', d.diagType); const row = document.getElementById('pr-diag-row'); if (row) row.style.display = d.diagType === 'specific' ? '' : 'none'; }
+  if (d.med)  sR('pr_med',  d.med);
+  if (d.hosp) sR('pr_hosp', d.hosp);
+  if (d.period && typeof prFillPeriod === 'function') prFillPeriod();
+}
+
+function startPsyDraftAutosave() {
+  stopPsyDraftAutosave();
+  if (!_psyDraftKey) return;
+  _psyDraftTimer = setInterval(() => {
+    try {
+      if (!document.getElementById('psychiatrist-modal')) { stopPsyDraftAutosave(); return; }
+      const snap = snapshotPsyDraft();
+      if (snap.main || snap.core || snap.interv || snap.rec)
+        localStorage.setItem(_psyDraftKey, JSON.stringify(snap));
+    } catch(e) { console.warn('psy draft autosave failed', e); }
+  }, 5000);
+}
+
+function stopPsyDraftAutosave() {
+  if (_psyDraftTimer) { clearInterval(_psyDraftTimer); _psyDraftTimer = null; }
+}
+
+function clearPsyDraft() {
+  stopPsyDraftAutosave();
+  if (_psyDraftKey) { try { localStorage.removeItem(_psyDraftKey); } catch(_) {} }
+  _psyDraftKey = null;
+}
+
 function renderPsychiatryPage() {
   const q    = (document.getElementById('psychiatry-q')?.value    || '').trim().toLowerCase();
   const diag = (document.getElementById('psychiatry-diag')?.value || '');
@@ -14433,7 +14554,7 @@ function openPsychiatristModal(caseId, recordId) {
       <div style="background:#fff;border-radius:12px;padding:28px;width:95%;max-width:700px;margin:auto;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
           <h3 style="font-size:1.1rem;">${existing?'編輯':'新增'}精神科醫師會談評估</h3>
-          <button onclick="document.getElementById('psychiatrist-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+          <button onclick="stopPsyDraftAutosave();document.getElementById('psychiatrist-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
           <div><label class="field-label">與談者姓名</label><input type="text" class="field-input" id="pr-name" value="${escHtml(pr.intervieweeName)}"></div>
@@ -14486,13 +14607,34 @@ function openPsychiatristModal(caseId, recordId) {
         <div style="display:flex;gap:10px;">
           <button class="btn btn-primary" onclick="savePsychiatristRecord('${escHtml(caseId)}','${existing?escHtml(recordId):'__new__'}')">儲存</button>
           ${existing ? `<button class="btn btn-secondary" onclick="printPsychiatristRecord('${escHtml(caseId)}','${escHtml(recordId)}')">列印</button>` : ''}
-          <button class="btn btn-secondary" onclick="document.getElementById('psychiatrist-modal').remove()">取消</button>
+          <button class="btn btn-secondary" onclick="stopPsyDraftAutosave();document.getElementById('psychiatrist-modal').remove()">取消</button>
         </div>
       </div>
     </div>`);
   document.querySelectorAll('[name="pr_diag"]').forEach(el => el.addEventListener('change', () => {
     document.getElementById('pr-diag-row').style.display = el.value==='specific' ? '' : 'none';
   }));
+
+  stopPsyDraftAutosave();
+  if (!existing) {
+    _psyDraftKey = `scc_draft_psy_${currentUser?.email||''}_${caseId}`;
+    try {
+      const raw = localStorage.getItem(_psyDraftKey);
+      if (raw) {
+        const draft = JSON.parse(raw);
+        const when = draft._savedAt ? new Date(draft._savedAt).toLocaleString('zh-TW') : '稍早';
+        if (confirm(`偵測到未完成的精神科醫師評估表草稿（${when}），是否還原？`)) {
+          psyRestoreDraft(draft);
+        } else {
+          try { localStorage.removeItem(_psyDraftKey); } catch(_) {}
+          _psyDraftKey = null;
+        }
+      }
+    } catch(e) { console.warn('psy draft restore failed', e); }
+    if (_psyDraftKey) startPsyDraftAutosave();
+  } else {
+    _psyDraftKey = null;
+  }
 }
 
 async function savePsychiatristRecord(caseId, recordId) {
@@ -14536,6 +14678,7 @@ async function savePsychiatristRecord(caseId, recordId) {
     if (idx >= 0) c.psychiatristRecords[idx] = { ...c.psychiatristRecords[idx], ...data };
     else c.psychiatristRecords.push({ ...data, id:recordId, createdAt:now });
   }
+  clearPsyDraft();
   document.getElementById('psychiatrist-modal')?.remove();
   showCaseDetail(caseId);
   const _psyJobLabel = recordId === '__new__' ? '新增精神科評估' : '更新精神科評估';
