@@ -3070,6 +3070,7 @@ async function afterLogin() {
     await loadCases(); // loadCases 接手 30→100%
     scanUnassignedRecords().catch(() => {}); // 每日掃描未歸屬記錄（fire-and-forget）
     _migrateLocalStorageDrafts(); // 把 localStorage crash 草稿轉成待辦事項（fire-and-forget）
+    _syncPendingRecordsToTodos(); // 把 casesData 中遺失對應 todo 的 pending 記錄補回待辦事項
   } catch (err) {
     hideLoading();
     // 找不到設定檔 → 顯示初始化畫面
@@ -4346,7 +4347,9 @@ function showCaseDetail(caseId) {
       : '';
 
     const pendingStyle = isPending ? ' style="background:#fffff0;border-color:#f6e05e;"' : '';
-    const pendingBadge = isPending ? '<span class="badge badge-orange" style="font-size:.73rem;background:#fefcbf;color:#744210;border:1px solid #f6e05e;">草稿</span>' : '';
+    const _pendingTodo = isPending ? todosData.find(t => t.recordId === r.id) : null;
+    const _pendingLabel = _pendingTodo?.origin === 'autosave' ? '自動備援' : '草稿';
+    const pendingBadge = isPending ? `<span class="badge badge-orange" style="font-size:.73rem;background:#fefcbf;color:#744210;border:1px solid #f6e05e;">${_pendingLabel}</span>` : '';
     const pendingEditBtn = isPending
       ? `<button class="btn-rec" style="background:#fefcbf;border-color:#f6e05e;color:#744210;" onclick="openNewRecordPage('${rcid}','${rid}','${escHtml(r.recordKind||'晤談記錄')}')">繼續編輯</button>`
       : '';
@@ -9256,6 +9259,57 @@ function _migrateLocalStorageDrafts() {
   }
   if (changed) {
     saveUserTodos().catch(e => console.warn('saveUserTodos after migrate failed:', e));
+    _syncBellBadge();
+  }
+}
+
+// ── 把 casesData 中遺失對應 todo 的 pending 記錄補回待辦事項 ──
+
+function _syncPendingRecordsToTodos() {
+  let changed = false;
+  for (const c of casesData) {
+    if (c.deleted) continue;
+    const caseLabel = `${c.name}（${c.id}）`;
+    for (const r of (c.records || [])) {
+      if (r.status !== 'pending') continue;
+      if (todosData.find(t => t.recordId === r.id && t.type === 'record')) continue;
+      _putTodoItem({
+        id: _genTodoId(), type: 'record', label: '晤談記錄草稿',
+        caseId: c.id, caseLabel, recordId: r.id,
+        origin: 'manual', notifRead: false, done: false,
+        createdAt: r.draftSavedAt || r.createdAt || new Date().toISOString(),
+        updatedAt: r.draftSavedAt || r.updatedAt || new Date().toISOString(),
+      });
+      changed = true;
+    }
+    for (const pr of (c.psychiatristRecords || [])) {
+      if (pr.status !== 'pending') continue;
+      if (todosData.find(t => t.recordId === pr.id && t.type === 'psychiatrist')) continue;
+      _putTodoItem({
+        id: _genTodoId(), type: 'psychiatrist', label: '精神科評估草稿',
+        caseId: c.id, caseLabel, recordId: pr.id,
+        origin: 'manual', notifRead: false, done: false,
+        createdAt: pr.draftSavedAt || pr.createdAt || new Date().toISOString(),
+        updatedAt: pr.draftSavedAt || pr.updatedAt || new Date().toISOString(),
+      });
+      changed = true;
+    }
+    if (c.initialInterview?.status === 'pending') {
+      if (!todosData.find(t => t.caseId === c.id && t.type === 'initial_interview' && !t.draftKey)) {
+        const ii = c.initialInterview;
+        _putTodoItem({
+          id: _genTodoId(), type: 'initial_interview', label: '初次晤談表草稿',
+          caseId: c.id, caseLabel,
+          origin: 'manual', notifRead: false, done: false,
+          createdAt: ii.draftSavedAt || ii.createdAt || new Date().toISOString(),
+          updatedAt: ii.draftSavedAt || ii.updatedAt || new Date().toISOString(),
+        });
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    saveUserTodos().catch(e => console.warn('saveUserTodos after sync failed:', e));
     _syncBellBadge();
   }
 }
