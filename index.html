@@ -2467,6 +2467,8 @@
     <div id="page-todos" class="page">
       <div class="page-title">待辦事項</div>
       <div id="todos-filter-bar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center;">
+        <select class="field-select" id="todos-filter-user" onchange="_onTodosUserFilterChange()" style="display:none;max-width:180px;" title="管理者：查看其他人員待辦事項"></select>
+        <span id="todos-admin-loading" style="display:none;font-size:.82rem;color:#718096;align-self:center;">載入中…</span>
         <input type="text" class="field-input" id="todos-search" placeholder="搜尋個案名稱／案號…" oninput="renderTodosPage()" style="max-width:200px;min-width:120px;">
         <select class="field-select" id="todos-filter-type" onchange="renderTodosPage()" style="max-width:170px;">
           <option value="">所有類型</option>
@@ -2483,7 +2485,7 @@
         </select>
         <button class="btn btn-secondary btn-sm" onclick="_resetTodosFilter()">重置</button>
         <div style="flex:1;"></div>
-        <label style="font-size:.85rem;cursor:pointer;user-select:none;"><input type="checkbox" id="todos-select-all" onchange="_toggleTodosSelectAll(this)"> 全選</label>
+        <label id="todos-select-all-label" style="font-size:.85rem;cursor:pointer;user-select:none;"><input type="checkbox" id="todos-select-all" onchange="_toggleTodosSelectAll(this)"> 全選</label>
         <button class="btn btn-sm" id="todos-batch-delete-btn" style="display:none;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_batchDeleteTodos()">刪除選取</button>
       </div>
       <div id="todos-body"></div>
@@ -9105,6 +9107,8 @@ async function getCasesFolderId() {
 
 let todosData = [];
 let _todoFileId = null;
+let _todosViewUser = null;    // null=自己, '__all__'=全部, email=特定人員
+let _adminTodosCache = {};    // email → todos[]
 let _usersFolderIdCache = null;
 const _USERS_FOLDER_LS_KEY = 'scc_users_folder_id_' + DRIVE_FOLDER_ID;
 
@@ -9541,20 +9545,113 @@ function discardPsychiatristRecord(caseId) {
   if (caseId) showCaseDetail(caseId);
 }
 
+// ── 管理者：載入特定人員的待辦事項 ──
+
+async function _fetchAdminTodosForUser(email) {
+  if (_adminTodosCache[email] !== undefined) return _adminTodosCache[email];
+  try {
+    const usersId = await getUsersFolderId();
+    const fileName = `todos_${email}.json`;
+    const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
+    const res = await driveQuery(q, 'id');
+    if (res.files && res.files.length) {
+      const raw = await driveReadJsonById(res.files[0].id);
+      _adminTodosCache[email] = Array.isArray(raw?.todos) ? raw.todos : [];
+    } else {
+      _adminTodosCache[email] = [];
+    }
+  } catch (e) {
+    console.warn('_fetchAdminTodosForUser failed:', email, e);
+    _adminTodosCache[email] = [];
+  }
+  return _adminTodosCache[email];
+}
+
+async function _onTodosUserFilterChange() {
+  const sel = document.getElementById('todos-filter-user');
+  const val = sel?.value || '';
+  _todosViewUser = val || null;
+
+  // Reset other filters when switching view
+  const s = document.getElementById('todos-search'); if (s) s.value = '';
+  const st = document.getElementById('todos-filter-status'); if (st) st.value = 'pending';
+  const ty = document.getElementById('todos-filter-type'); if (ty) ty.value = '';
+
+  const viewingOwn = !_todosViewUser || _todosViewUser === currentUser?.email;
+  if (viewingOwn) { renderTodosPage(); return; }
+
+  const loadingEl = document.getElementById('todos-admin-loading');
+  if (loadingEl) loadingEl.style.display = '';
+  try {
+    if (_todosViewUser === '__all__') {
+      const emails = Object.keys(configData?.users || {});
+      await Promise.all(emails.map(e => _fetchAdminTodosForUser(e)));
+    } else {
+      await _fetchAdminTodosForUser(_todosViewUser);
+    }
+  } catch (e) { console.warn('_onTodosUserFilterChange error:', e); }
+  if (loadingEl) loadingEl.style.display = 'none';
+  renderTodosPage();
+}
+
 // ── 待辦事項頁面渲染 ──
 
 function renderTodosPage() {
+  const isAdminUser = currentRole === '主任' || extraRole === '管理者';
+
+  // ── 管理者：初始化人員篩選下拉 ──
+  const userSel = document.getElementById('todos-filter-user');
+  if (userSel) {
+    if (isAdminUser && configData?.users) {
+      userSel.style.display = '';
+      if (!userSel.getAttribute('data-populated')) {
+        userSel.innerHTML =
+          `<option value="">我的待辦事項</option>` +
+          `<option value="__all__">── 全部人員</option>` +
+          Object.entries(configData.users)
+            .filter(([e]) => e !== currentUser?.email)
+            .sort(([,a],[,b]) => (a.name||'').localeCompare(b.name||'', 'zh'))
+            .map(([e, info]) => `<option value="${escHtml(e)}">${escHtml(info.name || e)}</option>`)
+            .join('');
+        userSel.setAttribute('data-populated', '1');
+      }
+      if (_todosViewUser && _todosViewUser !== currentUser?.email) userSel.value = _todosViewUser;
+      else if (!_todosViewUser) userSel.value = '';
+    } else {
+      userSel.style.display = 'none';
+    }
+  }
+
+  // ── 決定資料來源與唯讀模式 ──
+  const viewingOwn = !_todosViewUser || _todosViewUser === currentUser?.email;
+  let viewData, readOnly;
+  if (!isAdminUser || viewingOwn) {
+    viewData = todosData;
+    readOnly = false;
+  } else if (_todosViewUser === '__all__') {
+    viewData = Object.entries(_adminTodosCache).flatMap(([email, todos]) =>
+      todos.map(t => ({ ...t, _ownerEmail: email, _ownerName: configData?.users?.[email]?.name || email }))
+    );
+    readOnly = true;
+  } else {
+    viewData = (_adminTodosCache[_todosViewUser] || []).map(t => ({
+      ...t, _ownerEmail: _todosViewUser, _ownerName: configData?.users?.[_todosViewUser]?.name || _todosViewUser
+    }));
+    readOnly = true;
+  }
+
+  // ── 篩選 ──
   const search     = (document.getElementById('todos-search')?.value || '').trim().toLowerCase();
   const typeFilter = document.getElementById('todos-filter-type')?.value || '';
   const statusF    = document.getElementById('todos-filter-status')?.value;
   const statusFilter = statusF === undefined || statusF === null ? 'pending' : statusF;
 
-  const filtered = todosData.filter(t => {
+  const filtered = viewData.filter(t => {
     if (statusFilter === 'pending' && t.done) return false;
     if (statusFilter === 'done' && !t.done) return false;
     if (typeFilter && t.type !== typeFilter) return false;
     if (search) {
-      const hay = `${t.caseLabel || ''} ${t.caseId || ''} ${t.label || ''}`.toLowerCase();
+      const hay = `${t.caseLabel||''} ${t.caseId||''} ${t.label||''} ${t._ownerName||''}`.toLowerCase();
       if (!hay.includes(search)) return false;
     }
     return true;
@@ -9568,13 +9665,26 @@ function renderTodosPage() {
   const body = document.getElementById('todos-body');
   if (!body) return;
 
-  const batchBtn = document.getElementById('todos-batch-delete-btn');
+  // 批次操作列：唯讀時隱藏
+  const batchBtn  = document.getElementById('todos-batch-delete-btn');
   const selectAll = document.getElementById('todos-select-all');
-  if (selectAll) selectAll.checked = false;
-  if (batchBtn) batchBtn.style.display = 'none';
+  const selectAllLabel = document.getElementById('todos-select-all-label');
+  if (readOnly) {
+    if (selectAll) selectAll.checked = false;
+    if (selectAllLabel) selectAllLabel.style.display = 'none';
+    if (batchBtn) batchBtn.style.display = 'none';
+  } else {
+    if (selectAll) selectAll.checked = false;
+    if (selectAllLabel) selectAllLabel.style.display = '';
+    if (batchBtn) batchBtn.style.display = 'none';
+  }
 
   if (!filtered.length) {
-    body.innerHTML = `<div style="padding:32px;text-align:center;color:#718096;font-size:.9rem;">目前沒有${statusFilter === 'pending' ? '未完成的' : statusFilter === 'done' ? '已完成的' : ''}待辦事項。</div>`;
+    let who = '';
+    if (_todosViewUser === '__all__') who = '全員的';
+    else if (readOnly) who = `${configData?.users?.[_todosViewUser]?.name || _todosViewUser} 的`;
+    else who = statusFilter === 'pending' ? '未完成的' : statusFilter === 'done' ? '已完成的' : '';
+    body.innerHTML = `<div style="padding:32px;text-align:center;color:#718096;font-size:.9rem;">目前沒有${who}待辦事項。</div>`;
     return;
   }
 
@@ -9586,21 +9696,28 @@ function renderTodosPage() {
     const doneAt = t.doneAt ? new Date(t.doneAt).toLocaleString('zh-TW', { dateStyle:'short', timeStyle:'short' }) : '';
     const bgColor = t.done ? '#f7fafc' : (t.origin === 'autosave' ? '#fffaf0' : '#fff');
     const borderColor = t.done ? '#e2e8f0' : (t.origin === 'autosave' ? '#fbd38d' : '#e2e8f0');
+    const ownerBadge = t._ownerName ? `<span class="badge" style="background:#e9d8fd;color:#553c9a;font-size:.72rem;border:1px solid #d6bcfa;">${escHtml(t._ownerName)}</span>` : '';
 
-    const continueBtn = !t.done ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">繼續編輯</button>` : '';
-    const doneBtn = !t.done
-      ? `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoDone('${t.id}')">完成</button>`
-      : `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoUndone('${t.id}')">恢復</button>`;
-    const deleteBtn = `<button class="btn btn-sm" style="font-size:.78rem;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_deleteTodo('${t.id}')">刪除</button>`;
+    const checkBoxHtml = readOnly
+      ? `<div style="width:16px;flex-shrink:0;"></div>`
+      : `<input type="checkbox" class="todo-select-cb" data-id="${t.id}" onchange="_updateTodoBatchBtn()" style="margin-top:3px;flex-shrink:0;">`;
+    const continueBtn = !readOnly && !t.done ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">繼續編輯</button>` : '';
+    const doneBtn = !readOnly
+      ? (!t.done
+        ? `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoDone('${t.id}')">完成</button>`
+        : `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoUndone('${t.id}')">恢復</button>`)
+      : '';
+    const deleteBtn = !readOnly ? `<button class="btn btn-sm" style="font-size:.78rem;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_deleteTodo('${t.id}')">刪除</button>` : '';
 
     return `<div class="todo-item" data-id="${t.id}" style="background:${bgColor};border:1px solid ${borderColor};border-radius:8px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:flex-start;gap:10px;">
-      <input type="checkbox" class="todo-select-cb" data-id="${t.id}" onchange="_updateTodoBatchBtn()" style="margin-top:3px;flex-shrink:0;">
+      ${checkBoxHtml}
       <div style="flex:1;min-width:0;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
           <span style="font-weight:600;font-size:.9rem;${t.done?'text-decoration:line-through;color:#a0aec0;':''}">${escHtml(t.label)}</span>
           <span class="badge" style="background:#e2e8f0;color:#4a5568;font-size:.72rem;">${escHtml(tLabel)}</span>
           ${t.origin === 'autosave' ? '<span class="badge badge-orange" style="font-size:.72rem;">自動備援</span>' : ''}
           ${t.done ? '<span class="badge badge-green" style="font-size:.72rem;">已完成</span>' : ''}
+          ${ownerBadge}
         </div>
         ${t.caseLabel ? `<div style="font-size:.82rem;color:#718096;margin-bottom:4px;">個案：${escHtml(t.caseLabel)}</div>` : ''}
         <div style="font-size:.78rem;color:#a0aec0;">${createdAt}${t.done && doneAt ? `　完成：${doneAt}` : ''}</div>
