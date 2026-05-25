@@ -854,7 +854,7 @@
     <div style="display:flex;">
       <button id="ntab-notifs"   class="ntab ntab-active" onclick="setNotifTab('notifs')">提醒</button>
       <button id="ntab-jobs"     class="ntab"             onclick="setNotifTab('jobs')">工作執行</button>
-      <button id="ntab-autosave" class="ntab"             onclick="setNotifTab('autosave')">自動備援 <span id="autosave-notif-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 5px;font-size:.72rem;margin-left:2px;"></span></button>
+      <button id="ntab-autosave" class="ntab"             onclick="setNotifTab('autosave')">待辦事項 <span id="autosave-notif-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 5px;font-size:.72rem;margin-left:2px;"></span></button>
     </div>
     <div style="padding:3px 14px 6px;display:flex;justify-content:flex-end;">
       <button id="notif-panel-action-btn" onclick="_notifPanelAction()" style="font-size:.78rem;color:#2471a3;border:none;background:none;cursor:pointer;padding:0;">全部標為已讀</button>
@@ -3503,7 +3503,7 @@ function _syncBellBadge() {
   const unread  = notifs.filter(n => !n.read).length + (_updateAvailable ? 1 : 0);
   const failed  = _bgJobs.filter(j => j.state === 'failed').length;
   const running = _bgJobs.filter(j => j.state === 'running').length;
-  const autosaveUnread = todosData.filter(t => t.origin === 'autosave' && !t.notifRead && !t.done).length;
+  const autosaveUnread = todosData.filter(t => !t.notifRead && !t.done).length;
   const total   = unread + failed + autosaveUnread;
   badge.textContent = total > 99 ? '99+' : (total || '');
   badge.style.display = (total > 0 || running > 0) ? 'flex' : 'none';
@@ -3561,7 +3561,7 @@ function _notifPanelAction() {
   if (_notifTab === 'notifs') {
     markAllNotifRead();
   } else if (_notifTab === 'autosave') {
-    todosData.filter(t => t.origin === 'autosave' && !t.notifRead).forEach(t => { t.notifRead = true; });
+    todosData.filter(t => !t.notifRead).forEach(t => { t.notifRead = true; });
     saveUserTodos().catch(() => {});
     _syncBellBadge();
     renderTodosNotifList();
@@ -4272,15 +4272,18 @@ function showCaseDetail(caseId) {
     const isLinkedAsII = !r.deleted && c.initialInterview?.type === 'linkedRecord' && r.id === c.initialInterview?.recordId;
     const rcid = escHtml(c.id);
     const rid  = escHtml(r.id);
+    const isPending = r.status === 'pending';
     let actions = '';
     if (!caseIsDeleted) {
       if (!r.deleted) {
-        actions += `<button class="btn-rec btn-rec-edit" onclick="printRecord('${rcid}','${rid}')">列印</button>`;
-        // 編輯：僅建立者可編輯（管理者無編輯權，僅可刪除）
-        if (isCreator) {
-          actions += editable
-            ? `<button class="btn-rec btn-rec-edit" onclick="editRecord('${rcid}','${rid}')">編輯</button>`
-            : `<span class="edit-locked">超過2週，不可編輯</span>`;
+        if (!isPending) {
+          actions += `<button class="btn-rec btn-rec-edit" onclick="printRecord('${rcid}','${rid}')">列印</button>`;
+          // 編輯：僅建立者可編輯（管理者無編輯權，僅可刪除）
+          if (isCreator) {
+            actions += editable
+              ? `<button class="btn-rec btn-rec-edit" onclick="editRecord('${rcid}','${rid}')">編輯</button>`
+              : `<span class="edit-locked">超過2週，不可編輯</span>`;
+          }
         }
         // 刪除：建立者或管理者
         if (isCreator || isAdminUser) {
@@ -4342,7 +4345,6 @@ function showCaseDetail(caseId) {
       ? `<button class="rec-toggle-btn" onclick="toggleRecordExpand('${escHtml(r.id)}')">展開 ▼</button>`
       : '';
 
-    const isPending = r.status === 'pending';
     const pendingStyle = isPending ? ' style="background:#fffff0;border-color:#f6e05e;"' : '';
     const pendingBadge = isPending ? '<span class="badge badge-orange" style="font-size:.73rem;background:#fefcbf;color:#744210;border:1px solid #f6e05e;">草稿</span>' : '';
     const pendingEditBtn = isPending
@@ -4370,9 +4372,11 @@ function showCaseDetail(caseId) {
   };
 
   // 排序後的記錄列表（含分頁）
-  const sortedRecords = _recSortDesc
-    ? [...visibleRecords].reverse()
-    : [...visibleRecords];
+  const _pendingRecs = visibleRecords.filter(r => r.status === 'pending');
+  const _normalRecs  = visibleRecords.filter(r => !r.deleted && r.status !== 'pending');
+  const _deletedRecs = visibleRecords.filter(r => r.deleted);
+  const _sortedNormal = _recSortDesc ? [..._normalRecs].reverse() : [..._normalRecs];
+  const sortedRecords = [..._pendingRecs, ..._sortedNormal, ..._deletedRecs];
   const totalRecCount = sortedRecords.length;
   const totalPages = Math.max(1, Math.ceil(totalRecCount / _recPageSize));
   if (_recPage > totalPages) _recPage = totalPages;
@@ -9097,6 +9101,7 @@ async function getCasesFolderId() {
 // ══════════════════════════════════════════════
 
 let todosData = [];
+let _todoFileId = null;
 let _usersFolderIdCache = null;
 const _USERS_FOLDER_LS_KEY = 'scc_users_folder_id_' + DRIVE_FOLDER_ID;
 
@@ -9126,7 +9131,8 @@ async function loadUserTodos() {
     const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
     const res = await driveQuery(q, 'id');
     if (res.files && res.files.length) {
-      const raw = await driveReadJsonById(res.files[0].id);
+      _todoFileId = res.files[0].id;
+      const raw = await driveReadJsonById(_todoFileId);
       todosData = Array.isArray(raw?.todos) ? raw.todos : [];
     } else {
       todosData = [];
@@ -9143,11 +9149,22 @@ async function saveUserTodos() {
   if (!email) return;
   const fileName = `todos_${email}.json`;
   const content = { todos: todosData, updatedAt: new Date().toISOString() };
-  try {
-    await driveUpdateJsonFile(`users/${fileName}`, content);
-  } catch (e) {
-    if (!e.message.includes('找不到')) throw e;
-    const usersId = await getUsersFolderId();
+  const usersId = await getUsersFolderId();
+  if (!_todoFileId) {
+    const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
+    const res = await driveQuery(q, 'id');
+    if (res.files && res.files.length) _todoFileId = res.files[0].id;
+  }
+  if (_todoFileId) {
+    try {
+      await driveUpdateJsonFile(`users/${fileName}`, content);
+    } catch (e) {
+      // Path resolution failed; trash old file and recreate
+      try { await proxyCall('trashFile', { fileId: _todoFileId }); } catch (_) {}
+      _todoFileId = null;
+      await driveCreateJsonFile(fileName, content, usersId);
+    }
+  } else {
     await driveCreateJsonFile(fileName, content, usersId);
   }
 }
@@ -9326,7 +9343,7 @@ function draftRecord() {
   _putTodoItem({
     id: todoId, type: 'record', label: '晤談記錄草稿',
     caseId: _recordCaseId, caseLabel, recordId: draftRecordId,
-    origin: 'manual', notifRead: true, done: false,
+    origin: 'manual', notifRead: false, done: false,
     createdAt: existingTodo?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
@@ -9337,11 +9354,10 @@ function draftRecord() {
   showToast('已暫存草稿至待辦事項', 'success');
 
   const jobId = bgJobAdd('暫存晤談記錄草稿…');
-  Promise.all([
-    saveCasesChunks(_recordCaseId),
-    saveUserTodos(),
-  ]).then(() => bgJobDone(jobId, '草稿已儲存'))
+  saveCasesChunks(_recordCaseId)
+    .then(() => bgJobDone(jobId, '草稿已儲存'))
     .catch(e => bgJobFail(jobId, e.message));
+  saveUserTodos().catch(e => console.warn('saveUserTodos failed:', e));
 }
 
 function discardRecord() {
@@ -9377,7 +9393,7 @@ function draftInitialInterview() {
   const todoId = existingTodo?.id || _genTodoId();
   _putTodoItem({
     id: todoId, type: 'initial_interview', label: '初次晤談表草稿',
-    caseId, caseLabel, origin: 'manual', notifRead: true, done: false,
+    caseId, caseLabel, origin: 'manual', notifRead: false, done: false,
     createdAt: existingTodo?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
@@ -9388,11 +9404,10 @@ function draftInitialInterview() {
   showToast('已暫存草稿至待辦事項', 'success');
 
   const jobId = bgJobAdd('暫存初次晤談表草稿…');
-  Promise.all([
-    saveCasesChunks(caseId),
-    saveUserTodos(),
-  ]).then(() => bgJobDone(jobId, '草稿已儲存'))
+  saveCasesChunks(caseId)
+    .then(() => bgJobDone(jobId, '草稿已儲存'))
     .catch(e => bgJobFail(jobId, e.message));
+  saveUserTodos().catch(e => console.warn('saveUserTodos failed:', e));
 }
 
 function discardInitialInterview() {
@@ -9447,7 +9462,7 @@ function draftPsychiatristRecord(caseId, recordId) {
   _putTodoItem({
     id: todoId, type: 'psychiatrist', label: '精神科評估草稿',
     caseId, caseLabel, recordId: draftId,
-    origin: 'manual', notifRead: true, done: false,
+    origin: 'manual', notifRead: false, done: false,
     createdAt: existingTodo?.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
@@ -9459,11 +9474,10 @@ function draftPsychiatristRecord(caseId, recordId) {
   showToast('已暫存草稿至待辦事項', 'success');
 
   const jobId = bgJobAdd('暫存精神科評估草稿…');
-  Promise.all([
-    saveCasesChunks(caseId),
-    saveUserTodos(),
-  ]).then(() => bgJobDone(jobId, '草稿已儲存'))
+  saveCasesChunks(caseId)
+    .then(() => bgJobDone(jobId, '草稿已儲存'))
     .catch(e => bgJobFail(jobId, e.message));
+  saveUserTodos().catch(e => console.warn('saveUserTodos failed:', e));
 }
 
 function discardPsychiatristRecord(caseId) {
@@ -9639,13 +9653,20 @@ function _continueTodo(id) {
 function renderTodosNotifList() {
   const el = document.getElementById('notif-autosave-list');
   if (!el) return;
-  const items = todosData.filter(t => t.origin === 'autosave' && !t.done);
+  const allPending = todosData.filter(t => !t.done);
+  const items = [...allPending].sort((a,b) => new Date(b.updatedAt||b.createdAt||0) - new Date(a.updatedAt||a.createdAt||0)).slice(0, 20);
+  const goBtn = `<div style="padding:8px 16px;border-bottom:1px solid #f0f4f8;display:flex;justify-content:flex-end;">
+    <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="
+      document.getElementById('notif-panel').style.display='none';
+      showPage('page-todos',document.querySelector('[data-nav-id=page-todos]'));renderTodosPage();
+    ">查看全部（${allPending.length}）→</button>
+  </div>`;
   if (!items.length) {
-    el.innerHTML = '<div style="padding:24px;text-align:center;color:#718096;font-size:.875rem;">沒有未完成的自動備援草稿。</div>';
+    el.innerHTML = goBtn + '<div style="padding:24px;text-align:center;color:#718096;font-size:.875rem;">沒有待辦事項。</div>';
     return;
   }
-  el.innerHTML = items.map(t => {
-    const when = t.createdAt ? new Date(t.createdAt).toLocaleString('zh-TW', { dateStyle:'short', timeStyle:'short' }) : '';
+  el.innerHTML = goBtn + items.map(t => {
+    const when = (t.updatedAt||t.createdAt) ? new Date(t.updatedAt||t.createdAt).toLocaleString('zh-TW', { dateStyle:'short', timeStyle:'short' }) : '';
     const unread = !t.notifRead;
     return `<div style="padding:12px 16px;border-bottom:1px solid #f0f4f8;background:${unread?'#fffaf0':'#fff'};">
       <div style="display:flex;align-items:flex-start;gap:10px;">
@@ -14097,19 +14118,31 @@ async function openSemesterDeleteModal() {
   // Collect affected cases and records
   const toProcess = [];
   casesData.filter(c => !c.deleted && semSet.has(openDateToSemPrefix(c.openDate))).forEach(c => {
-    const recs = (c.records || []).filter(r => !r.deleted);
-    toProcess.push({ c, recs });
+    const recs = (c.records || []).filter(r => !r.deleted && r.status !== 'pending');
+    const psyRecs = (c.psychiatristRecords || []).filter(pr => !pr.deleted && pr.status !== 'pending');
+    const pendingRecs = (c.records || []).filter(r => r.status === 'pending');
+    const pendingPsy = (c.psychiatristRecords || []).filter(pr => pr.status === 'pending');
+    const pendingII = c.initialInterview?.status === 'pending' ? c.initialInterview : null;
+    toProcess.push({ c, recs, psyRecs, pendingRecs, pendingPsy, pendingII });
   });
   const totalRecs = toProcess.reduce((s, {recs}) => s + recs.length, 0);
-  if (!confirm(`確定要軟刪除以下資料？\n\n學期：${selectedSems.map(s => semesterLabel(s)).join('、')}\n個案：${toProcess.length} 筆\n晤談記錄：${totalRecs} 筆\n\n資料將移至資源回收桶，30 天後永久刪除。`)) return;
+  const totalPsy = toProcess.reduce((s, {psyRecs}) => s + psyRecs.length, 0);
+  const totalPending = toProcess.reduce((s, {pendingRecs, pendingPsy, pendingII}) => s + pendingRecs.length + pendingPsy.length + (pendingII ? 1 : 0), 0);
+  const psyNote = totalPsy > 0 ? `\n精神科評估：${totalPsy} 筆` : '';
+  const pendingNote = totalPending > 0 ? `\n草稿（將永久移除）：${totalPending} 筆` : '';
+  if (!confirm(`確定要軟刪除以下資料？\n\n學期：${selectedSems.map(s => semesterLabel(s)).join('、')}\n個案：${toProcess.length} 筆\n晤談記錄：${totalRecs} 筆${psyNote}${pendingNote}\n\n資料將移至資源回收桶，30 天後永久刪除。`)) return;
 
   showLoading('批次刪除：標記資料中…', 5);
   try {
     const deletedBy = currentUser.email;
     const deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
     // 先在記憶體標記所有記錄，再一次存所有 chunk（避免逐案存造成大量 API 呼叫）
-    for (const { c, recs } of toProcess) {
+    for (const { c, recs, psyRecs, pendingRecs, pendingPsy, pendingII } of toProcess) {
       recs.forEach(r => { r.deleted = true; r.deletedAt = now; r.deletedBy = deletedBy; r.deletedByName = deletedByName; });
+      psyRecs.forEach(pr => { pr.deleted = true; pr.deletedAt = now; pr.deletedBy = deletedBy; pr.deletedByName = deletedByName; });
+      if (pendingRecs.length) c.records = (c.records||[]).filter(r => r.status !== 'pending');
+      if (pendingPsy.length) c.psychiatristRecords = (c.psychiatristRecords||[]).filter(pr => pr.status !== 'pending');
+      if (pendingII) delete c.initialInterview;
       c.updatedAt = now;
     }
     const allIds = toProcess.map(({ c }) => c.id);
@@ -14120,8 +14153,8 @@ async function openSemesterDeleteModal() {
       showLoading(`批次刪除：寫入 ${done}/${total} 個資料段…`, pct);
     });
     showLoading('批次刪除：完成收尾…', 97);
-    auditLog(`批次軟刪除學期 ${selectedSems.join('、')} 記錄 ${totalRecs} 筆`);
-    // Step 2: find cases with all records deleted
+    auditLog(`批次軟刪除學期 ${selectedSems.join('、')} 記錄 ${totalRecs} 筆${totalPsy > 0 ? `，精神科 ${totalPsy} 筆` : ''}`);
+    // Step 2: find cases with all records deleted (pending records were removed)
     const emptyCases = toProcess.map(({c}) => c).filter(c => (c.records||[]).every(r => r.deleted));
     hideLoading();
     if (emptyCases.length > 0) await promptEmptyCaseDeletion(emptyCases, now);
@@ -14164,19 +14197,25 @@ async function promptEmptyCaseDeletion(emptyCases, now) {
       const selIds = [...modal.querySelectorAll('.ecd-chk:checked')].map(c => c.value);
       modal.remove();
       if (!selIds.length) { resolve(); return; }
-      showLoading('刪除個案中…');
+      showLoading('刪除個案中…', 5);
       try {
         const deletedBy = currentUser.email;
         const deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
+        const validIds = [];
         for (const caseId of selIds) {
           const idx = casesData.findIndex(c => c.id === caseId);
           if (idx < 0) continue;
           Object.assign(casesData[idx], { deleted:true, deletedAt:nowStr, deletedBy, deletedByName, updatedAt:nowStr });
-          await saveCasesChunks(caseId);
+          validIds.push(caseId);
         }
-        auditLog(`批次軟刪除空個案 ${selIds.length} 筆`);
+        if (validIds.length) {
+          await saveCasesChunks(...validIds, (done, total) => {
+            showLoading(`刪除個案基本資料 ${done}/${total} 個資料段…`, 10 + Math.round(done / total * 85));
+          });
+        }
+        auditLog(`批次軟刪除空個案 ${validIds.length} 筆`);
         hideLoading();
-        alert(`✓ 完成。${selIds.length} 個個案已移入資源回收桶。`);
+        alert(`✓ 完成。${validIds.length} 個個案已移入資源回收桶。`);
         resolve();
       } catch(e) { hideLoading(); alert('刪除失敗：' + e.message); resolve(); }
     };
