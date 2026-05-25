@@ -969,6 +969,9 @@
       <div class="nav-item" data-nav-id="page-todos" onclick="showPage('page-todos', this); renderTodosPage()">
         <span class="icon">✅</span> 待辦事項 <span id="todos-nav-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 4px;font-size:.72rem;margin-left:2px;min-width:16px;text-align:center;"></span> <span class="nav-drag-handle">⠿</span>
       </div>
+      <div class="nav-item" data-nav-id="page-event-records" onclick="showPage('page-event-records', this); renderEventRecordsPage()">
+        <span class="icon">📝</span> 事件處理記錄 <span class="nav-drag-handle">⠿</span>
+      </div>
     </div>
 
     <div class="sidebar-section" id="nav-admin-section" style="display:none;">
@@ -2597,6 +2600,7 @@
           <option value="record">晤談記錄草稿</option>
           <option value="initial_interview">初談表草稿</option>
           <option value="psychiatrist">精神科評估草稿</option>
+          <option value="event_records">事件處理記錄草稿</option>
           <option value="autosave">自動備援</option>
           <option value="manual">手動待辦</option>
         </select>
@@ -2611,6 +2615,12 @@
         <button class="btn btn-sm" id="todos-batch-delete-btn" style="display:none;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_batchDeleteTodos()">刪除選取</button>
       </div>
       <div id="todos-body"></div>
+    </div>
+
+    <!-- 事件處理記錄 -->
+    <div id="page-event-records" class="page">
+      <div class="page-title">事件處理記錄</div>
+      <div id="event-records-content"></div>
     </div>
 
   </main>
@@ -4602,7 +4612,7 @@ function showCaseDetail(caseId) {
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <span class="record-date">${escHtml(r.date || '草稿')}${timeDisplay}</span>
             ${pendingBadge}
-            ${r.recordKind === '事件處理記錄' ? '<span class="badge badge-orange" style="font-size:.73rem;">事件處理</span>' : ''}
+            ${r.isEventRecord ? '<span class="badge badge-orange" style="font-size:.73rem;">事件處理</span>' : ''}
             ${isLinkedAsII ? '<span class="badge" style="background:#bee3f8;color:#2b6cb0;border:1px solid #90cdf4;font-size:.73rem;">📋 初談記錄表</span>' : ''}
             ${deletedLabel}
           </div>
@@ -9590,6 +9600,14 @@ function _showExitDialog(title, onSave, onDraft, onDiscard) {
 // ── 晤談記錄：退出 / 暫存 / 不儲存 ──
 
 function exitRecordForm() {
+  const _rtE = v => !(v||'').replace(/<[^>]*>/g,'').trim();
+  const topics   = document.querySelectorAll('input[name="rec-topic"]:checked').length;
+  const services = document.querySelectorAll('input[name="rec-service-main"]:checked').length;
+  if (_rtE(getRichTextValue('rec-summary')) && _rtE(getRichTextValue('rec-assessment')) &&
+      _rtE(getRichTextValue('rec-next-plan')) && _rtE(getRichTextValue('rec-notes')) &&
+      !topics && !services) {
+    discardRecord(); return;
+  }
   _showExitDialog('離開晤談紀錄',
     () => saveRecord(),
     () => draftRecord(),
@@ -9672,6 +9690,12 @@ function discardRecord() {
 // ── 初次晤談表：退出 / 暫存 / 不儲存 ──
 
 function exitIIForm() {
+  const snap = snapshotInitialInterview();
+  const _rtE = v => !(v||'').replace(/<[^>]*>/g,'').trim();
+  if (!snap.problemsMain.length && _rtE(snap.family) && _rtE(snap.mainIssue) &&
+      _rtE(snap.summary) && _rtE(snap.expectation) && _rtE(snap.plan)) {
+    discardInitialInterview(); return;
+  }
   _showExitDialog('離開初次晤談表',
     () => saveInitialInterview(),
     () => draftInitialInterview(),
@@ -9721,6 +9745,12 @@ function discardInitialInterview() {
 // ── 精神科評估：退出 / 暫存 / 不儲存 ──
 
 function exitPsyForm(caseId, recordId) {
+  const _rtE = v => !(v||'').replace(/<[^>]*>/g,'').trim();
+  if (_rtE(getRichTextValue('pr-main')) && _rtE(getRichTextValue('pr-core')) &&
+      _rtE(getRichTextValue('pr-interv')) && _rtE(getRichTextValue('pr-rec')) &&
+      _rtE(getRichTextValue('pr-notes'))) {
+    discardPsychiatristRecord(caseId); return;
+  }
   _showExitDialog('離開精神科醫師評估',
     () => savePsychiatristRecord(caseId, recordId),
     () => draftPsychiatristRecord(caseId, recordId),
@@ -10066,10 +10096,456 @@ function _continueTodo(id) {
   } else if (t.type === 'psychiatrist') {
     if (t.recordId && t.caseId) { openPsychiatristModal(t.caseId, t.recordId); return; }
     if (t.caseId) openPsychiatristModal(t.caseId);
+  } else if (t.type === 'event_records') {
+    if (t.draftData?.caseId) {
+      openEventRecordForm(t.draftData.caseId, { ...t.draftData, todoId: t.id });
+    }
   } else if (t.draftData) {
     // generic autosave with draftData — best-effort restore
     if (t.caseId) openNewRecordPage(t.caseId);
   }
+}
+
+// ══════════════════════════════════════════════
+// ── 事件處理記錄表 ──────────────────────────────────────────────────────────
+
+const EVR_TOPICS = ['自我探索','情感困擾','家庭關係','心理疾患或傾向','情緒困擾','人際關係','學習與課業','生涯探索','生活適應','網路成癮','生理健康','性別議題','其他'];
+const EVR_SERVICE_ITEMS = ['諮商輔導／諮詢','心理測驗','與個案相關資源或關係人聯繫','性平行為人','轉介相關資源','責任通報','陪同服務','內部轉案','一次性服務','其他'];
+const EVR_MODES = ['面談','視訊','團體','電話關懷','E-mail/簡訊','外展訪視','其他'];
+const EVR_INTERVIEWEES = ['學生本人','家屬','朋友','伴侶','教職員工生','資源網絡人員'];
+const EVR_PERIODS = ['第1節 08:10-09:00','第2節 09:10-10:00','第3節 10:15-11:05','第4節 11:10-12:00','第5節 13:30-14:20','第6節 14:30-15:20','第7節 15:30-16:20','第8節 16:30-17:20','第9節 18:00-18:50','第10節 18:55-19:45','第11節 19:50-20:40'];
+
+let _evrCaseId     = null;
+let _evrCounselors = [];
+let _evrRecords    = [];
+let _evrDraftKey   = null;
+let _evrDraftTimer = null;
+let _evrTodoId     = null;
+
+// ── 搜尋頁 ──
+
+function renderEventRecordsPage() {
+  const el = document.getElementById('event-records-content');
+  if (!el) return;
+  if (_evrCaseId) { _renderEvrForm(); return; }
+  el.innerHTML = `
+    <div style="max-width:560px;">
+      <div style="font-size:.95rem;color:#4a5568;margin-bottom:14px;">請輸入學號、姓名或案號搜尋已開案個案：</div>
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="evr-search-inp" class="field-input" placeholder="學號 / 姓名 / 案號…" oninput="_evrSearch(this.value)" style="flex:1;">
+      </div>
+      <div id="evr-search-results" style="margin-top:14px;"></div>
+    </div>`;
+  setTimeout(() => document.getElementById('evr-search-inp')?.focus(), 50);
+}
+
+function _evrSearch(q) {
+  const res = document.getElementById('evr-search-results');
+  if (!res) return;
+  q = (q || '').trim().toLowerCase();
+  if (!q) { res.innerHTML = ''; return; }
+  const matched = casesData.filter(c => !c.deleted && c.status !== '結案' &&
+    ((c.name||'').toLowerCase().includes(q) || (c.studentId||'').toLowerCase().includes(q) || (c.id||'').toLowerCase().includes(q))
+  ).slice(0, 20);
+  if (!matched.length) { res.innerHTML = '<div style="color:#718096;font-size:.88rem;padding:8px;">查無符合的開案個案。</div>'; return; }
+  res.innerHTML = matched.map(c => `
+    <div style="padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;background:#fff;">
+      <div>
+        <div style="font-weight:600;">${escHtml(c.name)}</div>
+        <div style="font-size:.82rem;color:#718096;">${escHtml(c.id)}${c.studentId ? ' ‧ ' + escHtml(c.studentId) : ''}</div>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="openEventRecordForm('${escHtml(c.id)}')">新增事件處理記錄</button>
+    </div>`).join('');
+}
+
+// ── 開啟表單 ──
+
+function openEventRecordForm(caseId, fromDraftData) {
+  _evrCaseId   = caseId;
+  _evrDraftKey = `evr_draft_${caseId}_${currentUser?.email || 'anon'}`;
+  if (fromDraftData) {
+    _evrRecords    = fromDraftData.records || [_evrEmptyRecord()];
+    _evrCounselors = _evrRecords.map(r => r.counselors || []);
+    _evrTodoId     = fromDraftData.todoId  || null;
+  } else {
+    _evrRecords    = [_evrEmptyRecord()];
+    _evrCounselors = [[]];
+    _evrTodoId     = null;
+  }
+  showPage('page-event-records', document.querySelector('[data-nav-id="page-event-records"]'));
+  _renderEvrForm();
+  _startEvrAutosave();
+}
+
+function _evrEmptyRecord() {
+  return { date:'', time:'', room:'', counselors:[], interviewees:[], interventionMode:'', topics:[], serviceItems:[], summary:'', nextBk:null };
+}
+
+// ── 表單渲染 ──
+
+const _EVR_TOOLBAR_HTML = '<div class="rt-toolbar" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:6px;border:1px solid #cbd5e0;border-radius:6px;background:#f7fafc;padding:4px 8px;"><button type="button" class="rt-btn" onclick="toggleRtToolbar(this)" title="格式工具列" style="min-width:28px;font-size:.8rem;">A</button><span class="rt-toolbar-btns" style="display:none;gap:4px;flex-wrap:wrap;align-items:center;"><button type="button" class="rt-btn" data-cmd="bold" style="font-weight:bold;min-width:32px;">B</button><button type="button" class="rt-btn" data-cmd="italic" style="font-style:italic;min-width:32px;">I</button><button type="button" class="rt-btn" data-cmd="underline" style="text-decoration:underline;min-width:32px;">U</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtCycleUL" title="項目符號" style="min-width:32px;">•</button><button type="button" class="rt-btn" data-cmd="rtCycleOL" title="編號列表" style="min-width:32px;">1.</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtIndent" title="縮排" style="min-width:32px;">⇥</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="removeFormat" title="清除格式" style="min-width:32px;">⌫</button></span></div>';
+
+function _renderEvrForm() {
+  const el = document.getElementById('event-records-content');
+  if (!el || !_evrCaseId) return;
+  const c = casesData.find(x => x.id === _evrCaseId);
+  const cLabel = c ? `${escHtml(c.name)}（${escHtml(_evrCaseId)}）` : escHtml(_evrCaseId);
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+      <button class="btn btn-secondary btn-sm" onclick="exitEventRecordForm()">← 返回</button>
+      <div style="font-weight:600;font-size:1rem;">事件處理記錄 — ${cLabel}</div>
+    </div>
+    <div id="evr-alert" style="display:none;" class="alert"></div>
+    <div id="evr-cards-wrap"></div>
+    <div style="margin:12px 0;">
+      <button class="btn btn-secondary" onclick="_evrAddRecord()">＋ 新增事件處理記錄</button>
+    </div>
+    <div id="evr-draft-status" style="font-size:.8rem;color:#718096;margin-bottom:10px;"></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <button class="btn btn-primary" onclick="saveEventRecords()">儲存記錄</button>
+      <button class="btn btn-secondary" onclick="draftEventRecords()">暫存草稿</button>
+      <button class="btn btn-secondary" style="color:#c53030;border-color:#fc8181;" onclick="exitEventRecordForm()">捨棄離開</button>
+    </div>`;
+  _renderEvrCards();
+}
+
+function _renderEvrCards() {
+  const wrap = document.getElementById('evr-cards-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = _evrRecords.map((r, idx) => _buildEvrCardHtml(r, idx)).join('');
+  _evrRecords.forEach((r, idx) => {
+    _evrRestoreCard(r, idx);
+    _evrPopulateCounselorSelect(idx);
+    _evrRenderCounselorChips(idx);
+  });
+}
+
+function _buildEvrCardHtml(r, idx) {
+  const pfx = `evr${idx}`;
+  const removeBtn = idx > 0
+    ? `<button class="btn btn-secondary btn-sm" style="color:#c53030;border-color:#fc8181;font-size:.78rem;" onclick="_evrRemoveRecord(${idx})">移除此記錄</button>`
+    : '';
+  const mkOpts = (arr, cur) => arr.map(v => `<option value="${escHtml(v)}"${v===cur?' selected':''}>${escHtml(v)}</option>`).join('');
+  const periodOpts = `<option value="">— 請選擇 —</option>` + mkOpts(EVR_PERIODS, r.time);
+  const roomOpts   = `<option value="">— 請選擇 —</option>` + mkOpts(ROOMS, r.room);
+  const modeOpts   = `<option value="">— 請選擇 —</option>` + mkOpts(EVR_MODES, r.interventionMode);
+
+  const topicHtml = EVR_TOPICS.map((t, ti) =>
+    `<label style="display:flex;align-items:center;gap:4px;"><input type="checkbox" name="${pfx}-topic" value="${escHtml(t)}"${(r.topics||[]).includes(t)?' checked':''}/> ${ti+1}. ${escHtml(t)}</label>`
+  ).join('');
+
+  const svcHtml = EVR_SERVICE_ITEMS.map(s =>
+    `<label style="display:inline-flex;align-items:center;gap:4px;"><input type="checkbox" name="${pfx}-service" value="${escHtml(s)}"${(r.serviceItems||[]).includes(s)?' checked':''}/> ${escHtml(s)}</label>`
+  ).join('');
+
+  const itvHtml = EVR_INTERVIEWEES.map(v =>
+    `<label style="display:inline-flex;align-items:center;gap:5px;font-size:.88rem;cursor:pointer;"><input type="checkbox" name="${pfx}-interviewee" value="${escHtml(v)}"${(r.interviewees||[]).includes(v)?' checked':''}/> ${escHtml(v)}</label>`
+  ).join('');
+
+  const nextBkHtml = idx !== 0 ? '' : `
+    <div class="form-section" style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:14px;margin-bottom:14px;">
+      <div class="form-section-title" style="margin-top:0;">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
+          <input type="checkbox" id="${pfx}-next-bk-toggle" onchange="_evrToggleNextBk()" style="width:16px;height:16px;"${r.nextBk?' checked':''}>
+          同時預約下次諮商空間（選填）
+        </label>
+      </div>
+      <div id="${pfx}-next-bk-fields" style="display:${r.nextBk?'block':'none'};margin-top:10px;">
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">
+          <div><label class="field-label">空間</label><select class="field-select" id="${pfx}-next-bk-room">${roomOpts}</select></div>
+          <div><label class="field-label">日期</label><input type="date" class="field-input" id="${pfx}-next-bk-date" value="${escHtml(r.nextBk?.date||'')}"></div>
+          <div><label class="field-label">節次</label><select class="field-select" id="${pfx}-next-bk-period"><option value="">— 請選擇 —</option>${mkOpts(EVR_PERIODS, r.nextBk?.period||'')}</select></div>
+        </div>
+      </div>
+    </div>`;
+
+  return `
+    <div class="form-section" id="evr-card-${idx}" style="margin-bottom:18px;border:2px solid #bee3f8;border-radius:10px;padding:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+        <div style="font-size:1rem;font-weight:700;color:#2b6cb0;">事件處理記錄${idx + 1}</div>
+        ${removeBtn}
+      </div>
+      ${nextBkHtml}
+      <div style="background:#f7fafc;border-radius:8px;padding:12px;margin-bottom:12px;">
+        <div class="form-section-title" style="margin-top:0;">晤談基本資訊</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+          <div><label class="field-label">晤談日期</label><input type="date" class="field-input" id="${pfx}-date"></div>
+          <div><label class="field-label">晤談時間</label><select class="field-select" id="${pfx}-time">${periodOpts}</select></div>
+          <div><label class="field-label">晤談空間</label><select class="field-select" id="${pfx}-room">${roomOpts}</select></div>
+          <div><label class="field-label">介入方式</label><select class="field-select" id="${pfx}-mode">${modeOpts}</select></div>
+          <div style="grid-column:1/-1;">
+            <label class="field-label">晤談者</label>
+            <div id="${pfx}-counselor-chips" style="min-height:36px;padding:6px;border:1px solid #cbd5e0;border-radius:6px;background:#fff;display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px;"></div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <select id="${pfx}-counselor-add" class="field-select" style="flex:1;max-width:220px;"><option value="">— 新增晤談者 —</option></select>
+              <button class="btn btn-secondary btn-sm" type="button" onclick="_evrAddCounselor(${idx})">＋ 加入</button>
+            </div>
+          </div>
+          <div style="grid-column:1/-1;">
+            <label class="field-label">晤談對象</label>
+            <div style="display:flex;flex-wrap:wrap;gap:6px 16px;padding:8px;border:1px solid #cbd5e0;border-radius:6px;background:#fff;">${itvHtml}</div>
+          </div>
+        </div>
+      </div>
+      <div style="background:#f7fafc;border-radius:8px;padding:12px;margin-bottom:12px;">
+        <div class="form-section-title" style="margin-top:0;">會談主題</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:4px 12px;padding:8px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;">${topicHtml}</div>
+      </div>
+      <div style="background:#f7fafc;border-radius:8px;padding:12px;margin-bottom:12px;">
+        <div class="form-section-title" style="margin-top:0;">此次服務項目<span class="req">*</span></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:4px 12px;padding:8px;border:1px solid #e2e8f0;border-radius:6px;background:#fff;">${svcHtml}</div>
+      </div>
+      <div>
+        <div class="form-section-title">主述與會談資料</div>
+        ${_EVR_TOOLBAR_HTML}
+        <div class="rt-editor field-input" id="${pfx}-summary" contenteditable="true" style="min-height:120px;resize:vertical;overflow:auto;white-space:pre-wrap;line-height:1.6;"></div>
+      </div>
+    </div>`;
+}
+
+function _evrRestoreCard(r, idx) {
+  const pfx = `evr${idx}`;
+  const sv = (id, v) => { const el = document.getElementById(id); if (el && v) el.value = v; };
+  sv(`${pfx}-date`, r.date);
+  sv(`${pfx}-time`, r.time);
+  sv(`${pfx}-room`, r.room);
+  sv(`${pfx}-mode`, r.interventionMode);
+  if (r.summary) setRichTextValue(`${pfx}-summary`, r.summary);
+  if (idx === 0 && r.nextBk) {
+    sv(`${pfx}-next-bk-room`,   r.nextBk.room);
+    sv(`${pfx}-next-bk-period`, r.nextBk.period);
+  }
+}
+
+function _evrPopulateCounselorSelect(idx) {
+  const sel = document.getElementById(`evr${idx}-counselor-add`);
+  if (!sel || !configData?.users) return;
+  const existing = (_evrCounselors[idx] || []).map(u => u.email);
+  const opts = Object.entries(configData.users)
+    .filter(([email]) => !existing.includes(email))
+    .sort((a, b) => (a[1].name||'').localeCompare(b[1].name||''))
+    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}</option>`)
+    .join('');
+  sel.innerHTML = '<option value="">— 新增晤談者 —</option>' + opts;
+}
+
+function _evrRenderCounselorChips(idx) {
+  const wrap = document.getElementById(`evr${idx}-counselor-chips`);
+  if (!wrap) return;
+  const chips = _evrCounselors[idx] || [];
+  if (!chips.length) { wrap.innerHTML = '<span style="color:#a0aec0;font-size:.82rem;">（尚未選擇）</span>'; return; }
+  wrap.innerHTML = chips.map(u =>
+    `<span style="display:inline-flex;align-items:center;gap:4px;background:#bee3f8;border-radius:16px;padding:3px 10px;font-size:.83rem;">
+      ${escHtml(u.label)}
+      <button type="button" onclick="_evrRemoveCounselor(${idx},'${escHtml(u.email)}')" style="background:none;border:none;cursor:pointer;color:#2b6cb0;padding:0;font-size:1rem;line-height:1;">✕</button>
+    </span>`
+  ).join('');
+}
+
+function _evrAddCounselor(idx) {
+  const sel = document.getElementById(`evr${idx}-counselor-add`);
+  const email = sel?.value;
+  if (!email) return;
+  if (!_evrCounselors[idx]) _evrCounselors[idx] = [];
+  if (_evrCounselors[idx].some(u => u.email === email)) return;
+  const name = configData?.users?.[email]?.name || email;
+  _evrCounselors[idx].push({ email, label: name });
+  _evrRenderCounselorChips(idx);
+  _evrPopulateCounselorSelect(idx);
+}
+
+function _evrRemoveCounselor(idx, email) {
+  if (!_evrCounselors[idx]) return;
+  _evrCounselors[idx] = _evrCounselors[idx].filter(u => u.email !== email);
+  _evrRenderCounselorChips(idx);
+  _evrPopulateCounselorSelect(idx);
+}
+
+function _evrToggleNextBk() {
+  const tog    = document.getElementById('evr0-next-bk-toggle');
+  const fields = document.getElementById('evr0-next-bk-fields');
+  if (fields) fields.style.display = tog?.checked ? 'block' : 'none';
+}
+
+// ── 記錄增刪 ──
+
+function _evrSyncFromDom() {
+  _evrRecords = _evrRecords.map((_, idx) => {
+    const pfx = `evr${idx}`;
+    const gv  = id => document.getElementById(id)?.value || '';
+    return {
+      date:             gv(`${pfx}-date`),
+      time:             gv(`${pfx}-time`),
+      room:             gv(`${pfx}-room`),
+      interventionMode: gv(`${pfx}-mode`),
+      counselors:       [...(_evrCounselors[idx] || [])],
+      interviewees:     [...document.querySelectorAll(`input[name="${pfx}-interviewee"]:checked`)].map(c => c.value),
+      topics:           [...document.querySelectorAll(`input[name="${pfx}-topic"]:checked`)].map(c => c.value),
+      serviceItems:     [...document.querySelectorAll(`input[name="${pfx}-service"]:checked`)].map(c => c.value),
+      summary:          getRichTextValue(`${pfx}-summary`),
+      nextBk:           idx === 0 ? _evrGetNextBk() : null,
+    };
+  });
+}
+
+function _evrGetNextBk() {
+  const tog = document.getElementById('evr0-next-bk-toggle');
+  if (!tog?.checked) return null;
+  return {
+    room:   document.getElementById('evr0-next-bk-room')?.value   || '',
+    date:   document.getElementById('evr0-next-bk-date')?.value   || '',
+    period: document.getElementById('evr0-next-bk-period')?.value || '',
+  };
+}
+
+function _evrAddRecord() {
+  _evrSyncFromDom();
+  const prev  = _evrRecords[_evrRecords.length - 1] || _evrEmptyRecord();
+  const newRec = {
+    date: prev.date, time: prev.time, room: prev.room,
+    counselors: [...prev.counselors], interviewees: [...prev.interviewees],
+    interventionMode: prev.interventionMode,
+    topics: [], serviceItems: [], summary: '', nextBk: null,
+  };
+  _evrRecords.push(newRec);
+  _evrCounselors.push([...(prev.counselors || [])]);
+  _renderEvrCards();
+  document.getElementById(`evr-card-${_evrRecords.length - 1}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function _evrRemoveRecord(idx) {
+  if (idx === 0 || idx >= _evrRecords.length) return;
+  _evrSyncFromDom();
+  _evrRecords.splice(idx, 1);
+  _evrCounselors.splice(idx, 1);
+  _renderEvrCards();
+}
+
+// ── 退出 / 暫存 / 儲存 ──
+
+function exitEventRecordForm() {
+  if (!_evrCaseId) { renderEventRecordsPage(); return; }
+  _evrSyncFromDom();
+  const isEmpty = _evrRecords.every(r => {
+    const _rtE = v => !(v||'').replace(/<[^>]*>/g,'').trim();
+    return !r.date && !r.time && !r.room && !r.counselors.length && !r.interviewees.length &&
+           !r.topics.length && !r.serviceItems.length && _rtE(r.summary);
+  });
+  if (isEmpty) { discardEventRecords(); return; }
+  _showExitDialog('離開事件處理記錄表',
+    () => saveEventRecords(),
+    () => draftEventRecords(),
+    () => discardEventRecords()
+  );
+}
+
+function discardEventRecords() {
+  _stopEvrAutosave();
+  if (_evrDraftKey) localStorage.removeItem(_evrDraftKey);
+  _evrCaseId = null; _evrRecords = []; _evrCounselors = [];
+  _evrDraftKey = null; _evrTodoId = null;
+  renderEventRecordsPage();
+}
+
+function draftEventRecords() {
+  _evrSyncFromDom();
+  const caseObj = casesData.find(c => c.id === _evrCaseId);
+  if (!caseObj) { showToast('無法暫存：個案不存在', 'error'); return; }
+  const draftData = { caseId: _evrCaseId, records: _evrRecords };
+  const existingTodo = _evrTodoId ? todosData.find(t => t.id === _evrTodoId) : null;
+  const todoId = existingTodo?.id || _genTodoId();
+  _evrTodoId = todoId;
+  _putTodoItem({
+    id: todoId, type: 'event_records', label: '事件處理記錄草稿',
+    caseId: _evrCaseId, caseLabel: `${caseObj.name}（${_evrCaseId}）`,
+    draftData: { ...draftData, todoId }, origin: 'manual', notifRead: false, done: false,
+    createdAt: existingTodo?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  _stopEvrAutosave();
+  if (_evrDraftKey) localStorage.removeItem(_evrDraftKey);
+  _evrCaseId = null; _evrRecords = []; _evrCounselors = [];
+  _evrDraftKey = null;
+  showPage('page-todos', document.querySelector('[data-nav-id="page-todos"]'));
+  renderTodosPage();
+  showToast('已暫存草稿至待辦事項', 'success');
+  saveUserTodos().catch(e => console.warn('saveUserTodos failed:', e));
+}
+
+async function saveEventRecords() {
+  _evrSyncFromDom();
+  const errs = [];
+  _evrRecords.forEach((r, idx) => {
+    if (!r.serviceItems.length) errs.push(`事件處理記錄${idx + 1}：請選擇至少一項服務項目`);
+  });
+  if (errs.length) {
+    const alertEl = document.getElementById('evr-alert');
+    if (alertEl) {
+      alertEl.className = 'alert alert-error';
+      alertEl.textContent = errs.join('\n');
+      alertEl.style.display = '';
+      alertEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    return;
+  }
+  const cidx = casesData.findIndex(c => c.id === _evrCaseId);
+  if (cidx === -1) { showToast('個案不存在', 'error'); return; }
+  if (!casesData[cidx].records) casesData[cidx].records = [];
+  const now = new Date().toISOString();
+  const rand = () => Math.random().toString(36).slice(2, 6);
+  _evrRecords.forEach((r, idx) => {
+    casesData[cidx].records.push({
+      id: `REC_${Date.now()}_E${idx}_${rand()}`,
+      isEventRecord: true, recordKind: '晤談記錄',
+      date: r.date, time: r.time, room: r.room,
+      counselors: r.counselors,
+      counselorName: (r.counselors || []).map(u => u.label).join('、'),
+      interviewees: r.interviewees, interventionMode: r.interventionMode,
+      topics: r.topics, serviceItems: r.serviceItems,
+      summary: r.summary, status: 'done',
+      creatorEmail: currentUser?.email, createdAt: now, updatedAt: now,
+    });
+  });
+  if (_evrTodoId) {
+    const todo = todosData.find(t => t.id === _evrTodoId);
+    if (todo) { todo.done = true; todo.doneAt = now; }
+  }
+  _stopEvrAutosave();
+  if (_evrDraftKey) localStorage.removeItem(_evrDraftKey);
+  const savedCaseId = _evrCaseId;
+  const savedTodoId = _evrTodoId;
+  _evrCaseId = null; _evrRecords = []; _evrCounselors = [];
+  _evrDraftKey = null; _evrTodoId = null;
+  showCaseDetail(savedCaseId);
+  showToast('事件處理記錄已儲存', 'success');
+  const jobId = bgJobAdd('儲存事件處理記錄…');
+  try {
+    await saveCasesChunks(savedCaseId);
+    bgJobDone(jobId, '已儲存');
+    auditLog('新增事件處理記錄', savedCaseId);
+    if (savedTodoId) saveUserTodos().catch(() => {});
+  } catch (e) {
+    bgJobFail(jobId, e.message);
+  }
+}
+
+// ── 自動備援 ──
+
+function _startEvrAutosave() {
+  _stopEvrAutosave();
+  _evrDraftTimer = setInterval(() => {
+    if (!_evrCaseId || !_evrDraftKey) return;
+    _evrSyncFromDom();
+    try {
+      localStorage.setItem(_evrDraftKey, JSON.stringify({ records: _evrRecords, caseId: _evrCaseId, savedAt: new Date().toISOString() }));
+      const el = document.getElementById('evr-draft-status');
+      if (el) el.textContent = `草稿備援 ${new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'})}`;
+    } catch (_) {}
+  }, 60000);
+}
+
+function _stopEvrAutosave() {
+  if (_evrDraftTimer) { clearInterval(_evrDraftTimer); _evrDraftTimer = null; }
 }
 
 // ── 自動備援通知列表 ──
