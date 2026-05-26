@@ -4161,10 +4161,12 @@ function statusBadge(status) {
 // ══════════════════════════════════════════════
 //  渲染管理員使用者列表
 // ══════════════════════════════════════════════
-function renderAdminUsers() {
-  const users = Object.entries(configData.users || {});
+let _adminUserFilter = { status: 'all', role: '' };
 
-  if (!users.length) {
+function renderAdminUsers() {
+  const allUsers = Object.entries(configData.users || {});
+
+  if (!allUsers.length) {
     document.getElementById('admin-users-wrap').innerHTML = `
       <div class="empty-state"><div class="icon">👥</div>
         <p>尚無使用者（config.json 的 users 資料可能遺失）</p>
@@ -4175,9 +4177,51 @@ function renderAdminUsers() {
     return;
   }
 
-  const rows = users.map(([key, info]) => {
-    const isAdmin = info.isAdmin === true || info.extraRole === '管理者';
-    const adminBadge = isAdmin
+  // Counts for filter badges
+  const totalCount    = allUsers.length;
+  const activeCount   = allUsers.filter(([,i]) => !i.disabled).length;
+  const disabledCount = allUsers.filter(([,i]) =>  i.disabled).length;
+
+  // Collect distinct roles present in users
+  const presentRoles = [...new Set(allUsers.map(([,i]) => i.role).filter(Boolean))].sort((a,b) => a.localeCompare(b,'zh-TW'));
+
+  // Apply filters
+  const { status: fStatus, role: fRole } = _adminUserFilter;
+  const filtered = allUsers.filter(([, info]) => {
+    if (fStatus === 'active'   && info.disabled) return false;
+    if (fStatus === 'disabled' && !info.disabled) return false;
+    if (fRole && info.role !== fRole) return false;
+    return true;
+  });
+
+  // Sort: disabled to bottom, then by name within each group
+  filtered.sort(([, a], [, b]) => {
+    if (!!a.disabled !== !!b.disabled) return a.disabled ? 1 : -1;
+    return (a.name || '').localeCompare(b.name || '', 'zh-TW');
+  });
+
+  window._auFilter = (key, val) => { _adminUserFilter[key] = val; renderAdminUsers(); };
+
+  const tabStyle = (active) =>
+    `padding:5px 13px;border:none;border-radius:16px;cursor:pointer;font-size:.84rem;font-weight:${active?'600':'400'};background:${active?'#3182ce':'#edf2f7'};color:${active?'#fff':'#4a5568'};transition:all .15s;`;
+
+  const filterBar = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+      <div style="display:flex;gap:5px;flex-wrap:wrap;">
+        <button type="button" onclick="_auFilter('status','all')"      style="${tabStyle(fStatus==='all')}">全部（${totalCount}）</button>
+        <button type="button" onclick="_auFilter('status','active')"   style="${tabStyle(fStatus==='active')}">啟用中（${activeCount}）</button>
+        <button type="button" onclick="_auFilter('status','disabled')" style="${tabStyle(fStatus==='disabled')}">停用（${disabledCount}）</button>
+      </div>
+      <select onchange="_auFilter('role',this.value)" style="padding:5px 10px;border:1px solid #cbd5e0;border-radius:16px;font-size:.84rem;cursor:pointer;background:#fff;">
+        <option value="">全部職稱</option>
+        ${presentRoles.map(r => `<option value="${escHtml(r)}" ${fRole===r?'selected':''}>${escHtml(r)}</option>`).join('')}
+      </select>
+      ${(fStatus!=='all'||fRole) ? `<button type="button" onclick="_auFilter('status','all');_auFilter('role','')" style="padding:4px 10px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;font-size:.82rem;color:#718096;cursor:pointer;">× 清除篩選</button>` : ''}
+    </div>`;
+
+  const rows = filtered.map(([key, info]) => {
+    const isAdminUser = info.isAdmin === true || info.extraRole === '管理者';
+    const adminBadge = isAdminUser
       ? `<span class="badge badge-orange">管理者</span>`
       : (info.extraRole === '個案管理員'
           ? `<span class="badge badge-gray">個案管理員</span> <span style="color:#718096;font-size:.8rem;">(${(info.allowedCases || []).length} 個案)</span>`
@@ -4190,7 +4234,7 @@ function renderAdminUsers() {
     const disabledBadge = info.disabled ? `<span class="badge" style="background:#fed7d7;color:#c53030;margin-left:4px;">已停用</span>` : '';
     const disableBtn = isSelf ? '' : `<label title="${info.disabled?'啟用帳號':'停用帳號'}" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:.78rem;color:${info.disabled?'#c53030':'#718096'};margin-left:6px;"><input type="checkbox" ${info.disabled?'checked':''} onchange="toggleUserDisabled('${escHtml(key)}',this.checked)" style="cursor:pointer;"> 停用</label>`;
     return `
-      <tr style="opacity:${info.disabled?'.65':'1'};">
+      <tr style="opacity:${info.disabled?'.55':'1'};">
         <td>${displayKey}${isSelf ? ' <span class="badge badge-blue">本帳號</span>' : ''}${disabledBadge}</td>
         <td>${escHtml(info.name || '—')}</td>
         <td>${escHtml(info.role || '—')}</td>
@@ -4203,10 +4247,14 @@ function renderAdminUsers() {
       </tr>`;
   }).join('');
 
+  const emptyRow = filtered.length === 0
+    ? `<tr><td colspan="5" style="text-align:center;padding:20px;color:#a0aec0;font-size:.88rem;">無符合條件的使用者</td></tr>` : '';
+
   document.getElementById('admin-users-wrap').innerHTML = `
+    ${filterBar}
     <table>
       <thead><tr><th>帳號 / 識別碼</th><th>姓名</th><th>角色</th><th>附加身分</th><th>操作</th></tr></thead>
-      <tbody>${rows}</tbody>
+      <tbody>${rows || emptyRow}</tbody>
     </table>`;
 }
 
