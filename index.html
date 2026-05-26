@@ -1450,12 +1450,10 @@
           </div>
           <div class="full">
             <label class="field-label">結案原因<span class="req">*</span></label>
-            <div class="radio-group">
-              <label><input type="radio" name="cl-reason" value="個案主述問題已緩解" /> 個案主述問題已緩解</label>
-              <label><input type="radio" name="cl-reason" value="個案無意願會談" /> 個案無意願會談</label>
-              <label><input type="radio" name="cl-reason" value="退學" /> 退學</label>
-              <label><input type="radio" name="cl-reason" value="返家休養" /> 返家休養</label>
-              <label><input type="radio" name="cl-reason" value="其他" /> 其他</label>
+            <div id="cl-reason-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;"></div>
+            <div id="cl-reason-other-wrap" style="display:none;align-items:center;gap:6px;margin-top:8px;font-size:.88rem;">
+              其他說明：<input type="text" id="cl-reason-other" class="field-input" style="width:240px;padding:4px 8px;font-size:.88rem;" placeholder="請說明（必填）" oninput="_clReasonValidateOther()">
+              <span id="cl-reason-other-hint" style="color:#e53e3e;font-size:.8rem;display:none;">請填寫說明</span>
             </div>
           </div>
         </div>
@@ -1594,6 +1592,13 @@
             <div class="radio-group">
               <label><input type="radio" name="nc-status" value="active" checked /> 進行中</label>
               <label><input type="radio" name="nc-status" value="pending" /> 待分配</label>
+            </div>
+          </div>
+          <div class="full">
+            <label class="field-label">案別<span class="req">*</span></label>
+            <div class="radio-group">
+              <label><input type="radio" name="nc-ab-type" value="A案" /> A案（諮商晤談）</label>
+              <label><input type="radio" name="nc-ab-type" value="B案" /> B案（非諮商轉介，如霸凌轉介、性平會轉介等）</label>
             </div>
           </div>
         </div>
@@ -4970,6 +4975,7 @@ function showCaseDetail(caseId) {
       ${field('身分證字號／居留證號', c.idNumber)}
     </div>`) +
     mkSection('bg', '背景資料', `<div class="form-grid">
+      ${c.abType ? field('案別', c.abType) : ''}
       ${field('對象類別', c.caseType)}
       ${field('國籍', natLabel)}
       ${field('族群', ethLabel)}
@@ -6374,10 +6380,66 @@ function openClosureEvalPage(caseId) {
   // 清空其他欄位
   document.querySelectorAll('input[name="cl-light"]').forEach(r => r.checked = false);
   document.getElementById('cl-description').value = '';
-  document.querySelectorAll('input[name="cl-reason"]').forEach(r => r.checked = false);
+  _clReasonSet('');
   setAlert('closure-alert', '', '');
   document.getElementById('btn-confirm-closure').disabled = false;
   showPage('page-closure-eval', null);
+}
+
+// ── 結案原因 chips ──────────────────────────────────────────────────────
+const _CL_REASON_OPTS = ['個案主述問題已緩解','個案無意願會談','退學','返家休養','其他'];
+let _clReasonSelected = '';
+
+function _clReasonRender() {
+  const wrap = document.getElementById('cl-reason-chips');
+  if (!wrap) return;
+  wrap.innerHTML = _CL_REASON_OPTS.map(opt => {
+    const sel = _clReasonSelected === opt || (_clReasonSelected && opt === '其他' && !_CL_REASON_OPTS.includes(_clReasonSelected) && opt === '其他');
+    const isOtherSel = opt === '其他' && _clReasonSelected && !_CL_REASON_OPTS.slice(0,-1).includes(_clReasonSelected);
+    const active = _clReasonSelected === opt || (opt === '其他' && isOtherSel);
+    return `<span onclick="_clReasonSelect('${opt}')" style="cursor:pointer;padding:6px 14px;border-radius:20px;font-size:.88rem;border:1.5px solid ${active?'#3182ce':'#cbd5e0'};background:${active?'#ebf8ff':'#fff'};color:${active?'#2b6cb0':'#4a5568'};user-select:none;transition:all .15s;">${escHtml(opt)}</span>`;
+  }).join('');
+  const otherWrap = document.getElementById('cl-reason-other-wrap');
+  if (otherWrap) otherWrap.style.display = (_clReasonSelected === '其他' || (_clReasonSelected && !_CL_REASON_OPTS.slice(0,-1).includes(_clReasonSelected))) ? 'flex' : 'none';
+}
+
+function _clReasonSelect(opt) {
+  if (opt === '其他') {
+    _clReasonSelected = '其他';
+    _clReasonRender();
+    document.getElementById('cl-reason-other')?.focus();
+  } else {
+    _clReasonSelected = opt;
+    _clReasonRender();
+  }
+}
+
+function _clReasonValidateOther() {
+  const el = document.getElementById('cl-reason-other');
+  const hint = document.getElementById('cl-reason-other-hint');
+  if (!el || !hint) return;
+  const empty = !el.value.trim();
+  hint.style.display = empty ? '' : 'none';
+  el.style.borderColor = empty ? '#e53e3e' : '';
+}
+
+function _clReasonGet() {
+  if (_clReasonSelected === '其他' || (_clReasonSelected && !_CL_REASON_OPTS.slice(0,-1).includes(_clReasonSelected))) {
+    return document.getElementById('cl-reason-other')?.value.trim() || '';
+  }
+  return _clReasonSelected;
+}
+
+function _clReasonSet(val) {
+  if (!val) { _clReasonSelected = ''; _clReasonRender(); return; }
+  if (_CL_REASON_OPTS.slice(0,-1).includes(val)) {
+    _clReasonSelected = val;
+  } else {
+    _clReasonSelected = '其他';
+    const el = document.getElementById('cl-reason-other');
+    if (el) el.value = val;
+  }
+  _clReasonRender();
 }
 
 function cancelClosureEval() {
@@ -6388,7 +6450,7 @@ function cancelClosureEval() {
 async function saveClosureEval() {
   const light       = document.querySelector('input[name="cl-light"]:checked')?.value || '';
   const description = document.getElementById('cl-description').value.trim();
-  const reason      = document.querySelector('input[name="cl-reason"]:checked')?.value || '';
+  const reason      = _clReasonGet();
 
   const _closAlert = (msg) => {
     setAlert('closure-alert', 'error', msg);
@@ -6396,7 +6458,11 @@ async function saveClosureEval() {
   };
   if (!light)       { _closAlert('請選擇狀態評估燈號。'); return; }
   if (!description) { _closAlert('請填寫質性描述。'); return; }
-  if (!reason)      { _closAlert('請選擇結案原因。'); return; }
+  if (!_clReasonSelected) { _closAlert('請選擇結案原因。'); return; }
+  if ((_clReasonSelected === '其他' || !_CL_REASON_OPTS.slice(0,-1).includes(_clReasonSelected)) && !reason) {
+    _clReasonValidateOther(); _closAlert('請填寫結案原因「其他」的說明。'); return;
+  }
+  if (!reason) { _closAlert('請選擇結案原因。'); return; }
 
   const dimensions = CLOSURE_DIMS.map((dim, i) => ({
     label: dim,
@@ -7156,6 +7222,9 @@ async function importCasesFromExcel(file) {
       if (!id || id.length !== 7 || isNaN(parseInt(id))) continue;
 
       const counselorText = String(r[5]||'').trim();
+      // A欄（r[0]）：讀取A案/B案；空格時若有主責則歸A案（漏填），否則也預設A案
+      const abRaw = String(r[0]||'').trim();
+      const abType = abRaw.includes('B') ? 'B案' : (abRaw.includes('A') ? 'A案' : (counselorText ? 'A案' : 'A案'));
       const grade         = String(r[7]||'').trim();
       const identity      = String(r[24]||'').trim();
       const { caseType, program } = identityMap(identity, grade);
@@ -7191,6 +7260,7 @@ async function importCasesFromExcel(file) {
 
       imported.push({
         id,
+        abType,
         openDate:        openDateAD,
         name:            String(r[4]||'').trim(),
         studentId:       String(r[13]||'').trim(),
@@ -7390,6 +7460,7 @@ function showImportReviewModal(imported, prog, newCounselorsMap) {
           <td style="padding:5px 8px;text-align:center;width:30px;"><input type="checkbox" ${ed._selected?'checked':''} onclick="irSel(${oi},this.checked,event)" style="width:14px;height:14px;cursor:pointer;"></td>
           <td style="padding:5px 8px;text-align:center;width:22px;">${warn?'<span style="color:#e53e3e;font-size:.82rem;" title="已預設結案，請確認">⚠</span>':''}</td>
           <td style="padding:5px 8px;font-size:.79rem;color:#4a5568;white-space:nowrap;">${escHtml(c.id)}</td>
+          <td style="padding:5px 8px;font-size:.78rem;white-space:nowrap;"><span style="padding:2px 7px;border-radius:10px;background:${c.abType==='B案'?'#fed7e2':'#c6f6d5'};color:${c.abType==='B案'?'#9b2c2c':'#276749'};font-weight:600;">${escHtml(c.abType||'—')}</span></td>
           <td style="padding:5px 8px;font-size:.85rem;font-weight:600;">${escHtml(c.name||'—')}</td>
           <td style="padding:5px 8px;font-size:.78rem;color:#718096;">${escHtml(c.studentId||'—')}</td>
           <td style="padding:5px 8px;font-size:.78rem;color:#718096;white-space:nowrap;">${escHtml(c.openDate||'—')}</td>
@@ -7444,6 +7515,7 @@ function showImportReviewModal(imported, prog, newCounselorsMap) {
               <th style="padding:6px 8px;width:30px;text-align:center;"><input type="checkbox" title="全選/全不選" ${allFilteredSel?'checked':''} onchange="irSelAll(this.checked)" style="width:14px;height:14px;cursor:pointer;"></th>
               <th style="padding:6px 8px;width:22px;"></th>
               <th style="padding:6px 8px;font-size:.8rem;white-space:nowrap;">案號</th>
+              <th style="padding:6px 8px;font-size:.8rem;white-space:nowrap;">案別</th>
               <th style="padding:6px 8px;font-size:.8rem;">姓名</th>
               <th style="padding:6px 8px;font-size:.8rem;">學號</th>
               <th style="padding:6px 8px;font-size:.8rem;white-space:nowrap;">開案日期</th>
@@ -9232,6 +9304,7 @@ async function saveCase() {
   const emgRelation= document.getElementById('nc-emg-relation').value.trim();
   const source     = document.querySelector('input[name="nc-source"]:checked')?.value || '';
   const status     = document.querySelector('input[name="nc-status"]:checked')?.value || 'active';
+  const abType     = document.querySelector('input[name="nc-ab-type"]:checked')?.value || '';
   const counselorEmail = document.getElementById('nc-counselor').value;
   const foreignCountry = document.getElementById('nc-foreign-country').value.trim();
   const bsrsIds = ['nc-bsrs1','nc-bsrs2','nc-bsrs3','nc-bsrs4','nc-bsrs5'];
@@ -9267,6 +9340,7 @@ async function saveCase() {
   if (!emgName)        missing.push('緊急聯絡人姓名');
   if (!emgPhone)       missing.push('緊急聯絡人電話');
   if (!emgRelation)    missing.push('緊急聯絡人關係');
+  if (!abType)         missing.push('案別（A案／B案）');
   if (!source)         missing.push('來源');
   if (!topics.length)  missing.push('主訴問題分類');
   if (document.querySelector('input[name="nc-topic"][value="其他"]')?.checked && !topicOtherText) {
@@ -9326,7 +9400,7 @@ async function saveCase() {
     source, pastRecords, topics,
     counselorEmail, counselorName, counselorText: '',
     bsrs, bsrs6, bsrsTotal,
-    status, createdAt: now, updatedAt: now,
+    abType, status, createdAt: now, updatedAt: now,
   };
 
   try {
@@ -9409,6 +9483,7 @@ function fillFromCase(caseId) {
   };
   setR('nc-gender',    c.legalGender);
   setR('nc-gender-id', c.genderIdentity);
+  setR('nc-ab-type',   c.abType);
   setR('nc-type',      c.caseType);
   setR('nc-residence', c.residence);
   setR('nc-nationality', c.nationality || '');
