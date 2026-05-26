@@ -29,6 +29,7 @@
         case 'trashFile':          result = trashFile_(params); break;
         case 'deleteFile':         result = deleteFile_(params); break;
         case 'moveFile':           result = moveFile_(params); break;
+        case 'updateContentById':  result = updateContentById_(params); break;
         case 'query':              result = driveQuery_(params); break;
         case 'listFolder':         result = listFolder_(params); break;
         case 'createCalendarEvent':  result = createCalendarEvent_(params); break;
@@ -223,6 +224,10 @@
 
   function createJson_({ name, content, parentId }) {
     return driveUpload_(name, content, parentId);
+  }
+
+  function updateContentById_({ fileId, content }) {
+    return driveUpdateContent_(fileId, content);
   }
 
   function updateJson_({ path, content }) {
