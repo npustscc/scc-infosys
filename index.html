@@ -10174,6 +10174,13 @@ function openEventRecordForm(caseId, fromDraftData, origin) {
   } else {
     _evrRecords    = [_evrEmptyRecord()];
     _evrCounselors = [[]];
+    const _curEmail = currentUser?.email;
+    if (_curEmail && configData?.users?.[_curEmail]) {
+      const _cu = configData.users[_curEmail];
+      if (BK_COUNSELING_ROLES.has(_cu.role || '')) {
+        _evrCounselors = [[{ email: _curEmail, label: _cu.name || _curEmail, role: _cu.role || '' }]];
+      }
+    }
     _evrDynTags    = [{ accompany:[], other:[] }];
     _evrTodoId     = null;
   }
@@ -10390,9 +10397,14 @@ function _buildEvrCardHtml(r, idx) {
   const periodOpts = `<option value="">— 請選擇 —</option><option value="其他"${(!isStdTime && r.time)?' selected':''}>其他（自填時間）</option>` +
     EVR_PERIODS.map(v => `<option value="${escHtml(v)}"${v===r.time?' selected':''}>${escHtml(v)}</option>`).join('');
 
-  const topicHtml = EVR_TOPICS.map((t, ti) =>
-    `<label><input type="checkbox" name="${pfx}-topic" value="${escHtml(t)}"${(r.topics||[]).includes(t)?' checked':''}/> ${ti+1}. ${escHtml(t)}</label>`
-  ).join('');
+  const topicOtherVal     = (r.topics||[]).find(s => s.startsWith('其他：'))?.slice(3) || '';
+  const topicOtherChecked = (r.topics||[]).some(s => s === '其他' || s.startsWith('其他：'));
+  const topicHtml = EVR_TOPICS.map((t, ti) => {
+    if (t === '其他') {
+      return `<label style="display:inline-flex;align-items:center;gap:4px;"><input type="checkbox" name="${pfx}-topic" value="其他"${topicOtherChecked?' checked':''} onchange="_evrToggleTopicOther(this,${idx})"/> ${ti+1}. 其他：<input type="text" id="${pfx}-topic-other" class="field-input" style="display:${topicOtherChecked?'inline':'none'};width:120px;padding:3px 7px;font-size:.87rem;" placeholder="請說明" value="${escHtml(topicOtherVal)}"></label>`;
+    }
+    return `<label><input type="checkbox" name="${pfx}-topic" value="${escHtml(t)}"${(r.topics||[]).includes(t)?' checked':''}/> ${ti+1}. ${escHtml(t)}</label>`;
+  }).join('');
 
   const itvHtml = EVR_INTERVIEWEES.map(v =>
     `<label style="display:inline-flex;align-items:center;gap:5px;font-size:.88rem;cursor:pointer;"><input type="checkbox" name="${pfx}-interviewee" value="${escHtml(v)}"${(r.interviewees||[]).includes(v)?' checked':''}/> ${escHtml(v)}</label>`
@@ -10415,10 +10427,13 @@ function _buildEvrCardHtml(r, idx) {
       </div>
     </div>`;
 
+  const _cardBorder = idx % 2 === 0 ? '2px solid #bee3f8' : '2px solid #9ae6b4';
+  const _cardBg     = idx % 2 === 0 ? '' : 'background:#f0fff4;';
+  const _titleColor = idx % 2 === 0 ? '#2b6cb0' : '#276749';
   return `
-    <div class="form-section" id="evr-card-${idx}" style="margin-bottom:18px;border:2px solid #bee3f8;border-radius:10px;padding:16px;">
+    <div class="form-section" id="evr-card-${idx}" style="margin-bottom:18px;border:${_cardBorder};border-radius:10px;padding:16px;${_cardBg}">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-        <div style="font-size:1rem;font-weight:700;color:#2b6cb0;">事件處理記錄${idx + 1}</div>
+        <div style="font-size:1rem;font-weight:700;color:${_titleColor};">事件處理記錄${idx + 1}</div>
         ${removeBtn}
       </div>
       <div id="${pfx}-alert" class="alert alert-error" style="display:none;margin-bottom:10px;"></div>
@@ -10543,6 +10558,11 @@ function _evrToggleTimeOther(idx) {
   const sel   = document.getElementById(`evr${idx}-time`);
   const other = document.getElementById(`evr${idx}-time-other`);
   if (other) other.style.display = sel?.value === '其他' ? '' : 'none';
+}
+
+function _evrToggleTopicOther(el, idx) {
+  const other = document.getElementById(`evr${idx}-topic-other`);
+  if (other) { other.style.display = el.checked ? 'inline' : 'none'; if (!el.checked) other.value = ''; }
 }
 
 function _evrToggleSocialRpt(el, idx) {
@@ -10693,7 +10713,10 @@ function _evrSyncFromDom() {
       interventionMode: gv(`${pfx}-mode`),
       counselors:       [...(_evrCounselors[idx] || [])],
       interviewees:     [...document.querySelectorAll(`input[name="${pfx}-interviewee"]:checked`)].map(c => c.value),
-      topics:           [...document.querySelectorAll(`input[name="${pfx}-topic"]:checked`)].map(c => c.value),
+      topics:           [...document.querySelectorAll(`input[name="${pfx}-topic"]:checked`)].map(c => {
+                          if (c.value === '其他') { const txt = (document.getElementById(`${pfx}-topic-other`)?.value||'').trim(); return txt ? `其他：${txt}` : '其他'; }
+                          return c.value;
+                        }),
       serviceItems:     _evrCollectServiceItems(idx),
       dynTags:          { accompany: [...(_evrDynTags[idx]?.accompany||[])], other: [...(_evrDynTags[idx]?.other||[])] },
       summary:          getRichTextValue(`${pfx}-summary`),
