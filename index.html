@@ -7698,56 +7698,97 @@ function showImportMergePreview(imported, prog) {
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:30px;';
 
     const existingIds = new Set(casesData.map(c => c.id));
-    const newCases  = imported.filter(c => !existingIds.has(c.id));
-    const dupCases  = imported.filter(c =>  existingIds.has(c.id));
+    const newCases    = imported.filter(c => !existingIds.has(c.id));
+    const dupCases    = imported.filter(c =>  existingIds.has(c.id));
 
-    const dupHtml = dupCases.length === 0 ? '' : `
-      <div style="margin-top:14px;padding:12px 14px;background:#fff8e1;border-radius:8px;border:1px solid #f6c00b;">
-        <div style="font-weight:600;color:#7d4e00;margin-bottom:8px;">重複案號處理方式（${dupCases.length} 筆）</div>
-        <label style="display:flex;align-items:center;gap:8px;margin-bottom:6px;cursor:pointer;">
-          <input type="radio" name="dup-mode" value="skip" checked />
-          <span style="font-size:.88rem;">略過（保留系統現有資料，不覆蓋）</span>
-        </label>
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-          <input type="radio" name="dup-mode" value="update" />
-          <span style="font-size:.88rem;">更新（以匯入資料覆蓋基本欄位，保留既有晤談紀錄）</span>
-        </label>
-        <details style="margin-top:8px;">
-          <summary style="font-size:.82rem;color:#7d6608;cursor:pointer;">查看重複個案清單</summary>
-          <div style="margin-top:6px;max-height:150px;overflow:auto;border:1px solid #fde68a;border-radius:4px;">
-            ${dupCases.map(c => `<div style="font-size:.82rem;padding:4px 8px;border-bottom:1px solid #fef9c3;">${escHtml(c.id)} ${escHtml(c.name||'')} <span style="color:#a0aec0;">${escHtml(c.studentId||'')}</span></div>`).join('')}
+    // Same name → auto smart-merge. Different name → per-case decision.
+    const sameNameDups = [];
+    const diffNameDups = []; // { imp, ex, action:'use-imported'|'skip' }
+    dupCases.forEach(imp => {
+      const ex = casesData.find(c => c.id === imp.id);
+      const sameN = !imp.name || !ex?.name || imp.name === ex.name;
+      if (sameN) sameNameDups.push({ imp, ex });
+      else diffNameDups.push({ imp, ex, action: 'use-imported' });
+    });
+
+    const diffChoices = new Map(diffNameDups.map(d => [d.imp.id, 'use-imported']));
+
+    const sameNameHtml = sameNameDups.length === 0 ? '' : `
+      <div style="margin-top:14px;padding:12px 14px;background:#f0fff4;border-radius:8px;border:1px solid #9ae6b4;">
+        <div style="font-weight:600;color:#276749;margin-bottom:6px;">✓ 同案號且姓名一致（${sameNameDups.length} 筆）— 自動以最新資料更新、保留既有晤談紀錄</div>
+        <details><summary style="font-size:.82rem;color:#276749;cursor:pointer;">查看清單</summary>
+          <div style="margin-top:6px;max-height:140px;overflow:auto;border:1px solid #c6f6d5;border-radius:4px;">
+            ${sameNameDups.map(d => `<div style="font-size:.82rem;padding:4px 8px;border-bottom:1px solid #e6ffed;">${escHtml(d.imp.id)} <strong>${escHtml(d.imp.name||'')}</strong></div>`).join('')}
           </div>
         </details>
       </div>`;
 
+    const diffNameHtml = diffNameDups.length === 0 ? '' : `
+      <div style="margin-top:14px;padding:12px 14px;background:#fff8e1;border-radius:8px;border:1px solid #f6ad55;">
+        <div style="font-weight:600;color:#7d4e00;margin-bottom:8px;">⚠ 同案號但姓名不一致（${diffNameDups.length} 筆）— 請逐筆確認</div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:.83rem;">
+            <thead><tr style="background:#fef9c3;">
+              <th style="padding:5px 8px;text-align:left;">案號</th>
+              <th style="padding:5px 8px;text-align:left;">系統現有姓名</th>
+              <th style="padding:5px 8px;text-align:left;">匯入資料姓名</th>
+              <th style="padding:5px 8px;text-align:left;">處理方式</th>
+            </tr></thead>
+            <tbody>
+              ${diffNameDups.map((d, ri) => `<tr style="background:${ri%2===0?'#fffdf0':'#fffbeb'};">
+                <td style="padding:5px 8px;font-weight:600;">${escHtml(d.imp.id)}</td>
+                <td style="padding:5px 8px;color:#c05621;">${escHtml(d.ex?.name||'—')}</td>
+                <td style="padding:5px 8px;color:#276749;">${escHtml(d.imp.name||'—')}</td>
+                <td style="padding:5px 8px;">
+                  <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;">
+                    <input type="radio" name="dc-${escHtml(d.imp.id)}" value="use-imported" checked onchange="window._impDiffChg('${escHtml(d.imp.id)}','use-imported')">
+                    <span>以匯入取代</span>
+                  </label>
+                  <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;margin-left:10px;">
+                    <input type="radio" name="dc-${escHtml(d.imp.id)}" value="skip" onchange="window._impDiffChg('${escHtml(d.imp.id)}','skip')">
+                    <span>略過（保留現有）</span>
+                  </label>
+                </td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+
     modal.innerHTML = `
-      <div style="background:#fff;border-radius:12px;max-width:520px;width:100%;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3);">
-        <div style="padding:18px 24px;border-bottom:1px solid #e2e8f0;">
+      <div style="background:#fff;border-radius:12px;max-width:600px;width:100%;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.3);">
+        <div style="padding:18px 24px;border-bottom:1px solid #e2e8f0;flex-shrink:0;">
           <h3 style="margin:0;color:#1a5276;font-size:1.1rem;">確認匯入</h3>
         </div>
-        <div style="padding:20px 24px;">
+        <div style="padding:20px 24px;overflow:auto;flex:1;">
           <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:4px;">
             <div style="text-align:center;padding:12px 18px;background:#f0fff4;border-radius:8px;flex:1;min-width:100px;">
               <div style="font-size:1.9rem;font-weight:700;color:#276749;">${newCases.length}</div>
               <div style="font-size:.8rem;color:#4a5568;margin-top:2px;">新個案（將新增）</div>
             </div>
-            ${dupCases.length ? `<div style="text-align:center;padding:12px 18px;background:#fffbeb;border-radius:8px;flex:1;min-width:100px;">
-              <div style="font-size:1.9rem;font-weight:700;color:#7d4e00;">${dupCases.length}</div>
-              <div style="font-size:.8rem;color:#4a5568;margin-top:2px;">重複案號</div>
+            ${sameNameDups.length ? `<div style="text-align:center;padding:12px 18px;background:#f0fff4;border-radius:8px;flex:1;min-width:100px;">
+              <div style="font-size:1.9rem;font-weight:700;color:#276749;">${sameNameDups.length}</div>
+              <div style="font-size:.8rem;color:#4a5568;margin-top:2px;">同名更新</div>
+            </div>` : ''}
+            ${diffNameDups.length ? `<div style="text-align:center;padding:12px 18px;background:#fffbeb;border-radius:8px;flex:1;min-width:100px;">
+              <div style="font-size:1.9rem;font-weight:700;color:#c05621;">${diffNameDups.length}</div>
+              <div style="font-size:.8rem;color:#4a5568;margin-top:2px;">姓名不符（待確認）</div>
             </div>` : ''}
             <div style="text-align:center;padding:12px 18px;background:#ebf5fb;border-radius:8px;flex:1;min-width:100px;">
               <div style="font-size:1.9rem;font-weight:700;color:#1a5276;">${imported.length}</div>
               <div style="font-size:.8rem;color:#4a5568;margin-top:2px;">共解析筆數</div>
             </div>
           </div>
-          ${dupHtml}
+          ${sameNameHtml}${diffNameHtml}
         </div>
-        <div style="padding:14px 24px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:8px;background:#f7fafc;">
+        <div style="padding:14px 24px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:8px;background:#f7fafc;flex-shrink:0;">
           <button class="btn btn-secondary" type="button" id="imp-merge-cancel">取消</button>
           <button class="btn btn-primary" type="button" id="imp-merge-confirm">確認匯入</button>
         </div>
       </div>`;
     document.body.appendChild(modal);
+
+    window._impDiffChg = (id, action) => { diffChoices.set(id, action); };
 
     modal.querySelector('#imp-merge-cancel').onclick = () => {
       modal.remove();
@@ -7755,9 +7796,9 @@ function showImportMergePreview(imported, prog) {
       resolve(null);
     };
     modal.querySelector('#imp-merge-confirm').onclick = () => {
-      const dupMode = modal.querySelector('input[name="dup-mode"]:checked')?.value || 'skip';
+      const finalDiffDups = diffNameDups.map(d => ({ ...d, action: diffChoices.get(d.imp.id) || 'use-imported' }));
       modal.remove();
-      resolve({ newCases, dupCases, dupMode });
+      resolve({ newCases, sameNameDups, diffNameDups: finalDiffDups });
     };
   });
 }
@@ -7766,38 +7807,53 @@ function showImportMergePreview(imported, prog) {
 async function finalizeImport(imported, prog) {
   const choice = await showImportMergePreview(imported, prog);
   if (!choice) return;
-  const { newCases, dupCases, dupMode } = choice;
+  const { newCases, sameNameDups, diffNameDups } = choice;
 
-  let toWrite;
-  if (dupMode === 'skip') {
-    toWrite = [...casesData, ...newCases];
-  } else {
-    // update: keep existing records/initialInterview, overwrite basic fields
-    const importedMap = new Map(imported.map(c => [c.id, c]));
-    toWrite = casesData.map(c => {
-      const imp = importedMap.get(c.id);
-      if (!imp) return c;
+  // Fields to back-fill from existing when new import has blank value
+  const FILL_FIELDS = ['phone','address','emergencyName','emergencyPhone','emergencyRelation',
+                       'idNumber','birthday','residence','classNo','disability','ethnicityNote'];
+
+  const sameNameIds = new Set(sameNameDups.map(d => d.imp.id));
+  const diffImpIds  = new Set(diffNameDups.filter(d => d.action === 'use-imported').map(d => d.imp.id));
+  const importedMap = new Map(imported.map(c => [c.id, c]));
+
+  const toWrite = casesData.map(c => {
+    const imp = importedMap.get(c.id);
+    if (!imp) return c;
+    if (sameNameIds.has(c.id)) {
+      // Smart-merge: new data wins; fill blanks from existing
+      const merged = { ...imp };
+      FILL_FIELDS.forEach(f => { if (!merged[f] && c[f]) merged[f] = c[f]; });
+      merged.records         = c.records || [];
+      merged.initialInterview = c.initialInterview;
+      merged.psychTestResults = (imp.psychTestResults?.length ? imp.psychTestResults : c.psychTestResults) || [];
+      merged.createdAt       = c.createdAt || imp.createdAt;
+      return merged;
+    }
+    if (diffImpIds.has(c.id)) {
+      // User chose "以匯入取代": overwrite basic fields, keep records
       return { ...imp, records: c.records || [], initialInterview: c.initialInterview,
-        psychTestResults: (imp.psychTestResults?.length ? imp.psychTestResults : c.psychTestResults) || [],
-        createdAt: c.createdAt || imp.createdAt };
-    });
-    toWrite = [...toWrite, ...newCases];
-  }
+               psychTestResults: (imp.psychTestResults?.length ? imp.psychTestResults : c.psychTestResults) || [],
+               createdAt: c.createdAt || imp.createdAt };
+    }
+    return c; // skip (user chose to keep existing)
+  });
 
-  prog.innerHTML = `<span style="color:#718096;">寫入 Drive 中（${toWrite.length} 筆）…</span>`;
+  const finalCases = [...toWrite, ...newCases];
+  const updatedCount = sameNameDups.length + diffNameDups.filter(d => d.action === 'use-imported').length;
+  const skippedCount = diffNameDups.filter(d => d.action === 'skip').length;
+
+  prog.innerHTML = `<span style="color:#718096;">寫入 Drive 中（${finalCases.length} 筆）…</span>`;
   try {
-    casesData = toWrite;
+    casesData = finalCases;
     casesManifest = { chunks: [] };
     await migrateToChunks();
-    const addedCount  = newCases.length;
-    const updatedCount = dupMode === 'update' ? dupCases.length : 0;
-    const skippedCount = dupMode === 'skip'   ? dupCases.length : 0;
-    let msg = `✓ 成功匯入 ${addedCount} 筆新個案`;
-    if (updatedCount) msg += `，更新 ${updatedCount} 筆重複個案`;
-    if (skippedCount) msg += `，略過 ${skippedCount} 筆重複`;
+    let msg = `✓ 成功匯入 ${newCases.length} 筆新個案`;
+    if (updatedCount) msg += `，更新 ${updatedCount} 筆重複`;
+    if (skippedCount) msg += `，略過 ${skippedCount} 筆`;
     prog.innerHTML = `<span style="color:#276749;font-weight:600;">${msg}！</span>`;
     renderCases();
-    auditLog('批次匯入個案', `新增 ${addedCount}、${dupMode === 'update' ? '更新' : '略過'} ${dupCases.length} 筆重複`);
+    auditLog('批次匯入個案', `新增 ${newCases.length}、更新 ${updatedCount}、略過 ${skippedCount} 筆重複`);
   } catch (e) {
     prog.innerHTML = `<span style="color:#c53030;">✗ 寫入失敗：${escHtml(e.message)}</span>`;
   }
@@ -9609,6 +9665,7 @@ async function getCasesFolderId() {
 
 let todosData = [];
 let _todoFileId = null;
+let _suppressedTodoRecordIds = new Set(); // recordIds whose todos were explicitly deleted
 let _todosViewUser = null;    // null=自己, '__all__'=全部, email=特定人員
 let _adminTodosCache = {};    // email → todos[]
 let _usersFolderIdCache = null;
@@ -9650,8 +9707,10 @@ async function loadUserTodos() {
       _todoFileId = res.files[0].id;
       const raw = await driveReadJsonById(_todoFileId);
       todosData = Array.isArray(raw?.todos) ? raw.todos : [];
+      _suppressedTodoRecordIds = new Set(Array.isArray(raw?.suppressedRecordIds) ? raw.suppressedRecordIds : []);
     } else {
       todosData = [];
+      _suppressedTodoRecordIds = new Set();
     }
     _cleanupOldTodos();
   } catch (e) {
@@ -9664,7 +9723,7 @@ async function saveUserTodos() {
   const email = currentUser?.email;
   if (!email) return;
   const fileName = `todos_${email}.json`;
-  const content = { todos: todosData, updatedAt: new Date().toISOString() };
+  const content = { todos: todosData, suppressedRecordIds: [..._suppressedTodoRecordIds], updatedAt: new Date().toISOString() };
   const usersId = await getUsersFolderId();
   if (!_todoFileId) {
     const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
@@ -9713,6 +9772,7 @@ function _putTodoItem(item) {
   const idx = todosData.findIndex(t => t.id === item.id);
   if (idx >= 0) todosData[idx] = item;
   else todosData.push(item);
+  if (item.recordId) _suppressedTodoRecordIds.delete(item.recordId);
   _syncTodoBadge();
 }
 
@@ -9797,6 +9857,8 @@ function _syncPendingRecordsToTodos() {
     const caseLabel = `${c.name}（${c.id}）`;
     for (const r of (c.records || [])) {
       if (r.status !== 'pending') continue;
+      if (r.deleted) continue;
+      if (_suppressedTodoRecordIds.has(r.id)) continue;
       if (todosData.find(t => t.recordId === r.id && t.type === 'record')) continue;
       _putTodoItem({
         id: _genTodoId(), type: 'record', label: '晤談記錄草稿',
@@ -9809,6 +9871,8 @@ function _syncPendingRecordsToTodos() {
     }
     for (const pr of (c.psychiatristRecords || [])) {
       if (pr.status !== 'pending') continue;
+      if (pr.deleted) continue;
+      if (_suppressedTodoRecordIds.has(pr.id)) continue;
       if (todosData.find(t => t.recordId === pr.id && t.type === 'psychiatrist')) continue;
       _putTodoItem({
         id: _genTodoId(), type: 'psychiatrist', label: '精神科評估草稿',
@@ -10300,6 +10364,7 @@ function _batchDeleteTodos() {
   ids.forEach(id => {
     const t = todosData.find(x => x.id === id);
     if (t?.draftKey) localStorage.removeItem(t.draftKey);
+    if (t?.recordId) _suppressedTodoRecordIds.add(t.recordId);
     _removeTodoItem(id);
   });
   const _batchDelJobId = bgJobAdd(`批次刪除 ${ids.length} 個草稿 / 待辦`);
@@ -10313,6 +10378,7 @@ function _deleteTodo(id) {
   if (!t) return;
   if (!t.done && !confirm(`確定要刪除此草稿待辦事項？\n「${t.label}」${t.caseLabel ? `（${t.caseLabel}）` : ''}`)) return;
   if (t.draftKey) localStorage.removeItem(t.draftKey);
+  if (t.recordId) _suppressedTodoRecordIds.add(t.recordId);
   _removeTodoItem(id);
   const _delJobLabel = t.caseLabel ? `刪除「${t.label}」（${t.caseLabel}）` : `刪除「${t.label}」`;
   const _delJobId = bgJobAdd(_delJobLabel);
