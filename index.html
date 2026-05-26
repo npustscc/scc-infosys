@@ -6354,8 +6354,10 @@ async function saveRecord() {
   const _caseLabel = casesData[cidx]?.name || _recordCaseId;
 
   let _recAttachments;
+  showLoading('附件上傳中…');
   try { _recAttachments = await attachFlush('rec'); }
-  catch(e) { _recAlert('附件上傳失敗：' + e.message); return; }
+  catch(e) { hideLoading(); _recAlert('附件上傳失敗：' + e.message); return; }
+  hideLoading();
 
   if (_editingRecordId) {
     // ── 編輯現有紀錄 ──
@@ -8648,8 +8650,10 @@ async function saveInitialInterview() {
   const cidx = casesData.findIndex(c => c.id === _initialInterviewCaseId);
   if (cidx === -1) return;
   let _iiAttachments;
+  showLoading('附件上傳中…');
   try { _iiAttachments = await attachFlush('ii'); }
-  catch(e) { setAlert('initial-interview-alert','error','附件上傳失敗：' + e.message); return; }
+  catch(e) { hideLoading(); setAlert('initial-interview-alert','error','附件上傳失敗：' + e.message); return; }
+  hideLoading();
   snap.attachments = _iiAttachments;
   snap.updatedAt = new Date().toISOString();
   snap.updatedBy = currentUser?.email;
@@ -11434,10 +11438,12 @@ async function saveEventRecords() {
   const now = new Date().toISOString();
   const rand = () => Math.random().toString(36).slice(2, 6);
   const _evrAttachMap = {};
+  showLoading('附件上傳中…');
   for (let idx = 0; idx < _evrRecords.length; idx++) {
     try { _evrAttachMap[idx] = await attachFlush('evr_' + idx); }
-    catch(e) { showToast('第' + (idx+1) + '筆附件上傳失敗：' + e.message, 'error'); return; }
+    catch(e) { hideLoading(); showToast('第' + (idx+1) + '筆附件上傳失敗：' + e.message, 'error'); return; }
   }
+  hideLoading();
   _evrRecords.forEach((r, idx) => {
     casesData[cidx].records.push({
       id: `REC_${Date.now()}_E${idx}_${rand()}`,
@@ -17268,8 +17274,10 @@ async function savePsychiatristRecord(caseId, recordId) {
     }
   }
   let _psyAttachments;
+  showLoading('附件上傳中…');
   try { _psyAttachments = await attachFlush('psy'); }
-  catch(e) { alert('附件上傳失敗：' + e.message); return; }
+  catch(e) { hideLoading(); alert('附件上傳失敗：' + e.message); return; }
+  hideLoading();
   const data = {
     intervieweeName:gV('pr-name'), legalGender:gV('pr-gender'),
     department:gV('pr-dept'), studentId:gV('pr-sid'),
@@ -17621,7 +17629,9 @@ async function _attachAddPdf(pid, file) {
 
 async function _pdfRenderPages(pdfDoc, pageNums) {
   const result = [];
-  for (const pageNum of pageNums) {
+  for (let i = 0; i < pageNums.length; i++) {
+    const pageNum = pageNums[i];
+    if (pageNums.length > 1) showLoading(`轉換頁面 ${i + 1} / ${pageNums.length}…`);
     const page = await pdfDoc.getPage(pageNum);
     const vp = page.getViewport({ scale: 1.5 });
     const cv = document.createElement('canvas');
@@ -17630,7 +17640,7 @@ async function _pdfRenderPages(pdfDoc, pageNums) {
     const dataUrl = cv.toDataURL('image/jpeg', 0.82);
     const b64 = dataUrl.split(',')[1];
     const bArr = atob(b64); const arr = new Uint8Array(bArr.length);
-    for (let i = 0; i < bArr.length; i++) arr[i] = bArr.charCodeAt(i);
+    for (let j = 0; j < bArr.length; j++) arr[j] = bArr.charCodeAt(j);
     result.push({ pageNum, dataUrl, blob: new Blob([arr], { type:'image/jpeg' }) });
   }
   return result;
@@ -17723,17 +17733,21 @@ async function attachFlush(pid) {
   const s = _attachState.get(pid);
   if (!s) return [];
   if (!s.pending.length) return [...s.existing];
+  const totalUploads = s.pending.reduce((sum, p) => sum + (p.type === 'pdf_pages' ? p.pages.length : 1), 0);
+  let uploadIdx = 0;
   const folderId = await _ensureAttachFolder();
   const ts = Date.now().toString(36);
   const uploaded = [];
   for (const p of s.pending) {
     if (p.type === 'image') {
+      showLoading(`上傳附件 ${++uploadIdx} / ${totalUploads}…`);
       const b64 = await _blobToBase64(p.blob);
       const r = await proxyCall('uploadFile', { parentFolderId:folderId, fileName:`${ts}_${p.fileName}`, mimeType:p.mimeType, base64Data:b64 });
       uploaded.push({ type:'image', fileId:r.fileId, fileName:p.fileName, mimeType:p.mimeType });
     } else if (p.type === 'pdf_pages') {
       const pages = [];
       for (const pg of p.pages) {
+        showLoading(`上傳附件 ${++uploadIdx} / ${totalUploads}…`);
         const b64 = await _blobToBase64(pg.blob);
         const r = await proxyCall('uploadFile', {
           parentFolderId: folderId,
@@ -17744,6 +17758,7 @@ async function attachFlush(pid) {
       }
       uploaded.push({ type:'pdf_pages', fileName:p.fileName, mimeType:'image/jpeg', pages, pageRange:p.pageRange });
     } else if (p.type === 'word') {
+      showLoading(`上傳附件 ${++uploadIdx} / ${totalUploads}…`);
       const b64 = await _blobToBase64(p.blob);
       const r = await proxyCall('uploadFile', { parentFolderId:folderId, fileName:`${ts}_${p.fileName}`, mimeType:p.mimeType, base64Data:b64 });
       uploaded.push({ type:'word', fileId:r.fileId, fileName:p.fileName, mimeType:p.mimeType });
