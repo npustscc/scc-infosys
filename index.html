@@ -2779,9 +2779,11 @@ async function _doUserPrefWrite_() {
   try {
     const fresh = await driveReadJson(CONFIG_FILE);
     if (fresh?.users) {
-      const freshCount   = Object.keys(fresh.users).length;
-      const currentCount = Object.keys(configData.users || {}).length;
-      if (freshCount >= currentCount) configData.users = fresh.users;
+      // Only absorb users that don't exist locally (added by other admins).
+      // Never overwrite existing local state — local changes (e.g. disabled flag) take priority.
+      for (const [k, freshUser] of Object.entries(fresh.users)) {
+        if (!configData.users[k]) configData.users[k] = freshUser;
+      }
     }
   } catch (_) { /* fresh read 失敗時沿用記憶體狀態，確保 pin 仍能寫入 */ }
   // 無論 fresh read 成敗，都把最新偏好蓋回去
@@ -4490,6 +4492,7 @@ async function deleteUser(key) {
   try {
     delete configData.users[key];
     await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('刪除使用者', null, null, label);
     hideLoading();
     setAlert('admin-alert', 'info', `使用者 ${escHtml(label)} 已刪除。`);
     renderAdminUsers();
@@ -4502,20 +4505,22 @@ async function deleteUser(key) {
 async function toggleUserDisabled(key, disabled) {
   if (!configData.users?.[key]) return;
   const name = configData.users[key].name || key;
-  if (disabled && !confirm(`確定要停用「${name}」？停用後此帳號將無法登入系統。`)) {
-    renderAdminUsers(); return; // 重新渲染以還原 checkbox 狀態
-  }
-  configData.users[key].disabled = disabled || undefined; // false 時移除欄位
-  if (!disabled) delete configData.users[key].disabled;
-  showLoading('儲存中…');
+  // Apply locally first so UI reflects immediately
+  if (disabled) configData.users[key].disabled = true;
+  else delete configData.users[key].disabled;
+  renderAdminUsers();
+  const jobId = bgJobAdd(disabled ? `停用「${name}」` : `啟用「${name}」`);
   try {
     await driveUpdateJsonFile(CONFIG_FILE, configData);
-    hideLoading();
+    auditLog(disabled ? '停用使用者' : '啟用使用者', null, null, name);
+    bgJobDone(jobId);
     setAlert('admin-alert', 'success', disabled ? `已停用「${escHtml(name)}」` : `已啟用「${escHtml(name)}」`);
-    renderAdminUsers();
   } catch (err) {
-    hideLoading();
+    bgJobFail(jobId, err.message);
     setAlert('admin-alert', 'error', '儲存失敗：' + err.message);
+    // Revert local state on failure
+    if (disabled) delete configData.users[key].disabled;
+    else configData.users[key].disabled = true;
     renderAdminUsers();
   }
 }
@@ -12174,25 +12179,53 @@ function renderStats() {
   }));
   const svcSemList = [...svcSemPrefixes].sort().reverse();
   const svcDefaultSem = svcSemList[0] || currentSemesterPrefix();
+  // Build academic year and calendar year lists from svcSemPrefixes
+  const _aYearSet = new Set(), _cYearSet = new Set();
+  svcSemPrefixes.forEach(p => {
+    _aYearSet.add(p.slice(0, -1));
+    semesterMonths(p).forEach(m => _cYearSet.add(m.slice(0, 4)));
+  });
+  const aYearList = [..._aYearSet].sort().reverse();
+  const cYearList = [..._cYearSet].sort().reverse();
+
   window._svcStatsVisible = visible;
   window._svcEmailToGroup = emailToGroup;
   window._renderSvcTable = (sem) => {
     const vis = window._svcStatsVisible;
     const e2g = window._svcEmailToGroup;
     const colKeys = ['總計', ...Object.keys(roleGroups), '電話關懷'];
-    const mos = semesterMonths(sem);
+    // Determine months array based on sem key prefix
+    let mos;
+    if (sem.startsWith('y_')) {
+      const yr = sem.slice(2);
+      mos = Array.from({length: 12}, (_, i) => `${yr}-${String(i + 1).padStart(2, '0')}`);
+    } else if (sem.startsWith('a_')) {
+      const rocYr = sem.slice(2);
+      mos = [...semesterMonths(rocYr + '1'), ...semesterMonths(rocYr + '2')];
+    } else {
+      mos = semesterMonths(sem);
+    }
     const st = {};
     mos.forEach(m => {
       st[m] = {};
       colKeys.forEach(g => { st[m][g] = { p: new Set(), n: 0 }; });
     });
+    const totals = {};
+    colKeys.forEach(g => { totals[g] = { p: new Set(), n: 0 }; });
     vis.forEach(c => (c.records || []).filter(r => !r.deleted).forEach(r => {
       const m = (r.date || '').slice(0, 7);
       if (!st[m]) return;
       const grp = e2g[r.counselorEmail || ''];
       st[m]['總計'].p.add(c.id); st[m]['總計'].n++;
-      if (grp) { st[m][grp].p.add(c.id); st[m][grp].n++; }
-      if ((r.interventionMode || '') === '電話關懷') { st[m]['電話關懷'].p.add(c.id); st[m]['電話關懷'].n++; }
+      totals['總計'].p.add(c.id); totals['總計'].n++;
+      if (grp) {
+        st[m][grp].p.add(c.id); st[m][grp].n++;
+        totals[grp].p.add(c.id); totals[grp].n++;
+      }
+      if ((r.interventionMode || '') === '電話關懷') {
+        st[m]['電話關懷'].p.add(c.id); st[m]['電話關懷'].n++;
+        totals['電話關懷'].p.add(c.id); totals['電話關懷'].n++;
+      }
     }));
     const cell = (d) => d.n === 0 && d.p.size === 0
       ? `<span style="color:#cbd5e0;">—</span>`
@@ -12207,17 +12240,23 @@ function renderStats() {
       ).join('');
       return `<tr style="background:${bg};"><td style="padding:6px 10px;font-size:.82rem;font-weight:600;white-space:nowrap;border-right:1px solid #e2e8f0;">${parseInt(m.slice(5))}月</td>${cols}</tr>`;
     }).join('');
+    const totalCols = colKeys.map((g, i) =>
+      `<td style="padding:6px 8px;text-align:center;font-size:.8rem;font-weight:700;border-left:${i===colKeys.length-1?'2px':'1px'} solid #e2e8f0;">${cell(totals[g])}</td>`
+    ).join('');
+    const totalsRow = `<tr style="background:#edf2f7;border-top:2px solid #cbd5e0;"><td style="padding:6px 10px;font-size:.82rem;font-weight:700;white-space:nowrap;border-right:1px solid #e2e8f0;">合計</td>${totalCols}</tr>`;
     return `<div style="overflow-x:auto;">
-      <p style="font-size:.8rem;color:#718096;margin:0 0 8px 0;">格式：<strong>人數 / 人次</strong>（人數為當月有紀錄的不重複個案數）</p>
+      <p style="font-size:.8rem;color:#718096;margin:0 0 8px 0;">格式：<strong>人數 / 人次</strong>（人數為當月不重複個案數；合計人數為期間不重複個案總數）</p>
       <table style="width:100%;border-collapse:collapse;min-width:520px;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">
         <thead><tr style="background:#edf2f7;">
           <th style="padding:7px 10px;text-align:left;font-size:.79rem;font-weight:600;min-width:50px;border-bottom:2px solid #e2e8f0;border-right:1px solid #e2e8f0;">月份</th>${hdr}</tr></thead>
-        <tbody>${rows}</tbody>
+        <tbody>${rows}${totalsRow}</tbody>
       </table></div>`;
   };
   const svcSemSelect = `<select class="field-select" style="font-size:.85rem;padding:4px 8px;" onchange="const el=document.getElementById('svc-tbl');if(el)el.innerHTML=_renderSvcTable(this.value)">
     ${svcSemList.length
-      ? svcSemList.map(s => `<option value="${escHtml(s)}" ${s===svcDefaultSem?'selected':''}>${semesterLabel(s)} 學期</option>`).join('')
+      ? `<optgroup label="學期">${svcSemList.map(s => `<option value="${escHtml(s)}" ${s===svcDefaultSem?'selected':''}>${semesterLabel(s)} 學期</option>`).join('')}</optgroup>`
+        + (aYearList.length ? `<optgroup label="學年">${aYearList.map(a => `<option value="a_${escHtml(a)}">${a} 學年度</option>`).join('')}</optgroup>` : '')
+        + (cYearList.length ? `<optgroup label="年">${cYearList.map(y => `<option value="y_${y}">${y} 年</option>`).join('')}</optgroup>` : '')
       : `<option value="${escHtml(svcDefaultSem)}">${semesterLabel(svcDefaultSem)} 學期</option>`}
   </select>`;
 
