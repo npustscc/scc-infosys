@@ -4382,14 +4382,14 @@ async function saveBulkUsers() {
     };
     if (!u.isAdmin && configData.users[u.email].isAdmin) delete configData.users[u.email].isAdmin;
   });
-  showLoading('儲存中…');
+  document.getElementById('bulk-add-modal')?.remove();
+  renderAdminUsers();
+  const _buJobId = bgJobAdd(`批次新增使用者（${parsed.length} 位）`);
   try {
     await driveUpdateJsonFile(CONFIG_FILE, configData);
     auditLog('批次新增使用者', `${parsed.length} 位`);
-    hideLoading();
-    document.getElementById('bulk-add-modal')?.remove();
-    renderAdminUsers();
-  } catch(e) { hideLoading(); alert('儲存失敗：' + e.message); }
+    bgJobDone(_buJobId);
+  } catch(e) { bgJobFail(_buJobId, e.message); alert('儲存失敗：' + e.message); }
 }
 
 async function importBulkUsers() {
@@ -4402,13 +4402,13 @@ async function importBulkUsers() {
   if (!count || !confirm(`確定匯入 ${count} 位使用者？`)) return;
   if (!configData.users) configData.users = {};
   Object.assign(configData.users, parsed);
-  showLoading('儲存中…');
+  renderAdminUsers();
+  const _biuJobId = bgJobAdd(`批次匯入使用者（${count} 位）`);
   try {
     await driveUpdateJsonFile(CONFIG_FILE, configData);
     auditLog('批次匯入使用者', `${count} 位`);
-    hideLoading();
-    renderAdminUsers();
-  } catch(e) { hideLoading(); alert('儲存失敗：' + e.message); }
+    bgJobDone(_biuJobId);
+  } catch(e) { bgJobFail(_biuJobId, e.message); alert('儲存失敗：' + e.message); }
 }
 
 // ══════════════════════════════════════════════
@@ -8009,6 +8009,7 @@ async function finalizeImport(imported, prog) {
   const skippedCount = diffNameDups.filter(d => d.action === 'skip').length;
 
   prog.innerHTML = `<span style="color:#718096;">寫入 Drive 中（${finalCases.length} 筆）…</span>`;
+  const _jobId = bgJobAdd(`匯入個案（${newCases.length} 新增${updatedCount ? `、${updatedCount} 更新` : ''}）`);
   try {
     casesData = finalCases;
     casesManifest = { chunks: [] };
@@ -8019,8 +8020,10 @@ async function finalizeImport(imported, prog) {
     prog.innerHTML = `<span style="color:#276749;font-weight:600;">${msg}！</span>`;
     renderCases();
     auditLog('批次匯入個案', `新增 ${newCases.length}、更新 ${updatedCount}、略過 ${skippedCount} 筆重複`);
+    bgJobDone(_jobId);
   } catch (e) {
     prog.innerHTML = `<span style="color:#c53030;">✗ 寫入失敗：${escHtml(e.message)}</span>`;
+    bgJobFail(_jobId, e.message);
   }
 }
 
@@ -13195,6 +13198,7 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCoun
       modal.remove();
       prog.style.display = '';
       prog.innerHTML = '<span style="color:#718096;">寫入記錄至 Drive…</span>';
+      const _ciJobId = bgJobAdd('匯入輔導服務記錄');
 
       const modifiedCaseIds = new Set();
       let added = 0;
@@ -13223,40 +13227,46 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCoun
         added++;
       }
 
-      if (modifiedCaseIds.size > 0) {
-        prog.innerHTML = `<span style="color:#718096;">寫入 ${modifiedCaseIds.size} 個個案至 Drive…</span>`;
-        await saveCasesChunks(...modifiedCaseIds);
-      }
-
-      // 未比對且未跳過且已勾選暫存 → 存入 unassigned_records.json
-      const unassignedToSave = unmatchedState.filter(s => !s.skip && !s.assignedCaseId && s.saveToUnassigned !== false);
-      if (unassignedToSave.length) {
-        prog.innerHTML = `<span style="color:#718096;">儲存 ${unassignedToSave.length} 筆未歸屬記錄…</span>`;
-        const now = new Date().toISOString();
-        for (const s of unassignedToSave) {
-          unassignedRecordsData.push({
-            id: `ur-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
-            name: s.studentName || s.record.counseleeName || '',
-            semester: fileSemPrefix || '',
-            serviceItems: s.record.serviceItems || [],
-            importedAt: now,
-            importedBy: currentUser?.email || '',
-            record: s.record,
-            resolved: false,
-            matchedCaseId: null,
-            matchedAt: null,
-          });
+      try {
+        if (modifiedCaseIds.size > 0) {
+          prog.innerHTML = `<span style="color:#718096;">寫入 ${modifiedCaseIds.size} 個個案至 Drive…</span>`;
+          await saveCasesChunks(...modifiedCaseIds);
         }
-        await saveUnassignedRecords();
-      }
 
-      const skipped = unmatchedState.filter(s => s.skip).length + matchedState.filter(s => s.skip).length;
-      const autoSaved = unassignedToSave.length;
-      prog.innerHTML = `<span style="color:#276749;font-weight:600;">✓ 成功匯入 ${added} 筆輔導記錄`
-        + (skipped > 0 ? `，已跳過 ${skipped} 筆` : '')
-        + (autoSaved > 0 ? `，${autoSaved} 筆無法比對已存入未歸屬記錄` : '')
-        + `。</span>`;
-      auditLog(`批次匯入輔導服務記錄 ${added} 筆${autoSaved > 0 ? `，${autoSaved} 筆存入未歸屬記錄` : ''}`);
+        // 未比對且未跳過且已勾選暫存 → 存入 unassigned_records.json
+        const unassignedToSave = unmatchedState.filter(s => !s.skip && !s.assignedCaseId && s.saveToUnassigned !== false);
+        if (unassignedToSave.length) {
+          prog.innerHTML = `<span style="color:#718096;">儲存 ${unassignedToSave.length} 筆未歸屬記錄…</span>`;
+          const now = new Date().toISOString();
+          for (const s of unassignedToSave) {
+            unassignedRecordsData.push({
+              id: `ur-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
+              name: s.studentName || s.record.counseleeName || '',
+              semester: fileSemPrefix || '',
+              serviceItems: s.record.serviceItems || [],
+              importedAt: now,
+              importedBy: currentUser?.email || '',
+              record: s.record,
+              resolved: false,
+              matchedCaseId: null,
+              matchedAt: null,
+            });
+          }
+          await saveUnassignedRecords();
+        }
+
+        const skipped = unmatchedState.filter(s => s.skip).length + matchedState.filter(s => s.skip).length;
+        const autoSaved = unassignedToSave.length;
+        prog.innerHTML = `<span style="color:#276749;font-weight:600;">✓ 成功匯入 ${added} 筆輔導記錄`
+          + (skipped > 0 ? `，已跳過 ${skipped} 筆` : '')
+          + (autoSaved > 0 ? `，${autoSaved} 筆無法比對已存入未歸屬記錄` : '')
+          + `。</span>`;
+        auditLog(`批次匯入輔導服務記錄 ${added} 筆${autoSaved > 0 ? `，${autoSaved} 筆存入未歸屬記錄` : ''}`);
+        bgJobDone(_ciJobId);
+      } catch(_ciErr) {
+        prog.innerHTML = `<span style="color:#c53030;">✗ 寫入失敗：${escHtml(_ciErr.message)}</span>`;
+        bgJobFail(_ciJobId, _ciErr.message);
+      }
       resolve();
     };
 
@@ -15555,6 +15565,7 @@ async function importPsychTestCSV(file) {
   const prog = document.getElementById('import-progress');
   prog.style.display = '';
   prog.innerHTML = '<span style="color:#718096;">解析 CSV 中…</span>';
+  const _csvJobId = bgJobAdd('匯入心理測驗 CSV');
   try {
     const text = await file.text();
     const parseCSV = raw => {
@@ -15616,8 +15627,10 @@ async function importPsychTestCSV(file) {
     await migrateToChunks();
     prog.innerHTML = `<span style="color:#276749;font-weight:600;">✓ 心理測驗資料匯入完成：比對到 ${matched} 筆（更新 ${updated} 筆），${notFound} 筆找不到對應學號。</span>`;
     auditLog(`批次匯入心理測驗結果 ${updated} 筆`);
+    bgJobDone(_csvJobId);
   } catch(e) {
     prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span>`;
+    bgJobFail(_csvJobId, e.message);
   }
 }
 
@@ -15828,10 +15841,18 @@ function showPsychTestPreviewModal(rows, prog) {
           updated++;
         });
         prog.innerHTML = '<span style="color:#718096;">儲存中…</span>';
-        await migrateToChunks();
-        prog.innerHTML = `<span style="color:#276749;font-weight:600;">✓ 心理測驗資料匯入完成：共匯入 ${updated} 筆。</span>`;
-        auditLog(`批次匯入心理測驗結果 ${updated} 筆（從服務總表）`);
-        resolve(true);
+        const _xlJobId = bgJobAdd('匯入心理測驗（服務總表）');
+        try {
+          await migrateToChunks();
+          prog.innerHTML = `<span style="color:#276749;font-weight:600;">✓ 心理測驗資料匯入完成：共匯入 ${updated} 筆。</span>`;
+          auditLog(`批次匯入心理測驗結果 ${updated} 筆（從服務總表）`);
+          bgJobDone(_xlJobId);
+          resolve(true);
+        } catch(e2) {
+          prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e2.message)}</span>`;
+          bgJobFail(_xlJobId, e2.message);
+          resolve(false);
+        }
       } catch(e) {
         prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span>`;
         resolve(false);
