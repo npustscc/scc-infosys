@@ -3313,6 +3313,22 @@ function handleCredentialResponse(response) {
   tokenClient.requestAccessToken({ prompt: '' });
 }
 
+function _showDisabledScreen() {
+  let el = document.getElementById('disabled-overlay');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'disabled-overlay';
+    el.style.cssText = 'position:fixed;inset:0;background:#f7fafc;display:flex;align-items:center;justify-content:center;z-index:9999;padding:24px;';
+    el.innerHTML = `<div style="text-align:center;max-width:480px;padding:40px 32px;background:#fff;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.12);">
+      <div style="font-size:2.8rem;margin-bottom:16px;">🔒</div>
+      <h2 style="color:#c53030;margin:0 0 12px;font-size:1.4rem;">帳號已停用</h2>
+      <p style="color:#4a5568;font-size:1rem;line-height:1.7;margin:0;">請與屏科大學諮中心聯繫。</p>
+    </div>`;
+    document.body.appendChild(el);
+  }
+  el.style.display = 'flex';
+}
+
 // ══════════════════════════════════════════════
 //  登入後流程
 // ══════════════════════════════════════════════
@@ -3340,6 +3356,14 @@ async function afterLogin() {
     setLoadingProgress(25);
     configData = cfg;
     resolveUserRole();
+    // 檢查帳號是否停用（bootstrap admin 不受限制）
+    if (configData?.users?.[currentUser.email]?.disabled && currentUser.email !== BOOTSTRAP_ADMIN_EMAIL) {
+      hideLoading();
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('main-layout').style.display = 'none';
+      _showDisabledScreen();
+      return;
+    }
     migrateConfigIfNeeded(); // 背景靜默修復已知損毀
     applyDrivePrefs();
     initSidebarDrag();
@@ -4158,14 +4182,17 @@ function renderAdminUsers() {
     const displayKey = isNomail
       ? `<span style="color:#a0aec0;font-size:.82em;">（無 Gmail 帳號）</span>`
       : escHtml(key);
+    const disabledBadge = info.disabled ? `<span class="badge" style="background:#fed7d7;color:#c53030;margin-left:4px;">已停用</span>` : '';
+    const disableBtn = isSelf ? '' : `<label title="${info.disabled?'啟用帳號':'停用帳號'}" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:.78rem;color:${info.disabled?'#c53030':'#718096'};margin-left:6px;"><input type="checkbox" ${info.disabled?'checked':''} onchange="toggleUserDisabled('${escHtml(key)}',this.checked)" style="cursor:pointer;"> 停用</label>`;
     return `
-      <tr>
-        <td>${displayKey}${isSelf ? ' <span class="badge badge-blue">本帳號</span>' : ''}</td>
+      <tr style="opacity:${info.disabled?'.65':'1'};">
+        <td>${displayKey}${isSelf ? ' <span class="badge badge-blue">本帳號</span>' : ''}${disabledBadge}</td>
         <td>${escHtml(info.name || '—')}</td>
         <td>${escHtml(info.role || '—')}</td>
         <td>${adminBadge}</td>
         <td>
           <button class="btn btn-secondary btn-sm" onclick="openUserModal('${escHtml(key)}')">編輯</button>
+          ${disableBtn}
           ${isSelf ? '' : `<button class="btn btn-danger btn-sm" style="margin-left:6px;" onclick="deleteUser('${escHtml(key)}')">刪除</button>`}
         </td>
       </tr>`;
@@ -4416,6 +4443,27 @@ async function deleteUser(key) {
   } catch (err) {
     hideLoading();
     setAlert('admin-alert', 'error', '刪除失敗：' + err.message);
+  }
+}
+
+async function toggleUserDisabled(key, disabled) {
+  if (!configData.users?.[key]) return;
+  const name = configData.users[key].name || key;
+  if (disabled && !confirm(`確定要停用「${name}」？停用後此帳號將無法登入系統。`)) {
+    renderAdminUsers(); return; // 重新渲染以還原 checkbox 狀態
+  }
+  configData.users[key].disabled = disabled || undefined; // false 時移除欄位
+  if (!disabled) delete configData.users[key].disabled;
+  showLoading('儲存中…');
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    hideLoading();
+    setAlert('admin-alert', 'success', disabled ? `已停用「${escHtml(name)}」` : `已啟用「${escHtml(name)}」`);
+    renderAdminUsers();
+  } catch (err) {
+    hideLoading();
+    setAlert('admin-alert', 'error', '儲存失敗：' + err.message);
+    renderAdminUsers();
   }
 }
 
@@ -7210,8 +7258,21 @@ async function importCasesFromExcel(file) {
       }
     });
 
+    // 收集未識別主責人員（counselorEmail 空但 counselorText 有值）
+    const _newCounselorsMap = {};
+    imported.forEach(c => {
+      if (!c.counselorEmail && c.counselorText) {
+        const txt = c.counselorText;
+        if (!_newCounselorsMap[txt]) {
+          _newCounselorsMap[txt] = { origText: txt, name: txt, role: '兼任諮商心理師',
+            key: 'nomail_' + txt.replace(/\s+/g,'') + '_' + Date.now(), count: 0, include: true };
+        }
+        _newCounselorsMap[txt].count++;
+      }
+    });
+
     prog.innerHTML = '<span style="color:#718096;">請於預覽介面確認所有個案後再匯入…</span>';
-    const confirmed = await showImportReviewModal(imported, prog);
+    const confirmed = await showImportReviewModal(imported, prog, _newCounselorsMap);
     if (!confirmed) return;
     await finalizeImport(imported, prog);
   } catch(e) {
@@ -7220,7 +7281,7 @@ async function importCasesFromExcel(file) {
 }
 
 // 匯入預覽 modal：呈現所有解析出的個案，供使用者逐欄確認後再匯入
-function showImportReviewModal(imported, prog) {
+function showImportReviewModal(imported, prog, newCounselorsMap) {
   return new Promise(resolve => {
     let modal = document.getElementById('ir-modal');
     if (modal) modal.remove();
@@ -7230,6 +7291,8 @@ function showImportReviewModal(imported, prog) {
 
     const PAGE_SIZE = 10;
     const reviewMap = new Map(); // origIdx → { status, closeDate, counselorEmail, counselorName, _selected }
+    // 新增人員狀態（可編輯名稱、職稱）
+    const ncMap = newCounselorsMap || {};
     imported.forEach((c, i) => {
       reviewMap.set(i, {
         status: c.status,
@@ -7250,6 +7313,8 @@ function showImportReviewModal(imported, prog) {
       });
 
     let _tab = 'all', _search = '', _page = 0;
+    const ncKeys = Object.keys(ncMap);
+    const ncCount = ncKeys.length;
 
     const counselorEntries = Object.entries(configData?.users || {})
       .filter(([, info]) => BK_COUNSELING_ROLES.has(info.role || ''));
@@ -7282,10 +7347,11 @@ function showImportReviewModal(imported, prog) {
         return `padding:7px 14px;border:none;background:none;cursor:pointer;font-size:.86rem;border-bottom:2px solid ${on?color:'transparent'};margin-bottom:-2px;color:${on?color:'#4a5568'};font-weight:${on?'600':'400'};`;
       };
       const tabs = `
-        <div style="display:flex;margin-bottom:14px;border-bottom:2px solid #e2e8f0;">
+        <div style="display:flex;margin-bottom:14px;border-bottom:2px solid #e2e8f0;flex-wrap:wrap;">
           <button type="button" onclick="irTab('all')" style="${ts('all','#3182ce')}">全部（${sorted.length}）</button>
           ${confirmCount ? `<button type="button" onclick="irTab('confirm')" style="${ts('confirm','#e53e3e')}">⚠ 應確認（${confirmCount}）</button>` : ''}
           ${noCounselorCount ? `<button type="button" onclick="irTab('nocounselor')" style="${ts('nocounselor','#dd6b20')}">主責未比對（${noCounselorCount}）</button>` : ''}
+          ${ncCount ? `<button type="button" onclick="irTab('newcounselors')" style="${ts('newcounselors','#6b46c1')}">👤 新增人員（${ncCount}）</button>` : ''}
         </div>`;
 
       const rowsHtml = rows.map((c, ri) => {
@@ -7324,6 +7390,36 @@ function showImportReviewModal(imported, prog) {
           <button type="button" onclick="irPg(${_page+1})" ${_page>=totalPages-1?'disabled':''} style="padding:3px 10px;border:1px solid #e2e8f0;border-radius:4px;background:#fff;cursor:pointer;">›</button>
         </div>`;
 
+      if (_tab === 'newcounselors') {
+        const ncRoleOpts = ROLES.map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
+        const ncRowsHtml = ncKeys.map(txt => {
+          const nc = ncMap[txt];
+          return `<tr style="background:#faf5ff;">
+            <td style="padding:6px 10px;text-align:center;"><input type="checkbox" ${nc.include?'checked':''} onchange="irUpdNC('${escHtml(txt)}','include',this.checked)" style="cursor:pointer;width:14px;height:14px;"></td>
+            <td style="padding:6px 10px;font-size:.83rem;color:#718096;">${escHtml(txt)}</td>
+            <td style="padding:6px 10px;"><input type="text" value="${escHtml(nc.name)}" oninput="irUpdNC('${escHtml(txt)}','name',this.value)" style="border:1px solid #cbd5e0;border-radius:4px;padding:3px 7px;font-size:.83rem;width:120px;"></td>
+            <td style="padding:6px 10px;"><select onchange="irUpdNC('${escHtml(txt)}','role',this.value)" style="border:1px solid #cbd5e0;border-radius:4px;padding:3px 5px;font-size:.83rem;"><option value="">— 請選擇職稱 —</option>${ncRoleOpts.replace(new RegExp(`value="${escHtml(nc.role)}"`), `value="${escHtml(nc.role)}" selected`)}</select></td>
+            <td style="padding:6px 10px;font-size:.78rem;color:#a0aec0;text-align:center;">${nc.count} 個案</td>
+          </tr>`;
+        }).join('');
+        return `${tabs}
+          <div style="padding:6px 0 10px;font-size:.83rem;color:#553c9a;background:#faf5ff;border-radius:6px;padding:10px 14px;margin-bottom:10px;">
+            以下人員在 Excel 中有出現，但在系統使用者清單中找不到對應帳號。<br>勾選後將於確認匯入時自動新增至使用者管理（無 Gmail 帳號格式）。
+          </div>
+          <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;">
+              <thead><tr style="background:#e9d8fd;text-align:left;">
+                <th style="padding:6px 10px;width:28px;"></th>
+                <th style="padding:6px 10px;font-size:.8rem;">Excel 中顯示名稱</th>
+                <th style="padding:6px 10px;font-size:.8rem;">姓名（可修改）</th>
+                <th style="padding:6px 10px;font-size:.8rem;">職稱</th>
+                <th style="padding:6px 10px;font-size:.8rem;text-align:center;">使用案數</th>
+              </tr></thead>
+              <tbody>${ncRowsHtml}</tbody>
+            </table>
+          </div>`;
+      }
+
       const allFilteredSel = filtered.every(c => reviewMap.get(c._origIdx)._selected);
       return `${tabs}
         <div style="overflow-x:auto;">
@@ -7351,6 +7447,13 @@ function showImportReviewModal(imported, prog) {
     };
 
     window.irTab = (t) => { _tab = t; _page = 0; rerender(); };
+    window.irUpdNC = (origText, field, val) => {
+      const nc = ncMap[origText]; if (!nc) return;
+      if (field === 'include') nc.include = val;
+      else if (field === 'name') nc.name = val;
+      else if (field === 'role') nc.role = val;
+      rerender();
+    };
     window.irSearch = (v) => { _search = v; _page = 0; rerender(); };
     window.irPg = (p) => {
       const tot = Math.max(1, Math.ceil(getFiltered().length / PAGE_SIZE));
@@ -7417,7 +7520,36 @@ function showImportReviewModal(imported, prog) {
       prog.innerHTML = '<span style="color:#a0aec0;">已取消匯入。</span>';
       resolve(false);
     };
-    modal.querySelector('#ir-confirm').onclick = () => {
+    modal.querySelector('#ir-confirm').onclick = async () => {
+      // 1. 新增未識別主責人員到 configData
+      const addedCounselors = [];
+      for (const [origText, nc] of Object.entries(ncMap)) {
+        if (!nc.include || !nc.name) continue;
+        if (!nc.role) { alert(`請為「${nc.name}」選擇職稱後再確認匯入。`); return; }
+        const key = nc.key || ('nomail_' + nc.name.replace(/\s+/g,'') + '_import');
+        if (!configData.users[key]) {
+          configData.users[key] = { name: nc.name, role: nc.role };
+          addedCounselors.push({ origText, key, name: nc.name, role: nc.role });
+        }
+        nc.resolvedKey = key;
+      }
+      if (addedCounselors.length) {
+        try { driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {}); } catch(_) {}
+      }
+
+      // 2. 將已解析的主責人員 key 回寫到 reviewMap
+      imported.forEach((c, origIdx) => {
+        if (!c.counselorEmail && c.counselorText) {
+          const nc = ncMap[c.counselorText];
+          if (nc?.resolvedKey) {
+            const ed = reviewMap.get(origIdx);
+            ed.counselorEmail = nc.resolvedKey;
+            ed.counselorName  = nc.name;
+          }
+        }
+      });
+
+      // 3. 收集最終匯入清單
       const finalImported = [];
       imported.forEach((c, origIdx) => {
         const ed = reviewMap.get(origIdx);
@@ -12405,9 +12537,22 @@ async function importCounselingRecords(file) {
       }
     }
 
-    // ── Phase 2: show review modal ──
+    // ── Phase 2: 收集未識別主責人員 ──
+    const _ncMapRec = {};
+    [...matchedItems, ...unmatchedItems].forEach(item => {
+      const ct = String(item.rawRow ? (item.rawRow[6]||'') : '').trim() || item.record.counselorName || '';
+      if (!item.record.counselorEmail && ct) {
+        if (!_ncMapRec[ct]) {
+          _ncMapRec[ct] = { origText: ct, name: ct, role: '兼任諮商心理師',
+            key: 'nomail_' + ct.replace(/\s+/g,'') + '_import', count: 0, include: true };
+        }
+        _ncMapRec[ct].count++;
+      }
+    });
+
+    // ── Phase 3: show review modal ──
     prog.innerHTML = `<span style="color:#718096;">開啟預覽介面…</span>`;
-    await showCounselingImportPreview(matchedItems, unmatchedItems, prog);
+    await showCounselingImportPreview(matchedItems, unmatchedItems, prog, _ncMapRec);
 
   } catch(e) {
     prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span>`;
@@ -12415,7 +12560,7 @@ async function importCounselingRecords(file) {
 }
 
 // 輔導記錄匯入預覽 modal
-function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
+function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCounselorsMap) {
   return new Promise(resolve => {
     let modal = document.getElementById('counsel-import-modal');
     if (modal) modal.remove();
@@ -12434,11 +12579,13 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
       ...item,
       skip: false,
     }));
+    const ciNcMap  = newCounselorsMap || {};
+    const ciNcKeys = Object.keys(ciNcMap);
+    let _ciShowTab = 'all'; // 'all','unmatched','matched','newcounselors'
 
     const renderModal = () => {
       const filterVal = (modal.querySelector('#ci-filter-input')?.value || '').toLowerCase();
-      const showTab   = modal.querySelector('#ci-tab-all')?.dataset.active === '1' ? 'all'
-                      : modal.querySelector('#ci-tab-unmatched')?.dataset.active === '1' ? 'unmatched' : 'matched';
+      const showTab = _ciShowTab || 'all';
 
       const unmatchedVisible = unmatchedState.filter(s => {
         if (showTab === 'matched') return false;
@@ -12537,9 +12684,10 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
               <button id="ci-tab-all" data-active="${isAll?'1':'0'}" style="${tabStyle(isAll)}" onclick="ciSwitchTab('all')">全部（${unmatchedItems.length + matchedItems.length}）</button>
               ${unmatchedItems.length > 0 ? `<button id="ci-tab-unmatched" data-active="${isUM?'1':'0'}" style="${tabStyle(isUM)}" onclick="ciSwitchTab('unmatched')">⚠ 無法比對（${unmatchedItems.length}）</button>` : ''}
               <button id="ci-tab-matched" data-active="${isM?'1':'0'}" style="${tabStyle(isM)}" onclick="ciSwitchTab('matched')">✓ 已比對（${matchedItems.length}）</button>
-              <input id="ci-filter-input" class="field-input" placeholder="搜尋姓名 / 案號 / 輔導人員…" style="flex:1;min-width:200px;font-size:.85rem;" oninput="ciFilter()" value="${escHtml(filterVal)}">
+              ${ciNcKeys.length ? `<button id="ci-tab-nc" style="${tabStyle(showTab==='newcounselors')}" onclick="ciSwitchTab('newcounselors')">👤 新增人員（${ciNcKeys.length}）</button>` : ''}
+              ${showTab !== 'newcounselors' ? `<input id="ci-filter-input" class="field-input" placeholder="搜尋姓名 / 案號 / 輔導人員…" style="flex:1;min-width:200px;font-size:.85rem;" oninput="ciFilter()" value="${escHtml(filterVal)}">
               <button type="button" class="btn btn-secondary btn-sm" onclick="ciSelAll(false)">全不選</button>
-              <button type="button" class="btn btn-secondary btn-sm" onclick="ciSelAll(true)">全選</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="ciSelAll(true)">全選</button>` : ''}
             </div>
             ${pendingUnmatched > 0 ? `<div style="margin-top:8px;font-size:.82rem;color:#b7791f;background:#fffbeb;padding:6px 12px;border-radius:6px;border:1px solid #f6e05e;">
               ℹ ${pendingUnmatched} 筆無法比對且勾選「暫存」，匯入後將存入未歸屬記錄待後續指派。如要直接匯入請在下方「指派至個案」欄搜尋並選擇對應個案；取消勾選則略過。
@@ -12548,7 +12696,33 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
 
           <!-- Table -->
           <div style="overflow:auto;flex:1;">
-            ${(showTab !== 'matched' && unmatchedItems.length > 0) ? `
+            ${showTab === 'newcounselors' ? (() => {
+              const ncRoleOpts = ROLES.map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
+              const ncRows = ciNcKeys.map(txt => {
+                const nc = ciNcMap[txt];
+                return `<tr style="background:#faf5ff;">
+                  <td style="padding:7px 10px;text-align:center;"><input type="checkbox" ${nc.include?'checked':''} onchange="ciUpdNC('${escHtml(txt)}','include',this.checked)" style="cursor:pointer;width:14px;height:14px;"></td>
+                  <td style="padding:7px 10px;font-size:.83rem;color:#718096;">${escHtml(txt)}</td>
+                  <td style="padding:7px 10px;"><input type="text" value="${escHtml(nc.name)}" oninput="ciUpdNC('${escHtml(txt)}','name',this.value)" style="border:1px solid #cbd5e0;border-radius:4px;padding:3px 7px;font-size:.83rem;width:120px;"></td>
+                  <td style="padding:7px 10px;"><select onchange="ciUpdNC('${escHtml(txt)}','role',this.value)" style="border:1px solid #cbd5e0;border-radius:4px;padding:3px 5px;font-size:.83rem;"><option value="">— 請選擇職稱 —</option>${ncRoleOpts.replace(new RegExp(`value="${escHtml(nc.role)}"`), `value="${escHtml(nc.role)}" selected`)}</select></td>
+                  <td style="padding:7px 10px;font-size:.78rem;color:#a0aec0;text-align:center;">${nc.count} 筆記錄</td>
+                </tr>`;
+              }).join('');
+              return `<div style="padding:10px 16px;background:#faf5ff;border-bottom:1px solid #e9d8fd;font-size:.83rem;color:#553c9a;">
+                  以下人員在 Excel 中有出現，但在系統使用者清單中找不到對應帳號。勾選後將於確認匯入時自動新增至使用者管理。
+                </div>
+                <table style="width:100%;border-collapse:collapse;">
+                  <thead><tr style="background:#e9d8fd;text-align:left;font-size:.79rem;color:#553c9a;">
+                    <th style="padding:7px 10px;width:28px;"></th>
+                    <th style="padding:7px 10px;">Excel 中顯示名稱</th>
+                    <th style="padding:7px 10px;">姓名（可修改）</th>
+                    <th style="padding:7px 10px;">職稱</th>
+                    <th style="padding:7px 10px;text-align:center;">記錄筆數</th>
+                  </tr></thead>
+                  <tbody>${ncRows}</tbody>
+                </table>`;
+            })() : ''}
+            ${(showTab !== 'matched' && showTab !== 'newcounselors' && unmatchedItems.length > 0) ? `
             <div style="padding:8px 16px 4px;background:#fff5f5;border-bottom:1px solid #fed7d7;">
               <span style="font-size:.82rem;font-weight:700;color:#c53030;">⚠ 無法比對的記錄（${unmatchedItems.length} 筆）— 請指派至正確個案，或跳過</span>
             </div>
@@ -12567,7 +12741,7 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
               <tbody>${unmatchedRows}</tbody>
             </table>` : ''}
 
-            ${(showTab !== 'unmatched' && matchedItems.length > 0) ? `
+            ${(showTab !== 'unmatched' && showTab !== 'newcounselors' && matchedItems.length > 0) ? `
             <div style="padding:8px 16px 4px;background:#f0fff4;border-bottom:1px solid #c6f6d5;${showTab==='all'&&unmatchedItems.length>0?'margin-top:0;':''}">
               <span style="font-size:.82rem;font-weight:700;color:#276749;">✓ 已比對的記錄（${matchedItems.length} 筆）— 確認比對正確，或跳過不需要的筆</span>
             </div>
@@ -12613,10 +12787,18 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
 
     // 掛載輔助函式到 window（modal 內 onclick 用）
     window.ciSwitchTab = (tab) => {
+      _ciShowTab = tab;
       ['all','unmatched','matched'].forEach(t => {
         const el = modal.querySelector(`#ci-tab-${t}`);
         if (el) el.dataset.active = (t === tab ? '1' : '0');
       });
+      renderModal();
+    };
+    window.ciUpdNC = (origText, field, val) => {
+      const nc = ciNcMap[origText]; if (!nc) return;
+      if (field === 'include') nc.include = val;
+      else if (field === 'name') nc.name = val;
+      else if (field === 'role') nc.role = val;
       renderModal();
     };
     window.ciFilter = () => renderModal();
@@ -12677,6 +12859,29 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog) {
     };
 
     const doConfirmImport = async () => {
+      // 先新增未識別主責人員
+      let cfgChanged = false;
+      for (const [origText, nc] of Object.entries(ciNcMap)) {
+        if (!nc.include || !nc.name) continue;
+        if (!nc.role) { alert(`請為「${nc.name}」選擇職稱後再確認匯入。`); return; }
+        const key = nc.key || ('nomail_' + nc.name.replace(/\s+/g,'') + '_import');
+        if (!configData.users[key]) {
+          configData.users[key] = { name: nc.name, role: nc.role };
+          cfgChanged = true;
+        }
+        nc.resolvedKey = key;
+      }
+      // 更新已有記錄的 counselorEmail
+      const applyNc = (rec) => {
+        if (!rec.counselorEmail && rec.counselorName) {
+          const nc = ciNcMap[rec.counselorName];
+          if (nc?.resolvedKey) { rec.counselorEmail = nc.resolvedKey; }
+        }
+      };
+      matchedState.forEach(s => applyNc(s.record));
+      unmatchedState.forEach(s => applyNc(s.record));
+      if (cfgChanged) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+
       modal.remove();
       prog.style.display = '';
       prog.innerHTML = '<span style="color:#718096;">寫入記錄至 Drive…</span>';
