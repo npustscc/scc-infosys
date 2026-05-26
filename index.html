@@ -7294,11 +7294,18 @@ function showImportReviewModal(imported, prog, newCounselorsMap) {
     // 新增人員狀態（可編輯名稱、職稱）
     const ncMap = newCounselorsMap || {};
     imported.forEach((c, i) => {
+      let counselorEmail = c.counselorEmail || '';
+      let counselorName  = c.counselorName || c.counselorText || '';
+      // Auto-assign ncMap entry if counselor is not in system yet
+      if (!counselorEmail && c.counselorText && ncMap[c.counselorText]) {
+        const nc = ncMap[c.counselorText];
+        if (nc.include && nc.key) { counselorEmail = nc.key; counselorName = nc.name || c.counselorText; }
+      }
       reviewMap.set(i, {
         status: c.status,
         closeDate: c.closeDate || '',
-        counselorEmail: c.counselorEmail || '',
-        counselorName: c.counselorName || c.counselorText || '',
+        counselorEmail,
+        counselorName,
         _selected: true,
       });
     });
@@ -7316,8 +7323,17 @@ function showImportReviewModal(imported, prog, newCounselorsMap) {
     const ncKeys = Object.keys(ncMap);
     const ncCount = ncKeys.length;
 
-    const counselorEntries = Object.entries(configData?.users || {})
-      .filter(([, info]) => BK_COUNSELING_ROLES.has(info.role || ''));
+    // Dynamic: includes ncMap entries (include=true, name+role filled) so dropdowns show them immediately
+    const getCounselorEntries = () => {
+      const base = Object.entries(configData?.users || {})
+        .filter(([, info]) => BK_COUNSELING_ROLES.has(info.role || ''));
+      for (const nc of Object.values(ncMap)) {
+        if (nc.include && nc.name && nc.role && nc.key && !configData?.users?.[nc.key]) {
+          base.push([nc.key, { name: nc.name, role: nc.role }]);
+        }
+      }
+      return base;
+    };
 
     const getFiltered = () => {
       const q = _search.toLowerCase();
@@ -7359,7 +7375,7 @@ function showImportReviewModal(imported, prog, newCounselorsMap) {
         const ed = reviewMap.get(oi);
         const warn = c._defaultedClosed;
         const bg = warn ? '#fff5f5' : (ri%2===0 ? '#fff' : '#f7fafc');
-        const counselorOpts = counselorEntries.map(([em, info]) =>
+        const counselorOpts = getCounselorEntries().map(([em, info]) =>
           `<option value="${escHtml(em)}" ${ed.counselorEmail===em?'selected':''}>${escHtml(info.name||em)}</option>`
         ).join('');
         const statusRadio =
@@ -7452,6 +7468,22 @@ function showImportReviewModal(imported, prog, newCounselorsMap) {
       if (field === 'include') nc.include = val;
       else if (field === 'name') nc.name = val;
       else if (field === 'role') nc.role = val;
+      // Sync reviewMap entries whose counselorText matches this nc entry
+      imported.forEach((c, origIdx) => {
+        if (c.counselorText !== origText) return;
+        const ed = reviewMap.get(origIdx);
+        if (field === 'include') {
+          if (val && nc.name && nc.key) {
+            ed.counselorEmail = nc.key;
+            ed.counselorName  = nc.name;
+          } else if (!val && ed.counselorEmail === nc.key) {
+            ed.counselorEmail = '';
+            ed.counselorName  = c.counselorText || '';
+          }
+        } else if (field === 'name' && ed.counselorEmail === nc.key) {
+          ed.counselorName = val;
+        }
+      });
       rerender();
     };
     window.irSearch = (v) => { _search = v; _page = 0; rerender(); };
@@ -7467,7 +7499,10 @@ function showImportReviewModal(imported, prog, newCounselorsMap) {
       else if (field === 'counselorEmail') {
         ed.counselorEmail = val;
         const info = configData?.users?.[val];
-        ed.counselorName = info ? (formatCounselorLabel(val) || info.name || val) : '';
+        const ncEntry = Object.values(ncMap).find(nc => nc.key === val);
+        if (info) ed.counselorName = formatCounselorLabel(val) || info.name || val;
+        else if (ncEntry) ed.counselorName = ncEntry.name || val;
+        else ed.counselorName = '';
       }
       rerender();
     };
@@ -9581,7 +9616,13 @@ const _USERS_FOLDER_LS_KEY = 'scc_users_folder_id_' + DRIVE_FOLDER_ID;
 
 async function getUsersFolderId() {
   if (!_usersFolderIdCache) {
-    _usersFolderIdCache = localStorage.getItem(_USERS_FOLDER_LS_KEY) || null;
+    const cached = localStorage.getItem(_USERS_FOLDER_LS_KEY) || null;
+    // Validate: must be a real ID string, not "[object Object]" from a past bug
+    if (cached && cached !== '[object Object]' && cached.length >= 10) {
+      _usersFolderIdCache = cached;
+    } else if (cached) {
+      localStorage.removeItem(_USERS_FOLDER_LS_KEY);
+    }
   }
   if (!_usersFolderIdCache) {
     const q = `name='users' and mimeType='application/vnd.google-apps.folder' and '${DRIVE_FOLDER_ID}' in parents and trashed=false`;
@@ -9589,7 +9630,8 @@ async function getUsersFolderId() {
     if (res.files && res.files.length) {
       _usersFolderIdCache = res.files[0].id;
     } else {
-      _usersFolderIdCache = await driveCreateFolder('users', DRIVE_FOLDER_ID);
+      const folderResult = await driveCreateFolder('users', DRIVE_FOLDER_ID);
+      _usersFolderIdCache = folderResult?.id || folderResult;
     }
     localStorage.setItem(_USERS_FOLDER_LS_KEY, _usersFolderIdCache);
   }
