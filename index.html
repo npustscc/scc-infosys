@@ -820,6 +820,15 @@
       body { font-size: 11pt; }
       a { text-decoration: none; }
     }
+    .attach-picker-wrap { margin-top:10px; }
+    .attach-item { display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:6px;margin-bottom:4px;font-size:.82rem; }
+    .attach-item.existing { background:#f7fafc;border:1px solid #e2e8f0; }
+    .attach-item.pending  { background:#f0fff4;border:1px solid #9ae6b4; }
+    .attach-del-btn { background:none;border:none;color:#e53e3e;cursor:pointer;font-size:1rem;padding:0 3px;line-height:1;flex-shrink:0; }
+    .attach-chip { display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border:1px solid #bee3f8;border-radius:10px;background:#ebf8ff;color:#2b6cb0;font-size:.79rem;cursor:pointer;transition:background .12s; }
+    .attach-chip:hover { background:#bee3f8; }
+    .attach-add-btn { display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border:1px dashed #cbd5e0;border-radius:6px;background:#f7fafc;color:#4a5568;font-size:.82rem;cursor:pointer;transition:border-color .12s; }
+    .attach-add-btn:hover { border-color:#a0aec0; }
   </style>
 </head>
 <body>
@@ -2235,6 +2244,7 @@
         <div class="field-input rt-editor" id="rec-notes" contenteditable="true"
           data-placeholder="（選填）其他補充說明…"
           style="resize:vertical;min-height:70px;overflow:auto;line-height:1.6;"></div>
+        <div id="attachPicker_rec" class="attach-picker-wrap"></div>
       </div>
 
       <!-- 預約下次諮商時間 -->
@@ -2611,6 +2621,7 @@
       <div class="form-section" id="ii-section-eight">
         <div class="form-section-title">八、備註<span style="font-size:.78rem;color:#718096;margin-left:6px;">（非必填）</span></div>
         <textarea class="field-input" id="ii-notes" rows="2" style="resize:vertical;" placeholder="其他補充說明…"></textarea>
+        <div id="attachPicker_ii" class="attach-picker-wrap"></div>
       </div>
 
       <div class="form-actions">
@@ -4163,7 +4174,7 @@ function statusBadge(status) {
 // ══════════════════════════════════════════════
 //  渲染管理員使用者列表
 // ══════════════════════════════════════════════
-let _adminUserFilter = { status: 'all', role: '' };
+let _adminUserFilter = { status: 'active', role: '' };
 let _adminUserSort   = { col: null, dir: 1 }; // col: 'key'|'name'|'role'|'extra'; dir: 1=asc, -1=desc
 
 function renderAdminUsers() {
@@ -4201,13 +4212,29 @@ function renderAdminUsers() {
   filtered.sort(([keyA, a], [keyB, b]) => {
     if (!!a.disabled !== !!b.disabled) return a.disabled ? 1 : -1;
     const col = _adminUserSort.col, dir = _adminUserSort.dir;
+    if (col === 'key') {
+      // Sort by Gmail address; nomail_ accounts fall back to gmail field or name
+      const gmailKey = (k, i) => k.startsWith('nomail_') ? ((i.gmail || i.name || k).toLowerCase()) : k.toLowerCase();
+      return dir * gmailKey(keyA, a).localeCompare(gmailKey(keyB, b), 'zh-TW');
+    }
+    if (col === 'role') {
+      const rolePri = r => {
+        if (!r) return 9;
+        if (r === '主任') return 0;
+        if (r.startsWith('專任')) return 1;
+        if (r.startsWith('實習')) return 2;
+        if (r.startsWith('兼任')) return 3;
+        return 4;
+      };
+      const pa = rolePri(a.role), pb = rolePri(b.role);
+      if (pa !== pb) return dir * (pa - pb);
+      return dir * (a.role || '').localeCompare(b.role || '', 'zh-TW');
+    }
     let va, vb;
-    if (col === 'key')   { va = keyA; vb = keyB; }
-    else if (col === 'role')  { va = a.role || ''; vb = b.role || ''; }
-    else if (col === 'extra') {
+    if (col === 'extra') {
       const xtra = i => (i.isAdmin || i.extraRole === '管理者') ? '管理者' : (i.extraRole || '');
       va = xtra(a); vb = xtra(b);
-    } else { va = a.name || ''; vb = b.name || ''; } // 'name' or default
+    } else { va = a.name || ''; vb = b.name || ''; }
     return dir * va.localeCompare(vb, 'zh-TW');
   });
 
@@ -4770,6 +4797,7 @@ function showCaseDetail(caseId) {
       ${svcBadges}
       ${r.nextPlan ? `<div class="rec-section-label">後續處遇計畫</div><div class="record-summary">${renderMaybeHtml(r.nextPlan)}</div>` : ''}
       ${r.notes ? `<div class="rec-section-label">備註</div><div class="record-summary">${renderMaybeHtml(r.notes)}</div>` : ''}
+      ${renderAttachChips(r.attachments)}
     </div>`;
 
     const toggleBtn = !r.deleted
@@ -4931,6 +4959,7 @@ function showCaseDetail(caseId) {
         ${(ii.serviceItems||ii.services||[]).length ? `<div style="margin-bottom:8px;"><span style="font-size:.75rem;color:#a0aec0;">服務項目：</span>${(ii.serviceItems||ii.services||[]).map(s=>`<span class="badge badge-gray" style="margin-right:4px;">${escHtml(s)}</span>`).join('')}</div>` : ''}
         ${iiField('主責輔導人員', ii.resultCounselor ? (formatCounselorLabel(ii.resultCounselor)||ii.resultCounselor) : [ii.resultSW,ii.resultFullTime,ii.resultPartTime,ii.resultVol].filter(Boolean).join('　'))}
         ${iiField('備註', ii.notes || ii.attendees)}
+        ${renderAttachChips(ii.attachments)}
         ${ii.updatedAt ? `<div style="font-size:.75rem;color:#a0aec0;margin-top:6px;">更新：${new Date(ii.updatedAt).toLocaleString('zh-TW')}</div>` : ''}
       </div>`;
     const iiIsCreator = ii.createdBy === currentUser?.email;
@@ -5023,6 +5052,7 @@ function showCaseDetail(caseId) {
           <div style="display:flex;gap:6px;">${btnHtml}</div>
         </div>
         ${pr.recommendations && !pr.deleted ? `<div style="padding:8px 12px;font-size:.85rem;color:#4a5568;border-top:1px solid #f0f4f8;">諮商中心建議：${renderMaybeHtml(pr.recommendations)}</div>` : ''}
+        ${renderAttachChips(pr.attachments)}
       </div>`;
     }).join('');
     const addBtn = !caseIsDeleted ? `<button class="btn btn-primary" onclick="openPsychiatristModal('${escHtml(c.id)}')">＋ 新增評估</button>` : '';
@@ -5413,6 +5443,7 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
     setRichTextValue('rec-assessment', existingRec.assessment || '');
     setRichTextValue('rec-next-plan',  existingRec.nextPlan   || '');
     setRichTextValue('rec-notes',      existingRec.notes      || '');
+    attachInit('rec', existingRec.attachments || []);
     _restoreTopics(existingRec.topics || []);
     _restoreServiceItems(existingRec.serviceItems || []);
     document.getElementById('rec-intervention-mode').value = existingRec.interventionMode || '';
@@ -5429,6 +5460,7 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
     setRichTextValue('rec-assessment', '');
     setRichTextValue('rec-next-plan',  '');
     setRichTextValue('rec-notes',      '');
+    attachInit('rec', []);
     document.getElementById('rec-intervention-mode').value = '';
     document.querySelectorAll('input[name="rec-interviewee"]').forEach(cb => cb.checked = false);
     const _rinNew = document.getElementById('rec-interviewee-note'); if (_rinNew) _rinNew.value = '';
@@ -6321,6 +6353,10 @@ async function saveRecord() {
   if (!casesData[cidx].records) casesData[cidx].records = [];
   const _caseLabel = casesData[cidx]?.name || _recordCaseId;
 
+  let _recAttachments;
+  try { _recAttachments = await attachFlush('rec'); }
+  catch(e) { _recAlert('附件上傳失敗：' + e.message); return; }
+
   if (_editingRecordId) {
     // ── 編輯現有紀錄 ──
     const ridx = casesData[cidx].records.findIndex(r => r.id === _editingRecordId);
@@ -6349,7 +6385,7 @@ async function saveRecord() {
     Object.assign(casesData[cidx].records[ridx], {
       date, time, topics, serviceItems, summary, assessment, nextPlan, notes,
       counselorName, counselors: counselorList, interventionMode, interviewees, intervieweeNote,
-      nextBkId: _editNextBkId,
+      nextBkId: _editNextBkId, attachments: _recAttachments,
       updatedAt: new Date().toISOString(), updatedBy: currentUser.email,
     });
     delete casesData[cidx].records[ridx].status;
@@ -6406,7 +6442,7 @@ async function saveRecord() {
       counselorName, counselors: counselorList, interventionMode, interviewees, intervieweeNote,
       topics, serviceItems, summary, assessment, nextPlan, notes,
       recordKind: _recordKind,
-      nextBkId: _newBkId,
+      nextBkId: _newBkId, attachments: _recAttachments,
       createdAt: new Date().toISOString(),
     };
     casesData[cidx].records.push(newRecord);
@@ -7862,9 +7898,26 @@ function showImportMergePreview(imported, prog) {
     modal.id = 'import-merge-modal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:30px;';
 
-    const existingIds = new Set(casesData.map(c => c.id));
-    const newCases    = imported.filter(c => !existingIds.has(c.id));
-    const dupCases    = imported.filter(c =>  existingIds.has(c.id));
+    const existingMap = new Map(casesData.map(c => [c.id, c]));
+    const newCases = [], dupCases = [];
+    imported.forEach(imp => {
+      const ex = existingMap.get(imp.id);
+      if (!ex) { newCases.push(imp); return; }
+      // Same ID but different semester → treat as a new independent case
+      const impSem = openDateToSemPrefix(imp.openDate);
+      const exSem  = openDateToSemPrefix(ex.openDate);
+      if (impSem && exSem && impSem !== exSem) {
+        // Generate unique ID to avoid collision: append semester prefix
+        let newId = imp.id + '_' + impSem;
+        const allIds = new Set([...casesData.map(c => c.id), ...newCases.map(c => c.id)]);
+        let sfx = 0;
+        while (allIds.has(newId)) newId = imp.id + '_' + impSem + '_' + (++sfx);
+        imp.id = newId;
+        newCases.push(imp);
+        return;
+      }
+      dupCases.push(imp);
+    });
 
     // Same name → auto smart-merge. Different name → per-case decision.
     const sameNameDups = [];
@@ -8442,6 +8495,7 @@ function openInitialInterviewPage(caseId) {
 
   const existing = c.initialInterview;
   if (existing && !existing.deleted && existing.type !== 'continuation' && existing.type !== 'linkedRecord') _iiPopulateForm(existing);
+  attachInit('ii', (existing && !existing.deleted) ? (existing.attachments || []) : []);
 
   setAlert('initial-interview-alert', '', '');
   showPage('page-initial-interview', null);
@@ -8593,6 +8647,10 @@ async function saveInitialInterview() {
 
   const cidx = casesData.findIndex(c => c.id === _initialInterviewCaseId);
   if (cidx === -1) return;
+  let _iiAttachments;
+  try { _iiAttachments = await attachFlush('ii'); }
+  catch(e) { setAlert('initial-interview-alert','error','附件上傳失敗：' + e.message); return; }
+  snap.attachments = _iiAttachments;
   snap.updatedAt = new Date().toISOString();
   snap.updatedBy = currentUser?.email;
   const prev = casesData[cidx].initialInterview;
@@ -10993,6 +11051,7 @@ function _buildEvrCardHtml(r, idx) {
         <div class="form-section-title">主述與會談資料<span class="req">*</span></div>
         ${_EVR_TOOLBAR_HTML}
         <div class="rt-editor field-input" id="${pfx}-summary" contenteditable="true" style="min-height:150px;resize:vertical;overflow:auto;white-space:pre-wrap;line-height:1.6;"></div>
+        <div id="attachPicker_evr_${idx}" class="attach-picker-wrap"></div>
       </div>
     </div>`;
 }
@@ -11005,6 +11064,7 @@ function _evrRestoreCard(r, idx) {
   sv(`${pfx}-mode`, r.interventionMode);
   sv(`${pfx}-interviewee-note`, r.intervieweeNote || '');
   if (r.summary) setRichTextValue(`${pfx}-summary`, r.summary);
+  attachInit('evr_' + idx, r.attachments || []);
   if (idx === 0 && r.nextBk) {
     sv(`${pfx}-next-bk-room`,   r.nextBk.room);
     sv(`${pfx}-next-bk-period`, r.nextBk.period);
@@ -11267,6 +11327,7 @@ function _evrAddRecord() {
   _evrCounselors.push([...(prev.counselors || [])]);
   _evrDynTags.push({ accompany:[], other:[] });
   _renderEvrCards();
+  attachInit('evr_' + (_evrRecords.length - 1), []);
   document.getElementById(`evr-card-${_evrRecords.length - 1}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -11372,6 +11433,11 @@ async function saveEventRecords() {
   if (!casesData[cidx].records) casesData[cidx].records = [];
   const now = new Date().toISOString();
   const rand = () => Math.random().toString(36).slice(2, 6);
+  const _evrAttachMap = {};
+  for (let idx = 0; idx < _evrRecords.length; idx++) {
+    try { _evrAttachMap[idx] = await attachFlush('evr_' + idx); }
+    catch(e) { showToast('第' + (idx+1) + '筆附件上傳失敗：' + e.message, 'error'); return; }
+  }
   _evrRecords.forEach((r, idx) => {
     casesData[cidx].records.push({
       id: `REC_${Date.now()}_E${idx}_${rand()}`,
@@ -11382,6 +11448,7 @@ async function saveEventRecords() {
       interviewees: r.interviewees, interventionMode: r.interventionMode,
       topics: r.topics, serviceItems: r.serviceItems,
       summary: r.summary, status: 'done',
+      attachments: _evrAttachMap[idx] || [],
       creatorEmail: currentUser?.email, createdAt: now, updatedAt: now,
     });
   });
@@ -17158,6 +17225,7 @@ function openPsychiatristModal(caseId, recordId) {
           </div>
         </div>
         <div style="margin-bottom:12px;"><label class="field-label">其他注意事項</label><div class="rt-toolbar" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:6px;border:1px solid #cbd5e0;border-radius:6px;background:#f7fafc;padding:4px 8px;"><button type="button" class="rt-btn" onclick="toggleRtToolbar(this)" title="格式工具列" style="min-width:28px;font-size:.8rem;">A</button><span class="rt-toolbar-btns" style="display:none;gap:4px;flex-wrap:wrap;align-items:center;"><button type="button" class="rt-btn" data-cmd="bold" title="粗體" style="font-weight:bold;min-width:32px;">B</button><button type="button" class="rt-btn" data-cmd="italic" title="斜體" style="font-style:italic;min-width:32px;">I</button><button type="button" class="rt-btn" data-cmd="underline" title="底線" style="text-decoration:underline;min-width:32px;">U</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="justifyLeft" title="靠左" style="min-width:32px;">⬅</button><button type="button" class="rt-btn" data-cmd="justifyCenter" title="置中" style="min-width:32px;">↔</button><button type="button" class="rt-btn" data-cmd="justifyRight" title="靠右" style="min-width:32px;">➡</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtCycleUL" title="項目符號（重複點擊循環切換類型）" style="min-width:32px;">•</button><button type="button" class="rt-btn" data-cmd="rtCycleOL" title="編號列表（重複點擊循環切換類型）" style="min-width:32px;">1.</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtIndent" title="縮排（最多5段，第6次重置）" style="min-width:32px;">⇥</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="removeFormat" title="清除格式" style="min-width:32px;">⌫</button></span></div><div class="field-input rt-editor" id="pr-notes" contenteditable="true" style="min-height:70px;overflow:auto;line-height:1.6;">${renderMaybeHtml(pr.otherNotes)}</div></div>
+        <div id="attachPicker_psy" class="attach-picker-wrap" style="margin-bottom:12px;"></div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;">
           <button class="btn btn-primary" onclick="savePsychiatristRecord('${escHtml(caseId)}','${existing?escHtml(recordId):'__new__'}')">儲存紀錄</button>
           <button class="btn btn-secondary" onclick="draftPsychiatristRecord('${escHtml(caseId)}','${existing?escHtml(recordId):'__new__'}')">暫存草稿</button>
@@ -17170,6 +17238,7 @@ function openPsychiatristModal(caseId, recordId) {
     document.getElementById('pr-diag-row').style.display = el.value==='specific' ? '' : 'none';
   }));
 
+  attachInit('psy', existing?.attachments || []);
   stopPsyDraftAutosave();
   if (!existing) {
     _psyDraftKey = `scc_draft_psy_${currentUser?.email||''}_${caseId}`;
@@ -17198,6 +17267,9 @@ async function savePsychiatristRecord(caseId, recordId) {
       return;
     }
   }
+  let _psyAttachments;
+  try { _psyAttachments = await attachFlush('psy'); }
+  catch(e) { alert('附件上傳失敗：' + e.message); return; }
   const data = {
     intervieweeName:gV('pr-name'), legalGender:gV('pr-gender'),
     department:gV('pr-dept'), studentId:gV('pr-sid'),
@@ -17207,7 +17279,7 @@ async function savePsychiatristRecord(caseId, recordId) {
     intervention:getRichTextValue('pr-interv'), recommendations:getRichTextValue('pr-rec'),
     diagnosisType:gR('pr_diag'), diagnosisName:gV('pr-diag-name'),
     medicationAdvice:gR('pr_med'), hospitalizationAdvice:gR('pr_hosp'),
-    otherNotes:getRichTextValue('pr-notes'),
+    otherNotes:getRichTextValue('pr-notes'), attachments:_psyAttachments,
     updatedAt:new Date().toISOString(), updatedBy:currentUser?.email, updatedByName:currentUser?.name,
   };
   delete data.status; delete data.draftSavedAt;
@@ -17352,6 +17424,406 @@ function printPsychiatristRecord(caseId, recordId) {
     </table>
     </body></html>`);
   w.document.close(); setTimeout(() => w.print(), 600);
+}
+
+// ══════════════════════════════════════════════
+//  附件功能（Attachment Feature）
+// ══════════════════════════════════════════════
+const _attachState = new Map(); // pickerId → { existing, pending, deletedFileIds }
+let _attachFolderCache = null;
+
+async function _ensureAttachFolder() {
+  if (_attachFolderCache) return _attachFolderCache;
+  const r = await proxyCall('query', {
+    q: `'${DRIVE_FOLDER_ID}' in parents and name='attachments' and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+    fields: 'id,name', pageSize: 1
+  });
+  if (r?.files?.length) { _attachFolderCache = r.files[0].id; return _attachFolderCache; }
+  const f = await proxyCall('createFolder', { name: 'attachments', parentId: DRIVE_FOLDER_ID });
+  _attachFolderCache = f.id;
+  return _attachFolderCache;
+}
+
+function attachInit(pid, existing) {
+  _attachState.set(pid, { existing: existing ? [...existing] : [], pending: [], deletedFileIds: [] });
+  attachRender(pid);
+}
+
+function _attachTotal(pid) {
+  const s = _attachState.get(pid);
+  return s ? s.existing.length + s.pending.length : 0;
+}
+
+function _attachIcon(type) {
+  if (type === 'image')     return '🖼️';
+  if (type === 'pdf_pages') return '📄';
+  if (type === 'word')      return '📝';
+  return '📎';
+}
+
+function _attachLabel(a) {
+  const name = a.fileName || '附件';
+  return (a.type === 'pdf_pages' && a.pageRange) ? `${name}（第${a.pageRange}頁）` : name;
+}
+
+function attachRender(pid) {
+  const wrap = document.getElementById('attachPicker_' + pid);
+  if (!wrap) return;
+  const s = _attachState.get(pid);
+  if (!s) return;
+  const max = 3, total = _attachTotal(pid);
+
+  const exHtml = s.existing.map((a, i) => `
+    <div class="attach-item existing">
+      <span>${_attachIcon(a.type)}</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(_attachLabel(a))}">${escHtml(_attachLabel(a))}</span>
+      <button type="button" class="attach-del-btn" onclick="attachRemoveExisting('${escHtml(pid)}',${i})">×</button>
+    </div>`).join('');
+
+  const penHtml = s.pending.map((a, i) => `
+    <div class="attach-item pending">
+      ${a.type === 'image' && a.dataUrl ? `<img src="${a.dataUrl}" style="width:30px;height:30px;object-fit:cover;border-radius:3px;flex-shrink:0;">` : `<span>${_attachIcon(a.type)}</span>`}
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(_attachLabel(a))}">${escHtml(_attachLabel(a))}</span>
+      <span style="font-size:.75rem;color:#276749;flex-shrink:0;">(待上傳)</span>
+      <button type="button" class="attach-del-btn" onclick="attachRemovePending('${escHtml(pid)}',${i})">×</button>
+    </div>`).join('');
+
+  const addBtn = total < max
+    ? `<button type="button" class="attach-add-btn" onclick="document.getElementById('attachInput_${pid}').click()">＋ 新增附件</button>` : '';
+
+  wrap.innerHTML = `
+    <div style="font-size:.82rem;color:#4a5568;margin-bottom:5px;font-weight:500;">
+      附件 <span style="font-weight:400;color:#718096;">（最多3個，支援圖片・PDF・Word）</span>
+    </div>
+    ${exHtml}${penHtml}${addBtn}
+    <input type="file" id="attachInput_${pid}" style="display:none"
+      accept="image/*,.pdf,.doc,.docx,.docm"
+      onchange="attachHandleInput('${escHtml(pid)}',this)">`;
+}
+
+function attachRemoveExisting(pid, idx) {
+  const s = _attachState.get(pid);
+  if (!s || !s.existing[idx]) return;
+  s.existing.splice(idx, 1);
+  attachRender(pid);
+}
+
+function attachRemovePending(pid, idx) {
+  const s = _attachState.get(pid);
+  if (!s) return;
+  s.pending.splice(idx, 1);
+  attachRender(pid);
+}
+
+async function attachHandleInput(pid, input) {
+  const files = [...(input.files || [])];
+  input.value = '';
+  for (const file of files) {
+    const s = _attachState.get(pid);
+    if (!s || _attachTotal(pid) >= 3) { if (files.length > 1) showToast('最多只能新增3個附件', 'warning'); return; }
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    if (file.type.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp'].includes(ext)) {
+      await _attachAddImage(pid, file);
+    } else if (file.type === 'application/pdf' || ext === 'pdf') {
+      await _attachAddPdf(pid, file);
+    } else if (['doc','docx','docm'].includes(ext) || (file.type||'').includes('wordprocessingml') || file.type === 'application/msword') {
+      if (file.size > 5 * 1024 * 1024) { alert(`Word 檔案「${file.name}」超過 5MB 限制`); return; }
+      _attachAddWord(pid, file);
+    } else {
+      alert(`不支援的檔案類型：${file.name}\n支援：圖片、PDF、Word (.doc/.docx)`);
+    }
+  }
+}
+
+async function _attachAddImage(pid, file) {
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1280;
+        let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) {
+          if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+          else { w = Math.round(w * MAX / h); h = MAX; }
+        }
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(img, 0, 0, w, h);
+        const dataUrl = cv.toDataURL('image/jpeg', 0.85);
+        const b64 = dataUrl.split(',')[1];
+        const bArr = atob(b64); const arr = new Uint8Array(bArr.length);
+        for (let i = 0; i < bArr.length; i++) arr[i] = bArr.charCodeAt(i);
+        const blob = new Blob([arr], { type: 'image/jpeg' });
+        const s = _attachState.get(pid);
+        if (s) { s.pending.push({ type:'image', fileName: file.name.replace(/\.[^.]+$/, '') + '.jpg', mimeType:'image/jpeg', blob, dataUrl }); attachRender(pid); }
+        resolve();
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+async function _attachAddPdf(pid, file) {
+  if (!window.pdfjsLib) {
+    showLoading('載入 PDF 解析套件…');
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
+      s.onload = res; s.onerror = () => rej(new Error('無法載入 PDF 解析套件'));
+      document.head.appendChild(s);
+    });
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+    hideLoading();
+  }
+  showLoading('解析 PDF 頁面…');
+  try {
+    const buf = await file.arrayBuffer();
+    const pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+    const numPages = pdfDoc.numPages;
+    hideLoading();
+
+    const s = _attachState.get(pid);
+    if (!s) return;
+    const availSlots = 3 - _attachTotal(pid);
+
+    if (numPages === 1) {
+      showLoading('轉換第 1 頁…');
+      const pages = await _pdfRenderPages(pdfDoc, [1]);
+      hideLoading();
+      s.pending.push({ type:'pdf_pages', fileName: file.name, mimeType:'image/jpeg', pages, pageRange:'1' });
+      attachRender(pid);
+      return;
+    }
+
+    showLoading('渲染頁面縮圖…');
+    const allPageNums = Array.from({ length: numPages }, (_, i) => i + 1);
+    const allPages = await _pdfRenderPages(pdfDoc, allPageNums);
+    hideLoading();
+
+    const selected = await _showPdfPageSelector(file.name, allPages, availSlots);
+    if (!selected || !selected.length) return;
+
+    for (let i = 0; i < selected.length; i += 5) {
+      const chunk = selected.slice(i, i + 5);
+      const s2 = _attachState.get(pid);
+      if (!s2 || _attachTotal(pid) >= 3) break;
+      const pr1 = chunk[0].pageNum, pr2 = chunk[chunk.length - 1].pageNum;
+      s2.pending.push({
+        type: 'pdf_pages', fileName: file.name, mimeType: 'image/jpeg',
+        pages: chunk, pageRange: pr1 === pr2 ? String(pr1) : `${pr1}-${pr2}`
+      });
+    }
+    attachRender(pid);
+  } catch(e) { hideLoading(); alert('PDF 解析失敗：' + e.message); }
+}
+
+async function _pdfRenderPages(pdfDoc, pageNums) {
+  const result = [];
+  for (const pageNum of pageNums) {
+    const page = await pdfDoc.getPage(pageNum);
+    const vp = page.getViewport({ scale: 1.5 });
+    const cv = document.createElement('canvas');
+    cv.width = vp.width; cv.height = vp.height;
+    await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+    const dataUrl = cv.toDataURL('image/jpeg', 0.82);
+    const b64 = dataUrl.split(',')[1];
+    const bArr = atob(b64); const arr = new Uint8Array(bArr.length);
+    for (let i = 0; i < bArr.length; i++) arr[i] = bArr.charCodeAt(i);
+    result.push({ pageNum, dataUrl, blob: new Blob([arr], { type:'image/jpeg' }) });
+  }
+  return result;
+}
+
+function _showPdfPageSelector(fileName, allPages, availSlots) {
+  return new Promise(resolve => {
+    const maxPgs = Math.min(availSlots * 5, allPages.length);
+    let selected = allPages.slice(0, maxPgs).map((_, i) => i);
+    let modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.82);z-index:20000;display:flex;align-items:center;justify-content:center;padding:20px;';
+
+    const render = () => {
+      const selSet = new Set(selected);
+      const slots = Math.ceil(selected.length / 5);
+      modal.innerHTML = `
+        <div style="background:#fff;border-radius:12px;max-width:680px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;">
+          <div style="padding:16px 20px;border-bottom:1px solid #e2e8f0;">
+            <h3 style="margin:0 0 3px;font-size:.98rem;color:#1a5276;">選擇要上傳的頁面</h3>
+            <div style="font-size:.81rem;color:#718096;">${escHtml(fileName)} 共 ${allPages.length} 頁，剩餘 ${availSlots} 個附件槽（每槽最多5頁）</div>
+            <div id="pdf-sel-info" style="font-size:.81rem;margin-top:3px;color:${selected.length>maxPgs?'#e53e3e':'#276749'};">
+              已選 ${selected.length} 頁 → 將佔用 ${slots} 個附件槽
+            </div>
+          </div>
+          <div style="padding:10px 14px;overflow:auto;flex:1;">
+            <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(105px,1fr));gap:8px;">
+              ${allPages.map((p, i) => `
+                <div onclick="window._pdfToggle(${i})" style="cursor:pointer;text-align:center;">
+                  <div style="border:2px solid ${selSet.has(i)?'#3182ce':'#e2e8f0'};border-radius:5px;overflow:hidden;background:${selSet.has(i)?'#ebf8ff':'#fff'};">
+                    <img src="${p.dataUrl}" style="width:100%;display:block;max-height:110px;object-fit:contain;">
+                  </div>
+                  <div style="font-size:.75rem;color:${selSet.has(i)?'#3182ce':'#718096'};margin-top:2px;">第${p.pageNum}頁</div>
+                </div>`).join('')}
+            </div>
+          </div>
+          <div style="padding:10px 18px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+            <div style="display:flex;gap:6px;">
+              <button type="button" style="padding:4px 9px;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;cursor:pointer;background:#f7fafc;"
+                onclick="window._pdfSelAll(${allPages.length},${maxPgs})">全選前${maxPgs}頁</button>
+              <button type="button" style="padding:4px 9px;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;cursor:pointer;background:#f7fafc;"
+                onclick="window._pdfClearAll()">全部取消</button>
+            </div>
+            <div style="display:flex;gap:8px;">
+              <button type="button" id="pdf-cancel" style="padding:5px 13px;border:1px solid #cbd5e0;border-radius:6px;font-size:.84rem;cursor:pointer;background:#f7fafc;">取消</button>
+              <button type="button" id="pdf-confirm" ${selected.length===0||selected.length>maxPgs?'disabled style="opacity:.45;"':''}
+                style="padding:5px 13px;border:none;border-radius:6px;font-size:.84rem;cursor:pointer;background:#3182ce;color:#fff;">確認上傳</button>
+            </div>
+          </div>
+        </div>`;
+      window._pdfToggle = i => {
+        const pos = selected.indexOf(i);
+        if (pos >= 0) selected.splice(pos, 1);
+        else if (selected.length < maxPgs) selected.push(i);
+        else { showToast(`最多只能選 ${maxPgs} 頁`, 'warning'); return; }
+        selected.sort((a,b) => a-b);
+        render();
+      };
+      window._pdfSelAll = (total, max) => { selected = Array.from({length:Math.min(total,max)},(_,i)=>i); render(); };
+      window._pdfClearAll = () => { selected = []; render(); };
+      modal.querySelector('#pdf-cancel').onclick = () => { modal.remove(); resolve(null); };
+      modal.querySelector('#pdf-confirm').onclick = () => {
+        if (!selected.length) return;
+        modal.remove();
+        resolve(selected.map(i => allPages[i]));
+      };
+    };
+
+    render();
+    document.body.appendChild(modal);
+  });
+}
+
+function _attachAddWord(pid, file) {
+  const s = _attachState.get(pid);
+  if (!s) return;
+  s.pending.push({ type:'word', fileName:file.name, mimeType:file.type||'application/vnd.openxmlformats-officedocument.wordprocessingml.document', blob:file });
+  attachRender(pid);
+}
+
+function _blobToBase64(blob) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result.split(',')[1]);
+    r.onerror = rej;
+    r.readAsDataURL(blob);
+  });
+}
+
+async function attachFlush(pid) {
+  const s = _attachState.get(pid);
+  if (!s) return [];
+  if (!s.pending.length) return [...s.existing];
+  const folderId = await _ensureAttachFolder();
+  const ts = Date.now().toString(36);
+  const uploaded = [];
+  for (const p of s.pending) {
+    if (p.type === 'image') {
+      const b64 = await _blobToBase64(p.blob);
+      const r = await proxyCall('uploadFile', { parentFolderId:folderId, fileName:`${ts}_${p.fileName}`, mimeType:p.mimeType, base64Data:b64 });
+      uploaded.push({ type:'image', fileId:r.fileId, fileName:p.fileName, mimeType:p.mimeType });
+    } else if (p.type === 'pdf_pages') {
+      const pages = [];
+      for (const pg of p.pages) {
+        const b64 = await _blobToBase64(pg.blob);
+        const r = await proxyCall('uploadFile', {
+          parentFolderId: folderId,
+          fileName: `${ts}_${p.fileName.replace(/\.pdf$/i,'')}_p${pg.pageNum}.jpg`,
+          mimeType: 'image/jpeg', base64Data: b64
+        });
+        pages.push({ fileId:r.fileId, pageNum:pg.pageNum });
+      }
+      uploaded.push({ type:'pdf_pages', fileName:p.fileName, mimeType:'image/jpeg', pages, pageRange:p.pageRange });
+    } else if (p.type === 'word') {
+      const b64 = await _blobToBase64(p.blob);
+      const r = await proxyCall('uploadFile', { parentFolderId:folderId, fileName:`${ts}_${p.fileName}`, mimeType:p.mimeType, base64Data:b64 });
+      uploaded.push({ type:'word', fileId:r.fileId, fileName:p.fileName, mimeType:p.mimeType });
+    }
+  }
+  return [...s.existing, ...uploaded];
+}
+
+function renderAttachChips(attachments) {
+  if (!attachments || !attachments.length) return '';
+  return `<div style="margin-top:7px;display:flex;flex-wrap:wrap;gap:5px;align-items:center;">
+    <span style="font-size:.78rem;color:#718096;">附件：</span>
+    ${attachments.map(a => `<button type="button" class="attach-chip"
+      onclick='viewAttachment(${JSON.stringify(JSON.stringify(a))})'>${_attachIcon(a.type)} ${escHtml(_attachLabel(a))}</button>`).join('')}
+  </div>`;
+}
+
+async function viewAttachment(jsonStr) {
+  const a = JSON.parse(jsonStr);
+  if (a.type === 'image') {
+    showLoading('載入附件…');
+    try {
+      const r = await proxyCall('downloadFileBase64', { fileId: a.fileId });
+      hideLoading();
+      _attachShowImageModal(`data:${r.mimeType};base64,${r.base64}`, a.fileName);
+    } catch(e) { hideLoading(); alert('載入失敗：' + e.message); }
+  } else if (a.type === 'pdf_pages') {
+    showLoading('載入附件…');
+    try {
+      const pages = [];
+      for (const p of a.pages) {
+        const r = await proxyCall('downloadFileBase64', { fileId: p.fileId });
+        pages.push({ dataUrl: `data:${r.mimeType};base64,${r.base64}`, pageNum: p.pageNum });
+      }
+      hideLoading();
+      _attachShowPdfModal(a.fileName, pages, a.pageRange);
+    } catch(e) { hideLoading(); alert('載入失敗：' + e.message); }
+  } else if (a.type === 'word') {
+    showLoading('下載中…');
+    try {
+      const r = await proxyCall('downloadFileBase64', { fileId: a.fileId });
+      hideLoading();
+      const link = document.createElement('a');
+      link.href = `data:${r.mimeType};base64,${r.base64}`;
+      link.download = a.fileName;
+      link.click();
+    } catch(e) { hideLoading(); alert('下載失敗：' + e.message); }
+  }
+}
+
+function _attachShowImageModal(dataUrl, fileName) {
+  document.getElementById('attach-view-modal')?.remove();
+  const m = document.createElement('div');
+  m.id = 'attach-view-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:20001;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;';
+  m.innerHTML = `
+    <div style="max-width:90vw;display:flex;flex-direction:column;align-items:center;gap:8px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;width:100%;">
+        <span style="color:#e2e8f0;font-size:.83rem;">${escHtml(fileName)}</span>
+        <button onclick="document.getElementById('attach-view-modal').remove()" style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:5px;padding:3px 10px;cursor:pointer;">關閉</button>
+      </div>
+      <img src="${dataUrl}" style="max-width:100%;max-height:80vh;border-radius:6px;object-fit:contain;">
+    </div>`;
+  m.onclick = e => { if (e.target === m) m.remove(); };
+  document.body.appendChild(m);
+}
+
+function _attachShowPdfModal(fileName, pages, pageRange) {
+  document.getElementById('attach-view-modal')?.remove();
+  const m = document.createElement('div');
+  m.id = 'attach-view-modal';
+  m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:20001;overflow-y:auto;display:flex;flex-direction:column;align-items:center;padding:20px;gap:10px;';
+  m.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;width:100%;max-width:700px;flex-shrink:0;">
+      <span style="color:#e2e8f0;font-size:.83rem;">${escHtml(fileName)}${pageRange ? ` (第${pageRange}頁)` : ''}</span>
+      <button onclick="document.getElementById('attach-view-modal').remove()" style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:5px;padding:3px 10px;cursor:pointer;">關閉</button>
+    </div>
+    ${pages.map(p => `<div style="width:100%;max-width:700px;"><div style="color:#a0aec0;font-size:.75rem;margin-bottom:3px;">第 ${p.pageNum} 頁</div><img src="${p.dataUrl}" style="width:100%;border-radius:5px;display:block;"></div>`).join('')}`;
+  m.onclick = e => { if (e.target === m) m.remove(); };
+  document.body.appendChild(m);
 }
 
 // ══════════════════════════════════════════════
@@ -17628,6 +18100,7 @@ function restoreSidebarOrder() {
   <div style="background:#fff;border-radius:12px;max-width:520px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
     <h3 style="margin:0 0 14px;color:#1a5276;font-size:1.05rem;">回報問題或錯誤</h3>
     <textarea id="issue-desc" rows="5" style="width:100%;padding:10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.88rem;resize:vertical;box-sizing:border-box;" placeholder="請描述問題，例如：在哪個頁面、做了什麼動作、出現了什麼狀況…"></textarea>
+    <div id="attachPicker_issue_new" class="attach-picker-wrap"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
       <button class="btn btn-secondary" type="button" onclick="document.getElementById('issue-submit-modal').style.display='none'">取消</button>
       <button class="btn btn-primary" type="button" onclick="submitIssue()">送出</button>
@@ -17700,17 +18173,21 @@ async function _saveIssues() {
 function openIssueModal() {
   document.getElementById('issue-desc').value = '';
   document.getElementById('issue-submit-modal').style.display = 'flex';
-  setTimeout(() => document.getElementById('issue-desc').focus(), 50);
+  setTimeout(() => { attachInit('issue_new', []); document.getElementById('issue-desc').focus(); }, 50);
 }
 
 async function submitIssue() {
   const desc = document.getElementById('issue-desc').value.trim();
   if (!desc) { alert('請填寫問題說明'); return; }
   showLoading('送出中…');
+  let _issueAttachments = [];
+  try { _issueAttachments = await attachFlush('issue_new'); }
+  catch(e) { hideLoading(); alert('附件上傳失敗：' + e.message); return; }
   const issue = {
     id: 'issue_' + Date.now(),
     serial: _issueNextSerial(),
     description: desc,
+    attachments: _issueAttachments,
     submittedBy: currentUser?.email || '',
     submittedByName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
     submittedAt: new Date().toISOString(),
@@ -17915,6 +18392,7 @@ function renderIssuesPage() {
           <span style="font-size:.78rem;color:#a0aec0;">${dateStr}</span>
         </div>
         <div style="font-size:.88rem;color:#2d3748;white-space:pre-wrap;">${escHtml(issue.description)}</div>
+        ${renderAttachChips(issue.attachments)}
         ${commentsHtml}
         ${adminStatusControl}
         ${commentInput}

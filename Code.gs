@@ -36,6 +36,8 @@
         case 'updateCalendarEvent':  result = updateCalendarEvent_(params); break;
         case 'deleteCalendarEvent':  result = deleteCalendarEvent_(params); break;
         case 'listCalendarEvents':   result = listCalendarEvents_(params); break;
+        case 'uploadFile':           result = uploadFile_(params); break;
+        case 'downloadFileBase64':   result = downloadFileBase64_(params); break;
         default: return jsonResp_({ error: 'Unknown action: ' + action });
       }
       return jsonResp_(result);
@@ -374,6 +376,24 @@
     event.setDescription(buildEventDesc_(creatorName || counselorName || '', notes, actorTime, bkSerial, !!isEdit));
     event.setTime(start, end);
     return { ok: true };
+  }
+
+  function uploadFile_({ parentFolderId, fileName, mimeType, base64Data }) {
+    const bytes = Utilities.base64Decode(base64Data);
+    const blob  = Utilities.newBlob(bytes, mimeType, fileName);
+    const folder = DriveApp.getFolderById(parentFolderId);
+    const file  = folder.createFile(blob);
+    return { fileId: file.getId(), fileName: file.getName() };
+  }
+
+  function downloadFileBase64_({ fileId }) {
+    const file = DriveApp.getFileById(fileId);
+    const blob = file.getBlob();
+    return {
+      fileName: file.getName(),
+      mimeType: blob.getContentType(),
+      base64:   Utilities.base64Encode(blob.getBytes()),
+    };
   }
 
   function deleteCalendarEvent_({ eventId }) {
