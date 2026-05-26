@@ -829,6 +829,10 @@
     .attach-chip:hover { background:#bee3f8; }
     .attach-add-btn { display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border:1px dashed #cbd5e0;border-radius:6px;background:#f7fafc;color:#4a5568;font-size:.82rem;cursor:pointer;transition:border-color .12s; }
     .attach-add-btn:hover { border-color:#a0aec0; }
+    .attach-item.uploading { background:#ebf8ff;border:1px solid #bee3f8; }
+    .attach-item.upload-error { background:#fff5f5;border:1px solid #fed7d7; }
+    @keyframes attach-spin { to { transform:rotate(360deg); } }
+    .attach-spinner { display:inline-block;width:13px;height:13px;border:2px solid #bee3f8;border-top-color:#3182ce;border-radius:50%;animation:attach-spin .8s linear infinite;flex-shrink:0; }
   </style>
 </head>
 <body>
@@ -5679,12 +5683,14 @@ function snapshotRecordDraft() {
     topics: [...document.querySelectorAll('input[name="rec-topic"]:checked')].map(cb => cb.value),
     topicOther: document.getElementById('rec-topic-other')?.value || '',
     services: [...document.querySelectorAll('input[name="rec-service-main"]:checked')].map(cb => cb.value),
+    attachments: (_attachState.get('rec')?.existing || []),
   };
   return draft;
 }
 
 function restoreRecordDraft(d) {
   if (!d) return;
+  if (Array.isArray(d.attachments) && d.attachments.length) attachInit('rec', d.attachments);
   if (d.date != null) document.getElementById('rec-date').value = d.date;
   if (d.time != null) {
     document.getElementById('rec-time').value = d.time;
@@ -5726,7 +5732,7 @@ function startRecordDraftAutosave() {
       if (!page?.classList.contains('active')) return;
       const draft = snapshotRecordDraft();
       // 只在使用者有實際輸入時儲存
-      if (draft.summary || draft.assessment || draft.nextPlan || draft.notes || draft.topics.length || draft.services.length) {
+      if (draft.summary || draft.assessment || draft.nextPlan || draft.notes || draft.topics.length || draft.services.length || (draft.attachments||[]).length) {
         localStorage.setItem(_draftKey, JSON.stringify(draft));
         const ds = document.getElementById('_draft-autosave-status');
         if (ds) { const t = new Date(); ds.textContent = `草稿備援 ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`; }
@@ -6354,10 +6360,8 @@ async function saveRecord() {
   const _caseLabel = casesData[cidx]?.name || _recordCaseId;
 
   let _recAttachments;
-  showLoading('附件上傳中…');
   try { _recAttachments = await attachFlush('rec'); }
-  catch(e) { hideLoading(); _recAlert('附件上傳失敗：' + e.message); return; }
-  hideLoading();
+  catch(e) { _recAlert('附件上傳失敗：' + e.message); return; }
 
   if (_editingRecordId) {
     // ── 編輯現有紀錄 ──
@@ -8621,6 +8625,7 @@ function snapshotInitialInterview() {
     resultCounselor: get('ii-result-counselor'),
     notes: get('ii-notes'),
     familyImage: _iiFamilyImage || null,
+    attachments: (_attachState.get('ii')?.existing || []),
   };
 }
 
@@ -8650,10 +8655,8 @@ async function saveInitialInterview() {
   const cidx = casesData.findIndex(c => c.id === _initialInterviewCaseId);
   if (cidx === -1) return;
   let _iiAttachments;
-  showLoading('附件上傳中…');
   try { _iiAttachments = await attachFlush('ii'); }
-  catch(e) { hideLoading(); setAlert('initial-interview-alert','error','附件上傳失敗：' + e.message); return; }
-  hideLoading();
+  catch(e) { setAlert('initial-interview-alert','error','附件上傳失敗：' + e.message); return; }
   snap.attachments = _iiAttachments;
   snap.updatedAt = new Date().toISOString();
   snap.updatedBy = currentUser?.email;
@@ -10194,7 +10197,7 @@ function _snapshotRecordFormPartial() {
   const interventionMode = document.getElementById('rec-intervention-mode')?.value || '';
   const counselors = [..._recCounselors];
   const counselorName = counselors.map(c => c.label).join('、');
-  return { date, time, summary, assessment, nextPlan, notes, topics, serviceItems, interviewees, intervieweeNote, interventionMode, counselors, counselorName, recordKind: _recordKind };
+  return { date, time, summary, assessment, nextPlan, notes, topics, serviceItems, interviewees, intervieweeNote, interventionMode, counselors, counselorName, recordKind: _recordKind, attachments: (_attachState.get('rec')?.existing || []) };
 }
 
 function draftRecord() {
@@ -10338,6 +10341,7 @@ function draftPsychiatristRecord(caseId, recordId) {
     diagnosisType: gR('pr_diag'), diagnosisName: gV('pr-diag-name'),
     medicationAdvice: gR('pr_med'), hospitalizationAdvice: gR('pr_hosp'),
     otherNotes: getRichTextValue('pr-notes'),
+    attachments: (_attachState.get('psy')?.existing || []),
     status: 'pending', draftSavedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(), updatedBy: currentUser?.email,
   };
@@ -11438,12 +11442,10 @@ async function saveEventRecords() {
   const now = new Date().toISOString();
   const rand = () => Math.random().toString(36).slice(2, 6);
   const _evrAttachMap = {};
-  showLoading('附件上傳中…');
   for (let idx = 0; idx < _evrRecords.length; idx++) {
     try { _evrAttachMap[idx] = await attachFlush('evr_' + idx); }
-    catch(e) { hideLoading(); showToast('第' + (idx+1) + '筆附件上傳失敗：' + e.message, 'error'); return; }
+    catch(e) { showToast('第' + (idx+1) + '筆附件上傳失敗：' + e.message, 'error'); return; }
   }
-  hideLoading();
   _evrRecords.forEach((r, idx) => {
     casesData[cidx].records.push({
       id: `REC_${Date.now()}_E${idx}_${rand()}`,
@@ -17274,10 +17276,8 @@ async function savePsychiatristRecord(caseId, recordId) {
     }
   }
   let _psyAttachments;
-  showLoading('附件上傳中…');
   try { _psyAttachments = await attachFlush('psy'); }
-  catch(e) { hideLoading(); alert('附件上傳失敗：' + e.message); return; }
-  hideLoading();
+  catch(e) { alert('附件上傳失敗：' + e.message); return; }
   const data = {
     intervieweeName:gV('pr-name'), legalGender:gV('pr-gender'),
     department:gV('pr-dept'), studentId:gV('pr-sid'),
@@ -17438,6 +17438,7 @@ function printPsychiatristRecord(caseId, recordId) {
 //  附件功能（Attachment Feature）
 // ══════════════════════════════════════════════
 const _attachState = new Map(); // pickerId → { existing, pending, deletedFileIds }
+const _attachUploadPromises = new Map(); // pickerId → Set<Promise>
 let _attachFolderCache = null;
 
 async function _ensureAttachFolder() {
@@ -17454,6 +17455,7 @@ async function _ensureAttachFolder() {
 
 function attachInit(pid, existing) {
   _attachState.set(pid, { existing: existing ? [...existing] : [], pending: [], deletedFileIds: [] });
+  _attachUploadPromises.set(pid, new Set());
   attachRender(pid);
 }
 
@@ -17483,18 +17485,30 @@ function attachRender(pid) {
 
   const exHtml = s.existing.map((a, i) => `
     <div class="attach-item existing">
+      <span style="color:#276749;flex-shrink:0;font-size:.85rem;">✓</span>
       <span>${_attachIcon(a.type)}</span>
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(_attachLabel(a))}">${escHtml(_attachLabel(a))}</span>
       <button type="button" class="attach-del-btn" onclick="attachRemoveExisting('${escHtml(pid)}',${i})">×</button>
     </div>`).join('');
 
-  const penHtml = s.pending.map((a, i) => `
-    <div class="attach-item pending">
-      ${a.type === 'image' && a.dataUrl ? `<img src="${a.dataUrl}" style="width:30px;height:30px;object-fit:cover;border-radius:3px;flex-shrink:0;">` : `<span>${_attachIcon(a.type)}</span>`}
+  const penHtml = s.pending.map((a, i) => {
+    if (a.uploadStatus === 'error') {
+      return `<div class="attach-item upload-error">
+        <span style="color:#c53030;flex-shrink:0;font-size:.85rem;">✗</span>
+        <span>${_attachIcon(a.type)}</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(a.errorMsg||'')} — ${escHtml(_attachLabel(a))}">${escHtml(_attachLabel(a))}</span>
+        <span style="font-size:.72rem;color:#c53030;flex-shrink:0;">上傳失敗</span>
+        <button type="button" class="attach-del-btn" onclick="attachRemovePending('${escHtml(pid)}',${i})">×</button>
+      </div>`;
+    }
+    return `<div class="attach-item uploading">
+      <span class="attach-spinner"></span>
+      ${a.type === 'image' && a.dataUrl ? `<img src="${a.dataUrl}" style="width:26px;height:26px;object-fit:cover;border-radius:3px;flex-shrink:0;">` : `<span>${_attachIcon(a.type)}</span>`}
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(_attachLabel(a))}">${escHtml(_attachLabel(a))}</span>
-      <span style="font-size:.75rem;color:#276749;flex-shrink:0;">(待上傳)</span>
-      <button type="button" class="attach-del-btn" onclick="attachRemovePending('${escHtml(pid)}',${i})">×</button>
-    </div>`).join('');
+      <span style="font-size:.72rem;color:#2b6cb0;flex-shrink:0;">上傳中…</span>
+      <button type="button" class="attach-del-btn" title="取消" onclick="attachRemovePending('${escHtml(pid)}',${i})">×</button>
+    </div>`;
+  }).join('');
 
   const addBtn = total < max
     ? `<button type="button" class="attach-add-btn" onclick="document.getElementById('attachInput_${pid}').click()">＋ 新增附件</button>` : '';
@@ -17564,7 +17578,12 @@ async function _attachAddImage(pid, file) {
         for (let i = 0; i < bArr.length; i++) arr[i] = bArr.charCodeAt(i);
         const blob = new Blob([arr], { type: 'image/jpeg' });
         const s = _attachState.get(pid);
-        if (s) { s.pending.push({ type:'image', fileName: file.name.replace(/\.[^.]+$/, '') + '.jpg', mimeType:'image/jpeg', blob, dataUrl }); attachRender(pid); }
+        if (s) {
+          const item = { type:'image', fileName: file.name.replace(/\.[^.]+$/, '') + '.jpg', mimeType:'image/jpeg', blob, dataUrl, uploadStatus:'uploading' };
+          s.pending.push(item);
+          attachRender(pid);
+          _startUpload(pid, item);
+        }
         resolve();
       };
       img.src = e.target.result;
@@ -17600,8 +17619,10 @@ async function _attachAddPdf(pid, file) {
       showLoading('轉換第 1 頁…');
       const pages = await _pdfRenderPages(pdfDoc, [1]);
       hideLoading();
-      s.pending.push({ type:'pdf_pages', fileName: file.name, mimeType:'image/jpeg', pages, pageRange:'1' });
+      const item = { type:'pdf_pages', fileName: file.name, mimeType:'image/jpeg', pages, pageRange:'1', uploadStatus:'uploading' };
+      s.pending.push(item);
       attachRender(pid);
+      _startUpload(pid, item);
       return;
     }
 
@@ -17618,10 +17639,13 @@ async function _attachAddPdf(pid, file) {
       const s2 = _attachState.get(pid);
       if (!s2 || _attachTotal(pid) >= 3) break;
       const pr1 = chunk[0].pageNum, pr2 = chunk[chunk.length - 1].pageNum;
-      s2.pending.push({
+      const item = {
         type: 'pdf_pages', fileName: file.name, mimeType: 'image/jpeg',
-        pages: chunk, pageRange: pr1 === pr2 ? String(pr1) : `${pr1}-${pr2}`
-      });
+        pages: chunk, pageRange: pr1 === pr2 ? String(pr1) : `${pr1}-${pr2}`,
+        uploadStatus: 'uploading'
+      };
+      s2.pending.push(item);
+      _startUpload(pid, item);
     }
     attachRender(pid);
   } catch(e) { hideLoading(); alert('PDF 解析失敗：' + e.message); }
@@ -17716,8 +17740,10 @@ function _showPdfPageSelector(fileName, allPages, availSlots) {
 function _attachAddWord(pid, file) {
   const s = _attachState.get(pid);
   if (!s) return;
-  s.pending.push({ type:'word', fileName:file.name, mimeType:file.type||'application/vnd.openxmlformats-officedocument.wordprocessingml.document', blob:file });
+  const item = { type:'word', fileName:file.name, mimeType:file.type||'application/vnd.openxmlformats-officedocument.wordprocessingml.document', blob:file, uploadStatus:'uploading' };
+  s.pending.push(item);
   attachRender(pid);
+  _startUpload(pid, item);
 }
 
 function _blobToBase64(blob) {
@@ -17729,42 +17755,62 @@ function _blobToBase64(blob) {
   });
 }
 
+function _startUpload(pid, item) {
+  const uploadSet = _attachUploadPromises.get(pid);
+  const prom = (async () => {
+    try {
+      const folderId = await _ensureAttachFolder();
+      const ts = Date.now().toString(36);
+      let uploaded;
+      if (item.type === 'image') {
+        const b64 = await _blobToBase64(item.blob);
+        const r = await proxyCall('uploadFile', { parentFolderId:folderId, fileName:`${ts}_${item.fileName}`, mimeType:item.mimeType, base64Data:b64 });
+        uploaded = { type:'image', fileId:r.fileId, fileName:item.fileName, mimeType:item.mimeType };
+      } else if (item.type === 'pdf_pages') {
+        const pages = [];
+        for (const pg of item.pages) {
+          const b64 = await _blobToBase64(pg.blob);
+          const r = await proxyCall('uploadFile', {
+            parentFolderId: folderId,
+            fileName: `${ts}_${item.fileName.replace(/\.pdf$/i,'')}_p${pg.pageNum}.jpg`,
+            mimeType: 'image/jpeg', base64Data: b64
+          });
+          pages.push({ fileId:r.fileId, pageNum:pg.pageNum });
+        }
+        uploaded = { type:'pdf_pages', fileName:item.fileName, mimeType:'image/jpeg', pages, pageRange:item.pageRange };
+      } else if (item.type === 'word') {
+        const b64 = await _blobToBase64(item.blob);
+        const r = await proxyCall('uploadFile', { parentFolderId:folderId, fileName:`${ts}_${item.fileName}`, mimeType:item.mimeType, base64Data:b64 });
+        uploaded = { type:'word', fileId:r.fileId, fileName:item.fileName, mimeType:item.mimeType };
+      }
+      const s = _attachState.get(pid);
+      if (s) {
+        const idx = s.pending.indexOf(item);
+        if (idx >= 0) { s.pending.splice(idx, 1); s.existing.push(uploaded); }
+        attachRender(pid);
+      }
+    } catch(e) {
+      item.uploadStatus = 'error';
+      item.errorMsg = e.message;
+      const s = _attachState.get(pid);
+      if (s) attachRender(pid);
+    }
+  })();
+  if (uploadSet) { uploadSet.add(prom); prom.finally(() => uploadSet.delete(prom)); }
+}
+
 async function attachFlush(pid) {
   const s = _attachState.get(pid);
   if (!s) return [];
-  if (!s.pending.length) return [...s.existing];
-  const totalUploads = s.pending.reduce((sum, p) => sum + (p.type === 'pdf_pages' ? p.pages.length : 1), 0);
-  let uploadIdx = 0;
-  const folderId = await _ensureAttachFolder();
-  const ts = Date.now().toString(36);
-  const uploaded = [];
-  for (const p of s.pending) {
-    if (p.type === 'image') {
-      showLoading(`上傳附件 ${++uploadIdx} / ${totalUploads}…`);
-      const b64 = await _blobToBase64(p.blob);
-      const r = await proxyCall('uploadFile', { parentFolderId:folderId, fileName:`${ts}_${p.fileName}`, mimeType:p.mimeType, base64Data:b64 });
-      uploaded.push({ type:'image', fileId:r.fileId, fileName:p.fileName, mimeType:p.mimeType });
-    } else if (p.type === 'pdf_pages') {
-      const pages = [];
-      for (const pg of p.pages) {
-        showLoading(`上傳附件 ${++uploadIdx} / ${totalUploads}…`);
-        const b64 = await _blobToBase64(pg.blob);
-        const r = await proxyCall('uploadFile', {
-          parentFolderId: folderId,
-          fileName: `${ts}_${p.fileName.replace(/\.pdf$/i,'')}_p${pg.pageNum}.jpg`,
-          mimeType: 'image/jpeg', base64Data: b64
-        });
-        pages.push({ fileId:r.fileId, pageNum:pg.pageNum });
-      }
-      uploaded.push({ type:'pdf_pages', fileName:p.fileName, mimeType:'image/jpeg', pages, pageRange:p.pageRange });
-    } else if (p.type === 'word') {
-      showLoading(`上傳附件 ${++uploadIdx} / ${totalUploads}…`);
-      const b64 = await _blobToBase64(p.blob);
-      const r = await proxyCall('uploadFile', { parentFolderId:folderId, fileName:`${ts}_${p.fileName}`, mimeType:p.mimeType, base64Data:b64 });
-      uploaded.push({ type:'word', fileId:r.fileId, fileName:p.fileName, mimeType:p.mimeType });
-    }
+  const uploads = _attachUploadPromises.get(pid);
+  if (uploads && uploads.size) {
+    showLoading('等待附件上傳完成…');
+    await Promise.allSettled([...uploads]);
+    hideLoading();
   }
-  return [...s.existing, ...uploaded];
+  const errors = s.pending.filter(p => p.uploadStatus === 'error');
+  if (errors.length) throw new Error(`${errors.length} 個附件上傳失敗：${errors.map(p => p.fileName).join(', ')}`);
+  return [...s.existing];
 }
 
 function renderAttachChips(attachments) {
