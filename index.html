@@ -3747,6 +3747,9 @@ function addNotificationToUser(toEmail, type, caseId, caseName) {
 // ── 背景工作追蹤 ──────────────────────────────────
 let _bgJobs = [];
 let _notifTab = 'notifs';
+window.addEventListener('beforeunload', function(e) {
+  if (_bgJobs.some(j => j.state === 'running')) { e.preventDefault(); e.returnValue = ''; }
+});
 
 function bgJobAdd(label, detail) {
   const id = 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
@@ -5108,13 +5111,17 @@ async function deleteRecord(caseId, recordId) {
   rec.deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
   casesData[cidx].updatedAt = new Date().toISOString();
 
+  const _cName = casesData[cidx].name || caseId;
+  const _recJobId = bgJobAdd(rec.status === 'pending' ? '刪除草稿記錄' : '刪除晤談記錄', _cName);
   showCaseDetail(caseId);
   saveCasesChunks(caseId).then(() => {
+    bgJobDone(_recJobId);
     auditLog('刪除晤談紀錄', caseId, recordId);
     showToast('晤談紀錄已刪除');
   }).catch(err => {
     delete rec.deleted; delete rec.deletedAt; delete rec.deletedBy; delete rec.deletedByName;
     showCaseDetail(caseId);
+    bgJobFail(_recJobId, err.message);
     showToast('刪除失敗：' + err.message, 'error');
   });
 }
@@ -9458,7 +9465,11 @@ async function saveUserTodos() {
       // Path resolution failed; trash old file and recreate
       try { await proxyCall('trashFile', { fileId: _todoFileId }); } catch (_) {}
       _todoFileId = null;
-      await driveCreateJsonFile(fileName, content, usersId);
+      try {
+        await driveCreateJsonFile(fileName, content, usersId);
+      } catch (e2) {
+        throw new Error(`saveUserTodos 重建失敗：${e2?.message || e2}（原因：${e?.message || e}）`);
+      }
     }
   } else {
     await driveCreateJsonFile(fileName, content, usersId);
@@ -10070,8 +10081,8 @@ function _batchDeleteTodos() {
     if (t?.draftKey) localStorage.removeItem(t.draftKey);
     _removeTodoItem(id);
   });
-  const _batchDelJobId = bgJobAdd(`批次刪除 ${ids.length} 個待辦事項…`);
-  saveUserTodos().then(() => bgJobDone(_batchDelJobId)).catch(() => bgJobFail(_batchDelJobId, '儲存失敗'));
+  const _batchDelJobId = bgJobAdd(`批次刪除 ${ids.length} 個草稿 / 待辦`);
+  saveUserTodos().then(() => bgJobDone(_batchDelJobId)).catch(err => bgJobFail(_batchDelJobId, err?.message || '儲存失敗'));
   showToast(`已刪除 ${ids.length} 個待辦事項`, 'success', 2500);
   renderTodosPage();
 }
@@ -10082,8 +10093,9 @@ function _deleteTodo(id) {
   if (!t.done && !confirm(`確定要刪除此草稿待辦事項？\n「${t.label}」${t.caseLabel ? `（${t.caseLabel}）` : ''}`)) return;
   if (t.draftKey) localStorage.removeItem(t.draftKey);
   _removeTodoItem(id);
-  const _delJobId = bgJobAdd('刪除待辦事項…');
-  saveUserTodos().then(() => bgJobDone(_delJobId)).catch(() => bgJobFail(_delJobId, '儲存失敗'));
+  const _delJobLabel = t.caseLabel ? `刪除「${t.label}」（${t.caseLabel}）` : `刪除「${t.label}」`;
+  const _delJobId = bgJobAdd(_delJobLabel);
+  saveUserTodos().then(() => bgJobDone(_delJobId)).catch(err => bgJobFail(_delJobId, err?.message || '儲存失敗'));
   showToast('待辦事項已刪除', 'success', 2500);
   renderTodosPage();
 }
