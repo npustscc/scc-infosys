@@ -4164,6 +4164,7 @@ function statusBadge(status) {
 //  渲染管理員使用者列表
 // ══════════════════════════════════════════════
 let _adminUserFilter = { status: 'all', role: '' };
+let _adminUserSort   = { col: null, dir: 1 }; // col: 'key'|'name'|'role'|'extra'; dir: 1=asc, -1=desc
 
 function renderAdminUsers() {
   const allUsers = Object.entries(configData.users || {});
@@ -4196,13 +4197,26 @@ function renderAdminUsers() {
     return true;
   });
 
-  // Sort: disabled to bottom, then by name within each group
-  filtered.sort(([, a], [, b]) => {
+  // Sort: disabled to bottom always; then by selected column (or name by default)
+  filtered.sort(([keyA, a], [keyB, b]) => {
     if (!!a.disabled !== !!b.disabled) return a.disabled ? 1 : -1;
-    return (a.name || '').localeCompare(b.name || '', 'zh-TW');
+    const col = _adminUserSort.col, dir = _adminUserSort.dir;
+    let va, vb;
+    if (col === 'key')   { va = keyA; vb = keyB; }
+    else if (col === 'role')  { va = a.role || ''; vb = b.role || ''; }
+    else if (col === 'extra') {
+      const xtra = i => (i.isAdmin || i.extraRole === '管理者') ? '管理者' : (i.extraRole || '');
+      va = xtra(a); vb = xtra(b);
+    } else { va = a.name || ''; vb = b.name || ''; } // 'name' or default
+    return dir * va.localeCompare(vb, 'zh-TW');
   });
 
   window._auFilter = (key, val) => { _adminUserFilter[key] = val; renderAdminUsers(); };
+  window._auSort = col => {
+    if (_adminUserSort.col === col) _adminUserSort.dir *= -1;
+    else { _adminUserSort.col = col; _adminUserSort.dir = 1; }
+    renderAdminUsers();
+  };
 
   const tabStyle = (active) =>
     `padding:5px 13px;border:none;border-radius:16px;cursor:pointer;font-size:.84rem;font-weight:${active?'600':'400'};background:${active?'#3182ce':'#edf2f7'};color:${active?'#fff':'#4a5568'};transition:all .15s;`;
@@ -4252,10 +4266,25 @@ function renderAdminUsers() {
   const emptyRow = filtered.length === 0
     ? `<tr><td colspan="5" style="text-align:center;padding:20px;color:#a0aec0;font-size:.88rem;">無符合條件的使用者</td></tr>` : '';
 
+  const _sortIcon = col => {
+    if (_adminUserSort.col !== col) return `<span style="color:#cbd5e0;font-size:.72rem;margin-left:3px;">⇅</span>`;
+    return _adminUserSort.dir === 1
+      ? `<span style="color:#3182ce;font-size:.72rem;margin-left:3px;">▲</span>`
+      : `<span style="color:#3182ce;font-size:.72rem;margin-left:3px;">▼</span>`;
+  };
+  const _th = (col, label) =>
+    `<th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="_auSort('${col}')">${label}${_sortIcon(col)}</th>`;
+
   document.getElementById('admin-users-wrap').innerHTML = `
     ${filterBar}
     <table>
-      <thead><tr><th>帳號 / 識別碼</th><th>姓名</th><th>角色</th><th>附加身分</th><th>操作</th></tr></thead>
+      <thead><tr>
+        ${_th('key','帳號 / 識別碼')}
+        ${_th('name','姓名')}
+        ${_th('role','角色')}
+        ${_th('extra','附加身分')}
+        <th>操作</th>
+      </tr></thead>
       <tbody>${rows || emptyRow}</tbody>
     </table>`;
 }
