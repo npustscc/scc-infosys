@@ -173,8 +173,12 @@
     }
     const fileName = parts[parts.length - 1];
     const q2 = "name='" + fileName + "' and '" + curId + "' in parents and trashed=false";
-    const res2 = driveGet_('files', { q: q2, fields: 'files(id)', orderBy: 'modifiedTime desc', pageSize: '1' });
+    const res2 = driveGet_('files', { q: q2, fields: 'files(id)', orderBy: 'modifiedTime desc', pageSize: '5' });
     if (!res2.files || res2.files.length === 0) throw new Error('File not found: ' + path);
+    // 自動清理重複檔案（保留最近修改的那份）
+    if (res2.files.length > 1) {
+      res2.files.slice(1).forEach(function(f) { try { drivePatch_(f.id, { trashed: true }); } catch(e) {} });
+    }
     return res2.files[0].id;
   }
 
@@ -226,9 +230,18 @@
     try {
       fileId = resolvePathToId_(path);
     } catch (notFound) {
-      // 檔案不存在時自動建立
+      // 先二次確認（防止 Drive 索引延遲誤判為不存在而建立重複檔案）
       const { parentId, fileName } = resolvePathToParentAndName_(path);
-      return driveUpload_(fileName, content, parentId);
+      const verify = driveGet_('files', {
+        q: "name='" + fileName + "' and '" + parentId + "' in parents and trashed=false",
+        fields: 'files(id)', orderBy: 'modifiedTime desc', pageSize: '5'
+      });
+      if (verify.files && verify.files.length > 0) {
+        fileId = verify.files[0].id;
+        verify.files.slice(1).forEach(function(f) { try { drivePatch_(f.id, { trashed: true }); } catch(e) {} });
+      } else {
+        return driveUpload_(fileName, content, parentId);
+      }
     }
     return driveUpdateContent_(fileId, content);
   }
