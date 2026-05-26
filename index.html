@@ -4402,9 +4402,11 @@ function openUserModal(key) {
     const isNomail = _editingEmail.startsWith('nomail_');
     document.getElementById('modal-title').textContent = '編輯使用者';
     emailEl.value    = isNomail ? '' : _editingEmail;
-    emailEl.disabled = true;
-    emailEl.placeholder = isNomail ? '（無 Gmail 帳號）' : '';
-    hintEl.textContent = isNomail ? '此使用者無 Gmail 帳號，識別碼：' + _editingEmail : '帳號建立後無法更改電子郵件。';
+    emailEl.disabled = !isNomail; // nomail_ 使用者可補填 Gmail；已有 Gmail 者鎖定
+    emailEl.placeholder = isNomail ? '可補填 Gmail 帳號（選填）' : '';
+    hintEl.textContent = isNomail
+      ? '補填 Gmail 後將以該帳號作為識別碼，原無 Gmail 識別碼將移除。'
+      : '帳號建立後無法更改電子郵件。';
     document.getElementById('modal-name').value     = info.name  || '';
     sel.value = info.role || '';
     document.getElementById('modal-is-admin').checked = info.isAdmin === true || info.extraRole === '管理者';
@@ -4434,52 +4436,61 @@ async function saveUser() {
   const name     = document.getElementById('modal-name').value.trim();
   const role     = document.getElementById('modal-role').value;
   const isAdmin  = document.getElementById('modal-is-admin').checked;
-
-  const errEl = document.getElementById('modal-error');
+  const errEl    = document.getElementById('modal-error');
   errEl.style.display = 'none';
 
-  // 編輯模式：key 已確定
-  const key = _editingEmail || (rawEmail || `nomail_${Date.now()}`);
+  // Validation
+  if (rawEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)) {
+    errEl.textContent = '電子郵件格式不正確。'; errEl.style.display = ''; return;
+  }
+  if (!name) { errEl.textContent = '請輸入姓名。'; errEl.style.display = ''; return; }
+  if (!role) { errEl.textContent = '請選擇角色。'; errEl.style.display = ''; return; }
 
-  // 新增模式：若有 email 則驗證格式
-  if (!_editingEmail && rawEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawEmail)) {
-    errEl.textContent = '電子郵件格式不正確。';
-    errEl.style.display = '';
-    return;
-  }
-  if (!name) {
-    errEl.textContent = '請輸入姓名。';
-    errEl.style.display = '';
-    return;
-  }
-  if (!role) {
-    errEl.textContent = '請選擇角色。';
-    errEl.style.display = '';
-    return;
+  const isNew = !_editingEmail;
+  const oldKey = _editingEmail; // null for new users
+  const isMigrating = oldKey?.startsWith('nomail_') && !!rawEmail; // nomail_ → Gmail
+  const newKey = isMigrating ? rawEmail : (oldKey || rawEmail || `nomail_${Date.now()}`);
+
+  // Duplicate check for Gmail migration
+  if (isMigrating && configData.users[newKey]) {
+    errEl.textContent = '此 Gmail 帳號已存在，請確認後再試。'; errEl.style.display = ''; return;
   }
 
-  document.getElementById('modal-save-btn').disabled = true;
-  showLoading('儲存使用者設定…');
+  // Snapshot for revert
+  const usersBackup = JSON.parse(JSON.stringify(configData.users || {}));
+
+  // Apply locally
+  configData.users = configData.users || {};
+  if (isMigrating) {
+    const merged = { ...(configData.users[oldKey] || {}), name, role };
+    if (isAdmin) merged.isAdmin = true; else delete merged.isAdmin;
+    configData.users[newKey] = merged;
+    delete configData.users[oldKey];
+  } else {
+    const entry = configData.users[newKey] || {};
+    entry.name = name; entry.role = role;
+    if (isAdmin) entry.isAdmin = true; else delete entry.isAdmin;
+    configData.users[newKey] = entry;
+  }
+
+  // Close modal and update UI immediately
+  document.getElementById('user-modal').style.display = 'none';
+  renderAdminUsers();
+
+  const displayLabel = newKey.startsWith('nomail_') ? `${name}（無 Gmail）` : newKey;
+  const action = isNew ? '新增使用者' : '編輯使用者';
+  const jobId = bgJobAdd(`${action}「${name}」`);
 
   try {
-    configData.users = configData.users || {};
-    const entry = configData.users[key] || {};
-    entry.name = name;
-    entry.role = role;
-    if (isAdmin) { entry.isAdmin = true; } else { delete entry.isAdmin; }
-    configData.users[key] = entry;
-
     await driveUpdateJsonFile(CONFIG_FILE, configData);
-    hideLoading();
-    document.getElementById('user-modal').style.display = 'none';
-    const displayLabel = key.startsWith('nomail_') ? `${name}（無 Gmail）` : key;
-    setAlert('admin-alert', 'info', `使用者 ${escHtml(displayLabel)} 已儲存。`);
-    renderAdminUsers();
+    auditLog(action, null, null, displayLabel + (isMigrating ? `（${oldKey} → ${newKey}）` : ''));
+    bgJobDone(jobId);
+    setAlert('admin-alert', 'success', `使用者 ${escHtml(displayLabel)} 已儲存。`);
   } catch (err) {
-    hideLoading();
-    document.getElementById('modal-save-btn').disabled = false;
-    errEl.textContent = '儲存失敗：' + err.message;
-    errEl.style.display = '';
+    bgJobFail(jobId, err.message);
+    setAlert('admin-alert', 'error', '儲存失敗：' + err.message);
+    configData.users = usersBackup; // revert
+    renderAdminUsers();
   }
 }
 
