@@ -8382,6 +8382,13 @@ async function finalizeImport(imported, prog) {
   });
 
   const finalCases = [...toWrite, ...newCases];
+  // Ensure every case has semesters populated (new cases from Excel may lack it)
+  finalCases.forEach(c => {
+    if (!Array.isArray(c.semesters) || !c.semesters.length) {
+      const sem = openDateToSemPrefix(c.openDate);
+      if (sem) c.semesters = [sem];
+    }
+  });
   const updatedCount = sameNameDups.length + diffNameDups.filter(d => d.action === 'use-imported').length;
   const skippedCount = diffNameDups.filter(d => d.action === 'skip').length;
 
@@ -16495,9 +16502,11 @@ async function confirmDeleteCaseFromAdmin(caseId) {
 }
 
 async function openSemesterDeleteModal() {
+  const _semOf = c => (Array.isArray(c.semesters) && c.semesters.length)
+    ? c.semesters[c.semesters.length - 1] : openDateToSemPrefix(c.openDate);
   const semMap = new Map();
   casesData.filter(c => !c.deleted).forEach(c => {
-    const sem = openDateToSemPrefix(c.openDate);
+    const sem = _semOf(c);
     if (!sem) return;
     if (!semMap.has(sem)) semMap.set(sem, { cases: [], recCount: 0 });
     const entry = semMap.get(sem);
@@ -16548,7 +16557,7 @@ async function openSemesterDeleteModal() {
   const now = new Date().toISOString();
   // Collect affected cases and records
   const toProcess = [];
-  casesData.filter(c => !c.deleted && semSet.has(openDateToSemPrefix(c.openDate))).forEach(c => {
+  casesData.filter(c => !c.deleted && semSet.has(_semOf(c))).forEach(c => {
     const recs = (c.records || []).filter(r => !r.deleted && r.status !== 'pending');
     const psyRecs = (c.psychiatristRecords || []).filter(pr => !pr.deleted && pr.status !== 'pending');
     const pendingRecs = (c.records || []).filter(r => r.status === 'pending');
