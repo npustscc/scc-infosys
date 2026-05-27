@@ -207,7 +207,6 @@
     #content {
       flex: 1;
       padding: 28px 32px;
-      overflow-y: auto;
     }
 
     /* Page sections */
@@ -3045,11 +3044,12 @@ function showToast(msg, type = 'success', duration = 3500) {
 }
 
 function showPage(pageId, navEl) {
+  const alreadyActive = document.getElementById(pageId)?.classList.contains('active');
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById(pageId).classList.add('active');
   if (navEl) navEl.classList.add('active');
-  window.scrollTo(0, 0);
+  if (!alreadyActive) window.scrollTo(0, 0);
   updateFloatingBackBtn(pageId);
 }
 
@@ -8328,6 +8328,8 @@ async function finalizeImport(imported, prog) {
       merged.initialInterview = c.initialInterview;
       merged.psychTestResults = (imp.psychTestResults?.length ? imp.psychTestResults : c.psychTestResults) || [];
       merged.createdAt        = c.createdAt || imp.createdAt;
+      // Preserve earliest openDate so batch-delete groups by original open semester
+      if (c.openDate && (!merged.openDate || c.openDate < merged.openDate)) merged.openDate = c.openDate;
       // Accumulate semesters: preserve all semesters this case has been active in
       const _exSems = Array.isArray(c.semesters) ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean);
       const _impSem = openDateToSemPrefix(imp.openDate);
@@ -8367,9 +8369,12 @@ async function finalizeImport(imported, prog) {
         BASIC_INFO_SNAPSHOT_FIELDS.forEach(f => { if (imp[f] !== undefined) _impSnap2[f] = imp[f]; });
         _existSnaps2[_impSem2] = _impSnap2;
       }
+      // Preserve earliest openDate so batch-delete groups by original open semester
+      const _openDate2 = (c.openDate && (!imp.openDate || c.openDate < imp.openDate)) ? c.openDate : imp.openDate;
       return { ...imp, records: c.records || [], initialInterview: c.initialInterview,
                psychTestResults: (imp.psychTestResults?.length ? imp.psychTestResults : c.psychTestResults) || [],
                createdAt: c.createdAt || imp.createdAt,
+               openDate: _openDate2,
                semesters: [...new Set(_exSems2)].sort(),
                basicInfoSnapshots: _existSnaps2 };
     }
@@ -16490,10 +16495,9 @@ async function confirmDeleteCaseFromAdmin(caseId) {
 }
 
 async function openSemesterDeleteModal() {
-  const _semOf = c => (Array.isArray(c.semesters) && c.semesters.length) ? c.semesters[0] : openDateToSemPrefix(c.openDate);
   const semMap = new Map();
   casesData.filter(c => !c.deleted).forEach(c => {
-    const sem = _semOf(c);
+    const sem = openDateToSemPrefix(c.openDate);
     if (!sem) return;
     if (!semMap.has(sem)) semMap.set(sem, { cases: [], recCount: 0 });
     const entry = semMap.get(sem);
@@ -16544,7 +16548,7 @@ async function openSemesterDeleteModal() {
   const now = new Date().toISOString();
   // Collect affected cases and records
   const toProcess = [];
-  casesData.filter(c => !c.deleted && semSet.has(_semOf(c))).forEach(c => {
+  casesData.filter(c => !c.deleted && semSet.has(openDateToSemPrefix(c.openDate))).forEach(c => {
     const recs = (c.records || []).filter(r => !r.deleted && r.status !== 'pending');
     const psyRecs = (c.psychiatristRecords || []).filter(pr => !pr.deleted && pr.status !== 'pending');
     const pendingRecs = (c.records || []).filter(r => r.status === 'pending');
