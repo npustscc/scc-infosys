@@ -959,6 +959,12 @@
       <div class="extra-role" id="sb-extra"></div>
     </div>
 
+    <div class="sidebar-section" style="border-bottom:1px solid rgba(255,255,255,.12);padding-bottom:6px;margin-bottom:4px;">
+      <div class="nav-item" data-nav-id="page-todos" onclick="showPage('page-todos', this); renderTodosPage()">
+        <span class="icon">✅</span> 待辦事項 <span id="todos-nav-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 4px;font-size:.72rem;margin-left:2px;min-width:16px;text-align:center;"></span> <span class="nav-drag-handle">⠿</span>
+      </div>
+    </div>
+
     <div class="sidebar-section">
       <h3>個案管理</h3>
       <div class="nav-item active" data-nav-id="page-cases" onclick="showPage('page-cases', this)">
@@ -978,9 +984,6 @@
       </div>
       <div class="nav-item" data-nav-id="page-stats" onclick="showPage('page-stats', this); renderStats()">
         <span class="icon">📊</span> 統計分析 <span class="nav-drag-handle">⠿</span>
-      </div>
-      <div class="nav-item" data-nav-id="page-todos" onclick="showPage('page-todos', this); renderTodosPage()">
-        <span class="icon">✅</span> 待辦事項 <span id="todos-nav-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 4px;font-size:.72rem;margin-left:2px;min-width:16px;text-align:center;"></span> <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" data-nav-id="page-event-records" onclick="showPage('page-event-records', this); renderEventRecordsPage()">
         <span class="icon">📝</span> 事件處理記錄 <span class="nav-drag-handle">⠿</span>
@@ -4182,7 +4185,7 @@ function statusBadge(status) {
 //  渲染管理員使用者列表
 // ══════════════════════════════════════════════
 let _adminUserFilter = { status: 'active', role: '' };
-let _adminUserSort   = { col: null, dir: 1 }; // col: 'key'|'name'|'role'|'extra'; dir: 1=asc, -1=desc
+let _adminUserSort   = { col: 'role', dir: 1 }; // col: 'key'|'name'|'role'|'extra'; dir: 1=asc, -1=desc
 
 function renderAdminUsers() {
   const allUsers = Object.entries(configData.users || {});
@@ -8496,8 +8499,9 @@ function openInitialInterviewPage(caseId) {
 
   // Populate counselor dropdowns
   const users = configData?.users || {};
+  const _COUNSELING_ROLES = new Set(['主任','專任社會工作師','專任諮商心理師','專任臨床心理師','兼任諮商心理師','兼任臨床心理師','駐校精神科醫師','實習諮商心理師','義務輔導老師']);
   const counselorOpts = '<option value="">— 請選擇輔導人員 —</option>' +
-    Object.keys(users).filter(e => users[e]?.name).map(e =>
+    Object.keys(users).filter(e => users[e]?.name && _COUNSELING_ROLES.has(users[e]?.role)).map(e =>
       `<option value="${escHtml(e)}">${escHtml(formatCounselorLabel(e))}</option>`
     ).join('');
   ['ii-result-counselor','ii-transfer-counselor','ii-sup-old-counselor'].forEach(id => {
@@ -8642,7 +8646,10 @@ async function saveInitialInterview() {
   const _rtText = v => (v||'').replace(/<[^>]*>/g,'').trim();
   const errs = [];
   if (!(snap.problemsMain || []).length) errs.push('一、個案問題評估（至少選一項）');
-  if (!_rtText(snap.family) && !_rtText(snap.mainIssue) && !_rtText(snap.summary) && !_rtText(snap.expectation)) errs.push('二、問題內容說明（至少填寫一欄）');
+  if (!_rtText(snap.family))      errs.push('二、問題內容說明（一）家庭概況（必填）');
+  if (!_rtText(snap.mainIssue))   errs.push('二、問題內容說明（二）主訴問題（必填）');
+  if (!_rtText(snap.summary))     errs.push('二、問題內容說明（三）會談摘要（必填）');
+  if (!_rtText(snap.expectation)) errs.push('二、問題內容說明（四）會談期待（必填）');
   if (snap.risk === '有' && !snap.riskDesc) errs.push('三、風險評估（已選「有」，請說明）');
   if (!_rtText(snap.plan)) errs.push('四、個別化服務計畫');
   if (!(snap.serviceItems || []).length) errs.push('五、此次服務項目（至少選一項）');
@@ -8678,7 +8685,8 @@ async function saveInitialInterview() {
   const jobId = bgJobAdd('儲存初次晤談表…');
   try {
     await saveCasesChunks(_initialInterviewCaseId);
-    auditLog('儲存初次晤談表', _initialInterviewCaseId);
+    const _iiSemLabel = semesterLabel(openDateToSemPrefix(casesData[cidx]?.openDate));
+    auditLog('儲存初次晤談表', `案號 ${_initialInterviewCaseId}（${_iiSemLabel} 學期）`);
     bgJobDone(jobId, '初次晤談表已儲存');
     clearIIDraft();
     showCaseDetail(_initialInterviewCaseId);
@@ -12339,15 +12347,17 @@ function renderStats() {
       const m = (r.date || '').slice(0, 7);
       if (!st[m]) return;
       const grp = e2g[r.counselorEmail || ''];
+      // totals key by (caseId, semester) so cross-semester same person counts separately
+      const _semKey = c.id + '|' + openDateToSemPrefix(m + '-01');
       st[m]['總計'].p.add(c.id); st[m]['總計'].n++;
-      totals['總計'].p.add(c.id); totals['總計'].n++;
+      totals['總計'].p.add(_semKey); totals['總計'].n++;
       if (grp) {
         st[m][grp].p.add(c.id); st[m][grp].n++;
-        totals[grp].p.add(c.id); totals[grp].n++;
+        totals[grp].p.add(_semKey); totals[grp].n++;
       }
       if ((r.interventionMode || '') === '電話關懷') {
         st[m]['電話關懷'].p.add(c.id); st[m]['電話關懷'].n++;
-        totals['電話關懷'].p.add(c.id); totals['電話關懷'].n++;
+        totals['電話關懷'].p.add(_semKey); totals['電話關懷'].n++;
       }
     }));
     const cell = (d) => d.n === 0 && d.p.size === 0
@@ -18362,6 +18372,41 @@ async function updateIssueStatus(issueId, newStatus) {
   }
 }
 
+function editIssue(issueId) {
+  const issue = issuesData.find(x => x.id === issueId);
+  if (!issue) return;
+  const sid = issueId.replace(/[^a-z0-9_]/gi, '_');
+  const descEl = document.getElementById(`issue-desc-text-${sid}`);
+  if (!descEl) return;
+  descEl.innerHTML = `
+    <textarea id="issue-edit-ta-${sid}" style="width:100%;padding:5px 7px;border:1px solid #cbd5e0;border-radius:5px;font-size:.85rem;resize:vertical;box-sizing:border-box;min-height:60px;">${escHtml(issue.description)}</textarea>
+    <div style="display:flex;gap:5px;margin-top:4px;">
+      <button class="btn btn-primary btn-sm" onclick="saveIssueEdit('${escHtml(issueId)}')">儲存</button>
+      <button class="btn btn-secondary btn-sm" onclick="renderIssuesPage()">取消</button>
+    </div>`;
+  descEl.querySelector('textarea').focus();
+}
+
+async function saveIssueEdit(issueId) {
+  const issue = issuesData.find(x => x.id === issueId);
+  if (!issue) return;
+  const sid = issueId.replace(/[^a-z0-9_]/gi, '_');
+  const newDesc = (document.getElementById(`issue-edit-ta-${sid}`)?.value || '').trim();
+  if (!newDesc) { alert('問題說明不可為空'); return; }
+  const prev = issue.description;
+  issue.description = newDesc;
+  showLoading('儲存中…');
+  try {
+    await _saveIssues();
+    renderIssuesPage();
+  } catch (e) {
+    issue.description = prev;
+    alert('儲存失敗：' + e.message);
+  } finally {
+    hideLoading();
+  }
+}
+
 function editIssueComment(issueId, commentId) {
   const issue = issuesData.find(x => x.id === issueId);
   if (!issue) return;
@@ -18521,6 +18566,8 @@ function renderIssuesPage() {
       ? new Date(issue.submittedAt).toLocaleString('zh-TW', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' })
       : '—';
 
+    const isCreator = issue.submittedBy === currentUser?.email;
+    const issueEditBtn = isCreator ? `<button class="btn btn-secondary btn-sm" style="padding:0 5px;font-size:.7rem;margin-left:auto;" onclick="editIssue('${sid}')">編輯</button>` : '';
     return `
       <div style="padding:12px 16px;border-bottom:1px solid #f0f4f8;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
@@ -18528,8 +18575,9 @@ function renderIssuesPage() {
           ${statusBadge(issue.status)}
           <span style="font-size:.8rem;color:#718096;">${escHtml(issue.submittedByName||issue.submittedBy||'—')}</span>
           <span style="font-size:.78rem;color:#a0aec0;">${dateStr}</span>
+          ${issueEditBtn}
         </div>
-        <div style="font-size:.88rem;color:#2d3748;white-space:pre-wrap;">${escHtml(issue.description)}</div>
+        <div id="issue-desc-text-${sid}" style="font-size:.88rem;color:#2d3748;white-space:pre-wrap;">${escHtml(issue.description)}</div>
         ${renderAttachChips(issue.attachments)}
         ${commentsHtml}
         ${adminStatusControl}
