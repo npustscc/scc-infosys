@@ -12459,6 +12459,32 @@ function _mkAuditDetail(l) {
   return parts.length ? parts.join(' ') : '<span style="color:#a0aec0;">—</span>';
 }
 
+function toggleAuditRow(idx) {
+  const wrap = document.getElementById('alw-' + idx);
+  const btn = document.querySelector('.audit-detail-toggle[data-idx="' + idx + '"]');
+  if (!wrap) return;
+  if (wrap.dataset.expanded === '1') {
+    wrap.style.maxHeight = '4.5em';
+    wrap.dataset.expanded = '0';
+    if (btn) btn.textContent = '展開 ▾';
+  } else {
+    wrap.style.maxHeight = wrap.scrollHeight + 'px';
+    wrap.dataset.expanded = '1';
+    if (btn) btn.textContent = '收起 ▴';
+  }
+}
+
+function _initAuditDetailToggles() {
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.audit-detail-wrap').forEach(wrap => {
+      if (wrap.scrollHeight > wrap.offsetHeight + 2) {
+        const btn = wrap.nextElementSibling;
+        if (btn && btn.classList.contains('audit-detail-toggle')) btn.style.display = '';
+      }
+    });
+  });
+}
+
 function _mkAuditTable(entries) {
   if (!entries.length) return `<div class="empty-state" style="padding:30px;"><div class="icon">📜</div><p>無符合條件的記錄</p></div>`;
   const colHid = window._auditColsHidden || new Set();
@@ -12470,13 +12496,16 @@ function _mkAuditTable(entries) {
     const hid = colHid.has(n);
     return `<th style="${thStyle(n)}cursor:pointer;user-select:none;white-space:nowrap;" onclick="auditToggleCol(${n})" title="${hid?'展開':'收折'}">${hid ? '' : label + ' '}<span style="font-size:.7rem;opacity:.5;">${hid?'▷':'◁'}</span></th>`;
   };
-  const rows = [...entries].reverse().map(l => `
+  const rows = [...entries].reverse().map((l, idx) => `
     <tr>
       <td style="${tdStyle(1)}font-size:.8rem;color:#718096;min-width:52px;">${fmtDate(l.t)}<br><span style="color:#a0aec0;">${fmtClock(l.t)}</span></td>
       <td style="${tdStyle(2)}font-size:.85rem;">${escHtml(l.name || '—')}</td>
       <td style="${tdStyle(3)}font-size:.75rem;color:#a0aec0;">${escHtml(l.email || '—')}</td>
       <td style="${tdStyle(4)}font-size:.85rem;${_auditActionColor(l.action)}">${escHtml(l.action)}</td>
-      <td style="${tdStyle(5)}font-size:.82rem;">${_mkAuditDetail(l)}</td>
+      <td style="${tdStyle(5)}font-size:.82rem;vertical-align:top;">
+        <div class="audit-detail-wrap" id="alw-${idx}" style="overflow:hidden;max-height:4.5em;line-height:1.5;" data-expanded="0">${_mkAuditDetail(l)}</div>
+        <span class="audit-detail-toggle" data-idx="${idx}" style="display:none;color:#718096;font-size:.72rem;cursor:pointer;user-select:none;" onclick="toggleAuditRow(${idx})">展開 ▾</span>
+      </td>
     </tr>`).join('');
   return `
     <div style="overflow-x:auto;">
@@ -12603,6 +12632,7 @@ function filterAuditLog() {
 
   document.getElementById('af-count').textContent = `${filtered.length} 筆`;
   wrap.innerHTML = _mkAuditTable(filtered);
+  _initAuditDetailToggles();
 }
 
 function auditToggleCol(n) {
@@ -17065,6 +17095,46 @@ const TRANSFER_INDICATORS = [
   { key: 'i8', label: '經歷重大創傷或重大災害事件、網路成癮或其他情形，致使嚴重影響身心適應與學習' },
 ];
 
+function searchTransferRefill(q) {
+  const wrap = document.getElementById('ta-refill-results');
+  if (!wrap) return;
+  if ((q||'').trim().length < 2) { wrap.innerHTML = ''; return; }
+  const ql = q.trim().toLowerCase();
+  const matches = casesData.filter(c => !c.deleted && (
+    (c.name||'').toLowerCase().includes(ql) ||
+    (c.studentId||'').toLowerCase().includes(ql) ||
+    (c.id||'').toLowerCase().includes(ql)
+  )).slice(0, 8);
+  if (!matches.length) { wrap.innerHTML = '<div style="color:#718096;font-size:.875rem;">找不到符合的個案</div>'; return; }
+  wrap.innerHTML = matches.map(c => `
+    <div onclick="fillTransferFromCase('${escHtml(c.id)}')"
+      style="padding:8px 12px;border:1px solid #bee3f8;border-radius:6px;margin-bottom:4px;cursor:pointer;background:#fff;display:flex;gap:16px;align-items:center;font-size:.875rem;"
+      onmouseover="this.style.background='#ebf8ff'" onmouseout="this.style.background='#fff'">
+      <span style="font-weight:700;color:#1a5276;min-width:80px;">${escHtml(c.name||'—')}</span>
+      <span style="color:#718096;">${escHtml(c.studentId||'—')}</span>
+      <span style="color:#718096;font-size:.8rem;">${escHtml(c.id||'—')}</span>
+    </div>`).join('');
+}
+
+function fillTransferFromCase(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const setV = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined && val !== null) el.value = val; };
+  setV('ta-name', c.name);
+  setV('ta-sid', c.studentId);
+  setV('ta-id', c.idNumber);
+  setV('ta-dept', c.department);
+  if (c.birthday) setV('ta-birthday', c.birthday);
+  const gSel = document.getElementById('ta-gender');
+  if (gSel && c.legalGender) gSel.value = c.legalGender;
+  setV('ta-case-id', caseId);
+  document.getElementById('ta-refill-q').value = '';
+  document.getElementById('ta-refill-results').innerHTML =
+    `<div style="color:#276749;background:#f0fff4;border:1px solid #9ae6b4;padding:8px 12px;border-radius:6px;font-size:.875rem;">
+      ✓ 已帶入「${escHtml(c.name||'—')}」（${escHtml(caseId)}）的資料，已連結至該個案
+    </div>`;
+}
+
 function renderTransferPage() {
   const tab = window._transferTab || 'outgoing';
   const outgoing = transferData.filter(r => r.type === 'outgoing');
@@ -17100,6 +17170,7 @@ function _renderTransferRow(r) {
     : r.recommendation === 'discuss' ? '<span class="badge badge-orange">建議討論</span>'
     : r.recommendation === 'noTransfer' ? '<span class="badge badge-green">建議不轉銜</span>' : '';
   const schoolInfo = r.fromSchool ? `<span style="font-size:.8rem;color:#718096;">來源：${escHtml(r.fromSchool)}</span>` : (r.toSchool ? `<span style="font-size:.8rem;color:#718096;">轉至：${escHtml(r.toSchool)}</span>` : '');
+  const caseLink = (r.type === 'incoming' && r.caseId) ? `<span style="font-size:.8rem;color:#3182ce;">案號：${escHtml(r.caseId)}</span>` : '';
   const actions = r.type === 'outgoing'
     ? `<button class="btn btn-secondary btn-sm" onclick="openTransferAssessmentModal('${escHtml(r.id)}','outgoing')">填寫評估</button>
        ${hasAssessment ? `<button class="btn btn-secondary btn-sm" onclick="printTransferAssessment('${escHtml(r.id)}')">列印</button>` : ''}
@@ -17111,7 +17182,7 @@ function _renderTransferRow(r) {
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <strong>${escHtml(r.name||'—')}</strong>
         <span style="color:#718096;font-size:.83rem;">${escHtml(r.studentId||r.idNumber||'')}</span>
-        ${statusBadge}${recBadge}${schoolInfo}
+        ${statusBadge}${recBadge}${schoolInfo}${caseLink}
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">${actions}</div>
     </div>
@@ -17247,6 +17318,17 @@ function openTransferAssessmentModal(transferId, type) {
           <h3 style="font-size:1.1rem;">${isNew?'新增':'編輯'}轉銜學生初評（${t==='outgoing'?'轉出':'轉進'}）</h3>
           <button onclick="document.getElementById('transfer-assessment-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
         </div>
+        ${isNew && t === 'incoming' ? `
+        <div style="background:#f0f9ff;border:1px solid #bee3f8;border-radius:8px;padding:14px;margin-bottom:18px;">
+          <div style="font-weight:600;margin-bottom:8px;font-size:.88rem;">🔍 從既有個案帶入（選填）</div>
+          <div style="display:flex;gap:8px;">
+            <input type="text" id="ta-refill-q" class="field-input" placeholder="輸入姓名、學號或案號搜尋"
+              oninput="searchTransferRefill(this.value)" style="flex:1;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('ta-refill-q').value='';document.getElementById('ta-refill-results').innerHTML=''">清除</button>
+          </div>
+          <div id="ta-refill-results" style="margin-top:8px;"></div>
+        </div>` : ''}
+        <input type="hidden" id="ta-case-id" value="${escHtml(r.caseId||'')}">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
           <div><label class="field-label">高關懷學生姓名 <span class="req">*</span></label><input type="text" class="field-input" id="ta-name" value="${escHtml(r.name||'')}"></div>
           <div><label class="field-label">就讀班級/系所</label><input type="text" class="field-input" id="ta-dept" value="${escHtml(r.department||'')}"></div>
@@ -17322,6 +17404,7 @@ async function saveTransferAssessment(idOrNew, type) {
     legalGender:gV('ta-gender'), idNumber:gV('ta-id'), studentId:gV('ta-sid'),
     fromSchool: type==='incoming' ? gV('ta-from') : '',
     toSchool: type==='outgoing' ? gV('ta-to') : '',
+    caseId: type==='incoming' ? (gV('ta-case-id') || '') : '',
     consentStatus:gR('ta_cs'), notInformedReason:gR('ta_ni'),
     notInformedOtherReason:gV('ta-ni-other'),
     studentConsent:gR('ta_sc'), guardianConsent:gR('ta_gc'),
