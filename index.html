@@ -12475,14 +12475,14 @@ function toggleAuditRow(idx) {
 }
 
 function _initAuditDetailToggles() {
-  requestAnimationFrame(() => {
+  setTimeout(() => {
     document.querySelectorAll('.audit-detail-wrap').forEach(wrap => {
-      if (wrap.scrollHeight > wrap.offsetHeight + 2) {
+      if (wrap.scrollHeight > wrap.clientHeight + 2) {
         const btn = wrap.nextElementSibling;
         if (btn && btn.classList.contains('audit-detail-toggle')) btn.style.display = '';
       }
     });
-  });
+  }, 0);
 }
 
 function _mkAuditTable(entries) {
@@ -17310,6 +17310,15 @@ function openTransferAssessmentModal(transferId, type) {
   const gcO = (v,l) => `<label style="margin-right:12px;"><input type="radio" name="ta_gc" value="${v}" ${r.guardianConsent===v?'checked':''}> ${l}</label>`;
   const rO2 = (v,l) => `<label style="margin-right:12px;"><input type="radio" name="ta_rec" value="${v}" ${r.recommendation===v?'checked':''}> ${l}</label>`;
   const isNew = !rec;
+  const _currentFilledBy = r.filledBy || configData?.users?.[currentUser?.email]?.name || currentUser?.name || '';
+  const _counselorByOpts = (() => {
+    const opts = getSortedCounselorEntries(([k, info]) => info.role && info.role !== '系統管理者')
+      .map(([k]) => {
+        const nm = configData?.users?.[k]?.name || k;
+        return `<option value="${escHtml(nm)}" ${_currentFilledBy === nm ? 'selected' : ''}>${escHtml(formatCounselorLabel(k))}</option>`;
+      }).join('');
+    return `<option value="">請選擇</option>` + opts;
+  })();
 
   document.body.insertAdjacentHTML('beforeend', `
     <div id="transfer-assessment-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:600;overflow-y:auto;display:flex;align-items:flex-start;justify-content:center;padding:20px;">
@@ -17369,7 +17378,7 @@ function openTransferAssessmentModal(transferId, type) {
           ${rO2('transfer','建議評估會議轉銜')}${rO2('discuss','建議經評估會議討論後再決定')}${rO2('noTransfer','建議不需轉銜')}
         </div>` : ''}
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
-          <div><label class="field-label">填表人</label><input type="text" class="field-input" id="ta-by" value="${escHtml(r.filledBy || configData?.users?.[currentUser?.email]?.name || currentUser?.name || '')}"></div>
+          <div><label class="field-label">填表人</label><select class="field-input" id="ta-by">${_counselorByOpts}</select></div>
           <div><label class="field-label">填表日期</label><input type="date" class="field-input" id="ta-date" value="${r.filledDate || new Date().toISOString().slice(0,10)}"></div>
         </div>
         <div style="display:flex;gap:10px;">
@@ -17425,6 +17434,16 @@ async function saveTransferAssessment(idOrNew, type) {
       else transferData.push({ ...data, id:idOrNew, createdAt:now, createdBy:currentUser?.email, createdByName:currentUser?.name });
     }
     await saveTransfer();
+    // If incoming transfer linked to an existing case, mark the case as transfer case
+    if (type === 'incoming' && data.caseId) {
+      const linkedCase = casesData.find(c => c.id === data.caseId && !c.deleted);
+      if (linkedCase && !linkedCase.isTransferCase) {
+        linkedCase.isTransferCase = true;
+        linkedCase.updatedAt = now;
+        await saveCasesChunks(data.caseId);
+        renderCases();
+      }
+    }
     auditLog('儲存轉銜評估', data.name);
     hideLoading();
     document.getElementById('transfer-assessment-modal')?.remove();
