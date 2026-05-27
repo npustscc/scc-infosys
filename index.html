@@ -12464,11 +12464,13 @@ function toggleAuditRow(idx) {
   const btn = document.querySelector('.audit-detail-toggle[data-idx="' + idx + '"]');
   if (!wrap) return;
   if (wrap.dataset.expanded === '1') {
-    wrap.style.maxHeight = '4.5em';
+    wrap.style.display = '-webkit-box';
+    wrap.style.webkitLineClamp = '3';
     wrap.dataset.expanded = '0';
     if (btn) btn.textContent = '展開 ▾';
   } else {
-    wrap.style.maxHeight = wrap.scrollHeight + 'px';
+    wrap.style.display = 'block';
+    wrap.style.webkitLineClamp = 'unset';
     wrap.dataset.expanded = '1';
     if (btn) btn.textContent = '收起 ▴';
   }
@@ -12482,7 +12484,56 @@ function _initAuditDetailToggles() {
         if (btn && btn.classList.contains('audit-detail-toggle')) btn.style.display = '';
       }
     });
-  }, 0);
+  }, 100);
+}
+
+function _makeAuditTableResizable() {
+  const table = document.querySelector('#audit-table-wrap table');
+  if (!table) return;
+  const savedWidths = _userPref_('auditColWidths', {});
+  const colHid = window._auditColsHidden || new Set();
+  // Apply saved widths
+  if (Object.keys(savedWidths).length) {
+    table.style.tableLayout = 'fixed';
+    [1,2,3,4,5].forEach(n => {
+      const col = document.getElementById('audit-col-' + n);
+      if (col && savedWidths[n]) col.style.width = savedWidths[n] + 'px';
+    });
+  }
+  // Add resize handles to visible th elements
+  table.querySelectorAll('thead th[data-col]').forEach(th => {
+    const n = parseInt(th.dataset.col);
+    if (!n || colHid.has(n)) return;
+    th.style.position = 'relative';
+    const handle = document.createElement('div');
+    handle.title = '拖曳調整欄寬';
+    handle.style.cssText = 'position:absolute;right:0;top:0;bottom:0;width:5px;cursor:col-resize;z-index:2;background:transparent;';
+    let startX, startW;
+    handle.addEventListener('mousedown', e => {
+      const col = document.getElementById('audit-col-' + n);
+      startX = e.pageX;
+      startW = (col && parseInt(col.style.width)) || th.offsetWidth;
+      table.style.tableLayout = 'fixed';
+      const onMove = ev => {
+        const w = Math.max(30, startW + ev.pageX - startX);
+        if (col) col.style.width = w + 'px';
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        const widths = {};
+        [1,2,3,4,5].forEach(i => {
+          const c = document.getElementById('audit-col-' + i);
+          if (c && c.style.width) widths[i] = parseInt(c.style.width);
+        });
+        syncUserPref_({ auditColWidths: widths });
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      e.preventDefault(); e.stopPropagation();
+    });
+    th.appendChild(handle);
+  });
 }
 
 function _mkAuditTable(entries) {
@@ -12494,7 +12545,7 @@ function _mkAuditTable(entries) {
   const fmtClock = iso => { if (!iso) return ''; const d = new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; };
   const colBtn = (n, label) => {
     const hid = colHid.has(n);
-    return `<th style="${thStyle(n)}cursor:pointer;user-select:none;white-space:nowrap;" onclick="auditToggleCol(${n})" title="${hid?'展開':'收折'}">${hid ? '' : label + ' '}<span style="font-size:.7rem;opacity:.5;">${hid?'▷':'◁'}</span></th>`;
+    return `<th data-col="${n}" style="${thStyle(n)}cursor:pointer;user-select:none;white-space:nowrap;" onclick="auditToggleCol(${n})" title="${hid?'展開':'收折'}">${hid ? '' : label + ' '}<span style="font-size:.7rem;opacity:.5;">${hid?'▷':'◁'}</span></th>`;
   };
   const rows = [...entries].reverse().map((l, idx) => `
     <tr>
@@ -12503,13 +12554,16 @@ function _mkAuditTable(entries) {
       <td style="${tdStyle(3)}font-size:.75rem;color:#a0aec0;">${escHtml(l.email || '—')}</td>
       <td style="${tdStyle(4)}font-size:.85rem;${_auditActionColor(l.action)}">${escHtml(l.action)}</td>
       <td style="${tdStyle(5)}font-size:.82rem;vertical-align:top;">
-        <div class="audit-detail-wrap" id="alw-${idx}" style="overflow:hidden;max-height:4.5em;line-height:1.5;" data-expanded="0">${_mkAuditDetail(l)}</div>
+        <div class="audit-detail-wrap" id="alw-${idx}" style="overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;" data-expanded="0">${_mkAuditDetail(l)}</div>
         <span class="audit-detail-toggle" data-idx="${idx}" style="display:none;color:#718096;font-size:.72rem;cursor:pointer;user-select:none;" onclick="toggleAuditRow(${idx})">展開 ▾</span>
       </td>
     </tr>`).join('');
   return `
     <div style="overflow-x:auto;">
       <table>
+        <colgroup>
+          <col id="audit-col-1"><col id="audit-col-2"><col id="audit-col-3"><col id="audit-col-4"><col id="audit-col-5">
+        </colgroup>
         <thead><tr>
           ${colBtn(1,'時間')}${colBtn(2,'操作者')}${colBtn(3,'帳號')}${colBtn(4,'動作')}${colBtn(5,'更動事由')}
         </tr></thead>
@@ -12633,6 +12687,7 @@ function filterAuditLog() {
   document.getElementById('af-count').textContent = `${filtered.length} 筆`;
   wrap.innerHTML = _mkAuditTable(filtered);
   _initAuditDetailToggles();
+  _makeAuditTableResizable();
 }
 
 function auditToggleCol(n) {
