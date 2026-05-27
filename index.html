@@ -1007,6 +1007,13 @@
         <span class="icon">📂</span> 未歸屬記錄 <span class="nav-drag-handle">⠿</span>
       </div>
     </div>
+    <!-- 轉銜窗口（非管理員）專屬入口 -->
+    <div class="sidebar-section" id="nav-transfer-section" style="display:none;">
+      <h3>轉銜管理</h3>
+      <div class="nav-item" data-nav-id="page-transfer" onclick="showPage('page-transfer', this); renderTransferPage()">
+        <span class="icon">🔄</span> 轉銜管理 <span class="nav-drag-handle">⠿</span>
+      </div>
+    </div>
 
     <div class="sidebar-section">
       <h3>設定與工具</h3>
@@ -2714,6 +2721,10 @@
         <input type="checkbox" id="modal-is-admin" />
         管理者（可檢視所有個案、管理使用者）
       </label>
+      <label class="form-check" style="margin-top:6px;">
+        <input type="checkbox" id="modal-is-transfer-contact" />
+        轉銜窗口（可存取轉銜管理頁面）
+      </label>
     </div>
 
     <div id="modal-error" class="alert alert-error"></div>
@@ -2937,6 +2948,7 @@ let gIdToken     = null;   // Google ID token（傳給 Apps Script 驗證用）
 let currentUser  = null;   // { email, name, picture }
 let currentRole  = null;   // 從 config.json 讀來
 let extraRole    = null;   // 管理者 / 個案管理員 / null
+let isTransferContact = false; // 轉銜窗口
 let configData   = null;   // 完整 config.json 內容
 let casesData    = [];
 let casesManifest = { chunks: [] };
@@ -3455,6 +3467,7 @@ async function afterLogin() {
 function resolveUserRole() {
   currentRole = null;
   extraRole   = null;
+  isTransferContact = false;
 
   if (configData && configData.users && configData.users[currentUser.email]) {
     const entry = configData.users[currentUser.email];
@@ -3462,6 +3475,7 @@ function resolveUserRole() {
     // 支援 isAdmin:true 與舊格式 extraRole:'管理者' 兩種寫法
     if (entry.isAdmin === true || entry.extraRole === '管理者') extraRole = '管理者';
     else if (entry.extraRole === '個案管理員') extraRole = '個案管理員';
+    if (entry.isTransferContact === true) isTransferContact = true;
   }
   // 備援：BOOTSTRAP_ADMIN_EMAIL 永遠擁有管理者身分（防止 config 遺失時鎖死）
   if (currentUser?.email === BOOTSTRAP_ADMIN_EMAIL) {
@@ -3479,6 +3493,8 @@ function resolveUserRole() {
   // 管理者才顯示使用者管理頁
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   document.getElementById('nav-admin-section').style.display = isAdmin ? '' : 'none';
+  // 轉銜窗口（非管理員）顯示轉銜管理入口
+  document.getElementById('nav-transfer-section').style.display = (!isAdmin && isTransferContact) ? '' : 'none';
 
   // 填充管理員頁使用者列表
   if (isAdmin && configData && configData.users) renderAdminUsers();
@@ -4297,11 +4313,12 @@ function renderAdminUsers() {
 
   const rows = filtered.map(([key, info]) => {
     const isAdminUser = info.isAdmin === true || info.extraRole === '管理者';
-    const adminBadge = isAdminUser
+    const tcBadge = info.isTransferContact ? `<span class="badge badge-teal" style="margin-left:4px;">轉銜窗口</span>` : '';
+    const adminBadge = (isAdminUser
       ? `<span class="badge badge-orange">管理者</span>`
       : (info.extraRole === '個案管理員'
           ? `<span class="badge badge-gray">個案管理員</span> <span style="color:#718096;font-size:.8rem;">(${(info.allowedCases || []).length} 個案)</span>`
-          : (info.extraRole ? `<span class="badge badge-gray">${escHtml(info.extraRole)}</span>` : '—'));
+          : (info.extraRole ? `<span class="badge badge-gray">${escHtml(info.extraRole)}</span>` : '—'))) + tcBadge;
     const isSelf = key === currentUser.email;
     const isNomail = key.startsWith('nomail_');
     const displayKey = isNomail
@@ -4499,6 +4516,7 @@ function openUserModal(key) {
     document.getElementById('modal-name').value     = info.name  || '';
     sel.value = info.role || '';
     document.getElementById('modal-is-admin').checked = info.isAdmin === true || info.extraRole === '管理者';
+    document.getElementById('modal-is-transfer-contact').checked = info.isTransferContact === true;
   } else {
     document.getElementById('modal-title').textContent = '新增使用者';
     emailEl.value    = '';
@@ -4508,6 +4526,7 @@ function openUserModal(key) {
     document.getElementById('modal-name').value     = '';
     sel.value = '';
     document.getElementById('modal-is-admin').checked = false;
+    document.getElementById('modal-is-transfer-contact').checked = false;
   }
 
   document.getElementById('modal-error').style.display = 'none';
@@ -4525,6 +4544,7 @@ async function saveUser() {
   const name     = document.getElementById('modal-name').value.trim();
   const role     = document.getElementById('modal-role').value;
   const isAdmin  = document.getElementById('modal-is-admin').checked;
+  const isTC     = document.getElementById('modal-is-transfer-contact').checked;
   const errEl    = document.getElementById('modal-error');
   errEl.style.display = 'none';
 
@@ -4553,12 +4573,14 @@ async function saveUser() {
   if (isMigrating) {
     const merged = { ...(configData.users[oldKey] || {}), name, role };
     if (isAdmin) merged.isAdmin = true; else delete merged.isAdmin;
+    if (isTC) merged.isTransferContact = true; else delete merged.isTransferContact;
     configData.users[newKey] = merged;
     delete configData.users[oldKey];
   } else {
     const entry = configData.users[newKey] || {};
     entry.name = name; entry.role = role;
     if (isAdmin) entry.isAdmin = true; else delete entry.isAdmin;
+    if (isTC) entry.isTransferContact = true; else delete entry.isTransferContact;
     configData.users[newKey] = entry;
   }
 
@@ -17246,15 +17268,15 @@ function openTransferAssessmentModal(transferId, type) {
           <div style="margin-bottom:10px;"><label class="field-label">主訴問題</label><textarea class="field-input" id="ta-issue" rows="3" style="resize:vertical;">${escHtml(r.mainIssue||'')}</textarea></div>
           <div style="margin-bottom:10px;"><label class="field-label">介入處遇</label><textarea class="field-input" id="ta-interv" rows="3" style="resize:vertical;">${escHtml(r.intervention||'')}</textarea></div>
           <div style="margin-bottom:10px;"><label class="field-label">轉銜評估</label><textarea class="field-input" id="ta-ta" rows="3" style="resize:vertical;">${escHtml(r.transferAssessment||'')}</textarea></div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-            <div><label class="field-label">填表人</label><input type="text" class="field-input" id="ta-by" value="${escHtml(r.filledBy||'')}"></div>
-            <div><label class="field-label">填表日期</label><input type="date" class="field-input" id="ta-date" value="${r.filledDate||''}"></div>
-          </div>
         </div>
         <div style="padding:14px;background:#f8fafc;border-radius:8px;margin-bottom:20px;">
           <div style="font-weight:600;margin-bottom:8px;">建議</div>
           ${rO2('transfer','建議評估會議轉銜')}${rO2('discuss','建議經評估會議討論後再決定')}${rO2('noTransfer','建議不需轉銜')}
         </div>` : ''}
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;">
+          <div><label class="field-label">填表人</label><input type="text" class="field-input" id="ta-by" value="${escHtml(r.filledBy || configData?.users?.[currentUser?.email]?.name || currentUser?.name || '')}"></div>
+          <div><label class="field-label">填表日期</label><input type="date" class="field-input" id="ta-date" value="${r.filledDate || new Date().toISOString().slice(0,10)}"></div>
+        </div>
         <div style="display:flex;gap:10px;">
           <button class="btn btn-primary" onclick="saveTransferAssessment('${isNew?'__new__':escHtml(r.id)}','${t}')">儲存</button>
           ${!isNew && r.recommendation ? `<button class="btn btn-secondary" onclick="printTransferAssessment('${escHtml(r.id)}')">列印</button>` : ''}
