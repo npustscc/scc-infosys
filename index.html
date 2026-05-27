@@ -4893,13 +4893,16 @@ function showCaseDetail(caseId) {
   const readable = allRecords.filter(r => canReadRecord(r, c));
   // 已刪除：管理者可見全部；建立者可看到自己被刪除的「痕跡」；其他人不顯示已刪除
   const visibleRecords = readable.filter(r => {
+    if (_csems && _detailSemFilter !== 'all' && r.date && r.status !== 'pending') {
+      if (openDateToSemPrefix(r.date) !== _activeSem) return false;
+    }
     if (!r.deleted) return true;
     if (isAdminUser) return true;
     if (isRecordCreator(r)) return true;
     return false;
   });
-  const activeCount = allRecords.filter(r => !r.deleted).length;
-  const deletedCount = allRecords.filter(r => r.deleted).length;
+  const activeCount = visibleRecords.filter(r => !r.deleted).length;
+  const deletedCount = visibleRecords.filter(r => r.deleted).length;
 
   const renderRecordCard = r => {
     const editable = !r.deleted && isEditable(r.createdAt);
@@ -5037,13 +5040,8 @@ function showCaseDetail(caseId) {
     ? `<div class="empty-state" style="padding:30px;"><div class="icon">📝</div><p>尚無晤談紀錄</p></div>`
     : pagedRecords.map(renderRecordCard).join('') + paginationHtml;
 
-  // 學期 tab HTML（多學期案件）
-  const _semTabsHtml = _csems ? `
-    <div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap;">
-      ${_csems.map(s => `<button class="btn ${s===_activeSem?'btn-primary':'btn-secondary'} btn-sm"
-        style="font-size:.8rem;" onclick="_caseDetailActiveSem='${escHtml(s)}';showCaseDetail('${escHtml(c.id)}')"
-        >${semesterLabel(s)} 學期</button>`).join('')}
-    </div>` : '';
+  // 學期 tab 已移至頁面頂部 detail-student-sem-nav，此處留空
+  const _semTabsHtml = '';
 
   // 初次晤談獨立卡片（獨立於晤談紀錄列表，置於精神科評估之上）
   const iiCardHtml = (() => {
@@ -5173,7 +5171,7 @@ function showCaseDetail(caseId) {
 
   const sortLabel = _recSortDesc ? '新→舊' : '舊→新';
   const sortBtn = `<button class="btn btn-secondary btn-sm" style="font-size:.8rem;" onclick="_recSortDesc=!_recSortDesc;syncUserPref_({recSortDesc:_recSortDesc});showCaseDetail('${escHtml(c.id)}')">排序：${sortLabel}</button>`;
-  const _semFilterBtn = _hasRelated
+  const _semFilterBtn = (_hasRelated || (_csems && _csems.length > 1))
     ? `<button class="btn btn-secondary btn-sm" style="font-size:.8rem;${_detailSemFilter==='all'?'background:#ebf8ff;border-color:#90cdf4;font-weight:600;':''}" onclick="toggleDetailSemFilter('${escHtml(c.id)}')">${_detailSemFilter==='all'?'所有學期 ✓':'本學期'}</button>`
     : '';
 
@@ -5210,6 +5208,9 @@ function showCaseDetail(caseId) {
   const psyHtml = (() => {
     const allPsy = (c.psychiatristRecords || []);
     const visiblePsy = allPsy.filter(pr => {
+      if (_csems && _detailSemFilter !== 'all' && pr.date) {
+        if (openDateToSemPrefix(pr.date) !== _activeSem) return false;
+      }
       if (!pr.deleted) return true;
       if (isAdminUser) return true;
       if (pr.createdBy === currentUser?.email) return true;
@@ -5346,7 +5347,27 @@ function showCaseDetail(caseId) {
     (_detailSemFilter !== 'all' ? psyHtml : '') +
     recordsHtml;
 
-  _renderStudentSemNav(caseId, _relatedCases);
+  if (_csems && _csems.length > 1) {
+    // 同案號多學期：在頂部顯示學期 TAB
+    const nav = document.getElementById('detail-student-sem-nav');
+    if (nav) {
+      nav.style.display = '';
+      nav.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;padding:10px 14px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;align-items:center;">
+        <span style="font-size:.8rem;color:#718096;font-weight:600;white-space:nowrap;">學期：</span>
+        ${_csems.map(s => {
+          const isAct = s === _activeSem;
+          return `<button onclick="_caseDetailActiveSem='${escHtml(s)}';_detailSemFilter='current';showCaseDetail('${escHtml(c.id)}')"
+            style="padding:4px 14px;border-radius:16px;border:1px solid ${isAct?'#3182ce':'#e2e8f0'};
+                   background:${isAct?'#ebf8ff':'#fff'};color:${isAct?'#1a5276':'#4a5568'};
+                   font-size:.82rem;font-weight:${isAct?'700':'400'};cursor:pointer;white-space:nowrap;">
+            ${escHtml(semesterLabel(s))}
+          </button>`;
+        }).join('')}
+      </div>`;
+    }
+  } else {
+    _renderStudentSemNav(caseId, _relatedCases);
+  }
 
   // Restore per-case section collapse states
   const _secKey = `scc_sec_${currentUser?.email||''}_${caseId}`;
