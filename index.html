@@ -9015,35 +9015,45 @@ function printInitialInterview(caseId) {
   }
   const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const printRich = v => { const t=String(v||''); if(/<[a-z][\s\S]*?>/i.test(t)) return t; return esc(t).replace(/\n/g,'<br>'); };
-  const cb = (b) => b ? '■' : '□';
+  const cb = (b) => `<span style="font-size:2em;line-height:1;vertical-align:middle;">${b ? '■' : '□'}</span>`;
 
-  // 一: problems with chip subs (default + custom)
-  const probBlock = II_PROBLEMS.map((p, i) => {
-    const mainChecked = (d.problemsMain || []).includes(p.key);
-    const allSubs = [...p.subs];
-    const customEntry = (d.probCustomSubs || []).find(x => x.idx === i);
-    if (customEntry) customEntry.values.forEach(v => { if (!allSubs.includes(v)) allSubs.push(v); });
-    const subsChecked = (d.problemSubs || []).filter(x => x.idx === i).map(x => x.value);
-    const subsHtml = allSubs.length
-      ? '<div style="margin-left:18px;font-size:11.5px;padding:2px 0;">' + allSubs.map(s => `${cb(subsChecked.includes(s))} ${esc(s)}`).join('　') + '</div>'
-      : '';
-    return `<div style="margin-bottom:3px;">${cb(mainChecked)} <b>${esc(p.key)}</b></div>${subsHtml}`;
-  }).join('');
+  // 一: 只列出有勾選的問題項目
+  const probBlock = (() => {
+    const items = II_PROBLEMS.map((p, i) => {
+      const mainChecked = (d.problemsMain || []).includes(p.key);
+      if (!mainChecked) return '';
+      const allSubs = [...p.subs];
+      const customEntry = (d.probCustomSubs || []).find(x => x.idx === i);
+      if (customEntry) customEntry.values.forEach(v => { if (!allSubs.includes(v)) allSubs.push(v); });
+      const subsChecked = (d.problemSubs || []).filter(x => x.idx === i).map(x => x.value);
+      const checkedSubs = allSubs.filter(s => subsChecked.includes(s));
+      const subsHtml = checkedSubs.length
+        ? '<div style="margin-left:22px;font-size:11.5px;padding:2px 0;">' + checkedSubs.map(s => `${cb(true)} ${esc(s)}`).join('　') + '</div>'
+        : '';
+      return `<div style="margin-bottom:3px;">${cb(true)} <b>${esc(p.key)}</b></div>${subsHtml}`;
+    }).filter(Boolean);
+    return items.length ? items.join('') : '（未勾選）';
+  })();
 
   // 五: serviceItems as list
   const svcItems = d.serviceItems || d.services || [];
   const svcBlock = svcItems.length ? svcItems.map(s => `<div>■ ${esc(s)}</div>`).join('') : '（未選擇）';
 
-  // 六: sup chips (default + custom)
-  const _supBlock = (defArr, savedSel, savedCustom) => {
+  // 六: sup chips (default + custom) — only show checked items
+  const _supBlockFiltered = (defArr, savedSel, savedCustom) => {
     const all = [...defArr];
     (savedCustom || []).forEach(v => { if (!all.includes(v)) all.push(v); });
-    return all.map(v => `${cb((savedSel||[]).includes(v))} ${esc(v)}`).join('　') || '—';
+    const checked = all.filter(v => (savedSel||[]).includes(v));
+    return checked.length ? checked.map(v => `${cb(true)} ${esc(v)}`).join('　') : '（未選）';
   };
-  const supRiskBlock  = _supBlock(II_SUP_RISKS,   d.supRisks,   d.supRisksCustom);
-  const supTopicBlock = _supBlock(II_SUP_TOPICS,   d.supTopics,  d.supTopicsCustom);
-  const supSkillBlock = _supBlock(II_SUP_SKILLS,   d.supSkills,  d.supSkillsCustom);
-  const vacancyBlock  = ['專任專輔人員','兼任專輔人員','義輔老師'].map(v => `${cb((d.vacancy||[]).includes(v))} ${esc(v)}`).join('　');
+  const supRiskBlock  = _supBlockFiltered(II_SUP_RISKS,   d.supRisks,   d.supRisksCustom);
+  const supTopicBlock = _supBlockFiltered(II_SUP_TOPICS,   d.supTopics,  d.supTopicsCustom);
+  const supSkillBlock = _supBlockFiltered(II_SUP_SKILLS,   d.supSkills,  d.supSkillsCustom);
+  const vacancyBlock  = (() => {
+    const all = ['專任專輔人員','兼任專輔人員','義輔老師'];
+    const checked = all.filter(v => (d.vacancy||[]).includes(v));
+    return checked.length ? checked.map(v => `${cb(true)} ${esc(v)}`).join('　') : '（未選）';
+  })();
 
   // 六: old main counselor (for 舊案)
   const oldCounselorEmail = d.oldMainCounselor || '';
@@ -9081,13 +9091,13 @@ function printInitialInterview(caseId) {
 <div class="sec-title">一、個案問題評估（可複選）</div>
 <div style="padding:4px 8px;">${probBlock}</div>
 <div class="sec-title">二、問題內容說明</div>
-<div class="row"><b>(一)家庭概況：</b></div><div class="box">${printRich(d.family)}</div>
+<div class="row"><b>(一)家庭概況：</b></div><div style="padding:3px 0 8px;">${printRich(d.family)}</div>
 ${d.familyImage ? `<div style="margin-top:6px;"><img src="${d.familyImage}" style="max-width:100%;max-height:200px;border:1px solid #ccc;border-radius:4px;" /></div>` : ''}
-<div class="row" style="margin-top:6px;"><b>(二)主訴問題：</b></div><div class="box">${printRich(d.mainIssue)}</div>
-<div class="row" style="margin-top:6px;"><b>(三)會談摘要：</b></div><div class="box">${printRich(d.summary)}</div>
-<div class="row" style="margin-top:6px;"><b>(四)會談期待：</b></div><div class="box">${printRich(d.expectation)}</div>
+<div class="row" style="margin-top:6px;"><b>(二)主訴問題：</b></div><div style="padding:3px 0 8px;">${printRich(d.mainIssue)}</div>
+<div class="row" style="margin-top:6px;"><b>(三)會談摘要：</b></div><div style="padding:3px 0 8px;">${printRich(d.summary)}</div>
+<div class="row" style="margin-top:6px;"><b>(四)會談期待：</b></div><div style="padding:3px 0 8px;">${printRich(d.expectation)}</div>
 <div class="sec-title">三、風險評估</div>
-<div>${cb(d.risk === '無')} 暫無　${cb(d.risk === '有')} 有，說明：</div><div class="box">${esc(d.riskDesc)}</div>
+<div>${cb(d.risk === '無')} 暫無　${cb(d.risk === '有')} 有，說明：</div><div style="padding:3px 0 8px;">${esc(d.riskDesc)}</div>
 <div class="sec-title">四、個別化服務計畫</div><div class="box">${printRich(d.plan)}</div>
 <div class="sec-title">五、此次服務項目</div>
 <div style="padding:4px 8px;">${svcBlock}</div>
@@ -17076,13 +17086,14 @@ function printTransferAssessment(transferId) {
       <td style="padding:6px 8px;text-align:center;border:1px solid #ccc;">${iv.notApplicable?'無此議題':degLabel(iv.degree)}</td>
       <td style="padding:6px 8px;text-align:center;border:1px solid #ccc;">${iv.notApplicable?'—':(iv.riskScore||'—')}</td></tr>`;
   }).join('');
-  const consentHtml = r.consentStatus==='notInformed'
+  const _tck = s => s.replace(/[□■]/g, c => `<span style="font-size:2em;line-height:1;vertical-align:middle;">${c}</span>`);
+  const consentHtml = _tck(r.consentStatus==='notInformed'
     ? `■ 未告知　理由：${r.notInformedReason==='notReached'?'■聯繫未果 □綠燈結案 □其他':r.notInformedReason==='greenLight'?'□聯繫未果 ■綠燈結案 □其他':`□聯繫未果 □綠燈結案 ■其他：${r.notInformedOtherReason||''}`}`
-    : `□ 未告知　■ 已告知<br>當事人：${r.studentConsent==='agree'?'■':' □'}同意 ${r.studentConsent==='disagree'?'■':'□'}不同意 ${r.studentConsent==='unclear'?'■':'□'}未明確<br>法定代理人：${r.guardianConsent==='agree'?'■':'□'}同意 ${r.guardianConsent==='disagree'?'■':'□'}不同意 ${r.guardianConsent==='unclear'?'■':'□'}未明確 ${r.guardianConsent==='na'?'■':'□'}免填`;
-  const recHtml = ['transfer','discuss','noTransfer'].map((v,i) => {
+    : `□ 未告知　■ 已告知<br>當事人：${r.studentConsent==='agree'?'■':' □'}同意 ${r.studentConsent==='disagree'?'■':'□'}不同意 ${r.studentConsent==='unclear'?'■':'□'}未明確<br>法定代理人：${r.guardianConsent==='agree'?'■':'□'}同意 ${r.guardianConsent==='disagree'?'■':'□'}不同意 ${r.guardianConsent==='unclear'?'■':'□'}未明確 ${r.guardianConsent==='na'?'■':'□'}免填`);
+  const recHtml = _tck(['transfer','discuss','noTransfer'].map((v,i) => {
     const labels = ['建議評估會議轉銜','建議經評估會議討論後再決定是否轉銜','建議不需轉銜'];
     return `${r.recommendation===v?'■':'□'} ${labels[i]}`;
-  }).join('<br>');
+  }).join('<br>'));
   const w = window.open('','_blank');
   if (!w) { alert('列印視窗被封鎖，請允許彈出視窗後重試。'); return; }
   w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>轉銜評估表</title>
@@ -17547,9 +17558,10 @@ function printPsychiatristRecord(caseId, recordId) {
   if (!pr) return;
   const rocDate = d => { if(!d) return '　年　月　日'; const p=d.split('-'); return p.length===3?`${parseInt(p[0])-1911}年${parseInt(p[1])}月${parseInt(p[2])}日`:d; };
   const timeRange = pr.timeStart||pr.timeEnd ? `${pr.timeStart||'　　'}～${pr.timeEnd||'　　'}` : '　　～　　';
-  const diagHtml = pr.diagnosisType==='specific' ? `□ 不符合任一精神疾患之診斷<br>■ 符合 ${escHtml(pr.diagnosisName||'')} 診斷標準` : '■ 不符合任一精神疾患之診斷<br>□ 符合　　　　診斷標準';
-  const medHtml = pr.medicationAdvice==='yes' ? '□ 否<br>■ 是，應定期回診並考慮藥物治療' : '■ 否<br>□ 是，應定期回診並考慮藥物治療';
-  const hospHtml = pr.hospitalizationAdvice==='yes' ? '□ 否<br>■ 是，建議住院療養' : '■ 否<br>□ 是，建議住院療養';
+  const _pk = s => s.replace(/[□■]/g, c => `<span style="font-size:2em;line-height:1;vertical-align:middle;">${c}</span>`);
+  const diagHtml = _pk(pr.diagnosisType==='specific' ? `□ 不符合任一精神疾患之診斷<br>■ 符合 ${escHtml(pr.diagnosisName||'')} 診斷標準` : '■ 不符合任一精神疾患之診斷<br>□ 符合　　　　診斷標準');
+  const medHtml = _pk(pr.medicationAdvice==='yes' ? '□ 否<br>■ 是，應定期回診並考慮藥物治療' : '■ 否<br>□ 是，應定期回診並考慮藥物治療');
+  const hospHtml = _pk(pr.hospitalizationAdvice==='yes' ? '□ 否<br>■ 是，建議住院療養' : '■ 否<br>□ 是，建議住院療養');
   const w = window.open('','_blank');
   if (!w) { alert('列印視窗被封鎖，請允許彈出視窗後重試。'); return; }
   w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>精神科醫師會談評估表</title>
