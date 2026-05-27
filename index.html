@@ -12462,9 +12462,9 @@ function _mkAuditDetail(l) {
   return parts.length ? parts.join(' ') : '<span style="color:#a0aec0;">—</span>';
 }
 
-function toggleAuditRow(idx) {
-  const wrap = document.getElementById('alw-' + idx);
-  const btn = document.querySelector('.audit-detail-toggle[data-idx="' + idx + '"]');
+function toggleAuditRow(id) {
+  const wrap = document.getElementById('alw-' + id);
+  const btn = document.querySelector('.audit-detail-toggle[data-idx="' + id + '"]');
   if (!wrap) return;
   if (wrap.dataset.expanded === '1') {
     wrap.classList.add('audit-detail-wrap');
@@ -12553,16 +12553,17 @@ function _mkAuditTable(entries) {
     const hid = colHid.has(n);
     return `<th data-col="${n}" style="${thStyle(n)}cursor:pointer;user-select:none;white-space:nowrap;" onclick="auditToggleCol(${n})" title="${hid?'展開':'收折'}">${hid ? '' : label + ' '}<span style="font-size:.7rem;opacity:.5;">${hid?'▷':'◁'}</span></th>`;
   };
+  const wrapC = (colN, idx, content) => {
+    const id = `${idx}-${colN}`;
+    return `<div class="audit-detail-wrap" id="alw-${id}" data-expanded="0">${content}</div><span class="audit-detail-toggle" data-idx="${id}" style="display:none;color:#718096;font-size:.72rem;cursor:pointer;user-select:none;" onclick="toggleAuditRow('${id}')">展開 ▾</span>`;
+  };
   const rows = [...entries].reverse().map((l, idx) => `
     <tr>
-      <td style="${tdStyle(1)}font-size:.8rem;color:#718096;min-width:52px;">${fmtDate(l.t)}<br><span style="color:#a0aec0;">${fmtClock(l.t)}</span></td>
-      <td style="${tdStyle(2)}font-size:.85rem;">${escHtml(l.name || '—')}</td>
-      <td style="${tdStyle(3)}font-size:.75rem;color:#a0aec0;">${escHtml(l.email || '—')}</td>
-      <td style="${tdStyle(4)}font-size:.85rem;${_auditActionColor(l.action)}">${escHtml(l.action)}</td>
-      <td style="${tdStyle(5)}font-size:.82rem;vertical-align:top;">
-        <div class="audit-detail-wrap" id="alw-${idx}" data-expanded="0">${_mkAuditDetail(l)}</div>
-        <span class="audit-detail-toggle" data-idx="${idx}" style="display:none;color:#718096;font-size:.72rem;cursor:pointer;user-select:none;" onclick="toggleAuditRow(${idx})">展開 ▾</span>
-      </td>
+      <td style="${tdStyle(1)}font-size:.8rem;color:#718096;min-width:52px;vertical-align:top;">${wrapC(1, idx, `${fmtDate(l.t)}<br><span style="color:#a0aec0;">${fmtClock(l.t)}</span>`)}</td>
+      <td style="${tdStyle(2)}font-size:.85rem;vertical-align:top;">${wrapC(2, idx, escHtml(l.name || '—'))}</td>
+      <td style="${tdStyle(3)}font-size:.75rem;color:#a0aec0;vertical-align:top;">${wrapC(3, idx, escHtml(l.email || '—'))}</td>
+      <td style="${tdStyle(4)}font-size:.85rem;${_auditActionColor(l.action)}vertical-align:top;">${wrapC(4, idx, escHtml(l.action))}</td>
+      <td style="${tdStyle(5)}font-size:.82rem;vertical-align:top;">${wrapC(5, idx, _mkAuditDetail(l))}</td>
     </tr>`).join('');
   return `
     <div style="overflow-x:auto;">
@@ -17340,9 +17341,12 @@ async function showTransferImportPreview(rows, type) {
       if (ex) { Object.assign(ex, { ...s, type, updatedAt: now }); }
       else { transferData.push({ id:'tr_'+Date.now()+'_'+Math.random().toString(36).slice(2), type, ...s, createdAt:now, updatedAt:now, createdBy:currentUser?.email, createdByName:currentUser?.name }); }
     });
-    showLoading('儲存中…');
-    try { await saveTransfer(); auditLog(`匯入${typeName}學生名單`,`${toImport.length}筆`); hideLoading(); renderTransferPage(); }
-    catch(e) { hideLoading(); alert('儲存失敗：'+e.message); }
+    renderTransferPage();
+    const _bgId = bgJobAdd(`匯入${typeName}學生名單（${toImport.length}筆）`);
+    (async () => {
+      try { await saveTransfer(); auditLog(`匯入${typeName}學生名單`,`${toImport.length}筆`); bgJobDone(_bgId); }
+      catch(e) { bgJobFail(_bgId, e.message); }
+    })();
   };
 }
 
@@ -17483,46 +17487,50 @@ async function saveTransferAssessment(idOrNew, type) {
     recommendation:gR('ta_rec'), updatedAt:now,
   };
   if (!data.name) { alert('請填寫學生姓名'); return; }
-  showLoading('儲存中…');
-  try {
-    if (idOrNew === '__new__') {
-      data.id = 'tr_'+Date.now()+'_'+Math.random().toString(36).slice(2);
-      data.createdAt = now; data.createdBy = currentUser?.email; data.createdByName = currentUser?.name;
-      transferData.push(data);
-    } else {
-      const idx = transferData.findIndex(r => r.id === idOrNew);
-      if (idx >= 0) transferData[idx] = { ...transferData[idx], ...data };
-      else transferData.push({ ...data, id:idOrNew, createdAt:now, createdBy:currentUser?.email, createdByName:currentUser?.name });
-    }
-    await saveTransfer();
-    // If incoming transfer linked to an existing case, mark the case as transfer case
-    if (type === 'incoming' && data.caseId) {
-      const linkedCase = casesData.find(c => c.id === data.caseId && !c.deleted);
-      if (linkedCase) {
-        if (!linkedCase.isTransferCase) {
-          linkedCase.isTransferCase = true;
-          linkedCase.updatedAt = now;
-          await saveCasesChunks(data.caseId);
-          renderCases();
+  if (idOrNew === '__new__') {
+    data.id = 'tr_'+Date.now()+'_'+Math.random().toString(36).slice(2);
+    data.createdAt = now; data.createdBy = currentUser?.email; data.createdByName = currentUser?.name;
+    transferData.push(data);
+  } else {
+    const idx = transferData.findIndex(r => r.id === idOrNew);
+    if (idx >= 0) transferData[idx] = { ...transferData[idx], ...data };
+    else transferData.push({ ...data, id:idOrNew, createdAt:now, createdBy:currentUser?.email, createdByName:currentUser?.name });
+  }
+  document.getElementById('transfer-assessment-modal')?.remove();
+  renderTransferPage();
+  const _bgId = bgJobAdd(`儲存轉銜評估：${data.name}`);
+  (async () => {
+    try {
+      await saveTransfer();
+      if (type === 'incoming' && data.caseId) {
+        const linkedCase = casesData.find(c => c.id === data.caseId && !c.deleted);
+        if (linkedCase) {
+          if (!linkedCase.isTransferCase) {
+            linkedCase.isTransferCase = true;
+            linkedCase.updatedAt = now;
+            await saveCasesChunks(data.caseId);
+            renderCases();
+          }
+        } else {
+          console.warn('saveTransferAssessment: caseId not found in casesData:', data.caseId);
         }
-      } else {
-        console.warn('saveTransferAssessment: caseId not found in casesData:', data.caseId);
       }
-    }
-    auditLog('儲存轉銜評估', data.name);
-    hideLoading();
-    document.getElementById('transfer-assessment-modal')?.remove();
-    renderTransferPage();
-  } catch(e) { hideLoading(); alert('儲存失敗：'+e.message); }
+      auditLog('儲存轉銜評估', data.name);
+      bgJobDone(_bgId);
+    } catch(e) { bgJobFail(_bgId, e.message); }
+  })();
 }
 
 async function deleteTransferRecord(id) {
   const r = transferData.find(t => t.id === id);
   if (!r || !confirm(`確定刪除「${r.name}」的轉銜記錄？`)) return;
   transferData = transferData.filter(t => t.id !== id);
-  showLoading('刪除中…');
-  try { await saveTransfer(); hideLoading(); renderTransferPage(); }
-  catch(e) { hideLoading(); alert('刪除失敗：'+e.message); }
+  renderTransferPage();
+  const _bgId = bgJobAdd(`刪除轉銜記錄：${r.name}`);
+  (async () => {
+    try { await saveTransfer(); auditLog('刪除轉銜記錄', r.name); bgJobDone(_bgId); }
+    catch(e) { bgJobFail(_bgId, e.message); }
+  })();
 }
 
 async function createCaseFromTransfer(transferId) {
