@@ -2847,7 +2847,7 @@ function applyDrivePrefs() {
 
 // 傳入 filterFn([email, info]) 過濾，依使用頻率（開啟記憶時）或職別+筆畫排序
 function getSortedCounselorEntries(filterFn) {
-  const entries = Object.entries(configData?.users || {}).filter(filterFn);
+  const entries = Object.entries(configData?.users || {}).filter(([, info]) => !info.disabled).filter(filterFn);
   const freqMode = _userPref_('counselorFreqMode', false); // 預設：角色排序
   const freqs    = freqMode ? (_userPref_('counselorFreqs', {})) : {};
   entries.sort(([ea, ia], [eb, ib]) => {
@@ -2884,6 +2884,17 @@ const ROLES = [
   '駐校精神科醫師',
 ];
 const EXTRA_ROLES = ['管理者', '個案管理員'];
+const BASIC_INFO_SNAPSHOT_FIELDS = [
+  'name', 'legalGender', 'genderIdentity', 'studentId', 'birthday', 'idNumber',
+  'nationality', 'foreignCountry', 'ethnicity', 'ethnicityNote',
+  'caseType', 'abType', 'program', 'department', 'grade', 'classNo', 'disability',
+  'phone', 'email', 'residence', 'address',
+  'emergencyName', 'emergencyPhone', 'emergencyRelation',
+  'source', 'pastRecords', 'topics',
+  'bsrs', 'bsrsTotal', 'bsrs6',
+  'counselorText', 'counselorName', 'counselorEmail',
+  'openDate',
+];
 
 // 輔導人員顯示名稱：名字＋角色（例：陳錦錫專任諮商心理師）
 function formatCounselorLabel(key) {
@@ -4784,7 +4795,7 @@ function showCaseDetail(caseId) {
   document.getElementById('detail-name').textContent = c.name || '—';
   document.getElementById('detail-meta').innerHTML =
     `案號：<strong>${escHtml(c.id)}</strong> &nbsp;|&nbsp; ` +
-    `開案日期：${adToRocDisplay(c.openDate)} &nbsp;|&nbsp; ` +
+    `開案日期：${adToRocDisplay(_cd('openDate'))} &nbsp;|&nbsp; ` +
     `主責：${escHtml(c.counselorText || c.counselorName || c.counselorEmail || '—')}` +
     (!c.counselorEmail && (c.counselorText || c.counselorName) ? ' <span style="font-size:.72rem;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1px 7px;color:#a0aec0;">未連結帳號</span>' : '') +
     `&nbsp;&nbsp;${statusBadge(c.status)}` +
@@ -4821,6 +4832,9 @@ function showCaseDetail(caseId) {
     _caseDetailActiveSem = openDateToSemPrefix(c.openDate);
   }
   const _activeSem = _caseDetailActiveSem;
+  // Per-semester snapshot: use snapshot data if available, otherwise fall back to case
+  const _snapData = (c.basicInfoSnapshots && _activeSem && c.basicInfoSnapshots[_activeSem]) || null;
+  const _cd = (field) => (_snapData !== null && _snapData[field] !== undefined) ? _snapData[field] : c[field];
 
   let actionsHtml = '';
   if (!caseIsDeleted && isActive) {
@@ -4879,13 +4893,13 @@ function showCaseDetail(caseId) {
       <div style="font-size:.9rem;color:#2d3748;">${escHtml(val || '—')}</div>
     </div>`;
 
-  const natLabel = c.nationality
-    ? (c.nationality + (c.foreignCountry ? `（${c.foreignCountry}）` : ''))
+  const natLabel = _cd('nationality')
+    ? (_cd('nationality') + (_cd('foreignCountry') ? `（${_cd('foreignCountry')}）` : ''))
     : '—';
-  const ethLabel = c.ethnicity
-    ? (c.ethnicity + (c.ethnicityNote ? `（${c.ethnicityNote}）` : ''))
-    : (c.nationality === '本國籍' ? '無/未填寫' : '—');
-  const pastLabel = (c.pastRecords || []).length ? (c.pastRecords || []).join('、') : '無/未填寫';
+  const ethLabel = _cd('ethnicity')
+    ? (_cd('ethnicity') + (_cd('ethnicityNote') ? `（${_cd('ethnicityNote')}）` : ''))
+    : (_cd('nationality') === '本國籍' ? '無/未填寫' : '—');
+  const pastLabel = (_cd('pastRecords') || []).length ? (_cd('pastRecords') || []).join('、') : '無/未填寫';
 
   // 晤談紀錄區塊
   const allRecords = c.records || [];
@@ -5289,46 +5303,48 @@ function showCaseDetail(caseId) {
 
   document.getElementById('detail-body').innerHTML =
     mkSection('basic', '個案基本資料', `<div class="form-grid">
-      ${field('法定性別', c.legalGender)}
-      ${field('性別認同', c.genderIdentity || '（未填）')}
-      ${field('學號', c.studentId)}
-      ${field('生日', adToRocDisplay(c.birthday))}
-      ${field('身分證字號／居留證號', c.idNumber)}
+      ${field('開案日期', adToRocDisplay(_cd('openDate')))}
+      ${field('法定性別', _cd('legalGender'))}
+      ${field('性別認同', _cd('genderIdentity') || '（未填）')}
+      ${field('學號', _cd('studentId'))}
+      ${field('生日', adToRocDisplay(_cd('birthday')))}
+      ${field('身分證字號／居留證號', _cd('idNumber'))}
     </div>`) +
     mkSection('bg', '背景資料', `<div class="form-grid">
-      ${c.abType ? field('案別', c.abType) : ''}
-      ${field('對象類別', c.caseType)}
+      ${_cd('abType') ? field('案別', _cd('abType')) : ''}
+      ${field('對象類別', _cd('caseType'))}
       ${field('國籍', natLabel)}
       ${field('族群', ethLabel)}
-      ${field('學制', c.program)}
-      ${field('系所', c.department)}
-      ${field('年級／班別', [c.grade, c.classNo].filter(Boolean).join(' / ') || '—')}
-      ${field('障礙類別', c.disability || '無/未填寫')}
+      ${field('學制', _cd('program'))}
+      ${field('系所', _cd('department'))}
+      ${field('年級／班別', [_cd('grade'), _cd('classNo')].filter(Boolean).join(' / ') || '—')}
+      ${field('障礙類別', _cd('disability') || '無/未填寫')}
     </div>`) +
     mkSection('contact', '聯絡資料', `<div class="form-grid">
-      ${field('聯絡電話', c.phone)}
-      ${c.email ? field('電子郵件', c.email) : ''}
-      ${field('住所類型', c.residence)}
-      ${field('宿舍樓層／地址', c.address || '無/未填寫')}
-      ${field('緊急聯絡人', c.emergencyName)}
-      ${field('緊急聯絡電話', c.emergencyPhone)}
-      ${field('與個案關係', c.emergencyRelation)}
+      ${field('聯絡電話', _cd('phone'))}
+      ${_cd('email') ? field('電子郵件', _cd('email')) : ''}
+      ${field('住所類型', _cd('residence'))}
+      ${field('宿舍樓層／地址', _cd('address') || '無/未填寫')}
+      ${field('緊急聯絡人', _cd('emergencyName'))}
+      ${field('緊急聯絡電話', _cd('emergencyPhone'))}
+      ${field('與個案關係', _cd('emergencyRelation'))}
     </div>`) +
     (() => {
-      const hasBsrs = (c.bsrsTotal !== null && c.bsrsTotal !== undefined) || (c.bsrs6 !== null && c.bsrs6 !== undefined) || (c.bsrs||[]).some(v=>v!==null&&v!==undefined);
+      const _bsrs = _cd('bsrs'); const _bsrsTotal = _cd('bsrsTotal'); const _bsrs6 = _cd('bsrs6');
+      const hasBsrs = (_bsrsTotal !== null && _bsrsTotal !== undefined) || (_bsrs6 !== null && _bsrs6 !== undefined) || (_bsrs||[]).some(v=>v!==null&&v!==undefined);
       if (!hasBsrs) return '';
       const scoreLabel = v => (['完全沒有','輕微','有時如此','常常如此','幾乎每天'][v] ?? '—');
       const qLabels = ['睡眠困擾','感覺緊張不安','覺得容易苦惱或動怒','感覺憂鬱、心情低落','覺得比不上別人或自己沒有用'];
-      const hasIndividual = (c.bsrs||[]).some(v=>v!==null&&v!==undefined);
+      const hasIndividual = (_bsrs||[]).some(v=>v!==null&&v!==undefined);
       const alertRow = (info) => `<div class="full"><div style="padding:7px 10px;border-left:3px solid ${info.border};background:${info.bg};color:${info.color};font-size:.84rem;border-radius:0 4px 4px 0;">${info.msg}</div></div>`;
       const individualRows = hasIndividual
-        ? qLabels.map((lbl,i)=>{ const v=(c.bsrs||[])[i]; return field(`${i+1}. ${lbl}`, v!==null&&v!==undefined?`${v} ${scoreLabel(v)}`:'—'); }).join('')
+        ? qLabels.map((lbl,i)=>{ const v=(_bsrs||[])[i]; return field(`${i+1}. ${lbl}`, v!==null&&v!==undefined?`${v} ${scoreLabel(v)}`:'—'); }).join('')
         : '';
-      const totalVal = c.bsrsTotal !== null && c.bsrsTotal !== undefined;
+      const totalVal = _bsrsTotal !== null && _bsrsTotal !== undefined;
       const totalRow = totalVal
-        ? field('總困擾分數（第1–5題）', c.bsrsTotal+' 分') + alertRow(bsrsLevelInfo(c.bsrsTotal))
+        ? field('總困擾分數（第1–5題）', _bsrsTotal+' 分') + alertRow(bsrsLevelInfo(_bsrsTotal))
         : '';
-      const q6score = c.bsrs6 !== null && c.bsrs6 !== undefined ? c.bsrs6 : null;
+      const q6score = _bsrs6 !== null && _bsrs6 !== undefined ? _bsrs6 : null;
       const q6Row = field('6. 有自殺的想法', q6score !== null ? `${q6score} ${scoreLabel(q6score)}` : '未填')
         + (q6score !== null && q6score > 0 ? alertRow(bsrs6AlertInfo(q6score)) : '');
       return mkSection('bsrs','BSRS-5 心理困擾量表',`<div class="form-grid">
@@ -5338,9 +5354,9 @@ function showCaseDetail(caseId) {
       </div>`);
     })() +
     mkSection('intake', '來談資訊', `<div class="form-grid">
-      ${field('來源', c.source)}
+      ${field('來源', _cd('source'))}
       ${field('過去紀錄', pastLabel)}
-      ${field('主訴問題', (c.topics || []).join('、') || '—')}
+      ${field('主訴問題', (_cd('topics') || []).join('、') || '—')}
     </div>`) +
     evalHtml +
     (_detailSemFilter !== 'all' && iiCardHtml ? `<div style="margin-bottom:20px;">${iiCardHtml}</div>` : '') +
@@ -5351,8 +5367,9 @@ function showCaseDetail(caseId) {
     // 同案號多學期：在頂部顯示學期 TAB
     const nav = document.getElementById('detail-student-sem-nav');
     if (nav) {
+      const _isHistSem = _activeSem !== _csems[_csems.length - 1];
       nav.style.display = '';
-      nav.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;padding:10px 14px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;align-items:center;">
+      nav.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;background:${_isHistSem?'#fffbeb':'#f7fafc'};border:1px solid ${_isHistSem?'#f6ad55':'#e2e8f0'};border-radius:8px;align-items:center;${_isHistSem?'margin-bottom:4px;':'margin-bottom:14px;'}">
         <span style="font-size:.8rem;color:#718096;font-weight:600;white-space:nowrap;">學期：</span>
         ${_csems.map(s => {
           const isAct = s === _activeSem;
@@ -5363,7 +5380,8 @@ function showCaseDetail(caseId) {
             ${escHtml(semesterLabel(s))}
           </button>`;
         }).join('')}
-      </div>`;
+      </div>
+      ${_isHistSem ? `<div style="background:#fffbeb;border:1px solid #f6ad55;color:#744210;border-radius:6px;padding:6px 14px;margin-bottom:14px;font-size:.82rem;">⚠ 目前顯示 <strong>${escHtml(semesterLabel(_activeSem))}</strong> 的歷史版本基本資料</div>` : ''}`;
     }
   } else {
     _renderStudentSemNav(caseId, _relatedCases);
@@ -5379,13 +5397,7 @@ function showCaseDetail(caseId) {
     });
   } catch (_) {}
 
-  const _alreadyOnDetail = document.getElementById('page-case-detail')?.classList.contains('active');
   showPage('page-case-detail', null);
-  if (_alreadyOnDetail) {
-    requestAnimationFrame(() => {
-      document.getElementById('detail-records-card')?.scrollIntoView({ behavior: 'instant', block: 'start' });
-    });
-  }
 }
 
 function renderCaseManagersBody(c) {
@@ -8266,6 +8278,20 @@ async function finalizeImport(imported, prog) {
       const _impSem = openDateToSemPrefix(imp.openDate);
       if (_impSem && !_exSems.includes(_impSem)) _exSems.push(_impSem);
       merged.semesters = [...new Set(_exSems)].sort();
+      // Build per-semester basic info snapshots
+      const _existSnaps = { ...(c.basicInfoSnapshots || {}) };
+      const _cSem = openDateToSemPrefix(c.openDate);
+      if (_cSem && !_existSnaps[_cSem]) {
+        const _cSnap = {};
+        BASIC_INFO_SNAPSHOT_FIELDS.forEach(f => { if (c[f] !== undefined) _cSnap[f] = c[f]; });
+        _existSnaps[_cSem] = _cSnap;
+      }
+      if (_impSem) {
+        const _impSnap = {};
+        BASIC_INFO_SNAPSHOT_FIELDS.forEach(f => { if (imp[f] !== undefined) _impSnap[f] = imp[f]; });
+        _existSnaps[_impSem] = _impSnap;
+      }
+      merged.basicInfoSnapshots = _existSnaps;
       delete merged._crossSemMerge;
       return merged;
     }
@@ -8274,10 +8300,23 @@ async function finalizeImport(imported, prog) {
       const _exSems2 = Array.isArray(c.semesters) ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean);
       const _impSem2 = openDateToSemPrefix(imp.openDate);
       if (_impSem2 && !_exSems2.includes(_impSem2)) _exSems2.push(_impSem2);
+      const _existSnaps2 = { ...(c.basicInfoSnapshots || {}) };
+      const _cSem2 = openDateToSemPrefix(c.openDate);
+      if (_cSem2 && !_existSnaps2[_cSem2]) {
+        const _cSnap2 = {};
+        BASIC_INFO_SNAPSHOT_FIELDS.forEach(f => { if (c[f] !== undefined) _cSnap2[f] = c[f]; });
+        _existSnaps2[_cSem2] = _cSnap2;
+      }
+      if (_impSem2) {
+        const _impSnap2 = {};
+        BASIC_INFO_SNAPSHOT_FIELDS.forEach(f => { if (imp[f] !== undefined) _impSnap2[f] = imp[f]; });
+        _existSnaps2[_impSem2] = _impSnap2;
+      }
       return { ...imp, records: c.records || [], initialInterview: c.initialInterview,
                psychTestResults: (imp.psychTestResults?.length ? imp.psychTestResults : c.psychTestResults) || [],
                createdAt: c.createdAt || imp.createdAt,
-               semesters: [...new Set(_exSems2)].sort() };
+               semesters: [...new Set(_exSems2)].sort(),
+               basicInfoSnapshots: _existSnaps2 };
     }
     return c; // skip (user chose to keep existing)
   });
@@ -9833,7 +9872,13 @@ async function saveCase() {
       const idx = casesData.findIndex(x => x.id === _editingCaseId);
       const prev = casesData[idx];
       const oldCounselorEmail = prev.counselorEmail;
-      casesData[idx] = { ...prev, ...newCase };
+      // Save per-semester snapshot when editing
+      const _editSem = _caseDetailActiveSem || openDateToSemPrefix(openDate);
+      const _prevSnaps = prev.basicInfoSnapshots || {};
+      const _editSnap = {};
+      BASIC_INFO_SNAPSHOT_FIELDS.forEach(f => { if (newCase[f] !== undefined) _editSnap[f] = newCase[f]; });
+      casesData[idx] = { ...prev, ...newCase,
+        basicInfoSnapshots: _editSem ? { ..._prevSnaps, [_editSem]: _editSnap } : _prevSnaps };
       await saveCasesChunks(_editingCaseId, newCase.id);
       let cfgChanged = syncManagersFromForm(newCase.id, _editingCaseId);
       if (counselorEmail && counselorEmail !== currentUser.email && counselorEmail !== oldCounselorEmail)
