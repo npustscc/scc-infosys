@@ -3597,7 +3597,7 @@ function renderCases() {
   const cfSemester = document.getElementById('cf-semester');
   if (cfSemester) {
     const semesters = [...new Set(
-      visible.map(c => openDateToSemPrefix(c.openDate)).filter(Boolean)
+      visible.flatMap(c => Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)]).filter(Boolean)
     )].sort().reverse();
     const prev = caseFilters.semester;
     cfSemester.innerHTML = '<option value="">全部學期</option>' +
@@ -3627,7 +3627,10 @@ function renderCases() {
 
   // ── 套用搜尋 / 篩選 ──
   const { q, status, semester, counselor, dateFrom, dateTo } = caseFilters;
-  if (semester) visible = visible.filter(c => openDateToSemPrefix(c.openDate) === semester);
+  if (semester) visible = visible.filter(c => {
+    if (Array.isArray(c.semesters) && c.semesters.length) return c.semesters.includes(semester);
+    return openDateToSemPrefix(c.openDate) === semester;
+  });
   if (q) {
     const ql = q.toLowerCase();
     visible = visible.filter(c =>
@@ -7909,28 +7912,20 @@ function showImportMergePreview(imported, prog) {
     imported.forEach(imp => {
       const ex = existingMap.get(imp.id);
       if (!ex) { newCases.push(imp); return; }
-      // Same ID but different semester → treat as a new independent case
+      // Same ID, different semester → same student continuing across semesters; mark for semester tracking
       const impSem = openDateToSemPrefix(imp.openDate);
       const exSem  = openDateToSemPrefix(ex.openDate);
-      if (impSem && exSem && impSem !== exSem) {
-        // Generate unique ID to avoid collision: append semester prefix
-        let newId = imp.id + '_' + impSem;
-        const allIds = new Set([...casesData.map(c => c.id), ...newCases.map(c => c.id)]);
-        let sfx = 0;
-        while (allIds.has(newId)) newId = imp.id + '_' + impSem + '_' + (++sfx);
-        imp.id = newId;
-        newCases.push(imp);
-        return;
-      }
+      if (impSem && exSem && impSem !== exSem) imp._crossSemMerge = true;
       dupCases.push(imp);
     });
 
     // Same name → auto smart-merge. Different name → per-case decision.
+    // Cross-semester duplicates always treat as same-name (same student guaranteed).
     const sameNameDups = [];
     const diffNameDups = []; // { imp, ex, action:'use-imported'|'skip' }
     dupCases.forEach(imp => {
       const ex = casesData.find(c => c.id === imp.id);
-      const sameN = !imp.name || !ex?.name || imp.name === ex.name;
+      const sameN = imp._crossSemMerge || !imp.name || !ex?.name || imp.name === ex.name;
       if (sameN) sameNameDups.push({ imp, ex });
       else diffNameDups.push({ imp, ex, action: 'use-imported' });
     });
@@ -7939,7 +7934,7 @@ function showImportMergePreview(imported, prog) {
 
     const sameNameHtml = sameNameDups.length === 0 ? '' : `
       <div style="margin-top:14px;padding:12px 14px;background:#f0fff4;border-radius:8px;border:1px solid #9ae6b4;">
-        <div style="font-weight:600;color:#276749;margin-bottom:6px;">✓ 同案號且姓名一致（${sameNameDups.length} 筆）— 自動以最新資料更新、保留既有晤談紀錄</div>
+        <div style="font-weight:600;color:#276749;margin-bottom:6px;">✓ 同案號（${sameNameDups.length} 筆，含跨學期同案）— 自動以最新資料更新、保留既有晤談紀錄、累積學期</div>
         <details><summary style="font-size:.82rem;color:#276749;cursor:pointer;">查看清單</summary>
           <div style="margin-top:6px;max-height:140px;overflow:auto;border:1px solid #c6f6d5;border-radius:4px;">
             ${sameNameDups.map(d => `<div style="font-size:.82rem;padding:4px 8px;border-bottom:1px solid #e6ffed;">${escHtml(d.imp.id)} <strong>${escHtml(d.imp.name||'')}</strong></div>`).join('')}
@@ -8048,17 +8043,27 @@ async function finalizeImport(imported, prog) {
       // Smart-merge: new data wins; fill blanks from existing
       const merged = { ...imp };
       FILL_FIELDS.forEach(f => { if (!merged[f] && c[f]) merged[f] = c[f]; });
-      merged.records         = c.records || [];
+      merged.records          = c.records || [];
       merged.initialInterview = c.initialInterview;
       merged.psychTestResults = (imp.psychTestResults?.length ? imp.psychTestResults : c.psychTestResults) || [];
-      merged.createdAt       = c.createdAt || imp.createdAt;
+      merged.createdAt        = c.createdAt || imp.createdAt;
+      // Accumulate semesters: preserve all semesters this case has been active in
+      const _exSems = Array.isArray(c.semesters) ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean);
+      const _impSem = openDateToSemPrefix(imp.openDate);
+      if (_impSem && !_exSems.includes(_impSem)) _exSems.push(_impSem);
+      merged.semesters = [...new Set(_exSems)].sort();
+      delete merged._crossSemMerge;
       return merged;
     }
     if (diffImpIds.has(c.id)) {
       // User chose "以匯入取代": overwrite basic fields, keep records
+      const _exSems2 = Array.isArray(c.semesters) ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean);
+      const _impSem2 = openDateToSemPrefix(imp.openDate);
+      if (_impSem2 && !_exSems2.includes(_impSem2)) _exSems2.push(_impSem2);
       return { ...imp, records: c.records || [], initialInterview: c.initialInterview,
                psychTestResults: (imp.psychTestResults?.length ? imp.psychTestResults : c.psychTestResults) || [],
-               createdAt: c.createdAt || imp.createdAt };
+               createdAt: c.createdAt || imp.createdAt,
+               semesters: [...new Set(_exSems2)].sort() };
     }
     return c; // skip (user chose to keep existing)
   });
