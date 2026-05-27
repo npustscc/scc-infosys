@@ -32,6 +32,7 @@
       z-index: 500;
     }
     #app-header.compact { height: 40px; padding: 0 16px; }
+    #detail-student-sem-nav { position: sticky; top: var(--hdr-h, 60px); z-index: 400; background: #fff; }
     #app-header h1 { font-size: 1.05rem; font-weight: 600; letter-spacing: .03em; transition: font-size .2s; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     #app-header.compact h1 { font-size: .82rem; }
     #user-info { display: flex; align-items: center; gap: 12px; font-size: .875rem; }
@@ -4669,9 +4670,25 @@ function _getRelatedCases(caseId) {
 }
 
 function toggleDetailSemFilter(caseId) {
+  const sy = window.scrollY;
   _detailSemFilter = _detailSemFilter === 'all' ? 'current' : 'all';
   _recPage = 1;
   showCaseDetail(caseId);
+  requestAnimationFrame(() => window.scrollTo(0, sy));
+}
+function _setDetailSemFilter(val, caseId) {
+  const sy = window.scrollY;
+  _detailSemFilter = val;
+  _recPage = 1;
+  showCaseDetail(caseId);
+  requestAnimationFrame(() => window.scrollTo(0, sy));
+}
+function _switchCaseSem(sem, caseId) {
+  const sy = window.scrollY;
+  _caseDetailActiveSem = sem;
+  _detailSemFilter = 'current';
+  showCaseDetail(caseId);
+  requestAnimationFrame(() => window.scrollTo(0, sy));
 }
 
 function _renderStudentSemNav(caseId, relatedCases) {
@@ -5195,7 +5212,10 @@ function showCaseDetail(caseId) {
   const sortLabel = _recSortDesc ? '新→舊' : '舊→新';
   const sortBtn = `<button class="btn btn-secondary btn-sm" style="font-size:.8rem;" onclick="_recSortDesc=!_recSortDesc;syncUserPref_({recSortDesc:_recSortDesc});showCaseDetail('${escHtml(c.id)}')">排序：${sortLabel}</button>`;
   const _semFilterBtn = (_hasRelated || (_csems && _csems.length > 1))
-    ? `<button class="btn btn-secondary btn-sm" style="font-size:.8rem;${_detailSemFilter==='all'?'background:#ebf8ff;border-color:#90cdf4;font-weight:600;':''}" onclick="toggleDetailSemFilter('${escHtml(c.id)}')">${_detailSemFilter==='all'?'所有學期 ✓':'本學期'}</button>`
+    ? `<select style="font-size:.8rem;padding:3px 8px;border:1px solid #cbd5e0;border-radius:6px;background:#fff;cursor:pointer;" onchange="_setDetailSemFilter(this.value,'${escHtml(c.id)}')">
+        <option value="current"${_detailSemFilter!=='all'?' selected':''}>本學期</option>
+        <option value="all"${_detailSemFilter==='all'?' selected':''}>所有學期</option>
+      </select>`
     : '';
 
   let countLabel, listContent;
@@ -5382,7 +5402,7 @@ function showCaseDetail(caseId) {
         <span style="font-size:.8rem;color:#718096;font-weight:600;white-space:nowrap;">學期：</span>
         ${_csems.map(s => {
           const isAct = s === _activeSem;
-          return `<button onclick="_caseDetailActiveSem='${escHtml(s)}';_detailSemFilter='current';showCaseDetail('${escHtml(c.id)}')"
+          return `<button onclick="_switchCaseSem('${escHtml(s)}','${escHtml(c.id)}')"
             style="padding:4px 14px;border-radius:16px;border:1px solid ${isAct?'#3182ce':'#e2e8f0'};
                    background:${isAct?'#ebf8ff':'#fff'};color:${isAct?'#1a5276':'#4a5568'};
                    font-size:.82rem;font-weight:${isAct?'700':'400'};cursor:pointer;white-space:nowrap;">
@@ -12806,9 +12826,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!_hdrCompact && sy > 80) {
       _hdrCompact = true;
       document.getElementById('app-header')?.classList.add('compact');
+      document.documentElement.style.setProperty('--hdr-h', '40px');
     } else if (_hdrCompact && sy < 50) {
       _hdrCompact = false;
       document.getElementById('app-header')?.classList.remove('compact');
+      document.documentElement.style.setProperty('--hdr-h', '60px');
     }
     const scrollBtn = document.getElementById('header-scroll-top');
     if (scrollBtn) scrollBtn.style.display = _hdrCompact ? '' : 'none';
@@ -16446,9 +16468,10 @@ async function confirmDeleteCaseFromAdmin(caseId) {
 }
 
 async function openSemesterDeleteModal() {
+  const _semOf = c => (Array.isArray(c.semesters) && c.semesters.length) ? c.semesters[0] : openDateToSemPrefix(c.openDate);
   const semMap = new Map();
   casesData.filter(c => !c.deleted).forEach(c => {
-    const sem = openDateToSemPrefix(c.openDate);
+    const sem = _semOf(c);
     if (!sem) return;
     if (!semMap.has(sem)) semMap.set(sem, { cases: [], recCount: 0 });
     const entry = semMap.get(sem);
@@ -16499,7 +16522,7 @@ async function openSemesterDeleteModal() {
   const now = new Date().toISOString();
   // Collect affected cases and records
   const toProcess = [];
-  casesData.filter(c => !c.deleted && semSet.has(openDateToSemPrefix(c.openDate))).forEach(c => {
+  casesData.filter(c => !c.deleted && semSet.has(_semOf(c))).forEach(c => {
     const recs = (c.records || []).filter(r => !r.deleted && r.status !== 'pending');
     const psyRecs = (c.psychiatristRecords || []).filter(pr => !pr.deleted && pr.status !== 'pending');
     const pendingRecs = (c.records || []).filter(r => r.status === 'pending');
@@ -17198,6 +17221,7 @@ function openTransferAssessmentModal(transferId, type) {
           <div><label class="field-label">學號</label><input type="text" class="field-input" id="ta-sid" value="${escHtml(r.studentId||'')}"></div>
           ${t==='incoming' ? `<div><label class="field-label">來源學校</label><input type="text" class="field-input" id="ta-from" value="${escHtml(r.fromSchool||'')}"></div>` : `<div><label class="field-label">轉至學校</label><input type="text" class="field-input" id="ta-to" value="${escHtml(r.toSchool||'')}"></div>`}
         </div>
+        ${t !== 'incoming' ? `
         <div style="margin-bottom:20px;padding:14px;background:#f8fafc;border-radius:8px;">
           <div style="font-weight:600;margin-bottom:8px;">當事人意願 <span class="req">*</span></div>
           <div style="margin-bottom:8px;">${csO('notInformed','未告知轉銜輔導相關措施')}${csO('informed','已告知轉銜輔導相關措施')}</div>
@@ -17230,7 +17254,7 @@ function openTransferAssessmentModal(transferId, type) {
         <div style="padding:14px;background:#f8fafc;border-radius:8px;margin-bottom:20px;">
           <div style="font-weight:600;margin-bottom:8px;">建議</div>
           ${rO2('transfer','建議評估會議轉銜')}${rO2('discuss','建議經評估會議討論後再決定')}${rO2('noTransfer','建議不需轉銜')}
-        </div>
+        </div>` : ''}
         <div style="display:flex;gap:10px;">
           <button class="btn btn-primary" onclick="saveTransferAssessment('${isNew?'__new__':escHtml(r.id)}','${t}')">儲存</button>
           ${!isNew && r.recommendation ? `<button class="btn btn-secondary" onclick="printTransferAssessment('${escHtml(r.id)}')">列印</button>` : ''}
@@ -17238,10 +17262,12 @@ function openTransferAssessmentModal(transferId, type) {
         </div>
       </div>
     </div>`);
-  document.querySelectorAll('[name="ta_cs"]').forEach(el => el.addEventListener('change', () => {
-    document.getElementById('ta-ni-sec').style.display = el.value==='notInformed' ? '' : 'none';
-    document.getElementById('ta-inf-sec').style.display = el.value==='informed' ? '' : 'none';
-  }));
+  if (t !== 'incoming') {
+    document.querySelectorAll('[name="ta_cs"]').forEach(el => el.addEventListener('change', () => {
+      document.getElementById('ta-ni-sec').style.display = el.value==='notInformed' ? '' : 'none';
+      document.getElementById('ta-inf-sec').style.display = el.value==='informed' ? '' : 'none';
+    }));
+  }
 }
 
 async function saveTransferAssessment(idOrNew, type) {
