@@ -1251,8 +1251,8 @@
           <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
             <input type="checkbox" id="pref-counselor-freq" style="width:16px;height:16px;margin-top:2px;flex-shrink:0;" />
             <span>
-              <strong>記憶選單偏好</strong>：常選的輔導人員自動排到最上方<br>
-              <span style="font-size:.82rem;color:#718096;">關閉後改以職別（專任、兼任、精神科醫師、實習、義務）及筆畫排序。</span>
+              <strong>開啟偏好模式</strong>：常選的輔導人員自動排到最上方<br>
+              <span style="font-size:.82rem;color:#718096;">預設（未勾選）為職別排序（主任→專任→兼任→實習→義務）及筆畫排序。</span>
             </span>
           </label>
           <div style="margin-top:10px;">
@@ -2845,7 +2845,7 @@ function applyDrivePrefs() {
 // 傳入 filterFn([email, info]) 過濾，依使用頻率（開啟記憶時）或職別+筆畫排序
 function getSortedCounselorEntries(filterFn) {
   const entries = Object.entries(configData?.users || {}).filter(filterFn);
-  const freqMode = _userPref_('counselorFreqMode', true);
+  const freqMode = _userPref_('counselorFreqMode', false); // 預設：角色排序
   const freqs    = freqMode ? (_userPref_('counselorFreqs', {})) : {};
   entries.sort(([ea, ia], [eb, ib]) => {
     if (freqMode) {
@@ -2860,7 +2860,7 @@ function getSortedCounselorEntries(filterFn) {
   return entries;
 }
 function recordCounselorUsage(...emails) {
-  if (!_userPref_('counselorFreqMode', true)) return;
+  if (!_userPref_('counselorFreqMode', false)) return;
   const freqs = { ..._userPref_('counselorFreqs', {}) };
   emails.filter(Boolean).forEach(e => { freqs[e] = (freqs[e] || 0) + 1; });
   syncUserPref_({ counselorFreqs: freqs });
@@ -4635,7 +4635,7 @@ function mkSection(id, title, bodyHtml, open = true) {
 function showCaseDetail(caseId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
-  if (_detailCaseId !== caseId) { _recPage = 1; _detailCaseId = caseId; }
+  if (_detailCaseId !== caseId) { _recPage = 1; _detailCaseId = caseId; _caseDetailActiveSem = null; }
   _recSortDesc = _userPref_('recSortDesc', false);
 
   document.getElementById('detail-name').textContent = c.name || '—';
@@ -4669,6 +4669,16 @@ function showCaseDetail(caseId) {
   const caseIsDeleted = !!c.deleted;
   const cid = escHtml(c.id);
 
+  // 學期 tab 計算（跨學期同案號）
+  const _csems = Array.isArray(c.semesters) && c.semesters.length > 1 ? [...c.semesters].sort() : null;
+  if (_csems) {
+    if (!_caseDetailActiveSem || !_csems.includes(_caseDetailActiveSem))
+      _caseDetailActiveSem = _csems[_csems.length - 1];
+  } else {
+    _caseDetailActiveSem = openDateToSemPrefix(c.openDate);
+  }
+  const _activeSem = _caseDetailActiveSem;
+
   let actionsHtml = '';
   if (!caseIsDeleted && isActive) {
     actionsHtml += `<button class="btn btn-primary" onclick="openNewRecordPage('${cid}')">＋ 新增記錄</button> `;
@@ -4676,9 +4686,23 @@ function showCaseDetail(caseId) {
   }
   actionsHtml += `<button class="btn btn-secondary" onclick="window.print()">列印</button>`;
   actionsHtml += ` <button class="btn btn-secondary" onclick="openBatchPrintModal('${cid}')">記錄批次列印</button>`;
-  actionsHtml += ` <button class="btn btn-secondary" onclick="openInitialInterviewPage('${cid}')">初次晤談表</button>`;
-  actionsHtml += ` <button class="btn btn-secondary" onclick="openPsychiatristModal('${cid}')">精神科評估</button>`;
-  if (c.initialInterview && (c.initialInterview.type === 'filled' || c.initialInterview.problemsMain)) {
+  const _iiSemData = _getCaseII(c, _activeSem);
+  const _iiAnyExists = !!(c.initialInterview && !c.initialInterview.deleted) ||
+    !!(c.initialInterviews && Object.values(c.initialInterviews).some(x => x && !x.deleted));
+  const _iiLinked  = _iiSemData?.type === 'linkedRecord' || _iiSemData?.type === 'continuation';
+  const _iiSameSem = _iiSemData && openDateToSemPrefix((_iiSemData.createdAt || '').slice(0,10)) === _activeSem;
+  const _iiNone    = !_iiSemData || _iiSemData.deleted;
+  let _iiLabel, _iiOncl;
+  if (_iiNone && !_iiAnyExists) {
+    _iiLabel = '建立初次晤談表'; _iiOncl = `openInitialInterviewPage('${cid}')`;
+  } else if (_iiNone || _iiLinked || !_iiSameSem) {
+    _iiLabel = '初次晤談表'; _iiOncl = `document.getElementById('ii-card-${cid}')?.scrollIntoView({behavior:'smooth',block:'center'})`;
+  } else {
+    _iiLabel = '編輯初次晤談表'; _iiOncl = `openInitialInterviewPage('${cid}')`;
+  }
+  actionsHtml += ` <button class="btn btn-secondary" onclick="${_iiOncl}">${_iiLabel}</button>`;
+  actionsHtml += ` <button class="btn btn-secondary" onclick="openPsychiatristModal('${cid}')">填寫精神科評估</button>`;
+  if (_iiSemData && !_iiSemData.deleted && (_iiSemData.type === 'filled' || _iiSemData.problemsMain)) {
     actionsHtml += ` <button class="btn btn-secondary" onclick="printInitialInterview('${cid}')">列印初次晤談</button>`;
   }
   if (caseIsDeleted) {
@@ -4870,12 +4894,23 @@ function showCaseDetail(caseId) {
     ? `<div class="empty-state" style="padding:30px;"><div class="icon">📝</div><p>尚無晤談紀錄</p></div>`
     : pagedRecords.map(renderRecordCard).join('') + paginationHtml;
 
+  // 學期 tab HTML（多學期案件）
+  const _semTabsHtml = _csems ? `
+    <div style="display:flex;gap:4px;margin-bottom:8px;flex-wrap:wrap;">
+      ${_csems.map(s => `<button class="btn ${s===_activeSem?'btn-primary':'btn-secondary'} btn-sm"
+        style="font-size:.8rem;" onclick="_caseDetailActiveSem='${escHtml(s)}';showCaseDetail('${escHtml(c.id)}')"
+        >${semesterLabel(s)} 學期</button>`).join('')}
+    </div>` : '';
+
   // 初次晤談獨立卡片（獨立於晤談紀錄列表，置於精神科評估之上）
   const iiCardHtml = (() => {
-    if (caseIsDeleted) return '';
-    const ii = c.initialInterview;
+    if (caseIsDeleted) return _semTabsHtml;
+    const ii = _getCaseII(c, _activeSem);
     const iiId = `ii-card-${escHtml(c.id)}`;
     const cid = escHtml(c.id);
+    const _needsII = !ii || ii.deleted ||
+      (ii.type !== 'continuation' && !(ii.type === 'linkedRecord' && ii.recordId) &&
+       ii.type !== 'filled' && !ii.problemsMain?.length && !ii.summary && !ii.mainIssue);
 
     // 動作列（需填寫 / 已刪除時顯示）
     const _iiActionBtns = (showRestore) => `
@@ -4887,14 +4922,14 @@ function showCaseDetail(caseId) {
       </div>
       <div id="ii-continuation-panel-${cid}" style="display:none;"></div>`;
 
-    if (needsInitialInterview(c)) {
+    if (_needsII) {
       const isDeleted = ii?.deleted;
       const canRestore = isDeleted && (isAdminUser || ii.createdBy === currentUser?.email);
       const deletedBadge = isDeleted && canRestore
         ? `<div style="font-size:.8rem;color:#a0aec0;margin-bottom:6px;">（已刪除 by ${escHtml(ii.deletedByName||ii.deletedBy||'—')}${isAdminUser ? '' : ''}）
            ${isAdminUser ? `<button class="btn btn-danger btn-sm" style="font-size:.75rem;margin-left:8px;" onclick="purgeInitialInterview('${cid}')" title="徹底移除">徹底移除</button>` : ''}</div>`
         : '';
-      return `
+      return _semTabsHtml + `
         <div class="record-card" id="${iiId}" style="border:1.5px dashed #f6c00b;background:#fffbeb;">
           <div style="padding:10px 16px 12px;">
             <span style="font-weight:700;color:#8a6d3b;">⚠ 初次晤談紀錄表（未填寫）</span>
@@ -4903,9 +4938,9 @@ function showCaseDetail(caseId) {
           </div>
         </div>`;
     }
-    if (!ii) return '';
+    if (!ii) return _semTabsHtml;
     if (ii.type === 'continuation') {
-      return `
+      return _semTabsHtml + `
         <div class="record-card" id="${iiId}" style="border:1.5px solid #c6f6d5;background:#f0fff4;">
           <div class="record-card-header">
             <span style="font-weight:700;color:#276749;">🗂 初次晤談紀錄表（舊案延續）</span>
@@ -4930,7 +4965,7 @@ function showCaseDetail(caseId) {
           ${lr.assessment ? `<div style="margin-bottom:4px;"><span style="font-size:.78rem;color:#a0aec0;">問題評估：</span><div style="margin-top:3px;">${renderMaybeHtml(lr.assessment)}</div></div>` : ''}
           ${lr.nextPlan ? `<div><span style="font-size:.78rem;color:#a0aec0;">後續處遇計畫：</span><div style="margin-top:3px;">${renderMaybeHtml(lr.nextPlan)}</div></div>` : ''}
         </div>` : '';
-      return `
+      return _semTabsHtml + `
         <div class="record-card" id="${iiId}" style="border:1.5px solid #bee3f8;background:#ebf8ff;">
           <div class="record-card-header">
             <span style="font-weight:700;color:#2b6cb0;">🔗 初次晤談紀錄表（採用 ${escHtml(lr?.date || '某筆')} 晤談紀錄）</span>
@@ -4975,7 +5010,7 @@ function showCaseDetail(caseId) {
     const iiIsCreator = ii.createdBy === currentUser?.email;
     const iiEditable = !ii.createdAt || isEditable(ii.createdAt);
     const iiCanDelete = isAdminUser || (iiIsCreator && iiEditable);
-    return `
+    return _semTabsHtml + `
       <div class="record-card" id="${iiId}" style="border:1.5px solid #b2d8b2;background:#f6fbf6;">
         <div class="record-card-header">
           <span style="font-weight:700;color:#276749;">📋 初次晤談紀錄表</span>
@@ -8098,6 +8133,8 @@ async function finalizeImport(imported, prog) {
 //  初次晤談紀錄表
 // ══════════════════════════════════════════════
 let _initialInterviewCaseId = null;
+let _initialInterviewSem    = null; // which semester's ii is being edited
+let _caseDetailActiveSem    = null; // active semester tab on case detail page
 let _iiDraftKey  = null;
 let _iiDraftTimer = null;
 
@@ -8431,10 +8468,22 @@ function needsInitialInterview(c) {
   return true;
 }
 
+// 取得指定學期的初次晤談表（multi-sem 案件使用 initialInterviews 欄位）
+function _getCaseII(c, semPrefix) {
+  if (Array.isArray(c.semesters) && c.semesters.length > 1) {
+    if (c.initialInterviews?.[semPrefix]) return c.initialInterviews[semPrefix];
+    // backward compat: if no per-sem storage yet, associate old initialInterview with oldest semester
+    const firstSem = [...c.semesters].sort()[0];
+    return semPrefix === firstSem ? (c.initialInterview || null) : null;
+  }
+  return c.initialInterview || null;
+}
+
 function openInitialInterviewPage(caseId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
   _initialInterviewCaseId = caseId;
+  _initialInterviewSem = _caseDetailActiveSem || openDateToSemPrefix(c.openDate);
   document.getElementById('initial-interview-case-info').textContent = `個案：${c.name}（${c.id}）`;
 
   // Reset chip state and image
@@ -8497,18 +8546,17 @@ function openInitialInterviewPage(caseId) {
   // Load custom service options into ii- lists
   _iiLoadCustomServiceOptions();
 
-  // Populate counselor dropdowns
-  const users = configData?.users || {};
+  // Populate counselor dropdowns（依使用者偏好排序：角色排序或偏好模式）
   const _COUNSELING_ROLES = new Set(['主任','專任社會工作師','專任諮商心理師','專任臨床心理師','兼任諮商心理師','兼任臨床心理師','駐校精神科醫師','實習諮商心理師','義務輔導老師']);
   const counselorOpts = '<option value="">— 請選擇輔導人員 —</option>' +
-    Object.keys(users).filter(e => users[e]?.name && _COUNSELING_ROLES.has(users[e]?.role)).map(e =>
-      `<option value="${escHtml(e)}">${escHtml(formatCounselorLabel(e))}</option>`
-    ).join('');
+    getSortedCounselorEntries(([e, u]) => !!(u?.name) && _COUNSELING_ROLES.has(u?.role))
+      .map(([e]) => `<option value="${escHtml(e)}">${escHtml(formatCounselorLabel(e))}</option>`)
+      .join('');
   ['ii-result-counselor','ii-transfer-counselor','ii-sup-old-counselor'].forEach(id => {
     const sel = document.getElementById(id); if (sel) sel.innerHTML = counselorOpts;
   });
 
-  const existing = c.initialInterview;
+  const existing = _getCaseII(c, _initialInterviewSem);
   if (existing && !existing.deleted && existing.type !== 'continuation' && existing.type !== 'linkedRecord') _iiPopulateForm(existing);
   attachInit('ii', (existing && !existing.deleted) ? (existing.attachments || []) : []);
 
@@ -8672,11 +8720,20 @@ async function saveInitialInterview() {
   snap.attachments = _iiAttachments;
   snap.updatedAt = new Date().toISOString();
   snap.updatedBy = currentUser?.email;
-  const prev = casesData[cidx].initialInterview;
+  const _isMultiSem = Array.isArray(casesData[cidx].semesters) && casesData[cidx].semesters.length > 1;
+  const prev = _isMultiSem && _initialInterviewSem
+    ? (casesData[cidx].initialInterviews?.[_initialInterviewSem] || casesData[cidx].initialInterview)
+    : casesData[cidx].initialInterview;
   snap.createdAt = prev?.createdAt || snap.updatedAt;
   snap.createdBy = prev?.createdBy || currentUser?.email;
   delete snap.status; delete snap.draftSavedAt;
-  casesData[cidx].initialInterview = snap;
+  if (_isMultiSem && _initialInterviewSem) {
+    if (!casesData[cidx].initialInterviews) casesData[cidx].initialInterviews = {};
+    casesData[cidx].initialInterviews[_initialInterviewSem] = snap;
+    casesData[cidx].initialInterview = snap; // backward compat
+  } else {
+    casesData[cidx].initialInterview = snap;
+  }
   casesData[cidx].updatedAt = snap.updatedAt;
   // mark corresponding todo as done
   const _iiTodo = todosData.find(t => t.caseId === _initialInterviewCaseId && t.type === 'initial_interview' && !t.done);
@@ -12687,7 +12744,7 @@ function renderPrefsPage() {
   document.getElementById('pref-pin-confirm').style.background  = _pinGray;
   document.getElementById('pref-error').style.display   = 'none';
   document.getElementById('pref-success').style.display = 'none';
-  document.getElementById('pref-counselor-freq').checked = _userPref_('counselorFreqMode', true);
+  document.getElementById('pref-counselor-freq').checked = _userPref_('counselorFreqMode', false);
 
   // 同步鎖定按鈕可見性
   const lockBtn = document.getElementById('header-lock-btn');
