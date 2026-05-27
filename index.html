@@ -4669,7 +4669,7 @@ function showCaseDetail(caseId) {
     actionsHtml += `<button class="btn btn-secondary" onclick="openEventRecordForm('${cid}', undefined, 'case-detail')">＋ 事件處理記錄</button> `;
   }
   actionsHtml += `<button class="btn btn-secondary" onclick="window.print()">列印</button>`;
-  actionsHtml += ` <button class="btn btn-secondary" onclick="printAllRecords('${cid}')">列印晤談彙整</button>`;
+  actionsHtml += ` <button class="btn btn-secondary" onclick="openBatchPrintModal('${cid}')">記錄批次列印</button>`;
   actionsHtml += ` <button class="btn btn-secondary" onclick="openInitialInterviewPage('${cid}')">初次晤談表</button>`;
   actionsHtml += ` <button class="btn btn-secondary" onclick="openPsychiatristModal('${cid}')">精神科評估</button>`;
   if (c.initialInterview && (c.initialInterview.type === 'filled' || c.initialInterview.problemsMain)) {
@@ -13435,107 +13435,167 @@ function exportCasesCSV() {
 }
 
 // ══════════════════════════════════════════════
-//  列印晤談彙整
+//  記錄批次列印
 // ══════════════════════════════════════════════
-function printAllRecords(caseId) {
+function openBatchPrintModal(caseId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
-  const records = (c.records || []).filter(r => !r.deleted).sort((a, b) => (a.date || '') < (b.date || '') ? -1 : 1);
+  const records = (c.records || []).filter(r => !r.deleted).sort((a, b) => (a.date||'') < (b.date||'') ? -1 : 1);
   if (!records.length) { alert('此個案尚無晤談紀錄。'); return; }
 
+  const weekdays = ['日','一','二','三','四','五','六'];
+  const fmtDate = d => {
+    if (!d) return '';
+    const dt = new Date(d + 'T00:00:00');
+    return `${d}（${weekdays[dt.getDay()]}）`;
+  };
+
+  document.getElementById('batch-print-overlay')?.remove();
+  const ov = document.createElement('div');
+  ov.id = 'batch-print-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;';
+
+  const rows = records.map(r => {
+    const snippet = (r.summary||'').replace(/<[^>]*>/g,'').slice(0, 60);
+    const dateStr = escHtml(fmtDate(r.date));
+    const timeStr = escHtml(r.time || '');
+    const snipStr = snippet ? `<div style="font-size:.8rem;color:#718096;margin-top:2px;">${escHtml(snippet)}${snippet.length >= 60 ? '…' : ''}</div>` : '';
+    return `<label style="display:flex;align-items:flex-start;gap:10px;padding:8px;border-radius:6px;cursor:pointer;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background=''">
+      <input type="checkbox" class="bp-cb" data-rid="${escHtml(r.id)}" checked style="margin-top:3px;flex-shrink:0;">
+      <div><div style="font-weight:600;font-size:.9rem;">${dateStr}　${timeStr}</div>${snipStr}</div>
+    </label>`;
+  }).join('');
+
+  ov.innerHTML = `<div style="background:#fff;border-radius:10px;padding:24px;max-width:600px;width:90%;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.3);">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <div style="font-size:1.05rem;font-weight:700;">記錄批次列印 — ${escHtml(c.name)}（${escHtml(caseId)}）</div>
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('batch-print-overlay').remove()">✕ 關閉</button>
+    </div>
+    <div style="margin-bottom:10px;display:flex;gap:8px;">
+      <button class="btn btn-secondary btn-sm" onclick="_bpSelectAll(true)">全選</button>
+      <button class="btn btn-secondary btn-sm" onclick="_bpSelectAll(false)">取消全選</button>
+    </div>
+    <div id="bp-list" style="overflow-y:auto;flex:1;border:1px solid #e2e8f0;border-radius:6px;padding:6px;margin-bottom:16px;">${rows}</div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <button class="btn btn-secondary" onclick="document.getElementById('batch-print-overlay').remove()">取消</button>
+      <button class="btn btn-primary" onclick="_doBatchPrint('${escHtml(caseId)}')">列印選取</button>
+    </div>
+  </div>`;
+  document.body.appendChild(ov);
+}
+
+function _bpSelectAll(checked) {
+  document.querySelectorAll('#batch-print-overlay .bp-cb').forEach(cb => { cb.checked = checked; });
+}
+
+function _doBatchPrint(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const checkedIds = new Set([...document.querySelectorAll('#batch-print-overlay .bp-cb:checked')].map(cb => cb.dataset.rid));
+  if (!checkedIds.size) { alert('請至少勾選一筆紀錄。'); return; }
+  const records = (c.records || [])
+    .filter(r => !r.deleted && checkedIds.has(r.id))
+    .sort((a, b) => (a.date||'') < (b.date||'') ? -1 : 1);
+  document.getElementById('batch-print-overlay')?.remove();
+  _renderBatchPrintHtml(c, records);
+}
+
+function _renderBatchPrintHtml(c, records) {
   const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const printRich = s => {
     const t = String(s || '');
     if (/<\/?[a-z][\s\S]*?>/i.test(t)) return sanitizeRichHtml(t);
     return esc(t).replace(/\n/g, '<br>');
   };
+  const hasContent = s => !!(s||'').replace(/<[^>]*>/g,'').trim();
+
   const weekdays = ['日','一','二','三','四','五','六'];
-  const bdDisp = (c.birthday || '').replace(/-/g, '/');
-  const deptDisp = [c.department, c.grade, c.classNo].filter(Boolean).join(' ');
+  const bdDisp    = (c.birthday || '').replace(/-/g, '/');
+  const deptDisp  = [c.department, c.grade, c.classNo].filter(Boolean).join(' ');
   const printTime = new Date().toLocaleString('zh-TW',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
   const printerName = configData?.users?.[currentUser?.email]?.name || currentUser?.name || '';
-
   const topicAliasMap = { '家庭問題':'家庭關係','人際互動':'人際關係','學業與學習':'學習與課業','生涯發展與規劃':'生涯探索','網路沉迷':'網路成癮' };
-  const officialTopics = ['自我探索','情感困擾','家庭關係','心理疾患或傾向','情緒困擾','人際關係','學習與課業','生涯探索','生活適應','網路成癮','生理健康','性別議題','其他'];
 
-  const renderOneRecord = (r, idx) => {
-    const dateObj = r.date ? new Date(r.date + 'T00:00:00') : null;
-    const weekday = dateObj ? `（${weekdays[dateObj.getDay()]}）` : '';
-    const timeDisp = (r.time || '').startsWith('其他：') ? r.time.slice(3) : (r.time || '');
-    const normalizedTopics = new Set((r.topics || []).map(t => topicAliasMap[t] || t));
-    const topicCbs = officialTopics.map((t, i) => {
-      const chk = normalizedTopics.has(t) || (t === '其他' && [...normalizedTopics].some(x => x.startsWith('其他')));
-      const note = (t === '其他' && chk) ? ([...normalizedTopics].find(x => x.startsWith('其他：')) || '').slice(3) : '';
-      return `<div class="cb-item"><div class="cb-row"><span style="font-size:2em;line-height:1;">${chk?'■':'□'}</span> ${i+1}. ${esc(t)}${note?'：'+esc(note):''}</div></div>`;
-    }).join('');
-    const svcItems = r.serviceItems || [];
-    const hasSvc = (...kws) => svcItems.some(s => kws.some(k => s.includes(k)));
-    const formSvcs = [
-      { label:'諮商輔導/諮詢', star:false, checked:hasSvc('諮商輔導') },
-      { label:'心理測驗', star:true, checked:hasSvc('心理測驗') },
-      { label:'與個案相關資源或關係人聯繫', star:true, checked:hasSvc('與個案相關資源') },
-      { label:'轉介至外部相關資源，持續諮商或治療', star:false, checked:hasSvc('持續諮商') },
-      { label:'轉介至外部相關資源，資源連結', star:true, checked:hasSvc('資源連結') },
-      { label:'轉介校內精神科醫師', star:false, checked:hasSvc('校內精神科醫師') },
-      { label:'轉介校外精神科醫師', star:false, checked:hasSvc('校外精神科醫師') },
-      { label:'責任通報', star:true, checked:hasSvc('責任通報') },
-      { label:'陪同服務', star:true, checked:hasSvc('陪同服務') },
-      { label:'內部轉案', star:true, checked:hasSvc('內部轉案') },
-      { label:'結案', star:false, checked:hasSvc('結案') },
-      { label:'其他', star:true, checked:hasSvc('其他') },
-    ];
-    const getDetail = (...kws) => { const m = svcItems.find(s => kws.some(k => s.includes(k))); if (!m) return ''; const ci = m.indexOf('：'); return ci >= 0 ? m.slice(ci + 1) : ''; };
-    const detailMap = ['',getDetail('心理測驗'),'','','','','',getDetail('責任通報'),getDetail('陪同服務'),getDetail('內部轉案'),'',getDetail('其他')];
-    const svcCbs = formSvcs.map((sv, i) => {
-      const det = detailMap[i] ? `<div class="cb-det">${esc(detailMap[i])}</div>` : '';
-      return `<div class="cb-item"><div class="cb-row"><span style="font-size:2em;line-height:1;">${sv.checked?'■':'□'}</span> ${i+1}. ${sv.star?'*':''}${esc(sv.label)}</div>${det}</div>`;
-    }).join('');
+  const renderOne = (r, idx) => {
+    const dateObj  = r.date ? new Date(r.date + 'T00:00:00') : null;
+    const weekday  = dateObj ? `（${weekdays[dateObj.getDay()]}）` : '';
+    const timeDisp = (r.time||'').startsWith('其他：') ? r.time.slice(3) : (r.time||'');
+    const topicsText = (r.topics||[]).map(t => topicAliasMap[t] || t).join('、') || '—';
+    const svcText    = (r.serviceItems||[]).map(s => s.replace(/[：:].*$/, '')).join('、') || '—';
+    const counselor  = esc(r.counselorName || r.counselorEmail || '');
+
+    // 處理經過：僅有主述時不加標籤；有其他欄位時全部加標籤
+    const hasOther = hasContent(r.assessment) || hasContent(r.nextPlan) || hasContent(r.notes);
+    let procParts = [];
+    if (hasOther) {
+      if (hasContent(r.summary))    procParts.push(`<div class="proc-label">【主述】</div><div class="proc-body">${printRich(r.summary)}</div>`);
+      if (hasContent(r.assessment)) procParts.push(`<div class="proc-label">【問題評估】</div><div class="proc-body">${printRich(r.assessment)}</div>`);
+      if (hasContent(r.nextPlan))   procParts.push(`<div class="proc-label">【後續處遇計畫】</div><div class="proc-body">${printRich(r.nextPlan)}</div>`);
+      if (hasContent(r.notes))      procParts.push(`<div class="proc-label">【備註】</div><div class="proc-body">${printRich(r.notes)}</div>`);
+    } else {
+      procParts.push(`<div class="proc-body">${printRich(r.summary)}</div>`);
+    }
+    const procContent = procParts.join('<div class="proc-sep"></div>');
+
     return `
 <div class="rec-page" style="page-break-before:${idx===0?'auto':'always'};">
+<div class="hdr-school">國立屏東科技大學學生諮商中心</div>
 <div class="title">個　案　紀　錄　表</div>
-<table style="table-layout:fixed">
-  <tr><td>姓名：${esc(c.name)}</td><td>出生年月日：${esc(bdDisp)}</td><td>系級：${esc(deptDisp)}</td></tr>
-  <tr><td>案號：${esc(c.id)}</td><td>身分證／居留證：${esc(c.idNumber)}</td><td>電話：${esc(c.phone)}</td></tr>
-  <tr><td>學號：${esc(c.studentId)}</td><td colspan="2">晤談日期：${esc(r.date)}${weekday}　${esc(timeDisp)}</td></tr>
+<table class="info-tbl">
+  <tr>
+    <td class="th">姓名</td><td>${esc(c.name)}</td>
+    <td class="th">學號</td><td>${esc(c.studentId)}</td>
+    <td class="th">系級</td><td>${esc(deptDisp)}</td>
+  </tr>
+  <tr>
+    <td class="th">案號</td><td>${esc(c.id)}</td>
+    <td class="th">出生年月日</td><td>${esc(bdDisp)}</td>
+    <td class="th">電話</td><td>${esc(c.phone)}</td>
+  </tr>
+  <tr>
+    <td class="th">晤談日期</td><td colspan="3">${esc(r.date)}${weekday}　${esc(timeDisp)}</td>
+    <td class="th">晤談者</td><td>${counselor}</td>
+  </tr>
+  <tr>
+    <td class="th">會談主題</td><td colspan="5" style="line-height:1.6;">${esc(topicsText)}</td>
+  </tr>
+  <tr>
+    <td class="th">服務項目</td><td colspan="5" style="line-height:1.6;">${esc(svcText)}</td>
+  </tr>
 </table>
-<div class="sec"><div class="sh">一、會談主題</div><div class="topic-grid">${topicCbs}</div></div>
-<div class="sec"><div class="sh">二、主述與會談資料</div><div class="box">${printRich(r.summary)}</div></div>
-<div class="sec"><div class="sh">三、問題評估</div><div class="box sm">${printRich(r.assessment)}</div></div>
-<div class="sec"><div class="sh">四、當次介入處遇</div><div class="svc-grid">${svcCbs}</div></div>
-<div class="sec"><div class="sh">五、後續處遇計畫</div><div class="box sm">${printRich(r.nextPlan)}</div></div>
-<div class="sig"><div class="sig-f">晤談人員：<div class="sig-l">${esc(r.counselorName||r.counselorEmail||'')}</div></div></div>
+<div class="proc-box">
+  <div class="proc-title">處　理　經　過</div>
+  <div class="proc-content">${procContent}</div>
+</div>
+<div class="sig"><div class="sig-f">晤談人員：<div class="sig-l">${counselor}</div></div></div>
 </div>`;
   };
 
   const html = `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
-<title>晤談彙整 ${esc(c.name)} ${esc(c.id)}</title>
+<title>記錄批次列印 ${esc(c.name)} ${esc(c.id)}</title>
 <style>
 @page{size:A4 portrait;margin:0}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'微軟正黑體','Microsoft JhengHei','Noto Sans TC',sans-serif;font-size:11pt;color:#000}
-.rec-page{padding:16mm 15mm}
-.title{text-align:center;font-size:15pt;font-weight:bold;letter-spacing:2pt;margin-bottom:10pt;padding-bottom:6pt;border-bottom:1.5pt solid #000}
-table{width:100%;border-collapse:collapse;margin-bottom:8pt;font-size:10pt}
-td{padding:3pt 0;border:none}
-td+td{padding-left:12pt}
-.sec{margin-bottom:8pt}
-.sh{font-size:10.5pt;font-weight:bold;margin-bottom:3pt;border-bottom:.8pt solid #999;padding-bottom:2pt}
-.box{min-height:60pt;padding:4pt 0;white-space:pre-wrap;font-size:10pt;line-height:1.7;word-break:break-all;border-bottom:.5pt solid #ccc}
-.box.sm{min-height:36pt}
-.topic-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:1pt 6pt;margin:3pt 0}
-.svc-grid{display:grid;grid-template-columns:1fr 1fr;gap:4pt 8pt;margin:3pt 0;align-items:start}
-.cb-item{display:flex;flex-direction:column;font-size:9.5pt;line-height:1.2}
-.cb-row{display:flex;align-items:baseline;gap:3pt}
-.cb-det{font-size:8.5pt;color:#333;padding-left:30pt;margin-top:1pt}
-.topic-grid .cb-item{line-height:1}
-.topic-grid .cb-row{align-items:center}
-.topic-grid .cb-row > span:first-child{font-size:1.3em !important}
-.sig{display:flex;justify-content:flex-end;margin-top:14pt}
+.rec-page{padding:14mm 15mm}
+.hdr-school{text-align:center;font-size:11pt;margin-bottom:3pt;}
+.title{text-align:center;font-size:14pt;font-weight:bold;letter-spacing:3pt;margin-bottom:8pt;padding-bottom:5pt;border-bottom:1.5pt solid #000}
+.info-tbl{width:100%;border-collapse:collapse;font-size:10pt;margin-bottom:0;}
+.info-tbl td{padding:4pt 6pt;border:.8pt solid #555;}
+.info-tbl td.th{font-weight:bold;background:#f0f0f0;white-space:nowrap;text-align:center;width:58pt;}
+.proc-box{border:.8pt solid #555;border-top:none;min-height:180pt;}
+.proc-title{font-size:11pt;font-weight:bold;letter-spacing:2pt;text-align:center;padding:4pt;border-bottom:.8pt solid #555;background:#f0f0f0;}
+.proc-content{padding:8pt 10pt;font-size:10pt;line-height:1.8;word-break:break-all;}
+.proc-label{font-weight:bold;margin-top:8pt;margin-bottom:2pt;color:#1a202c;}
+.proc-label:first-child{margin-top:0;}
+.proc-body{padding-left:2pt;white-space:pre-wrap;}
+.proc-sep{border-top:.5pt dashed #bbb;margin:8pt 0;}
+.sig{display:flex;justify-content:flex-end;margin-top:12pt}
 .sig-f{display:flex;align-items:flex-end;gap:6pt;font-size:10.5pt}
-.sig-l{border-bottom:.8pt solid #000;width:120pt;padding-bottom:2pt;text-align:center;font-size:10pt}
+.sig-l{border-bottom:.8pt solid #000;min-width:120pt;padding-bottom:2pt;text-align:center;font-size:10pt}
 .foot{font-size:7.5pt;color:#888;text-align:right;margin-top:10pt;border-top:.5pt solid #ccc;padding-top:4pt}
 </style></head><body>
-${records.map((r, i) => renderOneRecord(r, i)).join('\n')}
+${records.map((r, i) => renderOne(r, i)).join('\n')}
 <div class="foot" style="padding:0 15mm 8mm;">${printerName ? esc(printerName)+' 於 ' : ''}${esc(printTime)} 列印　共 ${records.length} 筆晤談紀錄　國立屏東科技大學學生諮商中心資訊系統</div>
 <script>window.addEventListener('load',()=>window.print());<\/script>
 </body></html>`;
