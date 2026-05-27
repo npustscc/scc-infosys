@@ -289,6 +289,7 @@
     .badge-green  { background: #d5f5e3; color: #1d6a3a; }
     .badge-orange { background: #fdebd0; color: #9c4a00; }
     .badge-gray   { background: #e2e8f0; color: #4a5568; }
+    .badge-teal   { background: #e6fffa; color: #234e52; border: 1px solid #81e6d9; }
 
     .btn-sm { padding: 4px 10px; font-size: .78rem; }
     .btn-danger { background: #e74c3c; color: #fff; }
@@ -1813,6 +1814,12 @@
               <label><input type="radio" name="nc-source" value="校外轉介" /> 校外轉介</label>
               <label><input type="radio" name="nc-source" value="其他" /> 其他</label>
             </div>
+          </div>
+          <div class="full" style="margin-top:2px;">
+            <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" id="nc-is-transfer-case" />
+              <span style="font-weight:600;color:#234e52;">轉銜個案（永久標記）</span>
+            </label>
           </div>
           <div class="full">
             <label class="field-label">過去紀錄（可複選）</label>
@@ -3730,9 +3737,10 @@ function renderCases() {
     } else {
       actionBtn = `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();closeCaseConfirm('${cid}')">結案</button>`;
     }
+    const transferBadge = c.isTransferCase ? ' <span class="badge badge-teal">轉銜個案</span>' : '';
     const statusCell = c.deleted
       ? `<span class="badge-case-deleted">已刪除</span>`
-      : statusBadge(c.status);
+      : statusBadge(c.status) + transferBadge;
     return `
     <tr class="${c.deleted ? 'case-deleted-row' : ''}" style="cursor:pointer;" onclick="showCaseDetail('${cid}')">
       <td>${escHtml(c.id    || '—')}</td>
@@ -4799,6 +4807,7 @@ function showCaseDetail(caseId) {
     `主責：${escHtml(c.counselorText || c.counselorName || c.counselorEmail || '—')}` +
     (!c.counselorEmail && (c.counselorText || c.counselorName) ? ' <span style="font-size:.72rem;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1px 7px;color:#a0aec0;">未連結帳號</span>' : '') +
     `&nbsp;&nbsp;${statusBadge(c.status)}` +
+    (c.isTransferCase ? ' &nbsp;<span class="badge badge-teal">轉銜個案</span>' : '') +
     (c.deleted ? ` &nbsp;<span class="badge-case-deleted">已刪除 by ${escHtml(c.deletedByName || c.deletedBy || '?')}</span>` : '');
 
   const notesEl = document.getElementById('detail-import-notes');
@@ -7191,6 +7200,9 @@ function openEditCasePage(caseId) {
   updateOpenDateRoc();
   updateBirthRoc();
 
+  const _ncTransferEditEl = document.getElementById('nc-is-transfer-case');
+  if (_ncTransferEditEl) _ncTransferEditEl.checked = !!c.isTransferCase;
+
   document.getElementById('nc-refill-section').style.display = 'none';
   document.getElementById('new-case-page-title').textContent = '編輯個案';
   document.getElementById('btn-save-case').textContent = '更新個案';
@@ -7283,6 +7295,7 @@ function openNewCasePage() {
   calcBsrsTotal();
   setAlert('new-case-alert', '', '');
   document.getElementById('nc-id-format-hint').style.display = 'none';
+  const _ncTransferEl = document.getElementById('nc-is-transfer-case'); if (_ncTransferEl) _ncTransferEl.checked = false;
 
   // 填充主責人員選單
   const sel = document.getElementById('nc-counselor');
@@ -9776,6 +9789,7 @@ async function saveCase() {
   const bsrs6v = document.getElementById('nc-bsrs6')?.value;
   const bsrs6 = bsrs6v !== '' ? parseInt(bsrs6v) : null;
   const bsrsTotal = bsrs.some(v => v !== null) ? bsrs.filter(v=>v!==null).reduce((a,b)=>a+b,0) : null;
+  const isTransferCase = !!(document.getElementById('nc-is-transfer-case')?.checked);
 
   const pastRecords = [];
   if (document.getElementById('nc-past-psych').checked)   pastRecords.push('精神科就診');
@@ -9864,7 +9878,7 @@ async function saveCase() {
     source, pastRecords, topics,
     counselorEmail, counselorName, counselorText: '',
     bsrs, bsrs6, bsrsTotal,
-    abType, status, createdAt: now, updatedAt: now,
+    abType, status, isTransferCase, createdAt: now, updatedAt: now,
   };
 
   try {
@@ -9895,6 +9909,15 @@ async function saveCase() {
       if (counselorEmail && counselorEmail !== currentUser.email)
         cfgChanged = addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name) || cfgChanged;
       if (cfgChanged) { await driveUpdateJsonFile(CONFIG_FILE, configData); renderNotifBell(); }
+      // 若從轉銜管理「建立個案」進入，自動連結轉銜紀錄
+      if (window._transferPendingLink) {
+        const _tIdx = transferData.findIndex(t => t.id === window._transferPendingLink);
+        if (_tIdx >= 0) {
+          transferData[_tIdx].caseId = newCase.id;
+          await saveTransfer();
+        }
+        window._transferPendingLink = null;
+      }
       auditLog('新增個案', newCase.id);
       hideLoading();
       showPage('page-cases', document.querySelector('[data-nav-id="page-cases"]'));
@@ -17301,6 +17324,12 @@ async function createCaseFromTransfer(transferId) {
     const gRadio = document.querySelector(`input[name="nc-gender"][value="${r.legalGender}"]`);
     if (gRadio) gRadio.checked = true;
   }
+  const _srcRadio = document.querySelector('input[name="nc-source"][value="轉銜關懷"]');
+  if (_srcRadio) _srcRadio.checked = true;
+  const _stsRadio = document.querySelector('input[name="nc-status"][value="pending"]');
+  if (_stsRadio) _stsRadio.checked = true;
+  const _tcEl = document.getElementById('nc-is-transfer-case');
+  if (_tcEl) _tcEl.checked = true;
   window._transferPendingLink = transferId;
 }
 
