@@ -1886,6 +1886,7 @@
 
       <div class="form-actions">
         <button class="btn btn-secondary" onclick="cancelCaseForm()">取消</button>
+        <button class="btn btn-danger" id="btn-delete-sem-data" style="display:none;" onclick="">刪除此學期基本資料</button>
         <button class="btn btn-primary" id="btn-save-case" onclick="saveCase()">儲存個案</button>
       </div>
     </div>
@@ -4978,7 +4979,6 @@ function showCaseDetail(caseId) {
   if (!caseIsDeleted) {
     actionsHtml += `<button class="btn btn-secondary" onclick="showNewSemModal('${cid}')">新學期開案</button>`;
     if (_hasNewCounselorAlert(c)) actionsHtml += ` <button class="btn btn-secondary" style="font-size:.83rem;padding:4px 10px;" onclick="dismissNewCounselorAlert('${cid}')">取消新案提醒</button>`;
-    if (!isActive) actionsHtml += ` <button class="btn btn-secondary" onclick="reopenCase('${cid}')">取消結案</button>`;
     if (isAdminUser) {
       actionsHtml += ` <button class="btn btn-danger" onclick="deleteCase('${cid}')">刪除個案</button>`;
       actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【錯誤建案處理流程】\\n\\n若此個案為錯誤建立，請依下列步驟操作：\\n1. 點擊「刪除個案」，將個案標記為已刪除（可復原）\\n2. 確認無誤後，再由主任或管理者點擊「永久刪除」\\n   → 個案紀錄與身分資料將完全移除，無法復原')">？</button>`;
@@ -5006,6 +5006,13 @@ function showCaseDetail(caseId) {
   } else {
     _iiLabel = '編輯初次晤談表'; _iiOncl = `openInitialInterviewPage('${cid}')`;
   }
+  // 判斷此學期是否有結案評估可列印
+  const _semHasClosureEval = (c.semesterEvaluations || []).some(e => e.type === 'closure' && e.semester === _activeSem)
+    || (!( (c.semesterEvaluations||[]).some(e => e.type === 'closure') ) && !!c.closureEvaluation);
+  // 判斷此學期是否可刪除（超過1個學期且無紀錄）
+  const _semMonths = semesterMonths(_activeSem || '');
+  const _semHasRecords = (c.records||[]).some(r => !r.deleted && _semMonths.includes((r.date||'').slice(0,7)));
+  const _canDeleteSem = (c.semesters||[]).length > 1;
   let semActHtml = '';
   if (!caseIsDeleted) {
     if (isActive) {
@@ -5015,12 +5022,18 @@ function showCaseDetail(caseId) {
     semActHtml += ` <button class="btn btn-secondary" onclick="openBatchPrintModal('${cid}')">記錄批次列印</button>`;
     semActHtml += ` <button class="btn btn-secondary" onclick="${_iiOncl}">${_iiLabel}</button>`;
     semActHtml += ` <button class="btn btn-secondary" onclick="openPsychiatristModal('${cid}')">填寫精神科評估</button>`;
-    if (c.closureEvaluation) {
-      semActHtml += ` <button class="btn btn-secondary" onclick="printClosureEval('${cid}')">列印結案評估</button>`;
+    if (_semHasClosureEval) {
+      semActHtml += ` <button class="btn btn-secondary" onclick="printClosureEval('${cid}', null, '${_activeSem}')">列印結案評估</button>`;
     }
     semActHtml += ` <button class="btn btn-secondary" onclick="openEditCasePage('${cid}')">編輯基本資料</button>`;
     if (isActive) {
       semActHtml += ` <button class="btn btn-danger" onclick="closeCaseConfirm('${cid}')">結案</button>`;
+    }
+    if (!isActive) {
+      semActHtml += ` <button class="btn btn-secondary" onclick="reopenCase('${cid}')">取消結案</button>`;
+    }
+    if (_canDeleteSem) {
+      semActHtml += ` <button class="btn btn-danger" onclick="deleteCaseSemData('${cid}','${_activeSem}')"${_semHasRecords ? ' disabled title="此學期已有個案紀錄，無法刪除基本資料"' : ''}>刪除此學期基本資料</button>`;
     }
   }
   const semActEl = document.getElementById('detail-sem-actions');
@@ -5426,9 +5439,12 @@ function showCaseDetail(caseId) {
       `<div style="margin-bottom:10px;">${addBtn}</div><div>${emptyMsg}${cards}</div>`);
   })();
 
-  // 結案評估區塊（已結案才顯示）
+  // 結案評估區塊（僅顯示當前選取學期的結案評估）
   const evalHtml = (() => {
-    const ev = c.closureEvaluation;
+    // Look up semester-specific closure eval; fallback to legacy c.closureEvaluation only if no typed entries exist
+    const semClosure = (c.semesterEvaluations || []).find(e => e.type === 'closure' && e.semester === _activeSem);
+    const hasTypedClosures = (c.semesterEvaluations || []).some(e => e.type === 'closure');
+    const ev = semClosure || (!hasTypedClosures ? c.closureEvaluation : null);
     if (!ev) return '';
     const lightMap = { '紅燈':'light-red','橙燈':'light-orange','黃燈':'light-yellow','綠燈':'light-green' };
     const dimRows = (ev.dimensions || []).map(d =>
@@ -5454,16 +5470,16 @@ function showCaseDetail(caseId) {
         <div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.treatmentProvided)}</div></div>` : ''}
       ${ev.description ? `<div style="margin-top:12px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:4px;">質性描述</div>
         <div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.description)}</div></div>` : ''}
-      <div style="margin-top:14px;"><button class="btn btn-secondary btn-sm" onclick="printClosureEval('${escHtml(c.id)}')">列印結案評估</button></div>`;
+      <div style="margin-top:14px;"><button class="btn btn-secondary btn-sm" onclick="printClosureEval('${escHtml(c.id)}', null, '${_activeSem}')">列印結案評估</button></div>`;
     return mkSection('eval', '結案評估', evalBody);
   })();
 
-  // 學期評估記錄（顯示目前選取學期的評估）
+  // 學期評估記錄（只顯示當前選取學期的 type==='semester' 評估；結案評估在 evalHtml 區塊）
   const semEvalHtml = (() => {
     const allSems = c.semesterEvaluations;
     if (!allSems || !allSems.length) return '';
     const filtered = allSems.map((ev, origIdx) => ({ ev, origIdx }))
-      .filter(({ ev }) => !_activeSem || !ev.semester || ev.semester === _activeSem);
+      .filter(({ ev }) => ev.type !== 'closure' && (!_activeSem || !ev.semester || ev.semester === _activeSem));
     if (!filtered.length) return '';
     const lightMap = { '紅燈':'light-red','橙燈':'light-orange','黃燈':'light-yellow','綠燈':'light-green' };
     const cards = filtered.map(({ ev, origIdx }) => {
@@ -7130,20 +7146,27 @@ function _buildEvalPrintHtml(c, ev, formTitle) {
   </body></html>`;
 }
 
-function printClosureEval(caseId, semIdx) {
+function printClosureEval(caseId, semIdx, semPrefix) {
   const cid = caseId || _closureCaseId;
   const c = casesData.find(x => x.id === cid);
   if (!c) return;
-  // If semIdx provided, print a specific semester evaluation; otherwise print closure evaluation
   let ev, formTitle;
   if (semIdx != null) {
     ev = (c.semesterEvaluations || [])[semIdx];
-    formTitle = '學期評估表';
+    formTitle = ev?.type === 'closure' ? '結案評估表' : '學期評估表';
+  } else if (semPrefix) {
+    // Look up semester-specific closure eval
+    ev = (c.semesterEvaluations || []).find(e => e.type === 'closure' && e.semester === semPrefix);
+    formTitle = '結案評估表';
+    // Fallback to legacy c.closureEvaluation if no typed entries
+    if (!ev && !(c.semesterEvaluations || []).some(e => e.type === 'closure')) {
+      ev = c.closureEvaluation;
+    }
   } else {
     ev = c.closureEvaluation;
     formTitle = '結案評估表';
   }
-  if (!ev) { alert('此個案尚無評估資料。'); return; }
+  if (!ev) { alert('此學期尚無評估資料。'); return; }
   const html = _buildEvalPrintHtml(c, ev, formTitle);
   const w = window.open('','_blank');
   if (w) { w.document.write(html); w.document.close(); }
@@ -7196,17 +7219,20 @@ async function saveClosureEval() {
   const prev = {
     status: casesData[idx].status,
     closureEvaluation: casesData[idx].closureEvaluation,
-    semesterEvaluations: casesData[idx].semesterEvaluations,
+    semesterEvaluations: casesData[idx].semesterEvaluations ? [...casesData[idx].semesterEvaluations] : undefined,
   };
 
+  const evalSem = _closureEvalSem || currentSemesterPrefix();
+  const evalType = isClosure ? 'closure' : 'semester';
   casesData[idx].updatedAt = new Date().toISOString();
-  if (isClosure) {
-    casesData[idx].status = 'closed';
-    casesData[idx].closureEvaluation = evalData;
-  } else {
-    if (!casesData[idx].semesterEvaluations) casesData[idx].semesterEvaluations = [];
-    casesData[idx].semesterEvaluations.push({ ...evalData, semester: _closureEvalSem || currentSemesterPrefix() });
-  }
+  casesData[idx].status = 'closed';
+  if (!casesData[idx].semesterEvaluations) casesData[idx].semesterEvaluations = [];
+  // Replace existing eval for this semester+type (allow re-evaluation)
+  casesData[idx].semesterEvaluations = casesData[idx].semesterEvaluations.filter(
+    e => !(e.semester === evalSem && e.type === evalType)
+  );
+  casesData[idx].semesterEvaluations.push({ ...evalData, semester: evalSem, type: evalType });
+  if (isClosure) casesData[idx].closureEvaluation = { ...evalData, semester: evalSem }; // backward compat
 
   try {
     await saveCasesChunks(_closureCaseId);
@@ -7300,6 +7326,36 @@ async function addCaseSemester(caseId) {
       _caseDetailActiveSem = sem;
       renderCases();
       showCaseDetail(caseId);
+    } catch(e) { bgJobFail(jobId, e.message); }
+  })();
+}
+
+function deleteCaseSemData(caseId, sem) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c || !sem) return;
+  const semMonths_ = semesterMonths(sem);
+  const hasRec = (c.records||[]).some(r => !r.deleted && semMonths_.includes((r.date||'').slice(0,7)));
+  if (hasRec) { alert('此學期已有個案紀錄，無法刪除此學期基本資料。'); return; }
+  if (!confirm(`確定要刪除「${semesterLabel(sem)}」的基本資料快照嗎？\n此操作無法復原。`)) return;
+
+  if (c.basicInfoSnapshots) delete c.basicInfoSnapshots[sem];
+  if (c.semesters) {
+    c.semesters = c.semesters.filter(s => s !== sem);
+    if (!c.semesters.length) c.semesters = [openDateToSemPrefix(c.openDate)].filter(Boolean);
+  }
+  if (c.semesterEvaluations) c.semesterEvaluations = c.semesterEvaluations.filter(e => e.semester !== sem);
+  c.updatedAt = new Date().toISOString();
+  // Switch active sem to remaining latest before navigating
+  const remaining = (c.semesters||[]).slice().sort();
+  _caseDetailActiveSem = remaining[remaining.length - 1] || null;
+  renderCases();
+  showCaseDetail(caseId);
+  const jobId = bgJobAdd('刪除學期基本資料', c.name);
+  (async () => {
+    try {
+      await saveCasesChunks(caseId);
+      auditLog('刪除學期基本資料', caseId);
+      bgJobDone(jobId);
     } catch(e) { bgJobFail(jobId, e.message); }
   })();
 }
@@ -7629,6 +7685,23 @@ function openEditCasePage(caseId) {
   document.getElementById('nc-refill-section').style.display = 'none';
   document.getElementById('new-case-page-title').textContent = '編輯個案';
   document.getElementById('btn-save-case').textContent = '更新個案';
+
+  // 刪除此學期基本資料按鈕（僅多學期案件顯示）
+  const _btnDelSemEdit = document.getElementById('btn-delete-sem-data');
+  if (_btnDelSemEdit) {
+    const editSem = _caseDetailActiveSem || openDateToSemPrefix(c.openDate);
+    const canDelSem = (c.semesters || []).length > 1;
+    if (canDelSem) {
+      const _semMs = semesterMonths(editSem || '');
+      const _semHasRec = (c.records||[]).some(r => !r.deleted && _semMs.includes((r.date||'').slice(0,7)));
+      _btnDelSemEdit.style.display = '';
+      _btnDelSemEdit.disabled = _semHasRec;
+      _btnDelSemEdit.title = _semHasRec ? '此學期已有個案紀錄，無法刪除基本資料' : '';
+      _btnDelSemEdit.onclick = () => deleteCaseSemData(caseId, editSem);
+    } else {
+      _btnDelSemEdit.style.display = 'none';
+    }
+  }
 }
 
 function generateCaseId() {
@@ -7742,6 +7815,8 @@ function openNewCasePage() {
   document.getElementById('new-case-page-title').textContent = '新增個案';
   document.getElementById('btn-save-case').textContent = '儲存個案';
   document.getElementById('btn-save-case').disabled = false;
+  const _btnDelSem = document.getElementById('btn-delete-sem-data');
+  if (_btnDelSem) { _btnDelSem.style.display = 'none'; _btnDelSem.onclick = null; }
   showPage('page-new-case', null);
 }
 
