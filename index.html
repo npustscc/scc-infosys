@@ -295,7 +295,8 @@
     .audit-detail-wrap { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; }
 
     .btn-sm { padding: 4px 10px; font-size: .78rem; }
-    .btn-danger { background: #e74c3c; color: #fff; }
+    .btn-danger  { background: #e74c3c; color: #fff; }
+    .btn-warning { background: #ed8936; color: #fff; }
 
     /* ── New Case Form ── */
     .form-section {
@@ -1032,8 +1033,11 @@
 
     <div class="sidebar-section">
       <h3>設定與工具</h3>
-      <div class="nav-item" data-nav-id="page-issues" onclick="showPage('page-issues', this); renderIssuesPage()">
-        <span class="icon">🐛</span> 錯誤回報/許願池 <span class="nav-drag-handle">⠿</span>
+      <div class="nav-item" data-nav-id="page-issues" onclick="showPage('page-issues', this); markIssuesSeen(); renderIssuesPage()">
+        <span class="icon">🐛</span> 錯誤回報/許願池 <span id="issues-badge-wrap" style="display:inline-flex;gap:3px;margin-left:2px;vertical-align:middle;"></span><span class="nav-drag-handle">⠿</span>
+      </div>
+      <div class="nav-item" data-nav-id="page-pdf-tool" onclick="showPage('page-pdf-tool', this); renderPdfToolPage()">
+        <span class="icon">🖼️</span> PDF 轉圖片 <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" data-nav-id="page-audit" onclick="showPage('page-audit', this); renderAuditLog()">
         <span class="icon">📜</span> 稽核日誌 <span class="nav-drag-handle">⠿</span>
@@ -1381,6 +1385,30 @@
         </div>
         <div id="issues-body" style="padding:0;min-height:60px;"></div>
       </div>
+    </div>
+
+    <!-- PDF 轉圖片工具 -->
+    <div id="page-pdf-tool" class="page">
+      <div class="page-title">PDF 轉圖片</div>
+      <div class="card" style="margin-bottom:16px;">
+        <div class="card-header"><h3>上傳 PDF</h3></div>
+        <div style="padding:16px;">
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <label style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;background:#e2e8f0;border-radius:6px;cursor:pointer;font-size:.88rem;">
+              <span>📂 選擇 PDF 檔案</span>
+              <input type="file" id="pdf-tool-input" accept=".pdf,application/pdf" style="display:none;" onchange="pdfToolFileSelected(this)">
+            </label>
+            <span id="pdf-tool-filename" style="font-size:.85rem;color:#4a5568;"></span>
+          </div>
+          <div id="pdf-tool-progress" style="display:none;margin-top:12px;">
+            <div style="background:#e2e8f0;border-radius:4px;height:8px;overflow:hidden;">
+              <div id="pdf-tool-progress-bar" style="height:100%;background:#3182ce;width:0%;transition:width .2s;"></div>
+            </div>
+            <div id="pdf-tool-progress-text" style="font-size:.82rem;color:#718096;margin-top:4px;"></div>
+          </div>
+        </div>
+      </div>
+      <div id="pdf-tool-results"></div>
     </div>
 
     <!-- 空間預約 -->
@@ -3116,7 +3144,7 @@ function showPage(pageId, navEl) {
 function updateFloatingBackBtn(pageId) {
   const btn = document.getElementById('header-back-btn');
   if (!btn) return;
-  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings','page-recycle','page-transfer','page-psychiatry','page-unassigned-records','page-issues','page-event-records'];
+  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings','page-recycle','page-transfer','page-psychiatry','page-unassigned-records','page-issues','page-event-records','page-pdf-tool'];
   btn.style.display = showOn.includes(pageId) ? 'inline-block' : 'none';
   btn.dataset.fromPage = pageId;
 }
@@ -3895,6 +3923,7 @@ function addNotificationToUser(toEmail, type, caseId, caseName) {
     assigned_manager:         `您已被委任為個案「${caseName}（${caseId}）」的個案管理員`,
     removed_manager:          `您已被移除個案「${caseName}（${caseId}）」的個案管理員身分`,
     unassigned_record_match:  `未歸屬輔導記錄找到可能對應的個案「${caseName}（${caseId}）」，請至未歸屬記錄管理頁確認`,
+    new_issue:                `新的錯誤回報/許願池 #${String(caseName).padStart(3,'0')}，請至錯誤回報/許願池頁面查看`,
   };
   user.notifications.unshift({
     id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
@@ -4091,6 +4120,11 @@ async function notifClick(notifId, caseId) {
     const navEl = document.querySelector('[data-nav-id="page-unassigned-records"]');
     showPage('page-unassigned-records', navEl);
     renderUnassignedRecordsPage();
+  } else if (notif?.type === 'new_issue') {
+    const navEl = document.querySelector('[data-nav-id="page-issues"]');
+    markIssuesSeen();
+    showPage('page-issues', navEl);
+    renderIssuesPage();
   } else {
     showCaseDetail(caseId);
   }
@@ -6924,9 +6958,9 @@ function showEvalTypeModal(caseId) {
       <div class="modal-body" style="padding:20px 16px;">
         <p style="font-size:.88rem;color:#4a5568;margin-bottom:18px;">個案：<strong>${escHtml(c.name)}（${escHtml(c.id)}）</strong></p>
         <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
-          <button class="btn btn-secondary" style="flex:1;min-width:120px;padding:14px 10px;font-size:.95rem;"
+          <button class="btn btn-warning" style="flex:1;min-width:120px;padding:14px 10px;font-size:.95rem;"
             onclick="this.closest('.modal-overlay').remove();openClosureEvalPage('${escHtml(caseId)}','semester')">
-            📋 學期評估表<br><span style="font-size:.78rem;color:#718096;font-weight:400;">不結案，僅記錄本學期評估</span>
+            📋 學期評估表<br><span style="font-size:.78rem;opacity:.85;font-weight:400;">填寫後該學期結案</span>
           </button>
           <button class="btn btn-danger" style="flex:1;min-width:120px;padding:14px 10px;font-size:.95rem;"
             onclick="this.closest('.modal-overlay').remove();openClosureEvalPage('${escHtml(caseId)}','closure')">
@@ -19367,6 +19401,7 @@ async function loadIssues() {
   } catch (e) {
     issuesData = [];
   }
+  if (typeof renderIssuesBadge === 'function') renderIssuesBadge();
 }
 
 async function _saveIssues() {
@@ -19404,6 +19439,14 @@ async function submitIssue() {
   issuesData.push(issue);
   try {
     await _saveIssues();
+    // 通知所有系統管理者（主任 or 管理者 extraRole）
+    let notified = false;
+    Object.entries(configData?.users || {}).forEach(([email, u]) => {
+      if (u.role === '主任' || u.extraRole === '管理者') {
+        notified = addNotificationToUser(email, 'new_issue', issue.id, issue.serial) || notified;
+      }
+    });
+    if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
     document.getElementById('issue-submit-modal').style.display = 'none';
     renderIssuesPage();
   } catch (e) {
@@ -19643,6 +19686,207 @@ function renderIssuesPage() {
         ${commentInput}
       </div>`;
   }).join('');
+  renderIssuesBadge();
+}
+
+// ══════════════════════════════════════════════
+//  Issues 側邊欄 badge（三色）
+// ══════════════════════════════════════════════
+function _issuesSeenKey() {
+  return 'scc_issues_seen_' + (currentUser?.email || '');
+}
+
+function _getSeenIssueIds() {
+  try { return new Set(JSON.parse(localStorage.getItem(_issuesSeenKey()) || '[]')); }
+  catch { return new Set(); }
+}
+
+function _saveSeenIssueIds(set) {
+  try { localStorage.setItem(_issuesSeenKey(), JSON.stringify([...set])); } catch {}
+}
+
+function markIssuesSeen() {
+  const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  const myEmail = currentUser?.email || '';
+  const relevant = issuesData.filter(x => isAdmin || x.submittedBy === myEmail);
+  const resolved = relevant.filter(x => x.status === 'resolved').map(x => x.id);
+  if (!resolved.length) return;
+  const seen = _getSeenIssueIds();
+  resolved.forEach(id => seen.add(id));
+  _saveSeenIssueIds(seen);
+  renderIssuesBadge();
+}
+
+function renderIssuesBadge() {
+  const wrap = document.getElementById('issues-badge-wrap');
+  if (!wrap) return;
+  const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  const myEmail = currentUser?.email || '';
+  const relevant = issuesData.filter(x => isAdmin || x.submittedBy === myEmail);
+  const seen = _getSeenIssueIds();
+
+  const redCount    = relevant.filter(x => x.status === 'open').length;
+  const orangeCount = relevant.filter(x => x.status === 'in_progress').length;
+  const greenCount  = relevant.filter(x => x.status === 'resolved' && !seen.has(x.id)).length;
+
+  const badge = (count, bg) => count
+    ? `<span style="display:inline-block;background:${bg};color:#fff;border-radius:10px;font-size:.68rem;font-weight:700;padding:1px 6px;min-width:18px;text-align:center;line-height:1.5;">${count}</span>`
+    : '';
+
+  wrap.innerHTML =
+    badge(redCount,    '#e53e3e') +
+    badge(orangeCount, '#dd6b20') +
+    badge(greenCount,  '#38a169');
+}
+
+// ══════════════════════════════════════════════
+//  PDF 轉圖片工具
+// ══════════════════════════════════════════════
+const PDF_TOOL_LS_PREFIX = 'scc_pdfimg_';
+const PDF_TOOL_TTL_MS    = 3 * 24 * 60 * 60 * 1000;
+
+function _pdfToolPruneOld() {
+  const now = Date.now();
+  Object.keys(localStorage).forEach(k => {
+    if (!k.startsWith(PDF_TOOL_LS_PREFIX)) return;
+    try {
+      const v = JSON.parse(localStorage.getItem(k));
+      if (!v?.createdAt || now - new Date(v.createdAt).getTime() > PDF_TOOL_TTL_MS) {
+        localStorage.removeItem(k);
+      }
+    } catch { localStorage.removeItem(k); }
+  });
+}
+
+function _pdfToolList() {
+  _pdfToolPruneOld();
+  const items = [];
+  Object.keys(localStorage).forEach(k => {
+    if (!k.startsWith(PDF_TOOL_LS_PREFIX)) return;
+    try {
+      const v = JSON.parse(localStorage.getItem(k));
+      if (v) items.push({ key: k, ...v });
+    } catch {}
+  });
+  return items.sort((a, b) => (b.createdAt || '') > (a.createdAt || '') ? 1 : -1);
+}
+
+function renderPdfToolPage() {
+  _pdfToolPruneOld();
+  const items = _pdfToolList();
+  const el = document.getElementById('pdf-tool-results');
+  if (!el) return;
+  if (!items.length) { el.innerHTML = ''; return; }
+
+  el.innerHTML = items.map(item => {
+    const kEsc = escHtml(item.key);
+    const expireMs = PDF_TOOL_TTL_MS - (Date.now() - new Date(item.createdAt).getTime());
+    const expireHrs = Math.max(0, Math.round(expireMs / 3600000));
+    const thumbs = (item.pages || []).map((src, i) => `
+      <div style="display:inline-block;text-align:center;margin:4px;">
+        <img src="${src}" style="width:120px;height:auto;border:1px solid #e2e8f0;border-radius:4px;display:block;">
+        <a href="${src}" download="${escHtml(item.filename || 'page')}_p${i+1}.jpg"
+          style="font-size:.72rem;color:#3182ce;display:block;margin-top:2px;">下載 p${i+1}</a>
+      </div>`).join('');
+    return `
+      <div class="card" style="margin-bottom:14px;">
+        <div class="card-header" style="flex-wrap:wrap;gap:6px;">
+          <div style="font-weight:600;font-size:.93rem;">${escHtml(item.filename || '（未命名）')}</div>
+          <div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <span style="font-size:.78rem;color:#718096;">${(item.pages||[]).length} 頁・${expireHrs}h 後過期</span>
+            <button class="btn btn-primary btn-sm" onclick="pdfToolDownloadAll('${kEsc}')">全部下載</button>
+            <button class="btn btn-danger btn-sm" onclick="pdfToolDelete('${kEsc}')">刪除</button>
+          </div>
+        </div>
+        <div style="padding:10px 12px;overflow-x:auto;white-space:nowrap;">${thumbs}</div>
+      </div>`;
+  }).join('');
+}
+
+async function pdfToolFileSelected(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  document.getElementById('pdf-tool-filename').textContent = file.name;
+  input.value = '';
+
+  if (!window.pdfjsLib) {
+    showLoading('載入 PDF 解析套件…');
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+    hideLoading();
+  }
+
+  const progressWrap = document.getElementById('pdf-tool-progress');
+  const progressBar  = document.getElementById('pdf-tool-progress-bar');
+  const progressText = document.getElementById('pdf-tool-progress-text');
+  progressWrap.style.display = '';
+  progressBar.style.width = '0%';
+
+  try {
+    const buf    = await file.arrayBuffer();
+    const pdfDoc = await pdfjsLib.getDocument({ data: buf }).promise;
+    const total  = pdfDoc.numPages;
+    const pages  = [];
+    const scale  = 1.5;
+
+    for (let p = 1; p <= total; p++) {
+      progressText.textContent = `轉換中 ${p} / ${total}…`;
+      progressBar.style.width  = Math.round((p - 1) / total * 100) + '%';
+      const page     = await pdfDoc.getPage(p);
+      const viewport = page.getViewport({ scale });
+      const canvas   = document.createElement('canvas');
+      canvas.width   = Math.round(viewport.width);
+      canvas.height  = Math.round(viewport.height);
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      pages.push(canvas.toDataURL('image/jpeg', 0.88));
+    }
+
+    progressBar.style.width = '100%';
+    progressText.textContent = '完成！';
+    setTimeout(() => { progressWrap.style.display = 'none'; }, 1500);
+
+    const entry = {
+      filename: file.name.replace(/\.pdf$/i, ''),
+      createdAt: new Date().toISOString(),
+      pages,
+    };
+    const key = PDF_TOOL_LS_PREFIX + Date.now();
+    try {
+      localStorage.setItem(key, JSON.stringify(entry));
+    } catch {
+      alert('localStorage 空間不足，無法暫存圖片，請先刪除舊紀錄。');
+    }
+    renderPdfToolPage();
+  } catch (e) {
+    progressWrap.style.display = 'none';
+    alert('PDF 轉換失敗：' + e.message);
+  }
+}
+
+function pdfToolDownloadAll(key) {
+  try {
+    const item = JSON.parse(localStorage.getItem(key));
+    if (!item?.pages?.length) return;
+    item.pages.forEach((src, i) => {
+      const a = document.createElement('a');
+      a.href = src;
+      a.download = (item.filename || 'page') + '_p' + (i + 1) + '.jpg';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    });
+  } catch {}
+}
+
+function pdfToolDelete(key) {
+  if (!confirm('確定刪除此轉換結果？')) return;
+  localStorage.removeItem(key);
+  renderPdfToolPage();
 }
 </script>
 
