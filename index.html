@@ -4969,6 +4969,9 @@ function showCaseDetail(caseId) {
   if (_iiSemData && !_iiSemData.deleted && (_iiSemData.type === 'filled' || _iiSemData.problemsMain)) {
     actionsHtml += ` <button class="btn btn-secondary" onclick="printInitialInterview('${cid}')">列印初次晤談</button>`;
   }
+  if (c.closureEvaluation) {
+    actionsHtml += ` <button class="btn btn-secondary" onclick="printClosureEval('${cid}')">列印結案評估</button>`;
+  }
   if (caseIsDeleted) {
     if (isAdminUser) {
       actionsHtml += ` <button class="btn btn-secondary" onclick="restoreCaseAdmin('${cid}')">復原個案</button>`;
@@ -5528,17 +5531,15 @@ function renderCaseManagersBody(c) {
         </span>`).join('')
     : `<span style="color:#718096;font-size:.85rem;">尚未指定</span>`;
 
-  const options = nonManagers.map(([email]) =>
-    `<option value="${escHtml(email)}">${escHtml(formatCounselorLabel(email))}</option>`).join('');
+  const nonMgrSet = new Set(nonManagers.map(([email]) => email));
+  /* COUNSELOR_SELECT_GROUP:cm-add-select */
+  const options = buildCounselorOptgroups(([email]) => nonMgrSet.has(email), '— 選擇輔導人員 —');
 
   return `
     <div style="margin-bottom:10px;">${chips}</div>
     <div style="font-size:.78rem;color:#718096;margin-bottom:6px;">新增個案管理員：</div>
     <div style="display:flex;gap:8px;align-items:center;">
-      <select id="cm-add-select" style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;">
-        <option value="">— 選擇輔導人員 —</option>
-        ${options}
-      </select>
+      <select id="cm-add-select" style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;">${options}</select>
       <button class="btn btn-secondary" style="font-size:.85rem;" onclick="addCaseManager('${escHtml(c.id)}')">新增</button>
     </div>`;
 }
@@ -6822,6 +6823,7 @@ async function saveRecord() {
 //  結案評估
 // ══════════════════════════════════════════════
 let _closureCaseId = null;
+let _closureEvalDraft = null; // { caseId, dims, light, description, reason }
 
 function openClosureEvalPage(caseId) {
   const c = casesData.find(x => x.id === caseId);
@@ -6831,22 +6833,31 @@ function openClosureEvalPage(caseId) {
   document.getElementById('closure-case-info').textContent =
     `個案：${c.name}（${c.id}）　主責：${c.counselorName || c.counselorEmail}`;
 
+  const draft = _closureEvalDraft?.caseId === caseId ? _closureEvalDraft : null;
+
   // 產生八向度
-  document.getElementById('closure-dims').innerHTML = CLOSURE_DIMS.map((dim, i) => `
-    <div class="dim-row">
+  document.getElementById('closure-dims').innerHTML = CLOSURE_DIMS.map((dim, i) => {
+    const savedLevel = draft?.dims?.[i] || '不清楚';
+    return `<div class="dim-row">
       <div class="dim-label"><strong>${i+1}.</strong> ${escHtml(dim)}</div>
       <div class="dim-options">
-        <label><input type="radio" name="dim-${i}" value="低" /> <span class="badge badge-green">低</span></label>
-        <label><input type="radio" name="dim-${i}" value="中" /> <span class="badge badge-orange">中</span></label>
-        <label><input type="radio" name="dim-${i}" value="高" /> <span class="badge" style="background:#fde8e8;color:#c0392b;">高</span></label>
-        <label><input type="radio" name="dim-${i}" value="不清楚" checked /> 不清楚／無</label>
+        <label><input type="radio" name="dim-${i}" value="低" ${savedLevel==='低'?'checked':''}/> <span class="badge badge-green">低</span></label>
+        <label><input type="radio" name="dim-${i}" value="中" ${savedLevel==='中'?'checked':''}/> <span class="badge badge-orange">中</span></label>
+        <label><input type="radio" name="dim-${i}" value="高" ${savedLevel==='高'?'checked':''}/> <span class="badge" style="background:#fde8e8;color:#c0392b;">高</span></label>
+        <label><input type="radio" name="dim-${i}" value="不清楚" ${savedLevel==='不清楚'?'checked':''}/> 不清楚／無</label>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
-  // 清空其他欄位
-  document.querySelectorAll('input[name="cl-light"]').forEach(r => r.checked = false);
-  document.getElementById('cl-description').value = '';
-  _clReasonSet('');
+  // 清空或還原其他欄位
+  if (draft?.light) {
+    const r = document.querySelector(`input[name="cl-light"][value="${draft.light}"]`);
+    if (r) r.checked = true;
+  } else {
+    document.querySelectorAll('input[name="cl-light"]').forEach(r => r.checked = false);
+  }
+  document.getElementById('cl-description').value = draft?.description || '';
+  _clReasonSet(draft?.reason || '');
   setAlert('closure-alert', '', '');
   document.getElementById('btn-confirm-closure').disabled = false;
   showPage('page-closure-eval', null);
@@ -6914,6 +6925,14 @@ function _clReasonSet(val) {
 }
 
 function cancelClosureEval() {
+  // Save current form state as draft so reopening restores it
+  _closureEvalDraft = {
+    caseId: _closureCaseId,
+    dims: CLOSURE_DIMS.map((_, i) => document.querySelector(`input[name="dim-${i}"]:checked`)?.value || '不清楚'),
+    light: document.querySelector('input[name="cl-light"]:checked')?.value || '',
+    description: document.getElementById('cl-description')?.value || '',
+    reason: _clReasonGet(),
+  };
   if (_closureCaseId) showCaseDetail(_closureCaseId);
   else backToCaseList();
 }
@@ -7017,6 +7036,7 @@ async function saveClosureEval() {
   try {
     await saveCasesChunks(_closureCaseId);
     auditLog('執行結案', _closureCaseId);
+    _closureEvalDraft = null;
     hideLoading();
     renderCases();
     showCaseDetail(_closureCaseId);
