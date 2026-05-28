@@ -4970,7 +4970,7 @@ function showCaseDetail(caseId) {
   auditLog('查閱個案', caseId);
 
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
-  const isActive = c.status !== 'closed';
+  const isActive = ((c.semesterStatus || {})[_activeSem] || 'active') !== 'closed';
   const caseIsDeleted = !!c.deleted;
   const cid = escHtml(c.id);
 
@@ -5030,10 +5030,10 @@ function showCaseDetail(caseId) {
       semActHtml += ` <button class="btn btn-danger" onclick="closeCaseConfirm('${cid}')">結案</button>`;
     }
     if (!isActive) {
-      semActHtml += ` <button class="btn btn-secondary" onclick="reopenCase('${cid}')">取消結案</button>`;
+      semActHtml += ` <button class="btn btn-secondary" onclick="reopenCase('${cid}','${_activeSem}')">取消結案</button>`;
     }
     if (_canDeleteSem) {
-      semActHtml += ` <button class="btn btn-danger" onclick="deleteCaseSemData('${cid}','${_activeSem}')"${_semHasRecords ? ' disabled title="此學期已有個案紀錄，無法刪除基本資料"' : ''}>刪除此學期基本資料</button>`;
+      semActHtml += ` <button class="btn btn-danger" onclick="deleteCaseSemData('${cid}','${_activeSem}')">刪除此學期基本資料</button>`;
     }
   }
   const semActEl = document.getElementById('detail-sem-actions');
@@ -5725,7 +5725,7 @@ async function deleteRecord(caseId, recordId) {
   showCaseDetail(caseId);
   saveCasesChunks(caseId).then(() => {
     bgJobDone(_recJobId);
-    auditLog('刪除晤談紀錄', caseId, recordId);
+    auditLog('刪除晤談紀錄', caseId, recordId, rec.date ? `${rec.date}（${semesterLabel(openDateToSemPrefix(rec.date))}）` : '');
     showToast('晤談紀錄已刪除');
   }).catch(err => {
     delete rec.deleted; delete rec.deletedAt; delete rec.deletedBy; delete rec.deletedByName;
@@ -6849,7 +6849,7 @@ async function saveRecord() {
           _bkGcFlush();
         }
         bgJobProgress(jobId, 90);
-        auditLog('編輯晤談紀錄', _recordCaseId, editedId);
+        auditLog('編輯晤談紀錄', _recordCaseId, editedId, date ? `${date}（${semesterLabel(openDateToSemPrefix(date))}）` : '');
         bgJobDone(jobId);
       } catch(err) {
         casesData[cidx].records[ridx] = prev;
@@ -6894,7 +6894,7 @@ async function saveRecord() {
           _bkGcFlush();
         }
         bgJobProgress(jobId, 90);
-        auditLog('新增晤談紀錄', _recordCaseId, newRecord.id);
+        auditLog('新增晤談紀錄', _recordCaseId, newRecord.id, newRecord.date ? `${newRecord.date}（${semesterLabel(openDateToSemPrefix(newRecord.date))}）` : '');
         bgJobDone(jobId);
       } catch(err) {
         const failIdx = casesData[cidx]?.records.findIndex(r => r.id === newRecord.id);
@@ -7218,6 +7218,7 @@ async function saveClosureEval() {
   };
   const prev = {
     status: casesData[idx].status,
+    semesterStatus: casesData[idx].semesterStatus ? { ...casesData[idx].semesterStatus } : undefined,
     closureEvaluation: casesData[idx].closureEvaluation,
     semesterEvaluations: casesData[idx].semesterEvaluations ? [...casesData[idx].semesterEvaluations] : undefined,
   };
@@ -7225,7 +7226,10 @@ async function saveClosureEval() {
   const evalSem = _closureEvalSem || currentSemesterPrefix();
   const evalType = isClosure ? 'closure' : 'semester';
   casesData[idx].updatedAt = new Date().toISOString();
-  casesData[idx].status = 'closed';
+  // Per-semester status: mark this semester as closed
+  if (!casesData[idx].semesterStatus) casesData[idx].semesterStatus = {};
+  casesData[idx].semesterStatus[evalSem] = 'closed';
+  casesData[idx].status = _recomputeCaseStatus(casesData[idx]);
   if (!casesData[idx].semesterEvaluations) casesData[idx].semesterEvaluations = [];
   // Replace existing eval for this semester+type (allow re-evaluation)
   casesData[idx].semesterEvaluations = casesData[idx].semesterEvaluations.filter(
@@ -7236,7 +7240,7 @@ async function saveClosureEval() {
 
   try {
     await saveCasesChunks(_closureCaseId);
-    auditLog(isClosure ? '執行結案' : '儲存學期評估', _closureCaseId);
+    auditLog(isClosure ? '執行結案' : '儲存學期評估', _closureCaseId, null, semesterLabel(evalSem) + '學期');
     _closureEvalDraft = null;
     try { localStorage.removeItem('scc_closure_draft_' + _closureCaseId); } catch {}
     hideLoading();
@@ -7244,6 +7248,7 @@ async function saveClosureEval() {
     showCaseDetail(_closureCaseId);
   } catch (err) {
     casesData[idx].status = prev.status;
+    casesData[idx].semesterStatus = prev.semesterStatus;
     casesData[idx].closureEvaluation = prev.closureEvaluation;
     casesData[idx].semesterEvaluations = prev.semesterEvaluations;
     hideLoading();
@@ -7317,16 +7322,19 @@ async function addCaseSemester(caseId) {
     if (sortedSnaps) c.basicInfoSnapshots[sem] = { ...c.basicInfoSnapshots[sortedSnaps] };
   }
   c.updatedAt = new Date().toISOString();
+  showLoading(`新學期開案中（${semesterLabel(sem)}）…`);
   const jobId = bgJobAdd('新學期開案', c.name);
   (async () => {
     try {
+      bgJobProgress(jobId, 50);
       await saveCasesChunks(caseId);
-      auditLog('新學期開案', caseId);
+      auditLog('新學期開案', caseId, null, semesterLabel(sem) + '學期');
       bgJobDone(jobId);
       _caseDetailActiveSem = sem;
+      hideLoading();
       renderCases();
       showCaseDetail(caseId);
-    } catch(e) { bgJobFail(jobId, e.message); }
+    } catch(e) { hideLoading(); bgJobFail(jobId, e.message); }
   })();
 }
 
@@ -7344,6 +7352,8 @@ function deleteCaseSemData(caseId, sem) {
     if (!c.semesters.length) c.semesters = [openDateToSemPrefix(c.openDate)].filter(Boolean);
   }
   if (c.semesterEvaluations) c.semesterEvaluations = c.semesterEvaluations.filter(e => e.semester !== sem);
+  if (c.semesterStatus) delete c.semesterStatus[sem];
+  c.status = _recomputeCaseStatus(c);
   c.updatedAt = new Date().toISOString();
   // Switch active sem to remaining latest before navigating
   const remaining = (c.semesters||[]).slice().sort();
@@ -7360,30 +7370,42 @@ function deleteCaseSemData(caseId, sem) {
   })();
 }
 
-async function reopenCase(caseId) {
-  if (!confirm('確定要取消結案嗎？')) return;
-  await updateCaseStatus(caseId, 'active');
+// 計算個案的整體 status（由最新學期的 semesterStatus 推導）
+function _recomputeCaseStatus(c) {
+  const sems = (c.semesters || [openDateToSemPrefix(c.openDate)]).filter(Boolean).sort();
+  const latestSem = sems[sems.length - 1];
+  if (!latestSem) return c.status || 'active';
+  return (c.semesterStatus || {})[latestSem] || 'active';
 }
 
-async function updateCaseStatus(caseId, status) {
+async function reopenCase(caseId, sem) {
+  if (!confirm('確定要取消此學期的結案嗎？')) return;
   const idx = casesData.findIndex(c => c.id === caseId);
   if (idx === -1) return;
-  const prev = casesData[idx].status;
-  const cName = casesData[idx]?.name || caseId;
-  casesData[idx].status = status;
+  // 若未指定學期，取該案最新學期（from case list 直接點重開案）
+  const targetSem = sem || (() => {
+    const sems = (casesData[idx].semesters || [openDateToSemPrefix(casesData[idx].openDate)]).filter(Boolean).sort();
+    return sems[sems.length - 1] || currentSemesterPrefix();
+  })();
+  if (!casesData[idx].semesterStatus) casesData[idx].semesterStatus = {};
+  const prevSemStatus = { ...casesData[idx].semesterStatus };
+  const prevStatus = casesData[idx].status;
+  casesData[idx].semesterStatus[targetSem] = 'active';
+  casesData[idx].status = _recomputeCaseStatus(casesData[idx]);
   casesData[idx].updatedAt = new Date().toISOString();
   showCaseDetail(caseId);
   renderCases();
-  const jobId = bgJobAdd(status === 'active' ? '取消結案' : '更新案件狀態', cName);
+  const jobId = bgJobAdd('取消結案', casesData[idx]?.name || caseId);
   (async () => {
     try {
       bgJobProgress(jobId, 40);
       await saveCasesChunks(caseId);
       bgJobProgress(jobId, 90);
-      auditLog(status === 'active' ? '取消結案' : '更新案件狀態', caseId);
+      auditLog('取消結案', caseId, null, semesterLabel(targetSem) + '學期');
       bgJobDone(jobId);
     } catch (err) {
-      casesData[idx].status = prev;
+      casesData[idx].semesterStatus = prevSemStatus;
+      casesData[idx].status = prevStatus;
       casesData[idx].updatedAt = new Date().toISOString();
       bgJobFail(jobId, err.message);
       showCaseDetail(caseId);
@@ -7692,11 +7714,9 @@ function openEditCasePage(caseId) {
     const editSem = _caseDetailActiveSem || openDateToSemPrefix(c.openDate);
     const canDelSem = (c.semesters || []).length > 1;
     if (canDelSem) {
-      const _semMs = semesterMonths(editSem || '');
-      const _semHasRec = (c.records||[]).some(r => !r.deleted && _semMs.includes((r.date||'').slice(0,7)));
       _btnDelSemEdit.style.display = '';
-      _btnDelSemEdit.disabled = _semHasRec;
-      _btnDelSemEdit.title = _semHasRec ? '此學期已有個案紀錄，無法刪除基本資料' : '';
+      _btnDelSemEdit.disabled = false;
+      _btnDelSemEdit.title = '';
       _btnDelSemEdit.onclick = () => deleteCaseSemData(caseId, editSem);
     } else {
       _btnDelSemEdit.style.display = 'none';
@@ -10406,7 +10426,7 @@ async function saveCase() {
       if (counselorEmail && counselorEmail !== currentUser.email && counselorEmail !== oldCounselorEmail)
         cfgChanged = addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name) || cfgChanged;
       if (cfgChanged) { await driveUpdateJsonFile(CONFIG_FILE, configData); renderNotifBell(); }
-      auditLog('編輯個案', newCase.id);
+      auditLog('編輯個案', newCase.id, null, semesterLabel(_editSem) + '學期基本資料');
       hideLoading();
       renderCases();
       showCaseDetail(newCase.id);
