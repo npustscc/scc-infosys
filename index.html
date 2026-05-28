@@ -1478,16 +1478,13 @@
           <div class="full">
             <label class="field-label">結案原因<span class="req">*</span></label>
             <div id="cl-reason-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;"></div>
-            <div id="cl-reason-other-wrap" style="display:none;align-items:center;gap:6px;margin-top:8px;font-size:.88rem;">
-              其他說明：<input type="text" id="cl-reason-other" class="field-input" style="width:240px;padding:4px 8px;font-size:.88rem;" placeholder="請說明（必填）" oninput="_clReasonValidateOther()">
-              <span id="cl-reason-other-hint" style="color:#e53e3e;font-size:.8rem;display:none;">請填寫說明</span>
-            </div>
           </div>
         </div>
       </div>
 
       <div class="form-actions">
         <button class="btn btn-secondary" onclick="cancelClosureEval()">取消</button>
+        <button class="btn btn-secondary" onclick="printClosureEval()">列印結案評估</button>
         <button class="btn btn-danger" id="btn-confirm-closure" onclick="saveClosureEval()">確認結案</button>
       </div>
     </div>
@@ -2776,12 +2773,44 @@ const BK_COUNSELING_ROLES = new Set([
 // 職別排序優先順序（數字小者在前）
 const COUNSELOR_ROLE_ORDER = {
   '主任': 0,
-  '專任社會工作師': 1, '專任諮商心理師': 1, '專任臨床心理師': 1,
-  '兼任諮商心理師': 2, '兼任臨床心理師': 2,
-  '駐校精神科醫師': 3,
+  '專任社會工作師': 1, '專任諮商心理師': 2, '專任臨床心理師': 3,
   '實習諮商心理師': 4,
-  '義務輔導老師': 5,
+  '兼任諮商心理師': 5, '兼任臨床心理師': 6, '駐校精神科醫師': 7,
+  '義務輔導老師': 8,
 };
+// 輔導人員下拉分組（供 buildCounselorOptgroups 使用）
+const COUNSELOR_ROLE_GROUPS = [
+  { label: '專任', roles: ['主任','專任社會工作師','專任諮商心理師','專任臨床心理師'] },
+  { label: '實習生', roles: ['實習諮商心理師'] },
+  { label: '兼任', roles: ['兼任諮商心理師','兼任臨床心理師','駐校精神科醫師'] },
+  { label: '義務輔導老師', roles: ['義務輔導老師'] },
+];
+// 生成含 optgroup 標題的輔導人員選單 HTML /* COUNSELOR_SELECT_GROUP:core */
+function buildCounselorOptgroups(filterFn, placeholder) {
+  const ph = placeholder ?? '— 請選擇輔導人員 —';
+  const users = Object.entries(configData?.users || {}).filter(([, info]) => !info.disabled);
+  const freqMode = _userPref_('counselorFreqMode', false);
+  const freqs    = freqMode ? _userPref_('counselorFreqs', {}) : {};
+  let html = `<option value="">${escHtml(ph)}</option>`;
+  COUNSELOR_ROLE_GROUPS.forEach(group => {
+    const entries = users.filter(([email, info]) =>
+      group.roles.includes(info.role || '') && (!filterFn || filterFn([email, info]))
+    );
+    if (!entries.length) return;
+    entries.sort(([ea, ia], [eb, ib]) => {
+      if (freqMode) return (freqs[eb] ?? 0) - (freqs[ea] ?? 0);
+      const oa = group.roles.indexOf(ia.role || '');
+      const ob = group.roles.indexOf(ib.role || '');
+      return oa !== ob ? oa - ob : (ia.name || '').localeCompare(ib.name || '', 'zh');
+    });
+    html += `<optgroup label="${escHtml(group.label)}">`;
+    entries.forEach(([email]) => {
+      html += `<option value="${escHtml(email)}">${escHtml(formatCounselorLabel(email))}</option>`;
+    });
+    html += '</optgroup>';
+  });
+  return html;
+}
 // ── 偏好設定同步至 Drive（防抖，避免頻繁寫入）──────────────
 // 一次性修復已知資料損毀（role 字串含 U+FFFD、email key 錯誤）
 async function migrateConfigIfNeeded() {
@@ -5379,7 +5408,8 @@ function showCaseDetail(caseId) {
           <span style="font-size:.88rem;">${escHtml(ev.evaluatorName||ev.evaluatorEmail)}</span></div>
       </div>
       ${ev.description ? `<div style="margin-top:12px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:4px;">質性描述</div>
-        <div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.description)}</div></div>` : ''}`;
+        <div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.description)}</div></div>` : ''}
+      <div style="margin-top:14px;"><button class="btn btn-secondary btn-sm" onclick="printClosureEval('${escHtml(c.id)}')">列印結案評估</button></div>`;
     return mkSection('eval', '結案評估', evalBody);
   })();
 
@@ -5722,15 +5752,9 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
     '主任','專任社會工作師','專任諮商心理師','專任臨床心理師',
     '兼任諮商心理師','兼任臨床心理師','實習諮商心理師','駐校精神科醫師',
   ]);
-  const sel = document.getElementById('rec-transfer-counselor');
-  sel.innerHTML = '<option value="">— 請選擇輔導人員 —</option>';
-  getSortedCounselorEntries(([email, info]) => _COUNSELING_ROLES.has(info.role) && email !== currentUser.email)
-    .forEach(([email]) => {
-      const opt = document.createElement('option');
-      opt.value = email;
-      opt.textContent = formatCounselorLabel(email);
-      sel.appendChild(opt);
-    });
+  /* COUNSELOR_SELECT_GROUP:rec-transfer-counselor */
+  document.getElementById('rec-transfer-counselor').innerHTML =
+    buildCounselorOptgroups(([email, info]) => _COUNSELING_ROLES.has(info.role) && email !== currentUser.email);
 
   document.getElementById('dap-help-panel').classList.remove('active');
   setAlert('new-record-alert', '', '');
@@ -5873,18 +5897,14 @@ function renderRecCounselorChips() {
     chip.appendChild(x);
     box.appendChild(chip);
   });
-  // 重建下拉選項，排除已加入者
+  // 重建下拉選項，排除已加入者 /* COUNSELOR_SELECT_GROUP:rec-counselor-add-sel */
   const sel = document.getElementById('rec-counselor-add-sel');
   if (sel) {
     const exist = new Set(_recCounselors.map(c => c.email));
-    sel.innerHTML = '<option value="">— 新增晤談者 —</option>';
-    getSortedCounselorEntries(([email, info]) => BK_COUNSELING_ROLES.has(info.role || '') && !exist.has(email))
-      .forEach(([email]) => {
-        const opt = document.createElement('option');
-        opt.value = email;
-        opt.textContent = formatCounselorLabel(email);
-        sel.appendChild(opt);
-      });
+    sel.innerHTML = buildCounselorOptgroups(
+      ([email, info]) => BK_COUNSELING_ROLES.has(info.role || '') && !exist.has(email),
+      '— 新增晤談者 —'
+    );
   }
   syncRecCounselorHidden();
 }
@@ -6833,64 +6853,131 @@ function openClosureEvalPage(caseId) {
 }
 
 // ── 結案原因 chips ──────────────────────────────────────────────────────
-const _CL_REASON_OPTS = ['個案主述問題已緩解','個案無意願會談','退學','返家休養','其他'];
+const _CL_REASON_FIXED = ['個案主述問題已緩解','個案無意願會談','退學','返家休養'];
 let _clReasonSelected = '';
+function _clReasonAllOpts() {
+  return [..._CL_REASON_FIXED, ...(configData?.closureReasonCustomOpts || [])];
+}
 
 function _clReasonRender() {
   const wrap = document.getElementById('cl-reason-chips');
   if (!wrap) return;
-  wrap.innerHTML = _CL_REASON_OPTS.map(opt => {
-    const sel = _clReasonSelected === opt || (_clReasonSelected && opt === '其他' && !_CL_REASON_OPTS.includes(_clReasonSelected) && opt === '其他');
-    const isOtherSel = opt === '其他' && _clReasonSelected && !_CL_REASON_OPTS.slice(0,-1).includes(_clReasonSelected);
-    const active = _clReasonSelected === opt || (opt === '其他' && isOtherSel);
-    return `<span onclick="_clReasonSelect('${opt}')" style="cursor:pointer;padding:6px 14px;border-radius:20px;font-size:.88rem;border:1.5px solid ${active?'#3182ce':'#cbd5e0'};background:${active?'#ebf8ff':'#fff'};color:${active?'#2b6cb0':'#4a5568'};user-select:none;transition:all .15s;">${escHtml(opt)}</span>`;
+  const allOpts = _clReasonAllOpts();
+  const chipHtml = allOpts.map(opt => {
+    const active = _clReasonSelected === opt;
+    const isCustom = !_CL_REASON_FIXED.includes(opt);
+    const delBtn = isCustom
+      ? `<span onclick="event.stopPropagation();_clReasonDeleteCustom('${escHtml(opt).replace(/'/g,"\\'")}')
+" style="margin-left:5px;opacity:.6;font-size:.8rem;" title="刪除此選項">×</span>`
+      : '';
+    return `<span onclick="_clReasonSelect('${escHtml(opt).replace(/'/g,"\\'")}')
+" style="cursor:pointer;padding:6px 14px;border-radius:20px;font-size:.88rem;border:1.5px solid ${active?'#3182ce':'#cbd5e0'};background:${active?'#ebf8ff':'#fff'};color:${active?'#2b6cb0':'#4a5568'};user-select:none;transition:all .15s;display:inline-flex;align-items:center;">${escHtml(opt)}${delBtn}</span>`;
   }).join('');
-  const otherWrap = document.getElementById('cl-reason-other-wrap');
-  if (otherWrap) otherWrap.style.display = (_clReasonSelected === '其他' || (_clReasonSelected && !_CL_REASON_OPTS.slice(0,-1).includes(_clReasonSelected))) ? 'flex' : 'none';
+  wrap.innerHTML = chipHtml +
+    `<span onclick="_clReasonAddCustom()" style="cursor:pointer;padding:6px 12px;border-radius:20px;font-size:.88rem;border:1.5px dashed #cbd5e0;background:#f7fafc;color:#718096;user-select:none;">＋ 新增</span>`;
 }
 
 function _clReasonSelect(opt) {
-  if (opt === '其他') {
-    _clReasonSelected = '其他';
-    _clReasonRender();
-    document.getElementById('cl-reason-other')?.focus();
-  } else {
-    _clReasonSelected = opt;
-    _clReasonRender();
-  }
+  _clReasonSelected = opt;
+  _clReasonRender();
 }
 
-function _clReasonValidateOther() {
-  const el = document.getElementById('cl-reason-other');
-  const hint = document.getElementById('cl-reason-other-hint');
-  if (!el || !hint) return;
-  const empty = !el.value.trim();
-  hint.style.display = empty ? '' : 'none';
-  el.style.borderColor = empty ? '#e53e3e' : '';
+async function _clReasonAddCustom() {
+  const val = prompt('請輸入新的結案原因：');
+  if (!val || !val.trim()) return;
+  const trimmed = val.trim();
+  if (_clReasonAllOpts().includes(trimmed)) { alert('此選項已存在。'); return; }
+  if (!configData.closureReasonCustomOpts) configData.closureReasonCustomOpts = [];
+  configData.closureReasonCustomOpts.push(trimmed);
+  _clReasonSelected = trimmed;
+  _clReasonRender();
+  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+}
+
+async function _clReasonDeleteCustom(opt) {
+  if (!confirm(`確定要刪除結案原因「${opt}」？此為全系統共享選項。`)) return;
+  const idx = (configData.closureReasonCustomOpts || []).indexOf(opt);
+  if (idx >= 0) configData.closureReasonCustomOpts.splice(idx, 1);
+  if (_clReasonSelected === opt) _clReasonSelected = '';
+  _clReasonRender();
+  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
 }
 
 function _clReasonGet() {
-  if (_clReasonSelected === '其他' || (_clReasonSelected && !_CL_REASON_OPTS.slice(0,-1).includes(_clReasonSelected))) {
-    return document.getElementById('cl-reason-other')?.value.trim() || '';
-  }
   return _clReasonSelected;
 }
 
 function _clReasonSet(val) {
   if (!val) { _clReasonSelected = ''; _clReasonRender(); return; }
-  if (_CL_REASON_OPTS.slice(0,-1).includes(val)) {
-    _clReasonSelected = val;
-  } else {
-    _clReasonSelected = '其他';
-    const el = document.getElementById('cl-reason-other');
-    if (el) el.value = val;
-  }
+  _clReasonSelected = val;
   _clReasonRender();
 }
 
 function cancelClosureEval() {
   if (_closureCaseId) showCaseDetail(_closureCaseId);
   else backToCaseList();
+}
+
+function printClosureEval(caseId) {
+  const cid = caseId || _closureCaseId;
+  const c = casesData.find(x => x.id === cid);
+  if (!c) return;
+  const ev = c.closureEvaluation;
+  if (!ev) { alert('此個案尚無結案評估資料。'); return; }
+  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const rocDate = d => { if(!d) return ''; const p=(d||'').slice(0,10).split('-'); return p.length===3?`${parseInt(p[0])-1911}/${parseInt(p[1])}/${parseInt(p[2])}`:d; };
+  const lightColor = { '紅燈':'#c53030','橙燈':'#dd6b20','黃燈':'#b7791f','綠燈':'#276749' };
+  const dimRows = (ev.dimensions||[]).map((d,i) =>
+    `<tr><td style="padding:5px 8px;font-size:11pt;">${i+1}. ${esc(d.label)}</td>
+     <td style="padding:5px 8px;text-align:center;font-size:11pt;font-weight:700;color:${d.level==='低'?'#276749':d.level==='中'?'#dd6b20':'#c53030'};">${esc(d.level)}</td></tr>`
+  ).join('');
+  const html = `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
+  <title>結案評估表 - ${esc(c.name)}</title>
+  <style>
+    body { font-family:'微軟正黑體','Microsoft JhengHei',sans-serif; font-size:11pt; margin:20mm 18mm; color:#1a1a1a; }
+    h2 { text-align:center; font-size:15pt; margin-bottom:4px; }
+    .meta { text-align:center; font-size:10pt; color:#555; margin-bottom:18px; }
+    table { width:100%; border-collapse:collapse; margin-bottom:14px; }
+    th { background:#f0f4f8; padding:6px 8px; font-size:10.5pt; text-align:left; border:1px solid #ccc; }
+    td { border:1px solid #ccc; vertical-align:top; }
+    .label { font-size:9.5pt; color:#666; margin-bottom:2px; }
+    .val { font-size:11pt; }
+    .section { margin-bottom:14px; }
+    .desc { white-space:pre-wrap; font-size:10.5pt; border:1px solid #ccc; padding:8px; min-height:60px; }
+    @media print { body { margin:15mm 14mm; } }
+  </style></head><body>
+  <h2>國立屏東科技大學學生諮商中心 結案評估表</h2>
+  <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)} &ensp;|&ensp; 主責：${esc(c.counselorName||c.counselorEmail||'—')} &ensp;|&ensp; 評估日期：${rocDate(ev.evaluatedAt)}</div>
+  <div class="section">
+    <table>
+      <thead><tr><th style="width:80%;">向度</th><th style="width:20%;text-align:center;">風險等級</th></tr></thead>
+      <tbody>${dimRows}</tbody>
+    </table>
+  </div>
+  <div class="section">
+    <table>
+      <tr>
+        <th style="width:50%;">狀態燈號</th>
+        <th style="width:50%;">結案原因</th>
+      </tr>
+      <tr>
+        <td style="padding:8px;font-weight:700;font-size:12pt;color:${lightColor[ev.statusLight]||'#333'};">${esc(ev.statusLight||'—')}</td>
+        <td style="padding:8px;">${esc(ev.closureReason||'—')}</td>
+      </tr>
+    </table>
+  </div>
+  <div class="section">
+    <div class="label">質性描述（主訴問題與評估）</div>
+    <div class="desc">${esc(ev.description||'')}</div>
+  </div>
+  <div style="margin-top:30px;display:flex;justify-content:flex-end;gap:60px;font-size:10.5pt;">
+    <span>填表人：${esc(ev.evaluatorName||ev.evaluatorEmail||'—')}</span>
+    <span>主責：${esc(c.counselorName||'—')}</span>
+  </div>
+  <script>window.onload=()=>{ window.print(); }<\/script>
+  </body></html>`;
+  const w = window.open('','_blank');
+  if (w) { w.document.write(html); w.document.close(); }
 }
 
 async function saveClosureEval() {
@@ -6904,11 +6991,7 @@ async function saveClosureEval() {
   };
   if (!light)       { _closAlert('請選擇狀態評估燈號。'); return; }
   if (!description) { _closAlert('請填寫質性描述。'); return; }
-  if (!_clReasonSelected) { _closAlert('請選擇結案原因。'); return; }
-  if ((_clReasonSelected === '其他' || !_CL_REASON_OPTS.slice(0,-1).includes(_clReasonSelected)) && !reason) {
-    _clReasonValidateOther(); _closAlert('請填寫結案原因「其他」的說明。'); return;
-  }
-  if (!reason) { _closAlert('請選擇結案原因。'); return; }
+  if (!reason)      { _closAlert('請選擇結案原因。'); return; }
 
   const dimensions = CLOSURE_DIMS.map((dim, i) => ({
     label: dim,
@@ -7372,15 +7455,11 @@ function openNewCasePage() {
 
   // 填充主責人員選單
   const sel = document.getElementById('nc-counselor');
-  sel.innerHTML = '<option value="">未選擇</option>';
-  getSortedCounselorEntries(([key, info]) => info.role && info.role !== '系統管理者')
-    .forEach(([key]) => {
-      const opt = document.createElement('option');
-      opt.value = key;
-      opt.textContent = formatCounselorLabel(key);
-      if (key === currentUser.email) opt.selected = true;
-      sel.appendChild(opt);
-    });
+  /* COUNSELOR_SELECT_GROUP:nc-counselor */
+  sel.innerHTML = buildCounselorOptgroups(([, info]) => info.role && info.role !== '系統管理者', '未選擇');
+  if (currentUser?.email && sel.querySelector(`option[value="${CSS.escape(currentUser.email)}"]`)) {
+    sel.value = currentUser.email;
+  }
 
   const mgrSection = document.getElementById('nc-managers-section');
   if (currentRole === '主任' || extraRole === '管理者') {
@@ -7895,6 +7974,7 @@ function showImportReviewModal(imported, prog, newCounselorsMap) {
         const ed = reviewMap.get(oi);
         const warn = c._defaultedClosed;
         const bg = warn ? '#fff5f5' : (ri%2===0 ? '#fff' : '#f7fafc');
+        /* COUNSELOR_SELECT_GROUP:ir-counselor (special: includes ncMap new entries, skip optgroup) */
         const counselorOpts = getCounselorEntries().map(([em, info]) =>
           `<option value="${escHtml(em)}" ${ed.counselorEmail===em?'selected':''}>${escHtml(info.name||em)}</option>`
         ).join('');
@@ -8352,14 +8432,15 @@ async function finalizeImport(imported, prog) {
     const imp = importedMap.get(c.id);
     if (!imp) return c;
     if (sameNameIds.has(c.id)) {
-      // Smart-merge: new data wins; fill blanks from existing
-      const merged = { ...imp };
-      FILL_FIELDS.forEach(f => { if (!merged[f] && c[f]) merged[f] = c[f]; });
+      // Smart-merge: cross-sem case → keep existing basic fields; same-sem → new data wins
+      const isCrossSem = !!imp._crossSemMerge;
+      const merged = isCrossSem ? { ...c } : { ...imp };
+      if (!isCrossSem) FILL_FIELDS.forEach(f => { if (!merged[f] && c[f]) merged[f] = c[f]; });
       merged.records          = c.records || [];
       merged.initialInterview = c.initialInterview;
       merged.psychTestResults = (imp.psychTestResults?.length ? imp.psychTestResults : c.psychTestResults) || [];
       merged.createdAt        = c.createdAt || imp.createdAt;
-      // Preserve earliest openDate so batch-delete groups by original open semester
+      // Preserve earliest openDate
       if (c.openDate && (!merged.openDate || c.openDate < merged.openDate)) merged.openDate = c.openDate;
       // Accumulate semesters: preserve all semesters this case has been active in
       const _exSems = Array.isArray(c.semesters) ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean);
@@ -8859,12 +8940,9 @@ function openInitialInterviewPage(caseId) {
   // Load custom service options into ii- lists
   _iiLoadCustomServiceOptions();
 
-  // Populate counselor dropdowns（依使用者偏好排序：角色排序或偏好模式）
-  const _COUNSELING_ROLES = new Set(['主任','專任社會工作師','專任諮商心理師','專任臨床心理師','兼任諮商心理師','兼任臨床心理師','駐校精神科醫師','實習諮商心理師','義務輔導老師']);
-  const counselorOpts = '<option value="">— 請選擇輔導人員 —</option>' +
-    getSortedCounselorEntries(([e, u]) => !!(u?.name) && _COUNSELING_ROLES.has(u?.role))
-      .map(([e]) => `<option value="${escHtml(e)}">${escHtml(formatCounselorLabel(e))}</option>`)
-      .join('');
+  // Populate counselor dropdowns /* COUNSELOR_SELECT_GROUP:ii-result/transfer/sup-old-counselor */
+  const _COUNSELING_ROLES_II = new Set(['主任','專任社會工作師','專任諮商心理師','專任臨床心理師','兼任諮商心理師','兼任臨床心理師','駐校精神科醫師','實習諮商心理師','義務輔導老師']);
+  const counselorOpts = buildCounselorOptgroups(([e, u]) => !!(u?.name) && _COUNSELING_ROLES_II.has(u?.role));
   ['ii-result-counselor','ii-transfer-counselor','ii-sup-old-counselor'].forEach(id => {
     const sel = document.getElementById(id); if (sel) sel.innerHTML = counselorOpts;
   });
@@ -16635,36 +16713,44 @@ async function confirmDeleteCaseFromAdmin(caseId) {
 }
 
 async function openSemesterDeleteModal() {
-  const _semOf = c => openDateToSemPrefix(c.openDate)
-    || (Array.isArray(c.semesters) && c.semesters.length ? c.semesters[0] : '');
+  // 以「記錄日期」所屬學期分組，不再依案件 openDate
   const semMap = new Map();
   casesData.filter(c => !c.deleted).forEach(c => {
-    const sem = _semOf(c);
-    if (!sem) return;
-    if (!semMap.has(sem)) semMap.set(sem, { cases: [], recCount: 0 });
-    const entry = semMap.get(sem);
-    entry.cases.push(c);
-    entry.recCount += (c.records || []).filter(r => !r.deleted).length;
+    (c.records || []).filter(r => !r.deleted && r.status !== 'pending').forEach(r => {
+      const sem = openDateToSemPrefix(r.date);
+      if (!sem) return;
+      if (!semMap.has(sem)) semMap.set(sem, { recCount: 0, psyCount: 0, caseIds: new Set() });
+      semMap.get(sem).recCount++;
+      semMap.get(sem).caseIds.add(c.id);
+    });
+    (c.psychiatristRecords || []).filter(pr => !pr.deleted && pr.status !== 'pending').forEach(pr => {
+      const sem = openDateToSemPrefix(pr.date);
+      if (!sem) return;
+      if (!semMap.has(sem)) semMap.set(sem, { recCount: 0, psyCount: 0, caseIds: new Set() });
+      semMap.get(sem).psyCount++;
+      semMap.get(sem).caseIds.add(c.id);
+    });
   });
   const sems = [...semMap.keys()].sort().reverse();
-  if (sems.length === 0) { alert('目前沒有任何個案資料可刪除。'); return; }
+  if (sems.length === 0) { alert('目前沒有任何記錄資料可刪除。'); return; }
 
   const selectedSems = await new Promise(resolve => {
     let modal = document.createElement('div');
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
     const semRows = sems.map(s => {
       const e = semMap.get(s);
+      const psyNote = e.psyCount > 0 ? `，精神科 ${e.psyCount} 筆` : '';
       return `<label style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid #f0f4f8;cursor:pointer;font-size:.88rem;">
         <input type="checkbox" class="sem-chk" value="${escHtml(s)}" style="width:15px;height:15px;">
         <span style="font-weight:600;min-width:80px;">${escHtml(semesterLabel(s))} 學期</span>
-        <span style="color:#718096;font-size:.82rem;">${e.cases.length} 個案 · ${e.recCount} 筆記錄</span>
+        <span style="color:#718096;font-size:.82rem;">晤談 ${e.recCount} 筆${psyNote}，橫跨 ${e.caseIds.size} 個案</span>
       </label>`;
     }).join('');
     modal.innerHTML = `
       <div style="background:#fff;border-radius:12px;max-width:600px;width:100%;max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.35);">
         <div style="padding:18px 24px;border-bottom:1px solid #e2e8f0;">
           <h3 style="margin:0;color:#c53030;font-size:1.1rem;">學期批次刪除</h3>
-          <p style="font-size:.84rem;color:#718096;margin:8px 0 0;">選擇要軟刪除的學期。資料將移入資源回收桶，<strong>30 天後</strong>永久刪除（期間可復原）。</p>
+          <p style="font-size:.84rem;color:#718096;margin:8px 0 0;">依<strong>記錄日期</strong>選擇學期刪除。資料將移入資源回收桶，<strong>30 天後</strong>永久刪除（期間可復原）。</p>
         </div>
         <div style="padding:8px 14px;border-bottom:1px solid #e2e8f0;display:flex;gap:8px;">
           <button type="button" onclick="document.querySelectorAll('.sem-chk').forEach(c=>c.checked=true)" class="btn btn-secondary btn-sm">全選</button>
@@ -16686,40 +16772,33 @@ async function openSemesterDeleteModal() {
   });
   if (!selectedSems) return;
 
-  const semSet = new Set(selectedSems);
+  // 計算所選學期包含的月份
+  const selMonthSet = new Set(selectedSems.flatMap(s => semesterMonths(s)));
   const now = new Date().toISOString();
-  // Collect affected cases and records
+  const deletedBy = currentUser.email;
+  const deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
+
+  // 以記錄日期篩選，跨所有案件
   const toProcess = [];
-  casesData.filter(c => !c.deleted && semSet.has(_semOf(c))).forEach(c => {
-    const recs = (c.records || []).filter(r => !r.deleted && r.status !== 'pending');
-    const psyRecs = (c.psychiatristRecords || []).filter(pr => !pr.deleted && pr.status !== 'pending');
-    const pendingRecs = (c.records || []).filter(r => r.status === 'pending');
-    const pendingPsy = (c.psychiatristRecords || []).filter(pr => pr.status === 'pending');
-    const pendingII = c.initialInterview?.status === 'pending' ? c.initialInterview : null;
-    toProcess.push({ c, recs, psyRecs, pendingRecs, pendingPsy, pendingII });
+  casesData.filter(c => !c.deleted).forEach(c => {
+    const recs    = (c.records || []).filter(r => !r.deleted && r.status !== 'pending' && selMonthSet.has((r.date||'').slice(0,7)));
+    const psyRecs = (c.psychiatristRecords || []).filter(pr => !pr.deleted && pr.status !== 'pending' && selMonthSet.has((pr.date||'').slice(0,7)));
+    if (recs.length || psyRecs.length) toProcess.push({ c, recs, psyRecs });
   });
+
   const totalRecs = toProcess.reduce((s, {recs}) => s + recs.length, 0);
-  const totalPsy = toProcess.reduce((s, {psyRecs}) => s + psyRecs.length, 0);
-  const totalPending = toProcess.reduce((s, {pendingRecs, pendingPsy, pendingII}) => s + pendingRecs.length + pendingPsy.length + (pendingII ? 1 : 0), 0);
-  const psyNote = totalPsy > 0 ? `\n精神科評估：${totalPsy} 筆` : '';
-  const pendingNote = totalPending > 0 ? `\n草稿（將永久移除）：${totalPending} 筆` : '';
-  if (!confirm(`確定要軟刪除以下資料？\n\n學期：${selectedSems.map(s => semesterLabel(s)).join('、')}\n個案：${toProcess.length} 筆\n晤談記錄：${totalRecs} 筆${psyNote}${pendingNote}\n\n資料將移至資源回收桶，30 天後永久刪除。`)) return;
+  const totalPsy  = toProcess.reduce((s, {psyRecs}) => s + psyRecs.length, 0);
+  const psyNote   = totalPsy > 0 ? `\n精神科評估：${totalPsy} 筆` : '';
+  if (!confirm(`確定要軟刪除以下資料？\n\n學期：${selectedSems.map(s => semesterLabel(s)).join('、')}\n晤談記錄：${totalRecs} 筆${psyNote}\n橫跨 ${toProcess.length} 個案\n\n資料將移至資源回收桶，30 天後永久刪除。`)) return;
 
   showLoading('批次刪除：標記資料中…', 5);
   try {
-    const deletedBy = currentUser.email;
-    const deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
-    // 先在記憶體標記所有記錄，再一次存所有 chunk（避免逐案存造成大量 API 呼叫）
-    for (const { c, recs, psyRecs, pendingRecs, pendingPsy, pendingII } of toProcess) {
+    for (const { c, recs, psyRecs } of toProcess) {
       recs.forEach(r => { r.deleted = true; r.deletedAt = now; r.deletedBy = deletedBy; r.deletedByName = deletedByName; });
       psyRecs.forEach(pr => { pr.deleted = true; pr.deletedAt = now; pr.deletedBy = deletedBy; pr.deletedByName = deletedByName; });
-      if (pendingRecs.length) c.records = (c.records||[]).filter(r => r.status !== 'pending');
-      if (pendingPsy.length) c.psychiatristRecords = (c.psychiatristRecords||[]).filter(pr => pr.status !== 'pending');
-      if (pendingII) delete c.initialInterview;
       c.updatedAt = now;
     }
-    const allIds = toProcess.map(({ c }) => c.id);
-    const totalChunks = new Set(allIds.map(getCaseChunkName)).size;
+    const allIds = [...new Set(toProcess.map(({ c }) => c.id))];
     setLoadingProgress(10);
     await saveCasesChunks(...allIds, (done, total) => {
       const pct = 10 + Math.round(done / total * 85);
@@ -16727,11 +16806,10 @@ async function openSemesterDeleteModal() {
     });
     showLoading('批次刪除：完成收尾…', 97);
     auditLog(`批次軟刪除學期 ${selectedSems.join('、')} 記錄 ${totalRecs} 筆${totalPsy > 0 ? `，精神科 ${totalPsy} 筆` : ''}`);
-    // Step 2: find cases with all records deleted (pending records were removed)
     const emptyCases = toProcess.map(({c}) => c).filter(c => (c.records||[]).every(r => r.deleted));
     hideLoading();
     if (emptyCases.length > 0) await promptEmptyCaseDeletion(emptyCases, now);
-    else alert(`✓ 已將 ${toProcess.length} 個個案的 ${totalRecs} 筆記錄移入資源回收桶。`);
+    else alert(`✓ 已將 ${toProcess.length} 個案的 ${totalRecs} 筆記錄移入資源回收桶。`);
     renderCases();
   } catch(e) { hideLoading(); alert('批次刪除失敗：' + e.message); }
 }
