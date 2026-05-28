@@ -3758,9 +3758,18 @@ function renderCases() {
       actionBtn = `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();closeCaseConfirm('${cid}')">結案</button>`;
     }
     const transferBadge = c.isTransferCase ? ' <span class="badge badge-teal">轉銜個案</span>' : '';
+    const newCounselorBadge = (() => {
+      if (!c.newCounselorAlert?.date) return '';
+      if (c.counselorEmail !== currentUser?.email) return '';
+      const dismissed = configData?.users?.[currentUser.email]?.dismissedAlerts || [];
+      if (dismissed.includes(c.id)) return '';
+      if ((Date.now() - new Date(c.newCounselorAlert.date).getTime()) / 86400000 > 7) return '';
+      const mmdd = c.newCounselorAlert.date.slice(5,10).replace('-','/');
+      return ` <span class="badge badge-orange" style="cursor:default;">新案 ${mmdd} 轉入</span>`;
+    })();
     const statusCell = c.deleted
       ? `<span class="badge-case-deleted">已刪除</span>`
-      : statusBadge(c.status) + transferBadge;
+      : statusBadge(c.status) + transferBadge + newCounselorBadge;
     return `
     <tr class="${c.deleted ? 'case-deleted-row' : ''}" style="cursor:pointer;" onclick="showCaseDetail('${cid}')">
       <td>${escHtml(c.id    || '—')}</td>
@@ -3836,6 +3845,24 @@ function addNotificationToUser(toEmail, type, caseId, caseName) {
   });
   if (user.notifications.length > 100) user.notifications = user.notifications.slice(0, 100);
   return true;
+}
+
+function _hasNewCounselorAlert(c) {
+  if (!c.newCounselorAlert?.date) return false;
+  if (c.counselorEmail !== currentUser?.email) return false;
+  const dismissed = configData?.users?.[currentUser.email]?.dismissedAlerts || [];
+  if (dismissed.includes(c.id)) return false;
+  return (Date.now() - new Date(c.newCounselorAlert.date).getTime()) / 86400000 <= 7;
+}
+
+async function dismissNewCounselorAlert(caseId) {
+  const me = configData?.users?.[currentUser?.email];
+  if (!me) return;
+  if (!me.dismissedAlerts) me.dismissedAlerts = [];
+  if (!me.dismissedAlerts.includes(caseId)) me.dismissedAlerts.push(caseId);
+  renderCases();
+  showCaseDetail(caseId);
+  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
 }
 
 // ── 背景工作追蹤 ──────────────────────────────────
@@ -4920,6 +4947,7 @@ function showCaseDetail(caseId) {
     }
   } else {
     actionsHtml += ` <button class="btn btn-secondary" onclick="openEditCasePage('${cid}')">編輯</button>`;
+    if (_hasNewCounselorAlert(c)) actionsHtml += ` <button class="btn btn-secondary" style="font-size:.83rem;padding:4px 10px;" onclick="dismissNewCounselorAlert('${cid}')">取消新案提醒</button>`;
     actionsHtml += isActive
       ? ` <button class="btn btn-danger" onclick="closeCaseConfirm('${cid}')">結案</button>`
       : ` <button class="btn btn-secondary" onclick="reopenCase('${cid}')">取消結案</button>`;
@@ -9948,7 +9976,10 @@ async function saveCase() {
       const _prevSnaps = prev.basicInfoSnapshots || {};
       const _editSnap = {};
       BASIC_INFO_SNAPSHOT_FIELDS.forEach(f => { if (newCase[f] !== undefined) _editSnap[f] = newCase[f]; });
-      casesData[idx] = { ...prev, ...newCase,
+      const _alertUpdate = (counselorEmail && counselorEmail !== oldCounselorEmail)
+        ? { newCounselorAlert: { date: new Date().toISOString().slice(0,10), toEmail: counselorEmail } }
+        : {};
+      casesData[idx] = { ...prev, ...newCase, ..._alertUpdate,
         basicInfoSnapshots: _editSem ? { ..._prevSnaps, [_editSem]: _editSnap } : _prevSnaps };
       await saveCasesChunks(_editingCaseId, newCase.id);
       let cfgChanged = syncManagersFromForm(newCase.id, _editingCaseId);
@@ -17243,6 +17274,19 @@ function _renderTransferRow(r) {
     : r.recommendation === 'noTransfer' ? '<span class="badge badge-green">建議不轉銜</span>' : '';
   const schoolInfo = r.fromSchool ? `<span style="font-size:.8rem;color:#718096;">來源：${escHtml(r.fromSchool)}</span>` : (r.toSchool ? `<span style="font-size:.8rem;color:#718096;">轉至：${escHtml(r.toSchool)}</span>` : '');
   const caseLink = (r.type === 'incoming' && r.caseId) ? `<span style="font-size:.8rem;color:#3182ce;">案號：${escHtml(r.caseId)}</span>` : '';
+  let counselorInfo = '', semCountInfo = '';
+  if (r.type === 'incoming' && r.caseId) {
+    const _lc = casesData.find(c => c.id === r.caseId);
+    if (_lc) {
+      if (_lc.counselorName || _lc.counselorEmail) {
+        counselorInfo = `<span style="font-size:.8rem;color:#4a5568;">主責：${escHtml(_lc.counselorName || _lc.counselorEmail)}</span>`;
+      }
+      const _curSem = currentSemesterPrefix();
+      const _semMs = semesterMonths(_curSem);
+      const _cnt = (_lc.records || []).filter(rec => !rec.deleted && _semMs.includes((rec.date||'').slice(0,7))).length;
+      semCountInfo = `<span style="font-size:.8rem;color:#718096;">本學期 ${_cnt} 次</span>`;
+    }
+  }
   const actions = r.type === 'outgoing'
     ? `<button class="btn btn-secondary btn-sm" onclick="openTransferAssessmentModal('${escHtml(r.id)}','outgoing')">填寫評估</button>
        ${hasAssessment ? `<button class="btn btn-secondary btn-sm" onclick="printTransferAssessment('${escHtml(r.id)}')">列印</button>` : ''}
@@ -17254,7 +17298,7 @@ function _renderTransferRow(r) {
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <strong>${escHtml(r.name||'—')}</strong>
         <span style="color:#718096;font-size:.83rem;">${escHtml(r.studentId||r.idNumber||'')}</span>
-        ${statusBadge}${recBadge}${schoolInfo}${caseLink}
+        ${statusBadge}${recBadge}${schoolInfo}${caseLink}${counselorInfo ? ' ' + counselorInfo : ''}${semCountInfo ? ' ' + semCountInfo : ''}
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;">${actions}</div>
     </div>
