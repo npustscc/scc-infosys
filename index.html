@@ -1444,7 +1444,7 @@
     <div id="page-closure-eval" class="page">
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px;">
         <button class="btn btn-secondary" id="btn-closure-back" onclick="cancelClosureEval()">← 返回</button>
-        <div class="page-title" style="margin:0;border:none;padding:0;">結案評估表</div>
+        <div class="page-title" id="closure-eval-page-title" style="margin:0;border:none;padding:0;">結案評估表</div>
       </div>
       <div id="closure-case-info" class="alert alert-info" style="margin-bottom:16px;"></div>
       <div id="closure-alert"></div>
@@ -1455,7 +1455,7 @@
       </div>
 
       <div class="form-section">
-        <div class="form-section-title">質性描述與結案資訊</div>
+        <div id="closure-section-title" class="form-section-title">質性描述與結案資訊</div>
         <div class="form-grid">
           <div class="full">
             <label class="field-label">狀態評估<span class="req">*</span></label>
@@ -1470,7 +1470,17 @@
                 <span class="badge light-green">🟢 綠燈</span> 個案狀況穩定</label>
             </div>
           </div>
-          <div class="full">
+          <!-- 結案評估表：三個分開欄位 -->
+          <div class="full" id="cl-qualitative-closure" style="display:none;">
+            <label class="field-label">個案主訴問題<span class="req">*</span></label>
+            <textarea class="field-input" id="cl-chief-complaint" rows="3" style="resize:vertical;" placeholder="請描述個案主要求助問題…"></textarea>
+            <label class="field-label" style="margin-top:10px;">評估（可依認知、情緒、行為、內在需要等面向）<span class="req">*</span></label>
+            <textarea class="field-input" id="cl-assessment" rows="4" style="resize:vertical;" placeholder="請依各面向評估個案現況…"></textarea>
+            <label class="field-label" style="margin-top:10px;">已提供之輔導處遇<span class="req">*</span></label>
+            <textarea class="field-input" id="cl-treatment" rows="3" style="resize:vertical;" placeholder="請描述本次開案期間所提供的輔導方式與處遇…"></textarea>
+          </div>
+          <!-- 學期評估表：原有合併欄位 -->
+          <div class="full" id="cl-qualitative-semester" style="display:none;">
             <label class="field-label">質性描述（主訴問題與評估）<span class="req">*</span></label>
             <textarea class="field-input" id="cl-description" rows="4"
               style="resize:vertical;" placeholder="請描述個案主訴問題、評估結果及已提供之輔導處遇…"></textarea>
@@ -1484,7 +1494,7 @@
 
       <div class="form-actions">
         <button class="btn btn-secondary" onclick="cancelClosureEval()">取消</button>
-        <button class="btn btn-secondary" onclick="printClosureEval()">列印結案評估</button>
+        <button class="btn btn-secondary" id="btn-print-eval" onclick="printClosureEval()">列印</button>
         <button class="btn btn-danger" id="btn-confirm-closure" onclick="saveClosureEval()">確認結案</button>
       </div>
     </div>
@@ -3774,6 +3784,9 @@ function renderCases() {
     });
   });
 
+  const _semMs = caseFilters.semester ? semesterMonths(caseFilters.semester) : null;
+  const transferCaseIds = new Set((transferData||[]).filter(t => t.type === 'incoming' && t.caseId).map(t => t.caseId));
+
   const rows = visible.map(c => {
     const cid = escHtml(c.id);
     let actionBtn;
@@ -3786,7 +3799,8 @@ function renderCases() {
     } else {
       actionBtn = `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();closeCaseConfirm('${cid}')">結案</button>`;
     }
-    const transferBadge = c.isTransferCase ? ' <span class="badge badge-teal">轉銜個案</span>' : '';
+    const sessCount = (c.records||[]).filter(r => !r.deleted && r.status !== 'pending' && (!_semMs || _semMs.includes((r.date||'').slice(0,7)))).length;
+    const transferBadge = (c.isTransferCase || transferCaseIds.has(c.id)) ? ' <span class="badge badge-teal">轉銜個案</span>' : '';
     const newCounselorBadge = (() => {
       if (!c.newCounselorAlert?.date) return '';
       if (c.counselorEmail !== currentUser?.email) return '';
@@ -3814,6 +3828,7 @@ function renderCases() {
           : ''
       }</td>
       <td>${statusCell}</td>
+      <td style="text-align:center;">${sessCount}</td>
       <td>${escHtml((c.updatedAt || '').slice(0,10) || '—')}</td>
       <td onclick="event.stopPropagation()">${actionBtn}</td>
     </tr>`;
@@ -3829,6 +3844,7 @@ function renderCases() {
           <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('openDate')">開案學期 ${sortArrow('openDate')}</th>
           <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('counselorName')">主責人員 ${sortArrow('counselorName')}</th>
           <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('status')">狀態 ${sortArrow('status')}</th>
+          <th style="text-align:center;white-space:nowrap;">服務次數</th>
           <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('updatedAt')">更新日期 ${sortArrow('updatedAt')}</th>
           <th>操作</th>
         </tr>
@@ -5410,10 +5426,40 @@ function showCaseDetail(caseId) {
         <div><span style="font-size:.78rem;color:#a0aec0;">填表人</span><br>
           <span style="font-size:.88rem;">${escHtml(ev.evaluatorName||ev.evaluatorEmail)}</span></div>
       </div>
+      ${ev.chiefComplaint ? `<div style="margin-top:12px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:4px;">個案主訴問題</div>
+        <div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.chiefComplaint)}</div></div>` : ''}
+      ${ev.assessment ? `<div style="margin-top:10px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:4px;">評估</div>
+        <div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.assessment)}</div></div>` : ''}
+      ${ev.treatmentProvided ? `<div style="margin-top:10px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:4px;">已提供之輔導處遇</div>
+        <div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.treatmentProvided)}</div></div>` : ''}
       ${ev.description ? `<div style="margin-top:12px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:4px;">質性描述</div>
         <div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.description)}</div></div>` : ''}
       <div style="margin-top:14px;"><button class="btn btn-secondary btn-sm" onclick="printClosureEval('${escHtml(c.id)}')">列印結案評估</button></div>`;
     return mkSection('eval', '結案評估', evalBody);
+  })();
+
+  // 學期評估記錄（若有）
+  const semEvalHtml = (() => {
+    const sems = c.semesterEvaluations;
+    if (!sems || !sems.length) return '';
+    const lightMap = { '紅燈':'light-red','橙燈':'light-orange','黃燈':'light-yellow','綠燈':'light-green' };
+    const cards = sems.map((ev, idx) => {
+      const dimRows = (ev.dimensions||[]).map(d =>
+        `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f0f4f8;font-size:.82rem;">
+          <span style="color:#4a5568;">${escHtml(d.label)}</span>
+          <span class="badge ${d.level==='低'?'badge-green':d.level==='中'?'badge-orange':'light-red'}">${escHtml(d.level)}</span>
+        </div>`).join('');
+      return `<div style="background:#f7fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px 12px;margin-bottom:10px;">
+        <div style="font-size:.82rem;color:#718096;margin-bottom:6px;">
+          ${semesterLabel(ev.semester)||'—'}&ensp;|&ensp;評估人：${escHtml(ev.evaluatorName||ev.evaluatorEmail||'—')}
+          &ensp;<span class="badge ${lightMap[ev.statusLight]||'badge-gray'}">${escHtml(ev.statusLight||'—')}</span>
+          &ensp;<button class="btn btn-secondary btn-sm" onclick="printClosureEval('${escHtml(c.id)}',${idx})">列印</button>
+        </div>
+        <div style="margin-bottom:6px;">${dimRows}</div>
+        ${ev.description ? `<div style="font-size:.82rem;margin-top:6px;white-space:pre-wrap;">${escHtml(ev.description)}</div>` : ''}
+      </div>`;
+    }).reverse().join('');
+    return mkSection('semeval', '學期評估記錄', cards);
   })();
 
   document.getElementById('detail-body').innerHTML =
@@ -5474,6 +5520,7 @@ function showCaseDetail(caseId) {
       ${field('主訴問題', (_cd('topics') || []).join('、') || '—')}
     </div>`) +
     evalHtml +
+    semEvalHtml +
     (_detailSemFilter !== 'all' && iiCardHtml ? `<div style="margin-bottom:20px;">${iiCardHtml}</div>` : '') +
     (_detailSemFilter !== 'all' ? psyHtml : '') +
     recordsHtml;
@@ -6823,17 +6870,63 @@ async function saveRecord() {
 //  結案評估
 // ══════════════════════════════════════════════
 let _closureCaseId = null;
-let _closureEvalDraft = null; // { caseId, dims, light, description, reason }
+let _closureEvalDraft = null;
+let _closureEvalType = 'closure'; // 'closure' | 'semester'
 
-function openClosureEvalPage(caseId) {
+function showEvalTypeModal(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:400px;text-align:center;">
+      <div class="modal-header"><h3 style="margin:0;">請選擇評估類型</h3></div>
+      <div class="modal-body" style="padding:20px 16px;">
+        <p style="font-size:.88rem;color:#4a5568;margin-bottom:18px;">個案：<strong>${escHtml(c.name)}（${escHtml(c.id)}）</strong></p>
+        <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
+          <button class="btn btn-secondary" style="flex:1;min-width:120px;padding:14px 10px;font-size:.95rem;"
+            onclick="this.closest('.modal-overlay').remove();openClosureEvalPage('${escHtml(caseId)}','semester')">
+            📋 學期評估表<br><span style="font-size:.78rem;color:#718096;font-weight:400;">不結案，僅記錄本學期評估</span>
+          </button>
+          <button class="btn btn-danger" style="flex:1;min-width:120px;padding:14px 10px;font-size:.95rem;"
+            onclick="this.closest('.modal-overlay').remove();openClosureEvalPage('${escHtml(caseId)}','closure')">
+            🔒 結案評估表<br><span style="font-size:.78rem;opacity:.8;font-weight:400;">填寫後將結案</span>
+          </button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function openClosureEvalPage(caseId, evalType) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
   _closureCaseId = caseId;
+  _closureEvalType = evalType || 'closure';
+
+  const isClosure = _closureEvalType === 'closure';
+  const pageTitle = isClosure ? '結案評估表' : '學期評估表';
+  document.getElementById('closure-eval-page-title').textContent = pageTitle;
+  document.getElementById('closure-section-title').textContent = isClosure ? '質性描述與結案資訊' : '質性描述';
+  document.getElementById('btn-print-eval').textContent = isClosure ? '列印結案評估' : '列印學期評估';
+  document.getElementById('btn-confirm-closure').textContent = isClosure ? '確認結案' : '儲存學期評估';
+  document.getElementById('btn-confirm-closure').className = isClosure ? 'btn btn-danger' : 'btn btn-primary';
+  document.getElementById('cl-qualitative-closure').style.display = isClosure ? '' : 'none';
+  document.getElementById('cl-qualitative-semester').style.display = isClosure ? 'none' : '';
 
   document.getElementById('closure-case-info').textContent =
     `個案：${c.name}（${c.id}）　主責：${c.counselorName || c.counselorEmail}`;
 
-  const draft = _closureEvalDraft?.caseId === caseId ? _closureEvalDraft : null;
+  const _lsDraftKey = 'scc_closure_draft_' + caseId;
+  const rawDraft = (_closureEvalDraft?.caseId === caseId)
+    ? _closureEvalDraft
+    : (() => { try { return JSON.parse(localStorage.getItem(_lsDraftKey) || 'null'); } catch { return null; } })();
+  // Only use draft if eval type matches
+  const draft = (rawDraft?.evalType === _closureEvalType || (!rawDraft?.evalType && _closureEvalType === 'closure'))
+    ? rawDraft : null;
 
   // 產生八向度
   document.getElementById('closure-dims').innerHTML = CLOSURE_DIMS.map((dim, i) => {
@@ -6856,7 +6949,13 @@ function openClosureEvalPage(caseId) {
   } else {
     document.querySelectorAll('input[name="cl-light"]').forEach(r => r.checked = false);
   }
-  document.getElementById('cl-description').value = draft?.description || '';
+  if (isClosure) {
+    if (document.getElementById('cl-chief-complaint')) document.getElementById('cl-chief-complaint').value = draft?.chiefComplaint || '';
+    if (document.getElementById('cl-assessment'))      document.getElementById('cl-assessment').value = draft?.assessment || '';
+    if (document.getElementById('cl-treatment'))       document.getElementById('cl-treatment').value = draft?.treatmentProvided || '';
+  } else {
+    document.getElementById('cl-description').value = draft?.description || '';
+  }
   _clReasonSet(draft?.reason || '');
   setAlert('closure-alert', '', '');
   document.getElementById('btn-confirm-closure').disabled = false;
@@ -6925,24 +7024,23 @@ function _clReasonSet(val) {
 }
 
 function cancelClosureEval() {
-  // Save current form state as draft so reopening restores it
   _closureEvalDraft = {
     caseId: _closureCaseId,
+    evalType: _closureEvalType,
     dims: CLOSURE_DIMS.map((_, i) => document.querySelector(`input[name="dim-${i}"]:checked`)?.value || '不清楚'),
     light: document.querySelector('input[name="cl-light"]:checked')?.value || '',
     description: document.getElementById('cl-description')?.value || '',
+    chiefComplaint: document.getElementById('cl-chief-complaint')?.value || '',
+    assessment: document.getElementById('cl-assessment')?.value || '',
+    treatmentProvided: document.getElementById('cl-treatment')?.value || '',
     reason: _clReasonGet(),
   };
+  try { localStorage.setItem('scc_closure_draft_' + _closureCaseId, JSON.stringify(_closureEvalDraft)); } catch {}
   if (_closureCaseId) showCaseDetail(_closureCaseId);
   else backToCaseList();
 }
 
-function printClosureEval(caseId) {
-  const cid = caseId || _closureCaseId;
-  const c = casesData.find(x => x.id === cid);
-  if (!c) return;
-  const ev = c.closureEvaluation;
-  if (!ev) { alert('此個案尚無結案評估資料。'); return; }
+function _buildEvalPrintHtml(c, ev, formTitle) {
   const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const rocDate = d => { if(!d) return ''; const p=(d||'').slice(0,10).split('-'); return p.length===3?`${parseInt(p[0])-1911}/${parseInt(p[1])}/${parseInt(p[2])}`:d; };
   const lightColor = { '紅燈':'#c53030','橙燈':'#dd6b20','黃燈':'#b7791f','綠燈':'#276749' };
@@ -6950,8 +7048,25 @@ function printClosureEval(caseId) {
     `<tr><td style="padding:5px 8px;font-size:11pt;">${i+1}. ${esc(d.label)}</td>
      <td style="padding:5px 8px;text-align:center;font-size:11pt;font-weight:700;color:${d.level==='低'?'#276749':d.level==='中'?'#dd6b20':'#c53030'};">${esc(d.level)}</td></tr>`
   ).join('');
-  const html = `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
-  <title>結案評估表 - ${esc(c.name)}</title>
+  const qualSection = (ev.chiefComplaint || ev.assessment || ev.treatmentProvided)
+    ? `<div class="section">
+         <div class="label" style="font-weight:700;margin-bottom:6px;">個案主訴問題</div>
+         <div class="desc">${esc(ev.chiefComplaint||'')}</div>
+       </div>
+       <div class="section">
+         <div class="label" style="font-weight:700;margin-bottom:6px;">評估（可依認知、情緒、行為、內在需要等面向）</div>
+         <div class="desc">${esc(ev.assessment||'')}</div>
+       </div>
+       <div class="section">
+         <div class="label" style="font-weight:700;margin-bottom:6px;">已提供之輔導處遇</div>
+         <div class="desc">${esc(ev.treatmentProvided||'')}</div>
+       </div>`
+    : `<div class="section">
+         <div class="label">質性描述（主訴問題與評估）</div>
+         <div class="desc">${esc(ev.description||'')}</div>
+       </div>`;
+  return `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
+  <title>${esc(formTitle)} - ${esc(c.name)}</title>
   <style>
     body { font-family:'微軟正黑體','Microsoft JhengHei',sans-serif; font-size:11pt; margin:20mm 18mm; color:#1a1a1a; }
     h2 { text-align:center; font-size:15pt; margin-bottom:4px; }
@@ -6960,12 +7075,11 @@ function printClosureEval(caseId) {
     th { background:#f0f4f8; padding:6px 8px; font-size:10.5pt; text-align:left; border:1px solid #ccc; }
     td { border:1px solid #ccc; vertical-align:top; }
     .label { font-size:9.5pt; color:#666; margin-bottom:2px; }
-    .val { font-size:11pt; }
     .section { margin-bottom:14px; }
-    .desc { white-space:pre-wrap; font-size:10.5pt; border:1px solid #ccc; padding:8px; min-height:60px; }
+    .desc { white-space:pre-wrap; font-size:10.5pt; border:1px solid #ccc; padding:8px; min-height:50px; }
     @media print { body { margin:15mm 14mm; } }
   </style></head><body>
-  <h2>國立屏東科技大學學生諮商中心 結案評估表</h2>
+  <h2>國立屏東科技大學學生諮商中心 ${esc(formTitle)}</h2>
   <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)} &ensp;|&ensp; 主責：${esc(c.counselorName||c.counselorEmail||'—')} &ensp;|&ensp; 評估日期：${rocDate(ev.evaluatedAt)}</div>
   <div class="section">
     <table>
@@ -6975,42 +7089,67 @@ function printClosureEval(caseId) {
   </div>
   <div class="section">
     <table>
-      <tr>
-        <th style="width:50%;">狀態燈號</th>
-        <th style="width:50%;">結案原因</th>
-      </tr>
+      <tr><th style="width:50%;">狀態燈號</th><th style="width:50%;">結案原因</th></tr>
       <tr>
         <td style="padding:8px;font-weight:700;font-size:12pt;color:${lightColor[ev.statusLight]||'#333'};">${esc(ev.statusLight||'—')}</td>
         <td style="padding:8px;">${esc(ev.closureReason||'—')}</td>
       </tr>
     </table>
   </div>
-  <div class="section">
-    <div class="label">質性描述（主訴問題與評估）</div>
-    <div class="desc">${esc(ev.description||'')}</div>
-  </div>
+  ${qualSection}
   <div style="margin-top:30px;display:flex;justify-content:flex-end;gap:60px;font-size:10.5pt;">
     <span>填表人：${esc(ev.evaluatorName||ev.evaluatorEmail||'—')}</span>
     <span>主責：${esc(c.counselorName||'—')}</span>
   </div>
   <script>window.onload=()=>{ window.print(); }<\/script>
   </body></html>`;
+}
+
+function printClosureEval(caseId, semIdx) {
+  const cid = caseId || _closureCaseId;
+  const c = casesData.find(x => x.id === cid);
+  if (!c) return;
+  // If semIdx provided, print a specific semester evaluation; otherwise print closure evaluation
+  let ev, formTitle;
+  if (semIdx != null) {
+    ev = (c.semesterEvaluations || [])[semIdx];
+    formTitle = '學期評估表';
+  } else {
+    ev = c.closureEvaluation;
+    formTitle = '結案評估表';
+  }
+  if (!ev) { alert('此個案尚無評估資料。'); return; }
+  const html = _buildEvalPrintHtml(c, ev, formTitle);
   const w = window.open('','_blank');
   if (w) { w.document.write(html); w.document.close(); }
 }
 
 async function saveClosureEval() {
-  const light       = document.querySelector('input[name="cl-light"]:checked')?.value || '';
-  const description = document.getElementById('cl-description').value.trim();
-  const reason      = _clReasonGet();
+  const isClosure = _closureEvalType === 'closure';
+  const light  = document.querySelector('input[name="cl-light"]:checked')?.value || '';
+  const reason = _clReasonGet();
 
   const _closAlert = (msg) => {
     setAlert('closure-alert', 'error', msg);
     document.getElementById('closure-alert').scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
-  if (!light)       { _closAlert('請選擇狀態評估燈號。'); return; }
-  if (!description) { _closAlert('請填寫質性描述。'); return; }
-  if (!reason)      { _closAlert('請選擇結案原因。'); return; }
+  if (!light)  { _closAlert('請選擇狀態評估燈號。'); return; }
+  if (!reason) { _closAlert('請選擇結案原因。'); return; }
+
+  let evalPayload;
+  if (isClosure) {
+    const chiefComplaint   = (document.getElementById('cl-chief-complaint')?.value || '').trim();
+    const assessment       = (document.getElementById('cl-assessment')?.value || '').trim();
+    const treatmentProvided = (document.getElementById('cl-treatment')?.value || '').trim();
+    if (!chiefComplaint)    { _closAlert('請填寫個案主訴問題。'); return; }
+    if (!assessment)        { _closAlert('請填寫評估內容。'); return; }
+    if (!treatmentProvided) { _closAlert('請填寫已提供之輔導處遇。'); return; }
+    evalPayload = { chiefComplaint, assessment, treatmentProvided };
+  } else {
+    const description = (document.getElementById('cl-description')?.value || '').trim();
+    if (!description) { _closAlert('請填寫質性描述。'); return; }
+    evalPayload = { description };
+  }
 
   const dimensions = CLOSURE_DIMS.map((dim, i) => ({
     label: dim,
@@ -7018,31 +7157,44 @@ async function saveClosureEval() {
   }));
 
   document.getElementById('btn-confirm-closure').disabled = true;
-  showLoading('儲存結案評估…');
+  showLoading(isClosure ? '儲存結案評估…' : '儲存學期評估…');
 
   const idx = casesData.findIndex(c => c.id === _closureCaseId);
   if (idx === -1) { hideLoading(); return; }
-  const prev = { status: casesData[idx].status, closureEvaluation: casesData[idx].closureEvaluation };
 
-  casesData[idx].status = 'closed';
-  casesData[idx].updatedAt = new Date().toISOString();
-  casesData[idx].closureEvaluation = {
-    dimensions, statusLight: light, description, closureReason: reason,
+  const evalData = {
+    dimensions, statusLight: light, closureReason: reason, ...evalPayload,
     evaluatorEmail: currentUser.email,
     evaluatorName: configData?.users?.[currentUser.email]?.name || currentUser.name,
     evaluatedAt: new Date().toISOString(),
   };
+  const prev = {
+    status: casesData[idx].status,
+    closureEvaluation: casesData[idx].closureEvaluation,
+    semesterEvaluations: casesData[idx].semesterEvaluations,
+  };
+
+  casesData[idx].updatedAt = new Date().toISOString();
+  if (isClosure) {
+    casesData[idx].status = 'closed';
+    casesData[idx].closureEvaluation = evalData;
+  } else {
+    if (!casesData[idx].semesterEvaluations) casesData[idx].semesterEvaluations = [];
+    casesData[idx].semesterEvaluations.push({ ...evalData, semester: currentSemesterPrefix() });
+  }
 
   try {
     await saveCasesChunks(_closureCaseId);
-    auditLog('執行結案', _closureCaseId);
+    auditLog(isClosure ? '執行結案' : '儲存學期評估', _closureCaseId);
     _closureEvalDraft = null;
+    try { localStorage.removeItem('scc_closure_draft_' + _closureCaseId); } catch {}
     hideLoading();
     renderCases();
     showCaseDetail(_closureCaseId);
   } catch (err) {
     casesData[idx].status = prev.status;
     casesData[idx].closureEvaluation = prev.closureEvaluation;
+    casesData[idx].semesterEvaluations = prev.semesterEvaluations;
     hideLoading();
     document.getElementById('btn-confirm-closure').disabled = false;
     _closAlert('儲存失敗：' + err.message);
@@ -7054,7 +7206,7 @@ function backToCaseList() {
 }
 
 function closeCaseConfirm(caseId) {
-  openClosureEvalPage(caseId);
+  showEvalTypeModal(caseId);
 }
 
 async function reopenCase(caseId) {
