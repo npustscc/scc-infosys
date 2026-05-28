@@ -502,6 +502,19 @@
       display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px;
     }
     #modal-error { display: none; margin-top: 8px; }
+    .modal-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,.45);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 1000; overflow-y: auto; padding: 20px;
+    }
+    .modal-box {
+      background: #fff; border-radius: 12px; padding: 24px;
+      width: 95%; box-shadow: 0 8px 32px rgba(0,0,0,.18); margin: auto;
+    }
+    .modal-header { margin-bottom: 14px; border-bottom: 1px solid #e2e8f0; padding-bottom: 10px; }
+    .modal-header h3 { margin: 0; font-size: 1.05rem; color: #1a5276; }
+    .modal-body { padding: 4px 0; }
 
     /* ── Loading / error overlays ── */
     #loading-overlay {
@@ -1521,6 +1534,9 @@
 
       <!-- 學生學期導覽（跨案件） -->
       <div id="detail-student-sem-nav" style="display:none;"></div>
+
+      <!-- 學期內操作按鈕（隨選取學期更新） -->
+      <div id="detail-sem-actions" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;"></div>
 
       <!-- 詳細資料區塊（動態產生） -->
       <div id="detail-body"></div>
@@ -3818,7 +3834,6 @@ function renderCases() {
       <td>${escHtml(c.id    || '—')}</td>
       <td>${escHtml(c.name  || '—')}</td>
       <td>${escHtml(c.studentId || '—')}</td>
-      <td style="font-size:.8rem;color:#718096;">${escHtml(semesterLabel(openDateToSemPrefix(c.openDate)) || '—')}</td>
       <td>${escHtml(c.counselorName || '—')}${
         (caseManagerMap[c.id] || []).length
           ? `<div style="font-size:.72rem;margin-top:2px;color:#2471a3;">
@@ -3841,7 +3856,6 @@ function renderCases() {
           <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('id')">案號 ${sortArrow('id')}</th>
           <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('name')">個案姓名 ${sortArrow('name')}</th>
           <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('studentId')">學號 ${sortArrow('studentId')}</th>
-          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('openDate')">開案學期 ${sortArrow('openDate')}</th>
           <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('counselorName')">主責人員 ${sortArrow('counselorName')}</th>
           <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('status')">狀態 ${sortArrow('status')}</th>
           <th style="text-align:center;white-space:nowrap;">服務次數</th>
@@ -4934,7 +4948,7 @@ function showCaseDetail(caseId) {
     `主責：${escHtml(c.counselorText || c.counselorName || c.counselorEmail || '—')}` +
     (!c.counselorEmail && (c.counselorText || c.counselorName) ? ' <span style="font-size:.72rem;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1px 7px;color:#a0aec0;">未連結帳號</span>' : '') +
     `&nbsp;&nbsp;${statusBadge(c.status)}` +
-    (c.isTransferCase ? ' &nbsp;<span class="badge badge-teal">轉銜個案</span>' : '') +
+    ((c.isTransferCase || (transferData||[]).some(t => t.type === 'incoming' && t.caseId === c.id)) ? ' &nbsp;<span class="badge badge-teal">轉銜個案</span>' : '') +
     (c.deleted ? ` &nbsp;<span class="badge-case-deleted">已刪除 by ${escHtml(c.deletedByName || c.deletedBy || '?')}</span>` : '');
 
   const notesEl = document.getElementById('detail-import-notes');
@@ -4959,13 +4973,25 @@ function showCaseDetail(caseId) {
   const caseIsDeleted = !!c.deleted;
   const cid = escHtml(c.id);
 
+  // ── 全案層級按鈕（頂部） ──
   let actionsHtml = '';
-  if (!caseIsDeleted && isActive) {
-    actionsHtml += `<button class="btn btn-primary" onclick="openNewRecordPage('${cid}')">＋ 新增記錄</button> `;
-    actionsHtml += `<button class="btn btn-secondary" onclick="openEventRecordForm('${cid}', undefined, 'case-detail')">＋ 事件處理記錄</button> `;
+  if (!caseIsDeleted) {
+    actionsHtml += `<button class="btn btn-secondary" onclick="showNewSemModal('${cid}')">新學期開案</button>`;
+    if (_hasNewCounselorAlert(c)) actionsHtml += ` <button class="btn btn-secondary" style="font-size:.83rem;padding:4px 10px;" onclick="dismissNewCounselorAlert('${cid}')">取消新案提醒</button>`;
+    if (!isActive) actionsHtml += ` <button class="btn btn-secondary" onclick="reopenCase('${cid}')">取消結案</button>`;
+    if (isAdminUser) {
+      actionsHtml += ` <button class="btn btn-danger" onclick="deleteCase('${cid}')">刪除個案</button>`;
+      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【錯誤建案處理流程】\\n\\n若此個案為錯誤建立，請依下列步驟操作：\\n1. 點擊「刪除個案」，將個案標記為已刪除（可復原）\\n2. 確認無誤後，再由主任或管理者點擊「永久刪除」\\n   → 個案紀錄與身分資料將完全移除，無法復原')">？</button>`;
+    }
+  } else {
+    if (isAdminUser) {
+      actionsHtml += `<button class="btn btn-secondary" onclick="restoreCaseAdmin('${cid}')">復原個案</button>`;
+      actionsHtml += ` <button class="btn btn-danger" onclick="hardDeleteCase('${cid}')">永久刪除</button>`;
+    }
   }
-  actionsHtml += `<button class="btn btn-secondary" onclick="window.print()">列印</button>`;
-  actionsHtml += ` <button class="btn btn-secondary" onclick="openBatchPrintModal('${cid}')">記錄批次列印</button>`;
+  document.getElementById('detail-actions').innerHTML = actionsHtml;
+
+  // ── 學期內操作按鈕（在學期chips之下） ──
   const _iiSemData = _getCaseII(c, _activeSem);
   const _iiAnyExists = !!(c.initialInterview && !c.initialInterview.deleted) ||
     !!(c.initialInterviews && Object.values(c.initialInterviews).some(x => x && !x.deleted));
@@ -4980,31 +5006,25 @@ function showCaseDetail(caseId) {
   } else {
     _iiLabel = '編輯初次晤談表'; _iiOncl = `openInitialInterviewPage('${cid}')`;
   }
-  actionsHtml += ` <button class="btn btn-secondary" onclick="${_iiOncl}">${_iiLabel}</button>`;
-  actionsHtml += ` <button class="btn btn-secondary" onclick="openPsychiatristModal('${cid}')">填寫精神科評估</button>`;
-  if (_iiSemData && !_iiSemData.deleted && (_iiSemData.type === 'filled' || _iiSemData.problemsMain)) {
-    actionsHtml += ` <button class="btn btn-secondary" onclick="printInitialInterview('${cid}')">列印初次晤談</button>`;
-  }
-  if (c.closureEvaluation) {
-    actionsHtml += ` <button class="btn btn-secondary" onclick="printClosureEval('${cid}')">列印結案評估</button>`;
-  }
-  if (caseIsDeleted) {
-    if (isAdminUser) {
-      actionsHtml += ` <button class="btn btn-secondary" onclick="restoreCaseAdmin('${cid}')">復原個案</button>`;
-      actionsHtml += ` <button class="btn btn-danger" onclick="hardDeleteCase('${cid}')">永久刪除</button>`;
+  let semActHtml = '';
+  if (!caseIsDeleted) {
+    if (isActive) {
+      semActHtml += `<button class="btn btn-primary" onclick="openNewRecordPage('${cid}')">＋ 新增記錄</button>`;
+      semActHtml += ` <button class="btn btn-secondary" onclick="openEventRecordForm('${cid}', undefined, 'case-detail')">＋ 事件處理記錄</button>`;
     }
-  } else {
-    actionsHtml += ` <button class="btn btn-secondary" onclick="openEditCasePage('${cid}')">編輯</button>`;
-    if (_hasNewCounselorAlert(c)) actionsHtml += ` <button class="btn btn-secondary" style="font-size:.83rem;padding:4px 10px;" onclick="dismissNewCounselorAlert('${cid}')">取消新案提醒</button>`;
-    actionsHtml += isActive
-      ? ` <button class="btn btn-danger" onclick="closeCaseConfirm('${cid}')">結案</button>`
-      : ` <button class="btn btn-secondary" onclick="reopenCase('${cid}')">取消結案</button>`;
-    if (isAdminUser) {
-      actionsHtml += ` <button class="btn btn-danger" onclick="deleteCase('${cid}')">刪除個案</button>`;
-      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【錯誤建案處理流程】\\n\\n若此個案為錯誤建立，請依下列步驟操作：\\n1. 點擊「刪除個案」，將個案標記為已刪除（可復原）\\n2. 確認無誤後，再由主任或管理者點擊「永久刪除」\\n   → 個案紀錄與身分資料將完全移除，無法復原')">？</button>`;
+    semActHtml += ` <button class="btn btn-secondary" onclick="openBatchPrintModal('${cid}')">記錄批次列印</button>`;
+    semActHtml += ` <button class="btn btn-secondary" onclick="${_iiOncl}">${_iiLabel}</button>`;
+    semActHtml += ` <button class="btn btn-secondary" onclick="openPsychiatristModal('${cid}')">填寫精神科評估</button>`;
+    if (c.closureEvaluation) {
+      semActHtml += ` <button class="btn btn-secondary" onclick="printClosureEval('${cid}')">列印結案評估</button>`;
+    }
+    semActHtml += ` <button class="btn btn-secondary" onclick="openEditCasePage('${cid}')">編輯基本資料</button>`;
+    if (isActive) {
+      semActHtml += ` <button class="btn btn-danger" onclick="closeCaseConfirm('${cid}')">結案</button>`;
     }
   }
-  document.getElementById('detail-actions').innerHTML = actionsHtml;
+  const semActEl = document.getElementById('detail-sem-actions');
+  if (semActEl) semActEl.innerHTML = semActHtml;
 
   const mgrsEl = document.getElementById('detail-managers');
   if (isAdminUser) {
@@ -5438,12 +5458,15 @@ function showCaseDetail(caseId) {
     return mkSection('eval', '結案評估', evalBody);
   })();
 
-  // 學期評估記錄（若有）
+  // 學期評估記錄（顯示目前選取學期的評估）
   const semEvalHtml = (() => {
-    const sems = c.semesterEvaluations;
-    if (!sems || !sems.length) return '';
+    const allSems = c.semesterEvaluations;
+    if (!allSems || !allSems.length) return '';
+    const filtered = allSems.map((ev, origIdx) => ({ ev, origIdx }))
+      .filter(({ ev }) => !_activeSem || !ev.semester || ev.semester === _activeSem);
+    if (!filtered.length) return '';
     const lightMap = { '紅燈':'light-red','橙燈':'light-orange','黃燈':'light-yellow','綠燈':'light-green' };
-    const cards = sems.map((ev, idx) => {
+    const cards = filtered.map(({ ev, origIdx }) => {
       const dimRows = (ev.dimensions||[]).map(d =>
         `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f0f4f8;font-size:.82rem;">
           <span style="color:#4a5568;">${escHtml(d.label)}</span>
@@ -5451,14 +5474,14 @@ function showCaseDetail(caseId) {
         </div>`).join('');
       return `<div style="background:#f7fafc;border:1px solid #e2e8f0;border-radius:6px;padding:10px 12px;margin-bottom:10px;">
         <div style="font-size:.82rem;color:#718096;margin-bottom:6px;">
-          ${semesterLabel(ev.semester)||'—'}&ensp;|&ensp;評估人：${escHtml(ev.evaluatorName||ev.evaluatorEmail||'—')}
+          ${ev.semester ? escHtml(semesterLabel(ev.semester)) : '—'}&ensp;|&ensp;評估人：${escHtml(ev.evaluatorName||ev.evaluatorEmail||'—')}
           &ensp;<span class="badge ${lightMap[ev.statusLight]||'badge-gray'}">${escHtml(ev.statusLight||'—')}</span>
-          &ensp;<button class="btn btn-secondary btn-sm" onclick="printClosureEval('${escHtml(c.id)}',${idx})">列印</button>
+          &ensp;<button class="btn btn-secondary btn-sm" onclick="printClosureEval('${escHtml(c.id)}',${origIdx})">列印</button>
         </div>
         <div style="margin-bottom:6px;">${dimRows}</div>
         ${ev.description ? `<div style="font-size:.82rem;margin-top:6px;white-space:pre-wrap;">${escHtml(ev.description)}</div>` : ''}
       </div>`;
-    }).reverse().join('');
+    }).join('');
     return mkSection('semeval', '學期評估記錄', cards);
   })();
 
@@ -6872,6 +6895,7 @@ async function saveRecord() {
 let _closureCaseId = null;
 let _closureEvalDraft = null;
 let _closureEvalType = 'closure'; // 'closure' | 'semester'
+let _closureEvalSem  = null;     // active semester when eval was opened
 
 function showEvalTypeModal(caseId) {
   const c = casesData.find(x => x.id === caseId);
@@ -6906,6 +6930,7 @@ function openClosureEvalPage(caseId, evalType) {
   if (!c) return;
   _closureCaseId = caseId;
   _closureEvalType = evalType || 'closure';
+  _closureEvalSem  = _caseDetailActiveSem || currentSemesterPrefix();
 
   const isClosure = _closureEvalType === 'closure';
   const pageTitle = isClosure ? '結案評估表' : '學期評估表';
@@ -7180,7 +7205,7 @@ async function saveClosureEval() {
     casesData[idx].closureEvaluation = evalData;
   } else {
     if (!casesData[idx].semesterEvaluations) casesData[idx].semesterEvaluations = [];
-    casesData[idx].semesterEvaluations.push({ ...evalData, semester: currentSemesterPrefix() });
+    casesData[idx].semesterEvaluations.push({ ...evalData, semester: _closureEvalSem || currentSemesterPrefix() });
   }
 
   try {
@@ -7207,6 +7232,76 @@ function backToCaseList() {
 
 function closeCaseConfirm(caseId) {
   showEvalTypeModal(caseId);
+}
+
+function nextSemesterPrefix(prefix) {
+  if (!prefix || prefix.length < 4) return prefix;
+  const semType = prefix.slice(-1);
+  const rocYear = parseInt(prefix.slice(0, -1));
+  return semType === '1' ? `${rocYear}2` : `${rocYear + 1}1`;
+}
+
+function showNewSemModal(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const curSem = currentSemesterPrefix();
+  // Offer current + 2 future semesters that aren't already in semesters
+  const existing = new Set(c.semesters || [openDateToSemPrefix(c.openDate)]);
+  const candidates = [];
+  let s = curSem;
+  for (let i = 0; i < 4 && candidates.length < 3; i++) {
+    if (!existing.has(s)) candidates.push(s);
+    s = nextSemesterPrefix(s);
+  }
+  if (!candidates.length) candidates.push(curSem); // fallback
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:360px;">
+      <div class="modal-header"><h3>新學期開案</h3></div>
+      <div class="modal-body" style="padding:12px 0;">
+        <p style="font-size:.88rem;color:#4a5568;margin-bottom:12px;">個案：<strong>${escHtml(c.name)}（${escHtml(c.id)}）</strong></p>
+        <label class="field-label">選擇開案學期</label>
+        <select class="field-input" id="new-sem-select">
+          ${candidates.map(sem => `<option value="${escHtml(sem)}">${escHtml(semesterLabel(sem))}</option>`).join('')}
+        </select>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">取消</button>
+        <button class="btn btn-primary" onclick="addCaseSemester('${escHtml(caseId)}')">確認開案</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+async function addCaseSemester(caseId) {
+  const semEl = document.getElementById('new-sem-select');
+  if (!semEl) return;
+  const sem = semEl.value;
+  const c = casesData.find(x => x.id === caseId);
+  if (!c || !sem) return;
+  document.querySelector('.modal-overlay')?.remove();
+  if (!c.semesters) c.semesters = [openDateToSemPrefix(c.openDate)].filter(Boolean);
+  if (!c.semesters.includes(sem)) c.semesters.push(sem);
+  c.semesters.sort();
+  // Copy latest available basicInfoSnapshot as starting point
+  if (!c.basicInfoSnapshots) c.basicInfoSnapshots = {};
+  if (!c.basicInfoSnapshots[sem]) {
+    const sortedSnaps = c.semesters.slice(0, -1).filter(s => c.basicInfoSnapshots[s]).pop();
+    if (sortedSnaps) c.basicInfoSnapshots[sem] = { ...c.basicInfoSnapshots[sortedSnaps] };
+  }
+  c.updatedAt = new Date().toISOString();
+  const jobId = bgJobAdd('新學期開案', c.name);
+  (async () => {
+    try {
+      await saveCasesChunks(caseId);
+      auditLog('新學期開案', caseId);
+      bgJobDone(jobId);
+      _caseDetailActiveSem = sem;
+      renderCases();
+      showCaseDetail(caseId);
+    } catch(e) { bgJobFail(jobId, e.message); }
+  })();
 }
 
 async function reopenCase(caseId) {
