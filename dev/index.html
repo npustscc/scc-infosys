@@ -1079,6 +1079,13 @@
       </div>
 
       <div id="cases-alert"></div>
+      <div id="cases-loading-bar" style="display:none;padding:24px 8px 8px;text-align:center;">
+        <div id="cases-loading-msg-text" style="font-size:.88rem;color:#4a5568;margin-bottom:10px;">載入個案資料…</div>
+        <div style="background:#e2e8f0;border-radius:4px;height:6px;width:280px;margin:0 auto;overflow:hidden;">
+          <div id="cases-loading-fill" style="background:#1a5276;height:100%;border-radius:4px;width:0%;transition:width .3s ease;"></div>
+        </div>
+        <div id="cases-loading-pct-text" style="font-size:.78rem;color:#718096;margin-top:6px;">0%</div>
+      </div>
 
       <div class="card">
         <div class="card-header">
@@ -3136,6 +3143,21 @@ function setLoadingProgress(pct) {
   if (fill) fill.style.width = p + '%';
   if (txt)  txt.textContent  = p + '%';
 }
+let _casesLoadingMsg = '';
+function _setCasesLoadingProgress(pct, msg) {
+  if (msg !== undefined) _casesLoadingMsg = msg;
+  const bar  = document.getElementById('cases-loading-bar');
+  if (!bar) return;
+  if (pct < 0) { bar.style.display = 'none'; return; }
+  bar.style.display = '';
+  const msgEl  = document.getElementById('cases-loading-msg-text');
+  const fillEl = document.getElementById('cases-loading-fill');
+  const pctEl  = document.getElementById('cases-loading-pct-text');
+  if (msgEl)  msgEl.textContent    = _casesLoadingMsg || '載入個案資料…';
+  if (fillEl) fillEl.style.width   = Math.max(pct, 0) + '%';
+  if (pctEl)  pctEl.textContent    = Math.max(pct, 0) + '%';
+}
+
 function showLoading(msg = '載入中…', pct = 0) {
   document.getElementById('loading-msg').textContent = msg;
   document.getElementById('loading-overlay').style.display = 'flex';
@@ -3552,13 +3574,15 @@ async function afterLogin() {
     renderNotifBell();
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-layout').style.display  = 'flex';
-    setLoadingProgress(30);
+    hideLoading(); // 設定檔已載入，關閉全螢幕 overlay；個案改在背景載入
     checkPinSetup();
-    await loadCases(); // loadCases 接手 30→100%
-    loadPsychTestDB().catch(() => {}); // 心理測驗 DB（非關鍵，背景載入）
-    scanUnassignedRecords().catch(() => {}); // 每日掃描未歸屬記錄（fire-and-forget）
-    _migrateLocalStorageDrafts(); // 把 localStorage crash 草稿轉成待辦事項（fire-and-forget）
-    _syncPendingRecordsToTodos(); // 把 casesData 中遺失對應 todo 的 pending 記錄補回待辦事項
+    // cases 在背景載入，不阻擋 UI；完成後再跑後續初始化任務
+    loadCases().then(() => {
+      loadPsychTestDB().catch(() => {});
+      scanUnassignedRecords().catch(() => {});
+      _migrateLocalStorageDrafts();
+      _syncPendingRecordsToTodos();
+    }).catch(() => {}); // loadCases 內部已處理並顯示錯誤
   } catch (err) {
     hideLoading();
     // 找不到設定檔 → 顯示初始化畫面
@@ -3629,7 +3653,7 @@ function resolveUserRole() {
 // ══════════════════════════════════════════════
 async function loadCases() {
   setAlert('cases-alert', 'info', '');
-  showLoading('載入個案資料…', 30);
+  _setCasesLoadingProgress(5, '載入個案資料…');
   try {
     let manifest = null;
     let fileMap  = null;
@@ -3642,7 +3666,7 @@ async function loadCases() {
     } catch (e) {
       console.warn('[loadCases] 批次載入失敗，改用路徑方式:', e.message);
     }
-    setLoadingProgress(50);
+    _setCasesLoadingProgress(50);
 
     // fallback：逐層路徑查詢
     if (!manifest) {
@@ -3652,7 +3676,7 @@ async function loadCases() {
 
     if (manifest && Array.isArray(manifest.chunks) && manifest.chunks.length > 0) {
       casesManifest = manifest;
-      setLoadingProgress(60);
+      _setCasesLoadingProgress(60);
       const deletedSet = new Set(manifest.deletedIds || []);
       // 逐批讀取（每批 3 個），避免並發過多導致 Apps Script CORS/rate-limit 錯誤
       const LOAD_BATCH = 3;
@@ -3678,7 +3702,7 @@ async function loadCases() {
             .catch(e => { console.warn('[loadCases] chunk 載入失敗:', chunkFile, e.message); return { cases: [] }; });
         }));
         results.push(...batchResults);
-        setLoadingProgress(60 + Math.round(30 * Math.min(i + LOAD_BATCH, totalChunks) / totalChunks));
+        _setCasesLoadingProgress(60 + Math.round(30 * Math.min(i + LOAD_BATCH, totalChunks) / totalChunks));
       }
       // 過濾「墓碑」與重複 ID（同一個案 ID 若在多個 chunk 殘存，僅取第一筆）
       const seen = new Set();
@@ -3737,7 +3761,7 @@ async function loadCases() {
     setAlert('cases-alert', 'warn', `無法載入個案（${err.message}）。`);
     renderCases();
   } finally {
-    hideLoading();
+    _setCasesLoadingProgress(-1);
   }
 }
 
@@ -13669,16 +13693,24 @@ async function getCasesFolderFileMap() {
       }
     }
   });
-  await Promise.all(subfolders.map(async sub => {
-    const subRes = await proxyCall('listFolder', { folderId: sub.id, fields: 'id,name,modifiedTime', pageSize: 400 });
-    (subRes.files || []).forEach(f => {
-      const key = `${sub.name}/${f.name}`;
-      const t = f.modifiedTime || '';
-      if (!map.has(key) || (fileTimes.get(key) || '') < t) {
-        map.set(key, f.id); fileTimes.set(key, t);
+  // 年份子資料夾逐批列表（每批 3 個），避免並發過多觸發 rate-limit；單個失敗不影響其他
+  const SUB_BATCH = 3;
+  for (let i = 0; i < subfolders.length; i += SUB_BATCH) {
+    await Promise.all(subfolders.slice(i, i + SUB_BATCH).map(async sub => {
+      try {
+        const subRes = await proxyCall('listFolder', { folderId: sub.id, fields: 'id,name,modifiedTime', pageSize: 400 });
+        (subRes.files || []).forEach(f => {
+          const key = `${sub.name}/${f.name}`;
+          const t = f.modifiedTime || '';
+          if (!map.has(key) || (fileTimes.get(key) || '') < t) {
+            map.set(key, f.id); fileTimes.set(key, t);
+          }
+        });
+      } catch (e) {
+        console.warn('[getCasesFolderFileMap] 子資料夾列表失敗:', sub.name, e.message);
       }
-    });
-  }));
+    }));
+  }
   return map;
 }
 
