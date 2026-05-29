@@ -17998,26 +17998,28 @@ async function confirmDeleteCaseFromAdmin(caseId) {
 }
 
 async function openSemesterDeleteModal() {
-  // 以「記錄日期」所屬學期分組，不再依案件 openDate
+  // 以「記錄日期」+ 「個案 openDate」雙軌分組
   const semMap = new Map();
+  const ensureSem = (sem) => {
+    if (!semMap.has(sem)) semMap.set(sem, { recCount: 0, psyCount: 0, caseIds: new Set(), openCaseIds: new Set() });
+  };
   casesData.filter(c => !c.deleted).forEach(c => {
+    // 以 openDate 學期計入個案數（即使沒有記錄也能出現）
+    const openSem = openDateToSemPrefix(c.openDate);
+    if (openSem) { ensureSem(openSem); semMap.get(openSem).openCaseIds.add(c.id); }
     (c.records || []).filter(r => !r.deleted && r.status !== 'pending').forEach(r => {
       const sem = openDateToSemPrefix(r.date);
       if (!sem) return;
-      if (!semMap.has(sem)) semMap.set(sem, { recCount: 0, psyCount: 0, caseIds: new Set() });
-      semMap.get(sem).recCount++;
-      semMap.get(sem).caseIds.add(c.id);
+      ensureSem(sem); semMap.get(sem).recCount++; semMap.get(sem).caseIds.add(c.id);
     });
     (c.psychiatristRecords || []).filter(pr => !pr.deleted && pr.status !== 'pending').forEach(pr => {
       const sem = openDateToSemPrefix(pr.date);
       if (!sem) return;
-      if (!semMap.has(sem)) semMap.set(sem, { recCount: 0, psyCount: 0, caseIds: new Set() });
-      semMap.get(sem).psyCount++;
-      semMap.get(sem).caseIds.add(c.id);
+      ensureSem(sem); semMap.get(sem).psyCount++; semMap.get(sem).caseIds.add(c.id);
     });
   });
   const sems = [...semMap.keys()].sort().reverse();
-  if (sems.length === 0) { alert('目前沒有任何記錄資料可刪除。'); return; }
+  if (sems.length === 0) { alert('目前沒有任何資料可刪除。'); return; }
 
   const selectedSems = await new Promise(resolve => {
     let modal = document.createElement('div');
@@ -18025,10 +18027,13 @@ async function openSemesterDeleteModal() {
     const semRows = sems.map(s => {
       const e = semMap.get(s);
       const psyNote = e.psyCount > 0 ? `，精神科 ${e.psyCount} 筆` : '';
+      const recNote = e.recCount > 0 ? `晤談 ${e.recCount} 筆${psyNote}，` : '';
+      const totalCaseIds = new Set([...e.caseIds, ...e.openCaseIds]);
+      const noRecNote = e.recCount === 0 ? `<span style="color:#c05621;font-size:.79rem;">（僅個案基本資料，無晤談記錄）</span>` : '';
       return `<label style="display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid #f0f4f8;cursor:pointer;font-size:.88rem;">
         <input type="checkbox" class="sem-chk" value="${escHtml(s)}" style="width:15px;height:15px;">
         <span style="font-weight:600;min-width:80px;">${escHtml(semesterLabel(s))} 學期</span>
-        <span style="color:#718096;font-size:.82rem;">晤談 ${e.recCount} 筆${psyNote}，橫跨 ${e.caseIds.size} 個案</span>
+        <span style="color:#718096;font-size:.82rem;">${recNote}${totalCaseIds.size} 個案</span> ${noRecNote}
       </label>`;
     }).join('');
     modal.innerHTML = `
@@ -18073,8 +18078,12 @@ async function openSemesterDeleteModal() {
 
   const totalRecs = toProcess.reduce((s, {recs}) => s + recs.length, 0);
   const totalPsy  = toProcess.reduce((s, {psyRecs}) => s + psyRecs.length, 0);
-  const psyNote   = totalPsy > 0 ? `\n精神科評估：${totalPsy} 筆` : '';
-  if (!confirm(`確定要軟刪除以下資料？\n\n學期：${selectedSems.map(s => semesterLabel(s)).join('、')}\n晤談記錄：${totalRecs} 筆${psyNote}\n橫跨 ${toProcess.length} 個案\n\n資料將移至資源回收桶，30 天後永久刪除。`)) return;
+  // 所選學期的個案（依 openDate），包含無記錄的個案
+  const selSemSet = new Set(selectedSems);
+  const casesInSems = casesData.filter(c => !c.deleted && selSemSet.has(openDateToSemPrefix(c.openDate)));
+  const psyNote = totalPsy > 0 ? `\n精神科評估：${totalPsy} 筆` : '';
+  const caseNote = casesInSems.length > 0 ? `\n個案基本資料：${casesInSems.length} 筆（含無記錄者）` : '';
+  if (!confirm(`確定要軟刪除以下資料？\n\n學期：${selectedSems.map(s => semesterLabel(s)).join('、')}\n晤談記錄：${totalRecs} 筆${psyNote}${caseNote}\n\n資料將移至資源回收桶，30 天後永久刪除。`)) return;
 
   showLoading('批次刪除：標記資料中…', 5);
   try {
@@ -18085,13 +18094,16 @@ async function openSemesterDeleteModal() {
     }
     const allIds = [...new Set(toProcess.map(({ c }) => c.id))];
     setLoadingProgress(10);
-    await saveCasesChunks(...allIds, (done, total) => {
-      const pct = 10 + Math.round(done / total * 85);
-      showLoading(`批次刪除：寫入 ${done}/${total} 個資料段…`, pct);
-    });
-    showLoading('批次刪除：完成收尾…', 97);
+    if (allIds.length) {
+      await saveCasesChunks(...allIds, (done, total) => {
+        const pct = 10 + Math.round(done / total * 70);
+        showLoading(`批次刪除：寫入 ${done}/${total} 個資料段…`, pct);
+      });
+    }
+    showLoading('批次刪除：完成收尾…', 82);
     auditLog(`批次軟刪除學期 ${selectedSems.join('、')} 記錄 ${totalRecs} 筆${totalPsy > 0 ? `，精神科 ${totalPsy} 筆` : ''}`);
-    const emptyCases = toProcess.map(({c}) => c).filter(c => (c.records||[]).every(r => r.deleted));
+    // 所有記錄已刪或本無記錄的個案（含所選學期無記錄的個案）
+    const emptyCases = casesInSems.filter(c => (c.records||[]).every(r => r.deleted));
     hideLoading();
     if (emptyCases.length > 0) await promptEmptyCaseDeletion(emptyCases, now);
     else alert(`✓ 已將 ${toProcess.length} 個案的 ${totalRecs} 筆記錄移入資源回收桶。`);
