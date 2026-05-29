@@ -1097,6 +1097,7 @@
             <option value="">全部狀態</option>
             <option value="active">進行中</option>
             <option value="closed">已結案</option>
+            <option value="past_unclosed">過去學期未結案</option>
             <option value="deleted" id="cf-status-deleted" style="display:none;">已刪除</option>
           </select>
           <span id="cf-counselor-wrap" style="display:none;">
@@ -2740,6 +2741,7 @@
         <label id="todos-select-all-label" style="font-size:.85rem;cursor:pointer;user-select:none;"><input type="checkbox" id="todos-select-all" onchange="_toggleTodosSelectAll(this)"> 全選</label>
         <button class="btn btn-sm" id="todos-batch-delete-btn" style="display:none;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_batchDeleteTodos()">刪除選取</button>
       </div>
+      <div id="todos-unclosed-summary"></div>
       <div id="todos-body"></div>
     </div>
 
@@ -3772,6 +3774,8 @@ function renderCases() {
   }
   if (status === 'deleted') {
     visible = visible.filter(c => c.deleted);
+  } else if (status === 'past_unclosed') {
+    visible = visible.filter(c => !c.deleted && _hasPastUnclosed(c));
   } else if (status) {
     visible = visible.filter(c => !c.deleted && c.status === status);
   }
@@ -3858,11 +3862,16 @@ function renderCases() {
       const mmdd = c.newCounselorAlert.date.slice(5,10).replace('-','/');
       return ` <span class="badge badge-orange" style="cursor:default;">新案 ${mmdd} 轉入</span>`;
     })();
+    const pastUnclosedSems = _pastUnclosedSems(c);
+    const pastUnclosedTag = pastUnclosedSems.length
+      ? `<div style="font-size:.72rem;color:#9c4221;background:#feebc8;border-radius:3px;padding:1px 5px;margin-top:3px;display:inline-block;">${pastUnclosedSems.map(s => semesterLabel(s)).join('、')} 學期未完成結案</div>`
+      : '';
     const statusCell = c.deleted
       ? `<span class="badge-case-deleted">已刪除</span>`
-      : statusBadge(c.status) + transferBadge + newCounselorBadge;
+      : statusBadge(c.status) + transferBadge + newCounselorBadge + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '');
+    const rowBg = !c.deleted && pastUnclosedSems.length ? 'background:#fffbeb;' : '';
     return `
-    <tr class="${c.deleted ? 'case-deleted-row' : ''}" style="cursor:pointer;" onclick="showCaseDetail('${cid}')">
+    <tr class="${c.deleted ? 'case-deleted-row' : ''}" style="cursor:pointer;${rowBg}" onclick="showCaseDetail('${cid}')">
       <td>${escHtml(c.id    || '—')}</td>
       <td>${escHtml(c.name  || '—')}</td>
       <td>${escHtml(c.studentId || '—')}</td>
@@ -7565,6 +7574,27 @@ function _recomputeCaseStatus(c) {
   const latestSem = sems[sems.length - 1];
   if (!latestSem) return c.status || 'active';
   return (c.semesterStatus || {})[latestSem] || 'active';
+}
+
+function _hasPastUnclosed(c) {
+  const curSem = currentSemesterPrefix();
+  const sems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)];
+  return sems.some(s => s && s < curSem && (c.semesterStatus?.[s] || 'active') !== 'closed');
+}
+function _pastUnclosedSems(c) {
+  const curSem = currentSemesterPrefix();
+  const sems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)];
+  return sems.filter(s => s && s < curSem && (c.semesterStatus?.[s] || 'active') !== 'closed');
+}
+function goCasesPastUnclosed() {
+  caseFilters.status = 'past_unclosed';
+  caseFilters.semester = '';
+  const cfSemEl = document.getElementById('cf-semester');
+  if (cfSemEl) cfSemEl.value = '';
+  const cfStatusEl = document.getElementById('cf-status');
+  if (cfStatusEl) cfStatusEl.value = 'past_unclosed';
+  showPage('page-cases', document.querySelector('[data-nav-id="page-cases"]'));
+  renderCases();
 }
 
 async function reopenCase(caseId, sem) {
@@ -11842,6 +11872,29 @@ function renderTodosPage() {
 
   const body = document.getElementById('todos-body');
   if (!body) return;
+
+  // ── 過去學期未結案提醒 ──
+  const summaryEl = document.getElementById('todos-unclosed-summary');
+  if (summaryEl) {
+    let summaryHtml = '';
+    if (viewingOwn && Array.isArray(casesData)) {
+      const bySem = {};
+      casesData.filter(c => !c.deleted).forEach(c => {
+        _pastUnclosedSems(c).forEach(s => { bySem[s] = (bySem[s] || 0) + 1; });
+      });
+      const sems = Object.keys(bySem).sort();
+      if (sems.length) {
+        summaryHtml = `<div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
+          <div style="font-weight:600;font-size:.9rem;color:#9c4221;margin-bottom:8px;">⚠ 過去學期未結案提醒</div>
+          ${sems.map(s => `<div style="display:flex;align-items:center;gap:10px;font-size:.875rem;margin-bottom:4px;">
+            <span style="color:#744210;">${semesterLabel(s)} 學期共有 <strong>${bySem[s]}</strong> 案未結案</span>
+            <button class="btn btn-sm" style="padding:2px 10px;font-size:.78rem;background:#fff;border-color:#ed8936;color:#c05621;" onclick="goCasesPastUnclosed()">前往個案列表</button>
+          </div>`).join('')}
+        </div>`;
+      }
+    }
+    summaryEl.innerHTML = summaryHtml;
+  }
 
   // 批次操作列：唯讀時隱藏
   const batchBtn  = document.getElementById('todos-batch-delete-btn');
@@ -18156,15 +18209,34 @@ function fillTransferFromCase(caseId) {
 
 function renderTransferPage() {
   const tab = window._transferTab || 'outgoing';
+  const tsf = window._transferStatusFilter || 'all';
   const outgoing = transferData.filter(r => r.type === 'outgoing');
   const incoming = transferData.filter(r => r.type === 'incoming');
   const tabBtn = (id, label, count) =>
-    `<button onclick="window._transferTab='${id}';renderTransferPage()" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:${tab===id?'700':'400'};background:${tab===id?'#3498db':'#f0f4f8'};color:${tab===id?'#fff':'#4a5568'};">${label}（${count}）</button>`;
+    `<button onclick="window._transferTab='${id}';window._transferStatusFilter='all';renderTransferPage()" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:${tab===id?'700':'400'};background:${tab===id?'#3498db':'#f0f4f8'};color:${tab===id?'#fff':'#4a5568'};">${label}（${count}）</button>`;
   const importOutBtn = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'outgoing')"><span class="btn btn-secondary btn-sm">📥 匯入轉出名單</span></label>`;
   const importInBtn  = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'incoming')"><span class="btn btn-secondary btn-sm">📥 匯入轉進名單</span></label>`;
   const addOutBtn = `<button class="btn btn-primary btn-sm" onclick="openTransferAssessmentModal(null,'outgoing')">＋ 手動新增</button>`;
   const addInBtn  = `<button class="btn btn-primary btn-sm" onclick="openTransferAssessmentModal(null,'incoming')">＋ 手動新增</button>`;
-  const list = (tab === 'outgoing' ? outgoing : incoming);
+
+  // ── 轉進個案的開案狀態篩選 ──
+  const sfBtn = (f, label) =>
+    `<button onclick="window._transferStatusFilter='${f}';renderTransferPage()" style="padding:5px 14px;border:1px solid ${tsf===f?'#3498db':'#cbd5e0'};border-radius:6px;cursor:pointer;font-size:.82rem;font-weight:${tsf===f?'700':'400'};background:${tsf===f?'#ebf8ff':'#f7fafc'};color:${tsf===f?'#2b6cb0':'#4a5568'};">${label}</button>`;
+  const statusFilterBar = tab === 'incoming'
+    ? `<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;">${sfBtn('all','全部')}${sfBtn('active','開案中')}${sfBtn('closed','已結案')}</div>`
+    : '';
+
+  let list = (tab === 'outgoing' ? outgoing : incoming);
+  if (tab === 'incoming' && tsf !== 'all') {
+    list = list.filter(r => {
+      const lc = r.caseId ? casesData.find(c => c.id === r.caseId) : null;
+      if (!lc) return tsf === 'active';
+      const semStatuses = Object.values(lc.semesterStatus || {});
+      const hasActive = semStatuses.length === 0 ? lc.status !== 'closed' : semStatuses.some(s => s !== 'closed');
+      return tsf === 'active' ? hasActive : !hasActive;
+    });
+  }
+
   const listHtml = list.length === 0
     ? `<div class="empty-state"><div class="icon">🔄</div><p>尚無${tab==='outgoing'?'轉出':'轉進'}學生</p></div>`
     : list.map(_renderTransferRow).join('');
@@ -18177,6 +18249,7 @@ function renderTransferPage() {
       ${tabBtn('incoming','轉進學生',incoming.length)}
     </div>
     ${actionBar}
+    ${statusFilterBar}
     <div>${listHtml}</div>`;
 }
 
@@ -18197,10 +18270,15 @@ function _renderTransferRow(r) {
       if (_lc.counselorName || _lc.counselorEmail) {
         counselorInfo = `<span style="font-size:.8rem;color:#4a5568;">主責：${escHtml(_lc.counselorName || _lc.counselorEmail)}</span>`;
       }
-      const _curSem = currentSemesterPrefix();
-      const _semMs = semesterMonths(_curSem);
-      const _cnt = (_lc.records || []).filter(rec => !rec.deleted && _semMs.includes((rec.date||'').slice(0,7))).length;
-      semCountInfo = `<span style="font-size:.8rem;color:#718096;">本學期 ${_cnt} 次</span>`;
+      const _lcSems = Array.isArray(_lc.semesters) && _lc.semesters.length
+        ? [..._lc.semesters].sort()
+        : [openDateToSemPrefix(_lc.openDate)].filter(Boolean);
+      const _semCounts = _lcSems.map(s => {
+        const ms = semesterMonths(s);
+        const cnt = (_lc.records || []).filter(rec => !rec.deleted && ms.includes((rec.date||'').slice(0,7))).length;
+        return `${semesterLabel(s)}：${cnt}次`;
+      });
+      semCountInfo = `<span style="font-size:.8rem;color:#718096;">${_semCounts.join('　')}</span>`;
     }
   }
   const actions = r.type === 'outgoing'
