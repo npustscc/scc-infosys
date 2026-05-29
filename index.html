@@ -8474,12 +8474,51 @@ async function batchImportServiceTables(files) {
     }
   }
 
-  const result = await _showBatchImportConfirm(parsedFiles);
+  // 收集未識別輔導人員（counselorText 有值但找不到系統帳號）
+  const newCounselorsMap = {};
+  parsedFiles.forEach(f => {
+    (f.cases || []).forEach(c => {
+      if (!c.counselorEmail && c.counselorText) {
+        const txt = c.counselorText;
+        if (!newCounselorsMap[txt]) {
+          newCounselorsMap[txt] = {
+            origText: txt, name: txt, role: '兼任諮商心理師',
+            key: 'nomail_' + txt.replace(/\s+/g,'') + '_' + Date.now(),
+            count: 0, include: true,
+          };
+        }
+        newCounselorsMap[txt].count++;
+      }
+    });
+  });
+
+  const result = await _showBatchImportConfirm(parsedFiles, newCounselorsMap);
   if (!result.confirmed) { prog.style.display = 'none'; return; }
 
   const allCases   = parsedFiles.filter(f => !f.error).flatMap(f => f.cases);
   const allRecords = parsedFiles.filter(f => !f.error).flatMap(f => f.records)
     .filter(r => !result.excludedIds.has(r.record.id));
+
+  // 套用新增人員：寫入 configData.users，並更新 allCases 的 counselorEmail
+  const ncKeys = Object.keys(newCounselorsMap);
+  if (ncKeys.length > 0) {
+    ncKeys.forEach(txt => {
+      const nc = newCounselorsMap[txt];
+      if (nc.include && nc.name && nc.role && nc.key && !configData.users[nc.key]) {
+        configData.users[nc.key] = { name: nc.name, role: nc.role, noMail: true };
+      }
+    });
+    allCases.forEach(c => {
+      if (!c.counselorEmail && c.counselorText) {
+        const nc = newCounselorsMap[c.counselorText];
+        if (nc && nc.include && nc.key) {
+          c.counselorEmail = nc.key;
+          c.counselorName  = nc.name || c.counselorText;
+        }
+      }
+    });
+    try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch(_) {}
+  }
 
   prog.innerHTML = `<span style="color:#718096;">寫入資料中（${allCases.length} 筆個案、${allRecords.length} 筆記錄）…</span>`;
   await _applyBatchImport(allCases, allRecords, sorted.length, prog);
@@ -8584,11 +8623,12 @@ function _batchParseRecordsSheet(ws) {
   return result;
 }
 
-function _showBatchImportConfirm(parsedFiles) {
+function _showBatchImportConfirm(parsedFiles, newCounselorsMap = {}) {
   return new Promise(resolve => {
     const totalCases = parsedFiles.reduce((s,f) => s + f.cases.length, 0);
     const totalRecs  = parsedFiles.reduce((s,f) => s + f.records.length, 0);
     const filesWithOOR = parsedFiles.filter(f => !f.error && (f.outOfRangeRecords||[]).length > 0);
+    const ncKeys = Object.keys(newCounselorsMap);
 
     // 預設排除所有超出範圍的記錄
     const excludedIds = new Set();
@@ -8600,8 +8640,10 @@ function _showBatchImportConfirm(parsedFiles) {
 
     const render = () => {
       const tbStyle = (active, warn) => `padding:6px 14px;border:1.5px solid ${active?(warn?'#c05621':'#2b6cb0'):(warn?'#ed8936':'#e2e8f0')};background:${active?(warn?'#fffbeb':'#ebf8ff'):'#fff'};color:${active?(warn?'#c05621':'#2b6cb0'):(warn?'#c05621':'#4a5568')};border-radius:6px;cursor:pointer;font-size:.84rem;font-weight:${active?'700':'400'};`;
-      const tabBar = filesWithOOR.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
+      const hasAnySidebar = filesWithOOR.length > 0 || ncKeys.length > 0;
+      const tabBar = hasAnySidebar ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
         <button onclick="window._bicTab('summary')" style="${tbStyle(activeTab==='summary',false)}">摘要</button>
+        ${ncKeys.length ? `<button onclick="window._bicTab('newcounselors')" style="${tbStyle(activeTab==='newcounselors',true)}">👤 新增人員（${ncKeys.length}）</button>` : ''}
         ${filesWithOOR.map(f => `<button onclick="window._bicTab('${escHtml(f.name)}')" style="${tbStyle(activeTab===f.name,true)}">${semesterLabel(f.semPrefix)||escHtml(f.name)} <span style="font-size:.78rem;">（${(f.outOfRangeRecords||[]).length}筆超出範圍）</span></button>`).join('')}
       </div>` : '';
 
@@ -8613,6 +8655,7 @@ function _showBatchImportConfirm(parsedFiles) {
         ).join('');
         content = `
           <p style="font-size:.875rem;color:#4a5568;margin-bottom:10px;">以下 <strong>${parsedFiles.length}</strong> 個檔案將依序以<strong>覆蓋模式</strong>匯入，共 <strong>${totalCases}</strong> 筆個案、<strong>${totalRecs}</strong> 筆記錄。</p>
+          ${ncKeys.length ? `<div style="background:#faf5ff;border:1px solid #d6bcfa;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:.875rem;color:#553c9a;">👤 共 <strong>${ncKeys.length}</strong> 位輔導人員未在系統中找到對應帳號，請切換至「新增人員」分頁確認姓名與職稱。</div>` : ''}
           ${excludedIds.size > 0 ? `<div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:.875rem;color:#9c4221;">⚠ 共 <strong>${excludedIds.size}</strong> 筆超出學期範圍的記錄預設<strong>不匯入</strong>。請切換上方分頁確認，取消勾選可納入匯入。</div>` : ''}
           <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
             <thead><tr style="background:#f7fafc;">
@@ -8622,6 +8665,34 @@ function _showBatchImportConfirm(parsedFiles) {
             </tr></thead>
             <tbody>${rows}</tbody>
           </table>`;
+      } else if (activeTab === 'newcounselors') {
+        const ncRoleOpts = (typeof ROLES !== 'undefined' ? ROLES : []).map(r => `<option value="${escHtml(r)}">${escHtml(r)}</option>`).join('');
+        const ncRowsHtml = ncKeys.map(txt => {
+          const nc = newCounselorsMap[txt];
+          return `<tr style="background:#faf5ff;">
+            <td style="padding:6px 10px;text-align:center;"><input type="checkbox" ${nc.include?'checked':''} onchange="window._bicNcToggle('${escHtml(txt)}','include',this.checked)" style="cursor:pointer;width:14px;height:14px;"></td>
+            <td style="padding:6px 10px;font-size:.83rem;color:#718096;">${escHtml(txt)}</td>
+            <td style="padding:6px 10px;"><input type="text" value="${escHtml(nc.name)}" oninput="window._bicNcToggle('${escHtml(txt)}','name',this.value)" style="border:1px solid #cbd5e0;border-radius:4px;padding:3px 7px;font-size:.83rem;width:120px;"></td>
+            <td style="padding:6px 10px;"><select onchange="window._bicNcToggle('${escHtml(txt)}','role',this.value)" style="border:1px solid #cbd5e0;border-radius:4px;padding:3px 5px;font-size:.83rem;"><option value="">— 請選擇職稱 —</option>${ncRoleOpts.replace(new RegExp(`value="${escHtml(nc.role)}"`), `value="${escHtml(nc.role)}" selected`)}</select></td>
+            <td style="padding:6px 10px;font-size:.78rem;color:#a0aec0;text-align:center;">${nc.count} 個案</td>
+          </tr>`;
+        }).join('');
+        content = `
+          <div style="background:#faf5ff;border:1px solid #d6bcfa;border-radius:6px;padding:10px 14px;margin-bottom:10px;font-size:.83rem;color:#553c9a;">
+            以下人員在 Excel 中有出現，但在系統使用者清單中找不到對應帳號。<br>勾選後將於確認匯入時自動新增至使用者管理（無 Gmail 帳號格式）。
+          </div>
+          <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;">
+              <thead><tr style="background:#e9d8fd;text-align:left;">
+                <th style="padding:6px 10px;width:28px;"></th>
+                <th style="padding:6px 10px;font-size:.8rem;">Excel 中顯示名稱</th>
+                <th style="padding:6px 10px;font-size:.8rem;">姓名（可修改）</th>
+                <th style="padding:6px 10px;font-size:.8rem;">職稱</th>
+                <th style="padding:6px 10px;font-size:.8rem;text-align:center;">使用案數</th>
+              </tr></thead>
+              <tbody>${ncRowsHtml}</tbody>
+            </table>
+          </div>`;
       } else {
         const f = parsedFiles.find(pf => pf.name === activeTab);
         if (f) {
@@ -8684,12 +8755,18 @@ function _showBatchImportConfirm(parsedFiles) {
       if (btn) btn.textContent = excludedIds.size > 0 ? `確認匯入（排除 ${excludedIds.size} 筆超出範圍記錄）` : '確認匯入';
     };
     window._bicSelectAll = (checkAll) => {
-      const f = activeTab !== 'summary' ? parsedFiles.find(pf => pf.name === activeTab) : null;
+      const f = (activeTab !== 'summary' && activeTab !== 'newcounselors') ? parsedFiles.find(pf => pf.name === activeTab) : null;
       const ids = f ? (f.outOfRangeRecords || []).map(r => r.record.id) : parsedFiles.flatMap(pf => (pf.outOfRangeRecords||[]).map(r => r.record.id));
       ids.forEach(id => { if (checkAll) excludedIds.add(id); else excludedIds.delete(id); });
       render();
     };
-    const cleanup = () => { delete window._bicTab; delete window._bicToggle; delete window._bicSelectAll; modal.remove(); };
+    window._bicNcToggle = (origText, field, val) => {
+      const nc = newCounselorsMap[origText]; if (!nc) return;
+      if (field === 'include') nc.include = val === true || val === 'true';
+      else nc[field] = val;
+      // 不需要 re-render 整個 modal，只更新確認按鈕（姓名/職稱直接在 input 中修改）
+    };
+    const cleanup = () => { delete window._bicTab; delete window._bicToggle; delete window._bicSelectAll; delete window._bicNcToggle; modal.remove(); };
 
     render();
     document.body.appendChild(modal);
@@ -16069,7 +16146,12 @@ async function loadPsychTestDB() {
   } catch(e) { psychTestDB = {}; }
 }
 async function savePsychTestDB() {
-  await driveUpdateJsonFile(PSYCH_TEST_DB_FILE, psychTestDB);
+  try {
+    await driveUpdateJsonFile(PSYCH_TEST_DB_FILE, psychTestDB);
+  } catch(e) {
+    if (!e.message.includes('找不到')) throw e;
+    await driveCreateJsonFile(PSYCH_TEST_DB_FILE, psychTestDB, DRIVE_FOLDER_ID);
+  }
 }
 function _upsertPsychTestDB(sid, sem, result) {
   if (!sid) return;
