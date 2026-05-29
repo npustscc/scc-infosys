@@ -1160,6 +1160,9 @@
             <label class="btn btn-secondary" style="cursor:pointer;margin:0;">匯入心理測驗（服務總表）
               <input type="file" id="import-psych-file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportPsychExcel(this)" />
             </label>
+            <label class="btn btn-warning" style="cursor:pointer;margin:0;" title="一次選多個 .xlsm 檔，依檔名排序後逐一匯入基本資料與輔導服務情形">批次匯入服務總表
+              <input type="file" id="batch-import-file" accept=".xlsx,.xlsm" multiple style="display:none" onchange="handleBatchImportFile(this)" />
+            </label>
           </div>
           <div id="import-progress" style="margin-top:14px;display:none;font-size:.88rem;"></div>
         </div>
@@ -4831,8 +4834,134 @@ function _setDetailSemFilter(val, caseId) {
 }
 function _switchCaseSem(sem, caseId) {
   const sy = window.scrollY;
+  _caseDetailMode = 'semester';
   _caseDetailActiveSem = sem;
   _detailSemFilter = 'current';
+  showCaseDetail(caseId);
+  requestAnimationFrame(() => window.scrollTo(0, sy));
+}
+
+// ── 大專院校學生心理健康關懷量表向度對照
+const PSYCH_TEST_DIMS = {
+  AL:'整體量表結果', D1:'外部情境向度', D2:'內在個人向度',
+  F1:'關係保護/危險因子', F2:'生活調控警訊因子',
+  F3:'情緒保護/危險因子', F4:'憂鬱自殺警訊因子',
+  S01:'同儕與人際互動', S02:'家庭功能影響', S03:'知心好友與親密關係',
+  S04:'課業與作息變化', S05:'網路經驗與霸凌', S06:'性別認同壓力',
+  S07:'情境誘發情緒', S08:'生氣與衝動控制', S09:'憤怒表達與攻擊',
+  S10:'負向認知', S11:'憂鬱相關症狀', S12:'自殺意圖',
+};
+const PSYCH_TEST_TREE = [
+  {k:'AL',  l:'整體量表結果',       i:0},
+  {k:'D1',  l:'外部情境向度',       i:1},
+  {k:'F1',  l:'關係保護/危險因子',  i:2},
+  {k:'S01', l:'同儕與人際互動',     i:3},
+  {k:'S02', l:'家庭功能影響',       i:3},
+  {k:'S03', l:'知心好友與親密關係', i:3},
+  {k:'F2',  l:'生活調控警訊因子',   i:2},
+  {k:'S04', l:'課業與作息變化',     i:3},
+  {k:'S05', l:'網路經驗與霸凌',     i:3},
+  {k:'S06', l:'性別認同壓力',       i:3},
+  {k:'D2',  l:'內在個人向度',       i:1},
+  {k:'F3',  l:'情緒保護/危險因子',  i:2},
+  {k:'S07', l:'情境誘發情緒',       i:3},
+  {k:'S08', l:'生氣與衝動控制',     i:3},
+  {k:'S09', l:'憤怒表達與攻擊',     i:3},
+  {k:'F4',  l:'憂鬱自殺警訊因子',   i:2},
+  {k:'S10', l:'負向認知',           i:3},
+  {k:'S11', l:'憂鬱相關症狀',       i:3},
+  {k:'S12', l:'自殺意圖',           i:3},
+];
+
+function _psychTestLight(pr) {
+  const v = parseFloat(pr);
+  if (pr === null || pr === undefined || pr === '' || isNaN(v)) return {sym:'—', color:'#a0aec0', bg:'#f7fafc'};
+  if (v >= 90) return {sym:'●', label:'紅燈', color:'#c53030', bg:'#fff5f5'};
+  if (v >= 80) return {sym:'◎', label:'橙燈', color:'#c05621', bg:'#fffaf0'};
+  return {sym:'○', label:'黃燈', color:'#276749', bg:'#f0fff4'};
+}
+
+function _renderPsychTestReport(c, idx) {
+  const t = (c.psychTestResults || [])[idx];
+  if (!t) return '<div class="empty-state" style="padding:30px;"><div class="icon">📊</div><p>找不到測驗結果</p></div>';
+  const hasFullData = t.D1 !== undefined || t.D2 !== undefined;
+  const tree = hasFullData ? PSYCH_TEST_TREE : [
+    {k:'AL', l:'整體量表結果', i:0},
+    ...[1,2,3,4,5,6,7,8,9,10,11,12].map(n => {
+      const k = 'S' + String(n).padStart(2,'0');
+      return {k, l: PSYCH_TEST_DIMS[k] || k, i:1};
+    }),
+  ];
+  const rows = tree.map(d => {
+    const v = t[d.k];
+    if (v === undefined) return '';
+    const lt = _psychTestLight(v);
+    return `<tr>
+      <td style="padding:5px 8px 5px ${d.i*14+8}px;color:${d.i===0?'#1a5276':d.i===1?'#2d3748':'#4a5568'};font-size:.875rem;font-weight:${d.i<=1?600:400};">${escHtml(d.l)}</td>
+      <td style="padding:5px 8px;text-align:center;"><span style="background:${lt.bg};color:${lt.color};border-radius:6px;padding:2px 8px;font-size:.9rem;font-weight:700;">${lt.sym}</span></td>
+      <td style="padding:5px 8px;text-align:center;color:#4a5568;font-size:.875rem;">${v !== null && v !== undefined ? v : '—'}</td>
+    </tr>`;
+  }).join('');
+  const meta = [
+    t.testSemester ? `<span><strong>受測學期：</strong>${escHtml(semesterLabel(t.testSemester))}</span>` : '',
+    t.className    ? `<span><strong>班級：</strong>${escHtml(t.className)}</span>` : '',
+    t.validity     ? `<span><strong>問卷可信度：</strong>${escHtml(t.validity)}</span>` : '',
+    t.importedAt   ? `<span><strong>匯入：</strong>${escHtml(t.importedAt.slice(0,10))}</span>` : '',
+  ].filter(Boolean).join(' &nbsp;|&nbsp; ');
+  return mkSection('psych-report', '大專院校學生心理健康關懷量表結果報告',
+    `<div style="font-size:.85rem;color:#718096;margin-bottom:12px;">${meta}</div>` +
+    (t['是否為高關懷'] ? `<div style="background:#fff5f5;border:1px solid #feb2b2;border-radius:6px;padding:6px 12px;margin-bottom:10px;font-size:.875rem;color:#c53030;font-weight:600;">⚠ 高關懷個案</div>` : '') +
+    (t['同意導師知情'] ? `<div style="background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;padding:6px 12px;margin-bottom:10px;font-size:.875rem;color:#2b6cb0;">✓ 同意導師知情</div>` : '') +
+    `<table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+      <thead><tr style="background:#f7fafc;">
+        <th style="padding:6px 8px;text-align:left;font-size:.8rem;color:#718096;font-weight:600;">向度名稱</th>
+        <th style="padding:6px 8px;text-align:center;font-size:.8rem;color:#718096;font-weight:600;">燈號</th>
+        <th style="padding:6px 8px;text-align:center;font-size:.8rem;color:#718096;font-weight:600;">PR 值</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div style="margin-top:10px;font-size:.8rem;color:#718096;">○ PR ≤ 79：適應良好 &nbsp;◎ PR 80–89：適應有些困難 &nbsp;● PR ≥ 90：需要關注</div>`
+  );
+}
+
+function _buildCounselorHistoryBtn(c, activeSem) {
+  const sems = (c.semesters || []).filter(s => c.basicInfoSnapshots?.[s]);
+  if (sems.length <= 1) return '';
+  const safeId = c.id.replace(/[^a-zA-Z0-9]/g, '_');
+  return ` <span style="cursor:pointer;font-size:.75rem;color:#718096;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1px 7px;user-select:none;" onclick="toggleCounselorHistory(this,'${escHtml(c.id)}')">歷屆 ▾</span>`;
+}
+
+function toggleCounselorHistory(btn, caseId) {
+  const popId = '_ch_pop';
+  const existing = document.getElementById(popId);
+  if (existing) { existing.remove(); if (existing._btn === btn) return; }
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const sems = Array.isArray(c.semesters) ? [...c.semesters].sort() : [openDateToSemPrefix(c.openDate)].filter(Boolean);
+  const rows = sems.map(s => {
+    const snap = c.basicInfoSnapshots?.[s];
+    const display = snap?.counselorText || snap?.counselorName || snap?.counselorEmail || c.counselorText || c.counselorName || c.counselorEmail || '—';
+    const isCurrent = s === _caseDetailActiveSem;
+    return `<div style="padding:3px 0;font-size:.85rem;color:${isCurrent?'#2b6cb0':'#4a5568'};font-weight:${isCurrent?600:400};">${escHtml(semesterLabel(s))}：${escHtml(display)}${isCurrent?' <span style="font-size:.7rem;color:#4299e1;">（本學期）</span>':''}</div>`;
+  }).join('');
+  const pop = document.createElement('div');
+  pop.id = popId; pop._btn = btn;
+  pop.style.cssText = 'position:fixed;z-index:9999;background:#fff;border:1px solid #e2e8f0;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.12);padding:10px 14px;min-width:200px;';
+  pop.innerHTML = `<div style="font-size:.72rem;color:#a0aec0;font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em;">歷屆主責</div>${rows}`;
+  document.body.appendChild(pop);
+  const rect = btn.getBoundingClientRect();
+  pop.style.top = (rect.bottom + 6) + 'px';
+  pop.style.left = Math.min(rect.left, window.innerWidth - 220) + 'px';
+  setTimeout(() => {
+    const h = (e) => { if (!pop.contains(e.target) && e.target !== btn) { pop.remove(); document.removeEventListener('click', h); } };
+    document.addEventListener('click', h);
+  }, 0);
+}
+
+function _switchCasePsychTest(idx, caseId) {
+  const sy = window.scrollY;
+  _caseDetailMode = 'psychtest';
+  _caseDetailPsychIdx = idx;
   showCaseDetail(caseId);
   requestAnimationFrame(() => window.scrollTo(0, sy));
 }
@@ -4958,7 +5087,7 @@ function _buildAllSemTimeline(relatedCases, currentCaseId, isAdminUser) {
 function showCaseDetail(caseId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
-  if (_detailCaseId !== caseId) { _recPage = 1; _detailCaseId = caseId; _caseDetailActiveSem = null; _detailSemFilter = 'current'; }
+  if (_detailCaseId !== caseId) { _recPage = 1; _detailCaseId = caseId; _caseDetailActiveSem = null; _caseDetailMode = 'semester'; _caseDetailPsychIdx = 0; _detailSemFilter = 'current'; }
   _recSortDesc = _userPref_('recSortDesc', false);
   const _relatedCases = _getRelatedCases(caseId);
   const _hasRelated = _relatedCases.length > 1;
@@ -4980,8 +5109,9 @@ function showCaseDetail(caseId) {
   document.getElementById('detail-meta').innerHTML =
     `案號：<strong>${escHtml(c.id)}</strong> &nbsp;|&nbsp; ` +
     `開案日期：${adToRocDisplay(_cd('openDate'))} &nbsp;|&nbsp; ` +
-    `主責：${escHtml(c.counselorText || c.counselorName || c.counselorEmail || '—')}` +
-    (!c.counselorEmail && (c.counselorText || c.counselorName) ? ' <span style="font-size:.72rem;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1px 7px;color:#a0aec0;">未連結帳號</span>' : '') +
+    `主責：${escHtml(_cd('counselorText') || _cd('counselorName') || _cd('counselorEmail') || '—')}` +
+    (!_cd('counselorEmail') && (_cd('counselorText') || _cd('counselorName')) ? ' <span style="font-size:.72rem;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1px 7px;color:#a0aec0;">未連結帳號</span>' : '') +
+    _buildCounselorHistoryBtn(c, _activeSem) +
     `&nbsp;&nbsp;${statusBadge(c.status)}` +
     ((c.isTransferCase || (transferData||[]).some(t => t.type === 'incoming' && t.caseId === c.id)) ? ' &nbsp;<span class="badge badge-teal">轉銜個案</span>' : '') +
     (c.deleted ? ` &nbsp;<span class="badge-case-deleted">已刪除 by ${escHtml(c.deletedByName || c.deletedBy || '?')}</span>` : '');
@@ -5071,7 +5201,7 @@ function showCaseDetail(caseId) {
     }
   }
   const semActEl = document.getElementById('detail-sem-actions');
-  if (semActEl) semActEl.innerHTML = semActHtml;
+  if (semActEl) semActEl.innerHTML = _caseDetailMode === 'semester' ? semActHtml : '';
 
   const mgrsEl = document.getElementById('detail-managers');
   if (isAdminUser) {
@@ -5535,6 +5665,9 @@ function showCaseDetail(caseId) {
     return mkSection('semeval', '學期評估記錄', cards);
   })();
 
+  if (_caseDetailMode === 'psychtest') {
+    document.getElementById('detail-body').innerHTML = _renderPsychTestReport(c, _caseDetailPsychIdx);
+  } else {
   document.getElementById('detail-body').innerHTML =
     mkSection('basic', '個案基本資料', `<div class="form-grid">
       ${field('開案日期', adToRocDisplay(_cd('openDate')))}
@@ -5597,29 +5730,51 @@ function showCaseDetail(caseId) {
     (_detailSemFilter !== 'all' && iiCardHtml ? `<div style="margin-bottom:20px;">${iiCardHtml}</div>` : '') +
     (_detailSemFilter !== 'all' ? psyHtml : '') +
     recordsHtml;
+  } // end psychtest mode else
+
+  const _testResults = c.psychTestResults || [];
+  const _testChipsHtml = _testResults.length
+    ? `<div style="display:flex;gap:6px;flex-wrap:wrap;padding:8px 14px;background:#fef3c7;border:1px solid #f6d860;border-radius:8px;margin-bottom:6px;align-items:center;">
+        <span style="font-size:.8rem;color:#92600a;font-weight:600;white-space:nowrap;">心理測驗結果報告：</span>
+        ${_testResults.map((t, i) => {
+          const isAct = _caseDetailMode === 'psychtest' && _caseDetailPsychIdx === i;
+          return `<button onclick="_switchCasePsychTest(${i},'${escHtml(c.id)}')"
+            style="padding:4px 14px;border-radius:16px;border:1px solid ${isAct?'#d97706':'#f6d860'};
+                   background:${isAct?'#fef3c7':'#fffbeb'};color:${isAct?'#92600a':'#78350f'};
+                   font-size:.82rem;font-weight:${isAct?'700':'400'};cursor:pointer;white-space:nowrap;">
+            ${escHtml(semesterLabel(t.testSemester) || t.testSemester || `第${i+1}次`)}
+          </button>`;
+        }).join('')}
+      </div>`
+    : '';
 
   if (_csems && _csems.length > 1) {
     // 同案號多學期：在頂部顯示學期 TAB
     const nav = document.getElementById('detail-student-sem-nav');
     if (nav) {
-      const _isHistSem = _activeSem !== _csems[_csems.length - 1];
+      const _isHistSem = _caseDetailMode === 'semester' && _activeSem !== _csems[_csems.length - 1];
       nav.style.display = '';
-      nav.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;background:${_isHistSem?'#fffbeb':'#f7fafc'};border:1px solid ${_isHistSem?'#f6ad55':'#e2e8f0'};border-radius:8px;align-items:center;${_isHistSem?'margin-bottom:4px;':'margin-bottom:14px;'}">
-        <span style="font-size:.8rem;color:#718096;font-weight:600;white-space:nowrap;">學期：</span>
-        ${_csems.map(s => {
-          const isAct = s === _activeSem;
-          return `<button onclick="_switchCaseSem('${escHtml(s)}','${escHtml(c.id)}')"
-            style="padding:4px 14px;border-radius:16px;border:1px solid ${isAct?'#3182ce':'#e2e8f0'};
-                   background:${isAct?'#ebf8ff':'#fff'};color:${isAct?'#1a5276':'#4a5568'};
-                   font-size:.82rem;font-weight:${isAct?'700':'400'};cursor:pointer;white-space:nowrap;">
-            ${escHtml(semesterLabel(s))}
-          </button>`;
-        }).join('')}
-      </div>
-      ${_isHistSem ? `<div style="background:#fffbeb;border:1px solid #f6ad55;color:#744210;border-radius:6px;padding:6px 14px;margin-bottom:14px;font-size:.82rem;">⚠ 目前顯示 <strong>${escHtml(semesterLabel(_activeSem))}</strong> 的歷史版本基本資料</div>` : ''}`;
+      nav.innerHTML = _testChipsHtml +
+        `<div style="display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;background:${_isHistSem?'#fffbeb':'#f7fafc'};border:1px solid ${_isHistSem?'#f6ad55':'#e2e8f0'};border-radius:8px;align-items:center;margin-bottom:${_isHistSem?'4':'14'}px;">
+          <span style="font-size:.8rem;color:#718096;font-weight:600;white-space:nowrap;">學期：</span>
+          ${_csems.map(s => {
+            const isAct = _caseDetailMode === 'semester' && s === _activeSem;
+            return `<button onclick="_switchCaseSem('${escHtml(s)}','${escHtml(c.id)}')"
+              style="padding:4px 14px;border-radius:16px;border:1px solid ${isAct?'#3182ce':'#e2e8f0'};
+                     background:${isAct?'#ebf8ff':'#fff'};color:${isAct?'#1a5276':'#4a5568'};
+                     font-size:.82rem;font-weight:${isAct?'700':'400'};cursor:pointer;white-space:nowrap;">
+              ${escHtml(semesterLabel(s))}
+            </button>`;
+          }).join('')}
+        </div>
+        ${_isHistSem ? `<div style="background:#fffbeb;border:1px solid #f6ad55;color:#744210;border-radius:6px;padding:6px 14px;margin-bottom:14px;font-size:.82rem;">⚠ 目前顯示 <strong>${escHtml(semesterLabel(_activeSem))}</strong> 的歷史版本基本資料</div>` : ''}`;
     }
   } else {
     _renderStudentSemNav(caseId, _relatedCases);
+    if (_testChipsHtml) {
+      const nav = document.getElementById('detail-student-sem-nav');
+      if (nav) { nav.style.display = ''; nav.innerHTML = _testChipsHtml + nav.innerHTML; }
+    }
   }
 
   // Restore per-case section collapse states
@@ -7536,7 +7691,11 @@ async function hardDeleteCase(caseId) {
 // ══════════════════════════════════════════════
 //  案號管理
 // ══════════════════════════════════════════════
-function renderCaseNums() {
+let _cnPage = 1;
+let _cnPageSize = 30;
+
+function renderCaseNums(resetPage) {
+  if (resetPage) _cnPage = 1;
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
   let visible;
   if (isAdminUser) {
@@ -7554,7 +7713,6 @@ function renderCaseNums() {
     return;
   }
 
-  // Build per-student semester history (using all casesData, not just visible)
   const studentSems = {};
   casesData.forEach(c => {
     if (!c.studentId) return;
@@ -7569,7 +7727,14 @@ function renderCaseNums() {
     ? visible.filter(c => (c.id||'').includes(q) || (c.name||'').includes(q) || (c.studentId||'').includes(q))
     : visible;
 
-  const rows = filtered.map(c => {
+  const total = filtered.length;
+  const pageSize = _cnPageSize === 0 ? total : _cnPageSize;
+  const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(total / pageSize)) : 1;
+  if (_cnPage > totalPages) _cnPage = totalPages;
+  const start = (_cnPage - 1) * pageSize;
+  const paged = pageSize > 0 ? filtered.slice(start, start + pageSize) : filtered;
+
+  const rows = paged.map(c => {
     const sems = c.studentId ? [...(studentSems[c.studentId] || [])].sort() : [];
     const semChips = sems.map(s =>
       `<span style="display:inline-block;background:#ebf8ff;border:1px solid #90cdf4;color:#2b6cb0;border-radius:10px;padding:1px 8px;font-size:.78rem;margin:1px 2px;">${escHtml(semesterLabel(s))}</span>`
@@ -7587,13 +7752,31 @@ function renderCaseNums() {
     </tr>`;
   }).join('');
 
+  const pageSizeOptions = [30, 50, 100, 0].map(n =>
+    `<option value="${n}" ${_cnPageSize === n ? 'selected' : ''}>${n === 0 ? '全部' : n}</option>`
+  ).join('');
+  const paginationHtml = totalPages > 1 ? `
+    <div style="display:flex;align-items:center;gap:8px;justify-content:center;padding:10px 0;">
+      <button class="btn btn-secondary btn-sm" onclick="_cnPage=1;renderCaseNums()" ${_cnPage===1?'disabled':''}>«</button>
+      <button class="btn btn-secondary btn-sm" onclick="_cnPage--;renderCaseNums()" ${_cnPage===1?'disabled':''}>‹</button>
+      <span style="font-size:.85rem;color:#4a5568;">第 ${_cnPage} / ${totalPages} 頁（共 ${total} 筆）</span>
+      <button class="btn btn-secondary btn-sm" onclick="_cnPage++;renderCaseNums()" ${_cnPage===totalPages?'disabled':''}>›</button>
+      <button class="btn btn-secondary btn-sm" onclick="_cnPage=${totalPages};renderCaseNums()" ${_cnPage===totalPages?'disabled':''}>»</button>
+    </div>` : '';
+
   body.innerHTML = `
     <div class="card">
-      <div class="card-header">
-        <h3>案號查詢（共 ${visible.length} 筆）</h3>
-        <input type="search" id="cn-search" class="field-input" placeholder="搜尋案號／姓名／學號…"
-          style="max-width:240px;padding:5px 10px;font-size:.87rem;"
-          value="${escHtml(q)}" oninput="renderCaseNums()" />
+      <div class="card-header" style="flex-wrap:wrap;gap:8px;">
+        <h3>案號查詢（共 ${total} 筆${q ? '，符合搜尋' : ''}）</h3>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input type="search" id="cn-search" class="field-input" placeholder="搜尋案號／姓名／學號…"
+            style="max-width:220px;padding:5px 10px;font-size:.87rem;"
+            value="${escHtml(q)}" oninput="_cnPage=1;renderCaseNums()" />
+          <label style="font-size:.85rem;color:#718096;white-space:nowrap;">每頁
+            <select class="field-input" style="padding:4px 6px;font-size:.85rem;margin-left:4px;"
+              onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select> 筆
+          </label>
+        </div>
       </div>
       <div style="overflow-x:auto;">
         <table>
@@ -7603,6 +7786,7 @@ function renderCaseNums() {
           <tbody>${rows || '<tr><td colspan="5" style="text-align:center;color:#a0aec0;padding:20px;">無符合結果</td></tr>'}</tbody>
         </table>
       </div>
+      ${paginationHtml}
     </div>`;
 }
 
@@ -7712,7 +7896,12 @@ function openEditCasePage(caseId) {
     }
   });
 
-  document.getElementById('nc-counselor').value = c.counselorEmail || '';
+  {
+    const _eSem = _caseDetailActiveSem || openDateToSemPrefix(c.openDate);
+    const _eSnap = (_eSem && c.basicInfoSnapshots?.[_eSem]) || null;
+    document.getElementById('nc-counselor').value =
+      (_eSnap !== null && _eSnap.counselorEmail !== undefined) ? _eSnap.counselorEmail : (c.counselorEmail || '');
+  }
 
   const mgrSectionEdit = document.getElementById('nc-managers-section');
   if (currentRole === '主任' || extraRole === '管理者') {
@@ -8082,6 +8271,255 @@ function handleImportFile(input) {
   importCasesFromExcel(file);
 }
 
+function handleBatchImportFile(input) {
+  const files = Array.from(input.files);
+  if (!files.length) return;
+  input.value = '';
+  batchImportServiceTables(files);
+}
+
+async function batchImportServiceTables(files) {
+  const sorted = [...files].sort((a, b) => a.name.localeCompare(b.name));
+  const prog = document.getElementById('import-progress');
+  prog.style.display = '';
+  prog.innerHTML = '<span style="color:#718096;">載入 SheetJS 中…</span>';
+
+  await new Promise((resolve, reject) => {
+    if (window.XLSX) { resolve(); return; }
+    const s = document.createElement('script');
+    s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+    s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
+    document.head.appendChild(s);
+  });
+
+  const parsedFiles = [];
+  for (const file of sorted) {
+    prog.innerHTML = `<span style="color:#718096;">解析 ${escHtml(file.name)}…</span>`;
+    try {
+      const buf = await file.arrayBuffer();
+      let wb;
+      try { wb = XLSX.read(buf, { type: 'array', password: '7617' }); }
+      catch { wb = XLSX.read(buf, { type: 'array' }); }
+      const basicWs  = wb.Sheets['基本資料']    || wb.Sheets['學生資料'];
+      const recordWs = wb.Sheets['輔導服務情形'] || wb.Sheets['輔導服務紀錄'] || wb.Sheets['輔導服務記錄'];
+      const cases   = basicWs  ? _batchParseCasesSheet(basicWs, file.name)   : [];
+      const records = recordWs ? _batchParseRecordsSheet(recordWs)            : [];
+      parsedFiles.push({ name: file.name, cases, records, error: null });
+    } catch (e) {
+      parsedFiles.push({ name: file.name, cases: [], records: [], error: e.message });
+      auditLog('匯入失敗', null, null, `${file.name}：${e.message}`);
+    }
+  }
+
+  const allCases   = parsedFiles.flatMap(f => f.cases);
+  const allRecords = parsedFiles.flatMap(f => f.records);
+
+  const confirmed = await _showBatchImportConfirm(parsedFiles);
+  if (!confirmed) { prog.style.display = 'none'; return; }
+
+  prog.innerHTML = `<span style="color:#718096;">寫入資料中（${allCases.length} 筆個案、${allRecords.length} 筆記錄）…</span>`;
+  await _applyBatchImport(allCases, allRecords, sorted.length, prog);
+}
+
+function _batchParseCasesSheet(ws, fileName) {
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  const fnMatch = fileName.match(/^(\d{3})-([12])/);
+  const fileSemPrefix = fnMatch ? fnMatch[1] + fnMatch[2] : '';
+  const fileSemRange  = fileSemPrefix ? semesterDateRange(fileSemPrefix) : null;
+  const rocToAD = (raw) => {
+    const s = String(raw).replace(/\D/g, '');
+    if (s.length === 7) { const y = parseInt(s.slice(0,3))+1911; return `${y}-${s.slice(3,5)}-${s.slice(5,7)}`; }
+    if (s.length === 6) { const y = parseInt(s.slice(0,2))+1911; return `${y}-${s.slice(2,4)}-${s.slice(4,6)}`; }
+    return '';
+  };
+  const bsrsTextMap = {'完全沒有':0,'輕微':1,'有時如此':2,'常常如此':3,'幾乎每天':4};
+  const parseEmg = (raw) => { const m = String(raw).match(/^(.+?)[\(（](.+?)[\)）]$/); return m ? [m[1].trim(), m[2].trim()] : [String(raw).trim(), '']; };
+  const identityMap = (id, grade) => {
+    if (id.includes('博碩') || id.includes('碩') || id.includes('博')) return { caseType:'研究所', program: (grade||'').includes('博') ? '博士班' : '碩士班' };
+    if (id.includes('進修')) return { caseType:'進修部', program:'大學-進修部' };
+    return { caseType:'日間部', program:'大學-日間部' };
+  };
+  const findCounselorEmail = (t) => { for (const [e, info] of Object.entries(configData?.users||{})) { if (info.name && t.includes(info.name)) return e; } return ''; };
+  const now = new Date().toISOString();
+  const result = [];
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const id = String(r[1]||'').trim();
+    if (!id || id.length !== 7 || isNaN(parseInt(id))) continue;
+    const counselorText = String(r[5]||'').trim();
+    const abRaw = String(r[0]||'').trim();
+    const abType = abRaw.includes('B') ? 'B案' : 'A案';
+    const grade = String(r[7]||'').trim();
+    const identity = String(r[24]||'').trim();
+    const { caseType, program } = identityMap(identity, grade);
+    const natRaw = String(r[25]||'').trim();
+    const nationality = (natRaw === '台灣' || natRaw === '臺灣') ? '本國籍' : (natRaw ? '外國籍' : '本國籍');
+    const foreignCountry = nationality === '外國籍' ? natRaw : '';
+    const bsrs6Raw = String(r[17]||'').trim();
+    const [emgName, emgRelation] = parseEmg(r[18]);
+    const counselorEmail = findCounselorEmail(counselorText);
+    const counselorName  = counselorEmail ? (formatCounselorLabel(counselorEmail) || counselorEmail) : counselorText;
+    const closeDateRaw = String(r[27]||'').trim();
+    let closeDate = closeDateRaw ? rocToAD(closeDateRaw) : '';
+    const openDateRaw = String(r[2]||'').trim();
+    let openDateAD = rocToAD(openDateRaw);
+    if (fileSemRange) {
+      if (!openDateAD || openDateAD < fileSemRange.first || openDateAD > fileSemRange.last) openDateAD = fileSemRange.first;
+      if (closeDateRaw && (!closeDate || closeDate < fileSemRange.first || closeDate > fileSemRange.last)) closeDate = fileSemRange.last;
+    }
+    result.push({
+      id, abType, openDate: openDateAD, name: String(r[4]||'').trim(),
+      studentId: String(r[13]||'').trim(), birthday: rocToAD(String(r[11]||'').trim()),
+      idNumber: String(r[10]||'').trim(), legalGender: String(r[8]||'').trim(),
+      genderIdentity: '', caseType, program, nationality, foreignCountry,
+      ethnicity: '', ethnicityNote: '', department: String(r[6]||'').trim(), grade,
+      classNo: '', phone: String(r[14]||'').trim(), residence: '',
+      address: String(r[15]||'').trim(), emergencyName: emgName,
+      emergencyPhone: String(r[19]||'').trim(), emergencyRelation: emgRelation,
+      source: String(r[22]||'').trim() || '主動來談', pastRecords: [], topics: [],
+      counselorEmail, counselorName, counselorText: counselorText || '',
+      status: closeDate ? 'closed' : 'active', closeDate,
+      bsrs: null, bsrsTotal: r[16] !== '' ? (parseInt(r[16])||null) : null,
+      bsrs6: bsrs6Raw !== '' ? (bsrsTextMap[bsrs6Raw] ?? null) : null,
+      disability: '', isImported: true, createdAt: now, updatedAt: now,
+    });
+  }
+  return result;
+}
+
+function _batchParseRecordsSheet(ws) {
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  const rocToAD = (raw) => { const s = String(raw).replace(/\D/g,''); if (s.length===7){const y=parseInt(s.slice(0,3))+1911;return `${y}-${s.slice(3,5)}-${s.slice(5,7)}`;} return ''; };
+  const findCounselorKey = (t) => { for (const [k,info] of Object.entries(configData?.users||{})){if(info.name&&t.includes(info.name))return k;} return ''; };
+  const topicClean = (raw) => String(raw).trim().replace(/^\d+\.?\s*/,'');
+  const parseImportTime = (raw) => { if(!raw)return''; const m=raw.match(/\((\d+)\)$/); if(m){const n=parseInt(m[1]);if(n>=1&&n<=BK_PERIODS.length)return BK_PERIODS[n-1].label;} return raw; };
+  const mapMode = (s) => { s=String(s||'').trim(); if(/視訊/.test(s))return'視訊';if(/團體/.test(s))return'團體';if(/電話/.test(s))return'電話關懷';if(/mail|email|簡訊/i.test(s))return'E-mail/簡訊';if(/外展/.test(s))return'外展訪視';if(/面談|個別/.test(s))return'面談';return'其他'; };
+  const mapInterviewees = (raw) => { const s=String(raw||'').trim();if(!s)return[];return s.split(/[,，、\/；;]+/).map(x=>x.trim()).filter(Boolean).map(p=>{if(/學生|本人|個案/.test(p))return'學生本人';if(/家屬|家長|父母|親屬/.test(p))return'家屬';if(/朋友|同學/.test(p))return'朋友';if(/伴侶|男友|女友/.test(p))return'伴侶';if(/教職|教師|老師|職員|教授/.test(p))return'教職員工生';if(/資源|網絡|社工|機構|醫院/.test(p))return'資源網絡人員';return'';}).filter(Boolean); };
+  const result = [];
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const dateRaw = String(r[0]||'').trim(), studentName = String(r[2]||'').trim();
+    if (!studentName || !dateRaw) continue;
+    const date = rocToAD(dateRaw);
+    if (!date) continue;
+    const ct = String(r[6]||'').trim();
+    const ck = findCounselorKey(ct);
+    const crossUnit = String(r[15]||'').trim(), crossUnitOther = String(r[16]||'').trim();
+    const summary = [String(r[14]||'').trim(), crossUnit ? `跨單位聯繫：${crossUnit}${crossUnitOther?'（'+crossUnitOther+'）':''}` : ''].filter(Boolean).join('\n');
+    result.push({ studentName, record: {
+      id: `REC-BATCH-${i}-${Date.now()}`,
+      date, time: parseImportTime(String(r[1]||'').trim()),
+      counselorEmail: ck, counselorName: ck ? (formatCounselorLabel(ck)||ct) : ct,
+      interventionMode: mapMode(r[7]), interviewees: mapInterviewees(r[8]),
+      topics: [topicClean(r[9]), topicClean(r[10])].filter(Boolean),
+      serviceItems: [String(r[12]||'').trim(), String(r[13]||'').trim()].filter(Boolean),
+      summary, assessment: '', nextPlan: '', isImported: true,
+      createdAt: new Date().toISOString(),
+    }});
+  }
+  return result;
+}
+
+function _showBatchImportConfirm(parsedFiles) {
+  return new Promise(resolve => {
+    const totalCases = parsedFiles.reduce((s,f) => s + f.cases.length, 0);
+    const totalRecs  = parsedFiles.reduce((s,f) => s + f.records.length, 0);
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.75);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+    const rows = parsedFiles.map(f => f.error
+      ? `<tr><td style="padding:4px 8px;">${escHtml(f.name)}</td><td colspan="2" style="color:#c53030;font-size:.85rem;">${escHtml(f.error)}</td></tr>`
+      : `<tr><td style="padding:4px 8px;font-size:.875rem;">${escHtml(f.name)}</td><td style="padding:4px 8px;text-align:right;font-size:.875rem;">${f.cases.length} 筆</td><td style="padding:4px 8px;text-align:right;font-size:.875rem;">${f.records.length} 筆</td></tr>`
+    ).join('');
+    modal.innerHTML = `<div style="background:#fff;border-radius:12px;padding:24px;max-width:600px;width:100%;max-height:80vh;overflow-y:auto;">
+      <h3 style="margin:0 0 12px;font-size:1.05rem;">確認批次匯入服務總表</h3>
+      <p style="font-size:.875rem;color:#4a5568;margin-bottom:12px;">以下 <strong>${parsedFiles.length}</strong> 個檔案將依序以<strong>覆蓋模式</strong>匯入，共 <strong>${totalCases}</strong> 筆個案基本資料、<strong>${totalRecs}</strong> 筆輔導服務記錄。</p>
+      <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:16px;">
+        <thead><tr style="background:#f7fafc;"><th style="padding:5px 8px;text-align:left;font-size:.8rem;color:#718096;">檔案名稱</th><th style="padding:5px 8px;text-align:right;font-size:.8rem;color:#718096;">個案</th><th style="padding:5px 8px;text-align:right;font-size:.8rem;color:#718096;">記錄</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button id="_bic_cancel" class="btn btn-secondary">取消</button>
+        <button id="_bic_confirm" class="btn btn-primary">確認匯入</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+    modal.querySelector('#_bic_confirm').onclick = () => { modal.remove(); resolve(true); };
+    modal.querySelector('#_bic_cancel').onclick  = () => { modal.remove(); resolve(false); };
+  });
+}
+
+async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
+  const now = new Date().toISOString();
+  const importedMap = new Map(allCases.map(c => [c.id, c]));
+  let addedCases = 0, updatedCases = 0;
+
+  casesData = casesData.map(ec => {
+    const ic = importedMap.get(ec.id);
+    if (!ic) return ec;
+    updatedCases++;
+    const impSem   = openDateToSemPrefix(ic.openDate);
+    const exSems   = Array.isArray(ec.semesters) ? [...ec.semesters] : [openDateToSemPrefix(ec.openDate)].filter(Boolean);
+    if (impSem && !exSems.includes(impSem)) exSems.push(impSem);
+    const snaps = { ...(ec.basicInfoSnapshots || {}) };
+    const cSem = openDateToSemPrefix(ec.openDate);
+    if (cSem && !snaps[cSem]) { const s={}; BASIC_INFO_SNAPSHOT_FIELDS.forEach(f=>{if(ec[f]!==undefined)s[f]=ec[f];}); snaps[cSem]=s; }
+    if (impSem) { const s={}; BASIC_INFO_SNAPSHOT_FIELDS.forEach(f=>{if(ic[f]!==undefined)s[f]=ic[f];}); snaps[impSem]=s; }
+    const curSem = currentSemesterPrefix();
+    const semSt  = { ...(ec.semesterStatus || {}) };
+    if (impSem && impSem < curSem) semSt[impSem] = 'closed';
+    const merged = { ...ec, ...ic,
+      records: ec.records || [], initialInterview: ec.initialInterview, initialInterviews: ec.initialInterviews,
+      psychiatristRecords: ec.psychiatristRecords, semesterEvaluations: ec.semesterEvaluations,
+      semesterStatus: semSt, closureEvaluation: ec.closureEvaluation,
+      createdAt: ec.createdAt || ic.createdAt,
+      semesters: [...new Set(exSems)].sort(), basicInfoSnapshots: snaps };
+    merged.status = _recomputeCaseStatus ? _recomputeCaseStatus(merged) : (Object.values(semSt).every(v=>v==='closed') ? 'closed' : 'active');
+    return merged;
+  });
+
+  const curSemForNew = currentSemesterPrefix();
+  const existingIds = new Set(casesData.map(c => c.id));
+  allCases.filter(c => !existingIds.has(c.id)).forEach(c => {
+    addedCases++;
+    const sem = openDateToSemPrefix(c.openDate);
+    if (!Array.isArray(c.semesters) || !c.semesters.length) c.semesters = sem ? [sem] : [];
+    if (!c.basicInfoSnapshots && sem) { const s={}; BASIC_INFO_SNAPSHOT_FIELDS.forEach(f=>{if(c[f]!==undefined)s[f]=c[f];}); c.basicInfoSnapshots={[sem]:s}; }
+    if (sem && sem < curSemForNew) { c.semesterStatus = { ...(c.semesterStatus||{}), [sem]:'closed' }; c.status = 'closed'; }
+    casesData.push(c);
+  });
+
+  const nameMap = new Map();
+  casesData.forEach(c => { if (!c.name) return; if (!nameMap.has(c.name)) nameMap.set(c.name,[]); nameMap.get(c.name).push(c); });
+  let addedRecs = 0, unmatchedRecs = 0;
+  for (const { studentName, record } of allRecords) {
+    const cands = nameMap.get(studentName) || [];
+    let target = null;
+    if (cands.length === 1) { target = cands[0]; }
+    else if (cands.length > 1) { const s = cands.filter(c=>c.openDate&&c.openDate<=(record.date||'9999')).sort((a,b)=>b.openDate.localeCompare(a.openDate)); target = s[0] || cands[0]; }
+    if (target) { if (!target.records) target.records=[]; target.records.push({...record, id:`REC-BATCH-${Date.now()}-${Math.random().toString(36).slice(2)}`}); addedRecs++; }
+    else unmatchedRecs++;
+  }
+
+  const jobId = bgJobAdd(`批次匯入服務總表（${fileCount} 個檔案）`);
+  try {
+    casesManifest = { chunks: [] };
+    await migrateToChunks();
+    let msg = `✓ 批次匯入完成`;
+    if (addedCases)    msg += `：新增 ${addedCases} 筆個案`;
+    if (updatedCases)  msg += `${addedCases?'、':'：'}更新 ${updatedCases} 筆`;
+    if (addedRecs)     msg += `、新增 ${addedRecs} 筆輔導記錄`;
+    if (unmatchedRecs) msg += `（${unmatchedRecs} 筆記錄無法比對個案）`;
+    prog.innerHTML = `<span style="color:#276749;font-weight:600;">${msg}</span>`;
+    bgJobDone(jobId);
+    auditLog('批次匯入服務總表', null, null, `${fileCount} 個檔案，${addedCases} 新增，${updatedCases} 更新，${addedRecs} 筆記錄`);
+    renderCases();
+  } catch(e) {
+    bgJobFail(jobId, e.message);
+    auditLog('匯入失敗', null, null, `批次匯入失敗：${e.message}`);
+    prog.innerHTML = `<span style="color:#c53030;">✗ 寫入失敗：${escHtml(e.message)}</span>`;
+  }
+}
+
 async function importCasesFromExcel(file) {
   const prog = document.getElementById('import-progress');
   prog.style.display = '';
@@ -8271,6 +8709,7 @@ async function importCasesFromExcel(file) {
     if (!confirmed) return;
     await finalizeImport(imported, prog);
   } catch(e) {
+    auditLog('匯入失敗', null, null, `匯入個案基本資料失敗：${e.message}`);
     prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span><br><span style="color:#a0aec0;font-size:.8rem;">若因密碼保護無法開啟，請先將 Excel 另存為無密碼的 .xlsx 後再匯入。</span>`;
   }
 }
@@ -8925,6 +9364,8 @@ async function finalizeImport(imported, prog) {
 let _initialInterviewCaseId = null;
 let _initialInterviewSem    = null; // which semester's ii is being edited
 let _caseDetailActiveSem    = null; // active semester tab on case detail page
+let _caseDetailMode         = 'semester'; // 'semester' | 'psychtest'
+let _caseDetailPsychIdx     = 0;
 let _iiDraftKey  = null;
 let _iiDraftTimer = null;
 
@@ -13940,6 +14381,7 @@ async function importCounselingRecords(file) {
     await showCounselingImportPreview(matchedItems, unmatchedItems, prog, _ncMapRec);
 
   } catch(e) {
+    auditLog('匯入失敗', null, null, `匯入輔導服務記錄失敗：${e.message}`);
     prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span>`;
   }
 }
@@ -19462,15 +19904,16 @@ async function updateIssueStatus(issueId, newStatus) {
   if (!issue) return;
   const prev = issue.status;
   issue.status = newStatus;
-  showLoading('儲存中…');
+  const jobId = bgJobAdd(`更新回報狀態（${escHtml(issue.title || issueId).slice(0,20)}）`);
   try {
     await _saveIssues();
+    bgJobDone(jobId);
+    auditLog('更新回報狀態', null, null, `${issue.title || issueId}：${prev} → ${newStatus}`);
     renderIssuesPage();
   } catch (e) {
     issue.status = prev;
+    bgJobFail(jobId, e.message);
     alert('儲存失敗：' + e.message);
-  } finally {
-    hideLoading();
   }
 }
 
@@ -19861,6 +20304,7 @@ async function pdfToolFileSelected(input) {
     } catch {
       alert('localStorage 空間不足，無法暫存圖片，請先刪除舊紀錄。');
     }
+    auditLog('使用 PDF 轉圖片工具', null, null, `共 ${total} 頁`);
     renderPdfToolPage();
   } catch (e) {
     progressWrap.style.display = 'none';
