@@ -8654,13 +8654,31 @@ function _showBatchImportConfirm(parsedFiles, newCounselorsMap = {}) {
 
       let content = '';
       if (activeTab === 'summary') {
+        // 計算匯入後將無主責的個案
+        const noCounselorCases = parsedFiles.filter(f => !f.error).flatMap(f => f.cases).filter(c => {
+          if (c.counselorEmail) return false; // 已有 email，正常
+          if (!c.counselorText) return true;  // 欄位空白
+          const nc = newCounselorsMap[c.counselorText];
+          return !nc || !nc.include;           // 對應人員被取消勾選
+        });
         const rows = parsedFiles.map(f => f.error
           ? `<tr><td style="padding:4px 8px;">${escHtml(f.name)}</td><td colspan="2" style="color:#c53030;font-size:.85rem;">${escHtml(f.error)}</td></tr>`
           : `<tr><td style="padding:4px 8px;font-size:.875rem;">${escHtml(f.name)}${f.semPrefix?`<span style="font-size:.75rem;color:#718096;margin-left:6px;">${semesterLabel(f.semPrefix)}</span>`:''}</td><td style="padding:4px 8px;text-align:right;font-size:.875rem;">${f.cases.length} 筆</td><td style="padding:4px 8px;text-align:right;font-size:.875rem;">${f.records.length} 筆</td></tr>`
         ).join('');
+        const noCounselorHtml = noCounselorCases.length ? (() => {
+          const listItems = noCounselorCases.slice(0, 50).map(c =>
+            `<li style="padding:1px 0;">${escHtml(c.name||c.id||'—')}${c.studentId?`<span style="color:#a0aec0;font-size:.78rem;margin-left:6px;">${escHtml(c.studentId)}</span>`:''}${c.counselorText?`<span style="color:#e53e3e;font-size:.78rem;margin-left:6px;">（${escHtml(c.counselorText)} 未勾選）</span>`:''}</li>`
+          ).join('');
+          const more = noCounselorCases.length > 50 ? `<li style="color:#a0aec0;">…等共 ${noCounselorCases.length} 筆</li>` : '';
+          return `<details style="background:#fff5f5;border:1px solid #fc8181;border-radius:6px;padding:8px 12px;margin-bottom:10px;">
+            <summary style="font-size:.875rem;color:#c53030;cursor:pointer;font-weight:600;">⚠ 共 <strong>${noCounselorCases.length}</strong> 筆個案匯入後將<strong>無主責人員</strong>（點此展開）</summary>
+            <ul style="margin:8px 0 0 12px;padding:0;font-size:.83rem;color:#4a5568;list-style:disc;">${listItems}${more}</ul>
+          </details>`;
+        })() : '';
         content = `
           <p style="font-size:.875rem;color:#4a5568;margin-bottom:10px;">以下 <strong>${parsedFiles.length}</strong> 個檔案將依序以<strong>覆蓋模式</strong>匯入，共 <strong>${totalCases}</strong> 筆個案、<strong>${totalRecs}</strong> 筆記錄。</p>
           ${ncKeys.length ? `<div style="background:#faf5ff;border:1px solid #d6bcfa;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:.875rem;color:#553c9a;">👤 共 <strong>${ncKeys.length}</strong> 位輔導人員未在系統中找到對應帳號，請切換至「新增人員」分頁確認姓名與職稱。</div>` : ''}
+          ${noCounselorHtml}
           ${excludedIds.size > 0 ? `<div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:.875rem;color:#9c4221;">⚠ 共 <strong>${excludedIds.size}</strong> 筆超出學期範圍的記錄預設<strong>不匯入</strong>。請切換上方分頁確認，取消勾選可納入匯入。</div>` : ''}
           <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
             <thead><tr style="background:#f7fafc;">
