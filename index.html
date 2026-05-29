@@ -2830,6 +2830,7 @@ const BOOKINGS_FILE   = 'bookings.json';
 const ISSUES_FILE     = 'issues.json';
 const TRANSFER_FILE   = 'transfer.json';
 const UNASSIGNED_RECORDS_FILE = 'unassigned_records.json';
+const PSYCH_TEST_DB_FILE = 'psych_test_db.json';
 const ROOMS = ['玉山', '雪山', '中央山脈', '阿里山', '海岸山脈', '團體諮商室', '會議室', '其他'];
 const BK_PERIODS = [
   { label: '第1節  08:10–09:00',  start: '08:10', end: '09:00' },
@@ -3521,6 +3522,7 @@ async function afterLogin() {
       loadUnassignedRecords(),
       loadIssues(),
       loadUserTodos(),
+      loadPsychTestDB(),
     ]);
     setLoadingProgress(25);
     configData = cfg;
@@ -4935,6 +4937,15 @@ function _renderPsychTestReport(c, idx) {
     t.validity     ? `<span><strong>問卷可信度：</strong>${escHtml(t.validity)}</span>` : '',
     t.importedAt   ? `<span><strong>匯入：</strong>${escHtml(t.importedAt.slice(0,10))}</span>` : '',
   ].filter(Boolean).join(' &nbsp;|&nbsp; ');
+  const caseId = c.id;
+  const failsafeHtml = `<div style="margin-top:14px;padding:10px 12px;background:#fff8f0;border:1px solid #fbd38d;border-radius:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+    <span style="font-size:.82rem;color:#744210;flex:1;">若測驗結果有誤，可重新上傳或刪除。</span>
+    <label style="cursor:pointer;padding:4px 12px;background:#ed8936;color:#fff;border-radius:6px;font-size:.83rem;font-weight:600;white-space:nowrap;">
+      重新上傳/覆蓋
+      <input type="file" accept=".csv,.xlsx,.xlsm" style="display:none;" onchange="reuploadPsychTestResult('${escHtml(caseId)}',${idx},this)">
+    </label>
+    <button onclick="deletePsychTestResult('${escHtml(caseId)}',${idx})" style="padding:4px 12px;background:#fff;color:#c53030;border:1.5px solid #fc8181;border-radius:6px;font-size:.83rem;font-weight:600;cursor:pointer;white-space:nowrap;">刪除此測驗結果</button>
+  </div>`;
   return mkSection('psych-report', '大專院校學生心理健康關懷量表結果報告',
     `<div style="font-size:.85rem;color:#718096;margin-bottom:12px;">${meta}</div>` +
     (t['是否為高關懷'] ? `<div style="background:#fff5f5;border:1px solid #feb2b2;border-radius:6px;padding:6px 12px;margin-bottom:10px;font-size:.875rem;color:#c53030;font-weight:600;">⚠ 高關懷個案</div>` : '') +
@@ -4947,7 +4958,8 @@ function _renderPsychTestReport(c, idx) {
       </tr></thead>
       <tbody>${rows}</tbody>
     </table>
-    <div style="margin-top:10px;font-size:.8rem;color:#718096;">○ PR ≤ 79：適應良好 &nbsp;◎ PR 80–89：適應有些困難 &nbsp;● PR ≥ 90：需要關注</div>`
+    <div style="margin-top:10px;font-size:.8rem;color:#718096;">○ PR ≤ 79：適應良好 &nbsp;◎ PR 80–89：適應有些困難 &nbsp;● PR ≥ 90：需要關注</div>` +
+    failsafeHtml
   );
 }
 
@@ -4991,6 +5003,97 @@ function _switchCasePsychTest(idx, caseId) {
   _caseDetailPsychIdx = idx;
   showCaseDetail(caseId);
   requestAnimationFrame(() => window.scrollTo(0, sy));
+}
+
+async function deletePsychTestResult(caseId, idx) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c || !c.psychTestResults || !c.psychTestResults[idx]) return;
+  const t = c.psychTestResults[idx];
+  const label = t.testSemester ? semesterLabel(t.testSemester) : '（未知學期）';
+  if (!confirm(`確定要刪除「${label}」的心理測驗結果？此操作將記錄於稽核日誌。`)) return;
+  c.psychTestResults.splice(idx, 1);
+  auditLog('刪除心理測驗結果', caseId, null, `學期：${label}`);
+  await migrateToChunks();
+  showToast('已刪除測驗結果', 'success');
+  _caseDetailPsychIdx = Math.max(0, idx - 1);
+  showCaseDetail(caseId);
+}
+
+async function reuploadPsychTestResult(caseId, idx, input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const old = (c.psychTestResults || [])[idx];
+  const oldLabel = old?.testSemester ? semesterLabel(old.testSemester) : '（未知學期）';
+  showToast('解析檔案中…', 'info');
+  try {
+    let result = null;
+    if (file.name.endsWith('.csv')) {
+      const text = await file.text();
+      const lines = text.split(/\r?\n/).filter(l => l.trim());
+      if (lines.length < 2) throw new Error('CSV 無資料列');
+      const headers = lines[0].split(',').map(h => h.trim());
+      const idx2 = Object.fromEntries(headers.map((h,i) => [h, i]));
+      const row = lines[1].split(',');
+      const get = f => (idx2[f] >= 0 ? (row[idx2[f]] || '').trim() : '');
+      const sid = get('學號');
+      const semester = get('受測學期');
+      result = {
+        testSemester: semester, className: get('班級'),
+        AL: get('AL'), D1: get('D1'), D2: get('D2'), F1: get('F1'), F2: get('F2'), F3: get('F3'), F4: get('F4'),
+        S01: get('S01'), S02: get('S02'), S03: get('S03'), S04: get('S04'), S05: get('S05'), S06: get('S06'),
+        S07: get('S07'), S08: get('S08'), S09: get('S09'), S10: get('S10'), S11: get('S11'), S12: get('S12'),
+        teacherConsent: get('同意導師知情'), highConcern: get('是否為高關懷'), validity: get('問卷有效性'),
+        importedAt: new Date().toISOString(),
+      };
+      if (sid && sid !== c.studentId) {
+        if (!confirm(`CSV 中的學號（${sid}）與個案學號（${c.studentId}）不符，是否仍要覆蓋？`)) return;
+      }
+      if (sid) _upsertPsychTestDB(sid || c.studentId, semester, result);
+    } else {
+      await new Promise((resolve, reject) => {
+        if (window.XLSX) { resolve(); return; }
+        const s = document.createElement('script');
+        s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+        s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
+        document.head.appendChild(s);
+      });
+      const buf = await file.arrayBuffer();
+      let wb;
+      try { wb = XLSX.read(buf, { type:'array', password:'7617' }); }
+      catch { wb = XLSX.read(buf, { type:'array' }); }
+      const ws = wb.Sheets['新生測驗資料庫'] || wb.Sheets[wb.SheetNames[0]];
+      if (!ws) throw new Error('找不到工作表');
+      const rows2 = XLSX.utils.sheet_to_json(ws, { defval: '' });
+      const targetRow = rows2.find(r => String(r['學號']||'').trim() === c.studentId) || rows2[0];
+      if (!targetRow) throw new Error('找不到對應學號的資料列');
+      const get2 = f => String(targetRow[f]||'').trim();
+      const semester = get2('受測學期');
+      result = {
+        testSemester: semester, className: get2('班級'),
+        AL: get2('AL'), D1: get2('D1'), D2: get2('D2'), F1: get2('F1'), F2: get2('F2'), F3: get2('F3'), F4: get2('F4'),
+        S01: get2('S01'), S02: get2('S02'), S03: get2('S03'), S04: get2('S04'), S05: get2('S05'), S06: get2('S06'),
+        S07: get2('S07'), S08: get2('S08'), S09: get2('S09'), S10: get2('S10'), S11: get2('S11'), S12: get2('S12'),
+        teacherConsent: get2('同意導師知情'), highConcern: get2('是否為高關懷'), validity: get2('問卷有效性'),
+        importedAt: new Date().toISOString(),
+      };
+      if (c.studentId) _upsertPsychTestDB(c.studentId, semester, result);
+    }
+    if (!result) throw new Error('無法解析測驗結果');
+    if (!c.psychTestResults) c.psychTestResults = [];
+    if (idx < c.psychTestResults.length) c.psychTestResults[idx] = result;
+    else c.psychTestResults.push(result);
+    const newLabel = result.testSemester ? semesterLabel(result.testSemester) : '（未知學期）';
+    auditLog('覆蓋心理測驗結果', caseId, null, `原學期：${oldLabel} → 新學期：${newLabel}，檔案：${file.name}`);
+    await savePsychTestDB();
+    await migrateToChunks();
+    showToast('已更新測驗結果', 'success');
+    showCaseDetail(caseId);
+  } catch(e) {
+    showToast('解析失敗：' + e.message, 'error');
+  }
 }
 
 function _renderStudentSemNav(caseId, relatedCases) {
@@ -8606,6 +8709,13 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
       createdAt: ec.createdAt || ic.createdAt,
       semesters: [...new Set(exSems)].sort(), basicInfoSnapshots: snaps };
     merged.status = _recomputeCaseStatus ? _recomputeCaseStatus(merged) : (Object.values(semSt).every(v=>v==='closed') ? 'closed' : 'active');
+    // Auto-attach psych test results from psychTestDB for updated cases
+    const mergedSid = merged.studentId;
+    if (mergedSid && Array.isArray(psychTestDB[mergedSid]) && psychTestDB[mergedSid].length) {
+      const existSems = new Set((merged.psychTestResults || []).map(t => t.testSemester));
+      const toAdd = psychTestDB[mergedSid].filter(t => !existSems.has(t.testSemester));
+      if (toAdd.length) merged.psychTestResults = [...(merged.psychTestResults || []), ...toAdd];
+    }
     return merged;
   });
 
@@ -8617,6 +8727,13 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
     if (!Array.isArray(c.semesters) || !c.semesters.length) c.semesters = sem ? [sem] : [];
     if (!c.basicInfoSnapshots && sem) { const s={}; BASIC_INFO_SNAPSHOT_FIELDS.forEach(f=>{if(c[f]!==undefined)s[f]=c[f];}); c.basicInfoSnapshots={[sem]:s}; }
     if (sem && sem < curSemForNew) { c.semesterStatus = { ...(c.semesterStatus||{}), [sem]:'closed' }; c.status = 'closed'; }
+    // Auto-attach psych test results from psychTestDB for new cases
+    const newSid = c.studentId;
+    if (newSid && Array.isArray(psychTestDB[newSid]) && psychTestDB[newSid].length) {
+      const existSems = new Set((c.psychTestResults || []).map(t => t.testSemester));
+      const toAdd = psychTestDB[newSid].filter(t => !existSems.has(t.testSemester));
+      if (toAdd.length) c.psychTestResults = [...(c.psychTestResults || []), ...toAdd];
+    }
     casesData.push(c);
   });
 
@@ -11038,6 +11155,16 @@ async function saveCase() {
       renderCases();
       showCaseDetail(newCase.id);
     } else {
+      // Auto-attach psych test results from psychTestDB
+      if (studentId && Array.isArray(psychTestDB[studentId]) && psychTestDB[studentId].length) {
+        const existing = newCase.psychTestResults || [];
+        const existSems = new Set(existing.map(t => t.testSemester));
+        const toAdd = psychTestDB[studentId].filter(t => !existSems.has(t.testSemester));
+        if (toAdd.length) {
+          newCase.psychTestResults = [...existing, ...toAdd];
+          showToast(`已自動帶入 ${toAdd.length} 筆心理測驗資料`, 'info');
+        }
+      }
       casesData.push(newCase);
       await saveCasesChunks(newCase.id);
       let cfgChanged = syncManagersFromForm(newCase.id, null);
@@ -15537,6 +15664,7 @@ function _bkNextSerial() {
 }
 
 let transferData = [];  // loaded from transfer.json
+let psychTestDB  = {};  // { studentId: [{ testSemester, AL, D1, ... }] } loaded from psych_test_db.json
 let _bkDaySpan = parseInt(localStorage.getItem('scc_bk_span') || '1') || 1;
 let _bkListView = false;
 let _bkListPage = 1;
@@ -15919,6 +16047,22 @@ async function loadTransfer() {
     const data = await driveReadJson(TRANSFER_FILE);
     transferData = Array.isArray(data?.records) ? data.records : [];
   } catch(e) { transferData = []; }
+}
+
+async function loadPsychTestDB() {
+  try {
+    const data = await driveReadJson(PSYCH_TEST_DB_FILE);
+    psychTestDB = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
+  } catch(e) { psychTestDB = {}; }
+}
+async function savePsychTestDB() {
+  await driveUpdateJsonFile(PSYCH_TEST_DB_FILE, psychTestDB);
+}
+function _upsertPsychTestDB(sid, sem, result) {
+  if (!sid) return;
+  if (!psychTestDB[sid]) psychTestDB[sid] = [];
+  const idx = sem ? psychTestDB[sid].findIndex(t => t.testSemester === sem) : -1;
+  if (idx >= 0) psychTestDB[sid][idx] = result; else psychTestDB[sid].push(result);
 }
 
 async function saveTransfer() {
@@ -17352,33 +17496,32 @@ async function importPsychTestCSV(file) {
 
     let matched = 0, updated = 0, notFound = 0;
     const dataRows = rows.slice(1).filter(r => r.some(c => c.trim()));
+    const _csvNow = new Date().toISOString();
     for (const row of dataRows) {
       const get = f => (idx[f] >= 0 ? (row[idx[f]] || '').trim() : '');
       const sid = get('學號');
       if (!sid) continue;
-      const c = casesData.find(x => x.studentId === sid && !x.deleted);
-      if (!c) { notFound++; continue; }
-      matched++;
       const semester = get('受測學期');
-      if (!c.psychTestResults) c.psychTestResults = [];
-      const existIdx = semester ? c.psychTestResults.findIndex(t => t.testSemester === semester) : -1;
       const result = {
-        testSemester: semester,
-        className: get('班級'),
+        testSemester: semester, className: get('班級'),
         AL: get('AL'), D1: get('D1'), D2: get('D2'), F1: get('F1'), F2: get('F2'), F3: get('F3'), F4: get('F4'),
         S01: get('S01'), S02: get('S02'), S03: get('S03'), S04: get('S04'), S05: get('S05'), S06: get('S06'),
         S07: get('S07'), S08: get('S08'), S09: get('S09'), S10: get('S10'), S11: get('S11'), S12: get('S12'),
-        teacherConsent: get('同意導師知情'),
-        highConcern: get('是否為高關懷'),
-        validity: get('問卷有效性'),
-        importedAt: new Date().toISOString(),
+        teacherConsent: get('同意導師知情'), highConcern: get('是否為高關懷'), validity: get('問卷有效性'),
+        importedAt: _csvNow,
       };
-      if (existIdx >= 0) c.psychTestResults[existIdx] = result;
-      else c.psychTestResults.push(result);
+      _upsertPsychTestDB(sid, semester, result);
+      const c = casesData.find(x => x.studentId === sid && !x.deleted);
+      if (!c) { notFound++; continue; }
+      matched++;
+      if (!c.psychTestResults) c.psychTestResults = [];
+      const existIdx = semester ? c.psychTestResults.findIndex(t => t.testSemester === semester) : -1;
+      if (existIdx >= 0) c.psychTestResults[existIdx] = result; else c.psychTestResults.push(result);
       updated++;
     }
 
     prog.innerHTML = '<span style="color:#718096;">儲存中…</span>';
+    await savePsychTestDB();
     await migrateToChunks();
     prog.innerHTML = `<span style="color:#276749;font-weight:600;">✓ 心理測驗資料匯入完成：比對到 ${matched} 筆（更新 ${updated} 筆），${notFound} 筆找不到對應學號。</span>`;
     auditLog(`批次匯入心理測驗結果 ${updated} 筆`);
@@ -17568,15 +17711,27 @@ function showPsychTestPreviewModal(rows, prog) {
     };
     modal.querySelector('#pt-confirm').onclick = async () => {
       const selected = items.filter(i => i.selected && i.matchedCase);
-      if (selected.length === 0) { alert('沒有可匯入的資料（請確認已勾選且有對應個案）。'); return; }
+      if (selected.length === 0 && !items.some(i => i.selected)) { alert('沒有可匯入的資料（請確認已勾選且有對應個案）。'); return; }
       modal.remove();
       prog.innerHTML = '<span style="color:#718096;">匯入中…</span>';
       try {
         const now = new Date().toISOString();
-        const FIELDS = ['學號','姓名','受測學期','班級','AL','D1','D2','F1','F2','F3','F4',
-          'S01','S02','S03','S04','S05','S06','S07','S08','S09','S10','S11','S12',
-          '同意導師知情','是否為高關懷','問卷有效性'];
         let updated = 0;
+        // 將所有解析到的資料（含無對應個案）存入 psychTestDB
+        items.forEach(it => {
+          const get = f => String(it.row[f] || '').trim();
+          const sem = get('受測學期');
+          const result = {
+            testSemester: sem, className: get('班級'),
+            AL: get('AL'), D1: get('D1'), D2: get('D2'), F1: get('F1'), F2: get('F2'), F3: get('F3'), F4: get('F4'),
+            S01:get('S01'),S02:get('S02'),S03:get('S03'),S04:get('S04'),S05:get('S05'),S06:get('S06'),
+            S07:get('S07'),S08:get('S08'),S09:get('S09'),S10:get('S10'),S11:get('S11'),S12:get('S12'),
+            teacherConsent: get('同意導師知情'), highConcern: get('是否為高關懷'), validity: get('問卷有效性'),
+            importedAt: now,
+          };
+          _upsertPsychTestDB(it.sid, sem, result);
+        });
+        // 將勾選且有對應個案的資料存入個案
         selected.forEach(it => {
           const c = it.matchedCase;
           if (!c.psychTestResults) c.psychTestResults = [];
@@ -17598,8 +17753,9 @@ function showPsychTestPreviewModal(rows, prog) {
         prog.innerHTML = '<span style="color:#718096;">儲存中…</span>';
         const _xlJobId = bgJobAdd('匯入心理測驗（服務總表）');
         try {
+          await savePsychTestDB();
           await migrateToChunks();
-          prog.innerHTML = `<span style="color:#276749;font-weight:600;">✓ 心理測驗資料匯入完成：共匯入 ${updated} 筆。</span>`;
+          prog.innerHTML = `<span style="color:#276749;font-weight:600;">✓ 心理測驗資料匯入完成：共匯入 ${updated} 筆（另有 ${items.length - updated} 筆已存入測驗資料庫，待個案建立時自動帶入）。</span>`;
           auditLog(`批次匯入心理測驗結果 ${updated} 筆（從服務總表）`);
           bgJobDone(_xlJobId);
           resolve(true);
