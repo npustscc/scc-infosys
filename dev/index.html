@@ -8447,37 +8447,43 @@ async function confirmClearAllCases() {
 
 async function recoverCasesFromDrive() {
   if (!confirm('嘗試從 Drive 上殘存的 chunk 檔案恢復個案資料？')) return;
-  showLoading('掃描 Drive chunk 檔案中…');
-  try {
-    const fileMap = await getCasesFolderFileMap();
-    const chunkEntries = [...fileMap.entries()].filter(
-      ([name]) => name !== 'manifest.json' && name !== 'index.json' && name.endsWith('.json')
-    );
-    if (chunkEntries.length === 0) {
-      hideLoading();
-      alert('Drive 上找不到任何 chunk 檔案，資料可能已完全遺失。');
-      return;
+  const jobId = bgJobAdd('從 Drive 恢復個案資料', '掃描 chunk 檔案中…');
+  (async () => {
+    try {
+      const fileMap = await getCasesFolderFileMap();
+      bgJobProgress(jobId, 15);
+      const chunkEntries = [...fileMap.entries()].filter(
+        ([name]) => name !== 'manifest.json' && name !== 'index.json' && name.endsWith('.json')
+      );
+      if (chunkEntries.length === 0) {
+        bgJobFail(jobId, '找不到任何 chunk 檔案，資料可能已完全遺失');
+        showToast('Drive 上找不到任何 chunk 檔案', 'error', 6000);
+        return;
+      }
+      const results = await Promise.all(
+        chunkEntries.map(([name, fid]) =>
+          driveReadJsonById(fid).catch(e => { console.warn('chunk 讀取失敗:', name, e.message); return { cases: [] }; })
+        )
+      );
+      bgJobProgress(jobId, 60);
+      const recovered = results.flatMap(r => r.cases || []);
+      if (recovered.length === 0) {
+        bgJobFail(jobId, 'chunk 檔案存在但內容為空');
+        showToast('chunk 檔案存在但內容為空，資料可能已遺失', 'error', 6000);
+        return;
+      }
+      casesData = recovered;
+      casesManifest = { chunks: [] };
+      bgJobProgress(jobId, 70);
+      await migrateToChunks();
+      renderCases();
+      bgJobDone(jobId);
+      showToast(`✓ 成功恢復 ${recovered.length} 筆個案`, 'success');
+    } catch(e) {
+      bgJobFail(jobId, e.message);
+      showToast('恢復失敗：' + e.message, 'error', 6000);
     }
-    showLoading(`找到 ${chunkEntries.length} 個 chunk 檔，下載中…`);
-    const results = await Promise.all(
-      chunkEntries.map(([name, fid]) =>
-        driveReadJsonById(fid).catch(e => { console.warn('chunk 讀取失敗:', name, e.message); return { cases: [] }; })
-      )
-    );
-    const recovered = results.flatMap(r => r.cases || []);
-    if (recovered.length === 0) {
-      hideLoading();
-      alert('chunk 檔案存在但內容為空，資料可能已遺失。');
-      return;
-    }
-    casesData = recovered;
-    casesManifest = { chunks: [] };
-    showLoading(`找到 ${recovered.length} 筆個案，重建 manifest 中…`);
-    await migrateToChunks();
-    renderCases();
-    hideLoading();
-    alert(`✓ 成功恢復 ${recovered.length} 筆個案！`);
-  } catch(e) { hideLoading(); alert('恢復失敗：' + e.message); }
+  })();
 }
 
 function handleImportFile(input) {
@@ -10944,27 +10950,20 @@ async function mergeCounselorGroup(radioName, gi) {
   });
 
   if (!touched) { alert('沒有任何個案需要更新。'); return; }
-  showLoading(`整併中（${touched} 筆）…`);
-  try {
-    // 全部存回對應 chunk
-    const chunkSet = new Set();
-    casesData.forEach(c => chunkSet.add(getCaseChunkName(c.id)));
-    for (const ch of chunkSet) {
-      await saveCasesChunks(null); // saveCasesChunks 預期單個 case id；此處保守起見直接重寫整個 manifest
-      break;
+  openCounselorMergeTool(); renderCases(); // 立即更新 UI
+  const jobId = bgJobAdd(`整併主責人員：${keepName}`, `${touched} 筆個案`);
+  (async () => {
+    try {
+      casesManifest = { chunks: [] };
+      await migrateToChunks();
+      auditLog('整併主責人員', `${[...otherNames].join('、')} → ${keepName}`, `${touched} 筆`);
+      bgJobDone(jobId);
+      showToast(`✓ 已整併 ${touched} 筆個案的主責人員`, 'success');
+    } catch (err) {
+      bgJobFail(jobId, err.message);
+      showToast('整併失敗：' + err.message, 'error', 6000);
     }
-    // 為穩妥起見，呼叫一次完整重寫
-    casesManifest = { chunks: [] };
-    await migrateToChunks();
-    auditLog('整併主責人員', `${[...otherNames].join('、')} → ${keepName}`, `${touched} 筆`);
-    hideLoading();
-    alert(`✓ 已整併 ${touched} 筆個案的主責人員顯示名稱。`);
-    openCounselorMergeTool(); // 重新顯示
-    renderCases();
-  } catch (err) {
-    hideLoading();
-    alert('整併失敗：' + err.message);
-  }
+  })();
 }
 
 function renderCounselorLinkTool() {
@@ -11024,19 +11023,20 @@ async function applyCounselorLink(counselorText, selId) {
     touched++;
   });
   if (!touched) { alert('沒有找到符合的個案。'); return; }
-  showLoading(`連結中（${touched} 筆）…`);
-  try {
-    casesManifest = { chunks: [] };
-    await migrateToChunks();
-    auditLog('連結主責人員帳號', null, `${counselorText} → ${email}，${touched} 筆`);
-    hideLoading();
-    renderCounselorLinkTool();
-    renderCases();
-    alert(`✓ 已連結 ${touched} 筆個案。`);
-  } catch (err) {
-    hideLoading();
-    alert('連結失敗：' + err.message);
-  }
+  renderCounselorLinkTool(); renderCases(); // 立即更新 UI
+  const jobId = bgJobAdd(`連結主責人員：${counselorText} → ${userName}`, `${touched} 筆個案`);
+  (async () => {
+    try {
+      casesManifest = { chunks: [] };
+      await migrateToChunks();
+      auditLog('連結主責人員帳號', null, `${counselorText} → ${email}，${touched} 筆`);
+      bgJobDone(jobId);
+      showToast(`✓ 已連結 ${touched} 筆個案`, 'success');
+    } catch (err) {
+      bgJobFail(jobId, err.message);
+      showToast('連結失敗：' + err.message, 'error', 6000);
+    }
+  })();
 }
 
 function filterImportClosureRows() {
@@ -16011,7 +16011,7 @@ function _parseBkGcTitle(title) {
 }
 
 async function syncFromCalendar(silent = false) {
-  if (!silent) showLoading('從 Google Calendar 同步中…');
+  const jobId = silent ? null : bgJobAdd('Google Calendar 同步', '取得事件中…');
   try {
     const minus30 = new Date(); minus30.setDate(minus30.getDate() - 30);
     const plus90  = new Date(); plus90.setDate(plus90.getDate() + 90);
@@ -16130,8 +16130,8 @@ async function syncFromCalendar(silent = false) {
       auditActions.forEach(a => auditLog(a.action, a.caseId, null, a.detail));
       renderBookingsPage();
     }
+    if (jobId) bgJobProgress(jobId, 80);
     if (!silent) {
-      hideLoading();
       setAlert('bookings-alert', 'ok', changed ? 'Google Calendar 同步完成，已更新本機資料。' : 'Google Calendar 同步完成，無變動。');
     }
 
@@ -16153,8 +16153,10 @@ async function syncFromCalendar(silent = false) {
         } catch (_) {}
       }
     }
+    if (jobId) bgJobDone(jobId);
   } catch (e) {
-    if (!silent) { hideLoading(); setAlert('bookings-alert', 'warn', '同步失敗：' + e.message); }
+    if (jobId) bgJobFail(jobId, e.message);
+    if (!silent) setAlert('bookings-alert', 'warn', '同步失敗：' + e.message);
     console.warn('syncFromCalendar failed', e);
   }
 }
