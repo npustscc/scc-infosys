@@ -5,11 +5,30 @@
 國立屏東科技大學學生諮商中心資訊系統。  
 單一 `index.html`，純前端，後端為 Google Drive API（JSON 檔案儲存）。
 
+## 正式版 vs 測試版
+
+| | 檔案 | URL | Drive 資料夾 ID |
+|---|---|---|---|
+| **正式版** | `index.html` | `https://npustscc.github.io/scc-infosys/` | `1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP` |
+| **測試版** | `dev/index.html` | `https://npustscc.github.io/scc-infosys/dev/` | `1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx` |
+
 ## 固定工作流程
 
-每次完成功能或修復後，**直接** `git add`、`git commit`、`git push origin master`，不需詢問使用者是否要推。
+**所有新功能、修改、Bug 修復 → 預設只改 `dev/index.html`。**
 
-**理由：** 使用者靠 GitHub Pages 測試，push 是每次完成後的標準動作。不需要 pull request，直接推 master。
+- 完成後直接 `git add dev/index.html`、`git commit`、`git push origin master`
+- 使用者在 `dev/` URL 驗證
+
+**推行到正式版（使用者明確說「推行到正式版」或「promote」）：**
+
+```powershell
+Copy-Item dev\index.html index.html
+git add index.html dev/index.html
+git commit -m "推行到正式版：[功能說明]"
+git push origin master
+```
+
+注意：推行時 `index.html` 的 `DRIVE_FOLDER_ID` 必須維持正式版 ID `1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP`，不能帶入測試版 ID。推行後立即用 grep 確認。
 
 ## Git 設定
 
