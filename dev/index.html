@@ -9577,7 +9577,13 @@ function showImportMergePreview(imported, prog) {
 
     const diffNameHtml = diffNameDups.length === 0 ? '' : `
       <div style="margin-top:14px;padding:12px 14px;background:#fff8e1;border-radius:8px;border:1px solid #f6ad55;">
-        <div style="font-weight:600;color:#7d4e00;margin-bottom:8px;">⚠ 同案號但姓名不一致（${diffNameDups.length} 筆）— 請逐筆確認</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+          <div style="font-weight:600;color:#7d4e00;">⚠ 同案號但姓名不一致（${diffNameDups.length} 筆）— 請逐筆確認</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" type="button" onclick="window._impSetAllDiff('skip')">全部略過（保留現有）</button>
+            <button class="btn btn-secondary btn-sm" type="button" onclick="window._impSetAllDiff('use-imported')">全部以匯入取代</button>
+          </div>
+        </div>
         <div style="overflow-x:auto;">
           <table style="width:100%;border-collapse:collapse;font-size:.83rem;">
             <thead><tr style="background:#fef9c3;">
@@ -9641,6 +9647,13 @@ function showImportMergePreview(imported, prog) {
     document.body.appendChild(modal);
 
     window._impDiffChg = (id, action) => { diffChoices.set(id, action); };
+    window._impSetAllDiff = (action) => {
+      diffNameDups.forEach(d => {
+        diffChoices.set(d.imp.id, action);
+        const radios = modal.querySelectorAll(`[name="dc-${CSS.escape(d.imp.id)}"]`);
+        radios.forEach(r => { r.checked = (r.value === action); });
+      });
+    };
 
     modal.querySelector('#imp-merge-cancel').onclick = () => {
       modal.remove();
@@ -13349,24 +13362,37 @@ function renderTodosNotifList() {
 
 // ══════════════════════════════════════════════
 //  支援 "fileName" 或 "subfolder/fileName"（fileName 已含 .json 副檔名）
+async function _withRetry(fn, maxRetries = 2, baseDelayMs = 1500) {
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try { return await fn(); } catch (e) {
+      lastErr = e;
+      if (attempt < maxRetries) await new Promise(r => setTimeout(r, baseDelayMs * (attempt + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 async function driveSaveJsonInCases(fileName, content) {
-  const slashIdx = fileName.indexOf('/');
-  let parentId, leafName;
-  if (slashIdx >= 0) {
-    const sub = fileName.slice(0, slashIdx);
-    leafName = fileName.slice(slashIdx + 1);
-    parentId = await getOrCreateCasesSubfolder(sub);
-  } else {
-    parentId = await getCasesFolderId();
-    leafName = fileName;
-  }
-  const path = slashIdx >= 0 ? `cases/${fileName}` : `cases/${leafName}`;
-  try {
-    await driveUpdateJsonFile(path, content);
-  } catch (e) {
-    if (!e.message.includes('找不到')) throw e;
-    await driveCreateJsonFile(leafName, content, parentId);
-  }
+  return _withRetry(async () => {
+    const slashIdx = fileName.indexOf('/');
+    let parentId, leafName;
+    if (slashIdx >= 0) {
+      const sub = fileName.slice(0, slashIdx);
+      leafName = fileName.slice(slashIdx + 1);
+      parentId = await getOrCreateCasesSubfolder(sub);
+    } else {
+      parentId = await getCasesFolderId();
+      leafName = fileName;
+    }
+    const path = slashIdx >= 0 ? `cases/${fileName}` : `cases/${leafName}`;
+    try {
+      await driveUpdateJsonFile(path, content);
+    } catch (e) {
+      if (!e.message.includes('找不到')) throw e;
+      await driveCreateJsonFile(leafName, content, parentId);
+    }
+  });
 }
 
 async function saveCasesChunks(...args) {
