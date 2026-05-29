@@ -18499,30 +18499,40 @@ async function openSemesterDeleteModal() {
   const caseNote = casesInSems.length > 0 ? `\n個案基本資料：${casesInSems.length} 筆（含無記錄者）` : '';
   if (!confirm(`確定要軟刪除以下資料？\n\n學期：${selectedSems.map(s => semesterLabel(s)).join('、')}\n晤談記錄：${totalRecs} 筆${psyNote}${caseNote}\n\n資料將移至資源回收桶，30 天後永久刪除。`)) return;
 
-  showLoading('批次刪除：標記資料中…', 5);
-  try {
-    for (const { c, recs, psyRecs } of toProcess) {
-      recs.forEach(r => { r.deleted = true; r.deletedAt = now; r.deletedBy = deletedBy; r.deletedByName = deletedByName; });
-      psyRecs.forEach(pr => { pr.deleted = true; pr.deletedAt = now; pr.deletedBy = deletedBy; pr.deletedByName = deletedByName; });
-      c.updatedAt = now;
+  // 記憶體內直接標記（同步、快速）
+  for (const { c, recs, psyRecs } of toProcess) {
+    recs.forEach(r => { r.deleted = true; r.deletedAt = now; r.deletedBy = deletedBy; r.deletedByName = deletedByName; });
+    psyRecs.forEach(pr => { pr.deleted = true; pr.deletedAt = now; pr.deletedBy = deletedBy; pr.deletedByName = deletedByName; });
+    c.updatedAt = now;
+  }
+  const allIds = [...new Set(toProcess.map(({ c }) => c.id))];
+  // 所有記錄已刪或本無記錄的個案
+  const emptyCases = casesInSems.filter(c => (c.records||[]).every(r => r.deleted));
+  renderCases(); // 立即更新 UI，不等儲存
+  // 非同步背景儲存
+  const jobId = bgJobAdd(
+    `批次刪除 ${selectedSems.map(s => semesterLabel(s)).join('、')}`,
+    `${totalRecs} 筆記錄，${allIds.length} 個案`
+  );
+  (async () => {
+    try {
+      if (allIds.length) {
+        await saveCasesChunks(...allIds, (done, total) => {
+          bgJobProgress(jobId, Math.round(done / total * 90));
+        });
+      }
+      auditLog(`批次軟刪除學期 ${selectedSems.join('、')} 記錄 ${totalRecs} 筆${totalPsy > 0 ? `，精神科 ${totalPsy} 筆` : ''}`);
+      bgJobDone(jobId);
+      if (emptyCases.length > 0) {
+        await promptEmptyCaseDeletion(emptyCases, now);
+      } else {
+        showToast(`✓ 已將 ${totalRecs} 筆記錄移入資源回收桶`, 'success');
+      }
+    } catch(e) {
+      bgJobFail(jobId, e.message);
+      showToast('批次刪除儲存失敗：' + e.message, 'error', 6000);
     }
-    const allIds = [...new Set(toProcess.map(({ c }) => c.id))];
-    setLoadingProgress(10);
-    if (allIds.length) {
-      await saveCasesChunks(...allIds, (done, total) => {
-        const pct = 10 + Math.round(done / total * 70);
-        showLoading(`批次刪除：寫入 ${done}/${total} 個資料段…`, pct);
-      });
-    }
-    showLoading('批次刪除：完成收尾…', 82);
-    auditLog(`批次軟刪除學期 ${selectedSems.join('、')} 記錄 ${totalRecs} 筆${totalPsy > 0 ? `，精神科 ${totalPsy} 筆` : ''}`);
-    // 所有記錄已刪或本無記錄的個案（含所選學期無記錄的個案）
-    const emptyCases = casesInSems.filter(c => (c.records||[]).every(r => r.deleted));
-    hideLoading();
-    if (emptyCases.length > 0) await promptEmptyCaseDeletion(emptyCases, now);
-    else alert(`✓ 已將 ${toProcess.length} 個案的 ${totalRecs} 筆記錄移入資源回收桶。`);
-    renderCases();
-  } catch(e) { hideLoading(); alert('批次刪除失敗：' + e.message); }
+  })();
 }
 
 async function promptEmptyCaseDeletion(emptyCases, now) {
@@ -18559,27 +18569,31 @@ async function promptEmptyCaseDeletion(emptyCases, now) {
       const selIds = [...modal.querySelectorAll('.ecd-chk:checked')].map(c => c.value);
       modal.remove();
       if (!selIds.length) { resolve(); return; }
-      showLoading('刪除個案中…', 5);
+      const deletedBy = currentUser.email;
+      const deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
+      const validIds = [];
+      for (const caseId of selIds) {
+        const idx = casesData.findIndex(c => c.id === caseId);
+        if (idx < 0) continue;
+        Object.assign(casesData[idx], { deleted:true, deletedAt:nowStr, deletedBy, deletedByName, updatedAt:nowStr });
+        validIds.push(caseId);
+      }
+      renderCases();
+      resolve();
+      if (!validIds.length) return;
+      // 背景儲存
+      const jobId2 = bgJobAdd(`刪除空個案基本資料`, `${validIds.length} 筆`);
       try {
-        const deletedBy = currentUser.email;
-        const deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
-        const validIds = [];
-        for (const caseId of selIds) {
-          const idx = casesData.findIndex(c => c.id === caseId);
-          if (idx < 0) continue;
-          Object.assign(casesData[idx], { deleted:true, deletedAt:nowStr, deletedBy, deletedByName, updatedAt:nowStr });
-          validIds.push(caseId);
-        }
-        if (validIds.length) {
-          await saveCasesChunks(...validIds, (done, total) => {
-            showLoading(`刪除個案基本資料 ${done}/${total} 個資料段…`, 10 + Math.round(done / total * 85));
-          });
-        }
+        await saveCasesChunks(...validIds, (done, total) => {
+          bgJobProgress(jobId2, Math.round(done / total * 90));
+        });
         auditLog(`批次軟刪除空個案 ${validIds.length} 筆`);
-        hideLoading();
-        alert(`✓ 完成。${validIds.length} 個個案已移入資源回收桶。`);
-        resolve();
-      } catch(e) { hideLoading(); alert('刪除失敗：' + e.message); resolve(); }
+        bgJobDone(jobId2);
+        showToast(`✓ ${validIds.length} 個個案已移入資源回收桶`, 'success');
+      } catch(e) {
+        bgJobFail(jobId2, e.message);
+        showToast('刪除個案失敗：' + e.message, 'error', 6000);
+      }
     };
   });
 }
