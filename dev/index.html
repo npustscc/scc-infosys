@@ -9745,12 +9745,39 @@ async function finalizeImport(imported, prog) {
   const updatedCount = sameNameDups.length + diffNameDups.filter(d => d.action === 'use-imported').length;
   const skippedCount = diffNameDups.filter(d => d.action === 'skip').length;
 
-  prog.innerHTML = `<span style="color:#718096;">寫入 Drive 中（${finalCases.length} 筆）…</span>`;
+  const changedIds = [
+    ...newCases.map(c => c.id),
+    ...sameNameDups.map(d => d.imp.id),
+    ...diffNameDups.filter(d => d.action === 'use-imported').map(d => d.imp.id),
+  ].filter(Boolean);
+  const totalChunks = [...new Set(changedIds.map(getCaseChunkName))].length || 1;
+
+  prog.innerHTML = `
+    <div style="font-size:.88rem;color:#718096;margin-bottom:8px;">
+      寫入 Drive 中（${finalCases.length} 筆，共 ${totalChunks} 個資料區塊）…
+    </div>
+    <div style="background:#e2e8f0;border-radius:4px;height:8px;width:100%;overflow:hidden;">
+      <div id="_imp_prog_fill" style="background:#2b6cb0;height:100%;width:0%;transition:width .3s ease;"></div>
+    </div>
+    <div id="_imp_prog_pct" style="font-size:.78rem;color:#718096;margin-top:4px;">0 / ${totalChunks} 區塊</div>`;
+
+  const _updateImpProg = (done, total) => {
+    const pct = Math.round(done / total * 100);
+    const fill = document.getElementById('_imp_prog_fill');
+    const lbl  = document.getElementById('_imp_prog_pct');
+    if (fill) fill.style.width = pct + '%';
+    if (lbl)  lbl.textContent  = `${done} / ${total} 區塊（${pct}%）`;
+  };
+
   const _jobId = bgJobAdd(`匯入個案（${newCases.length} 新增${updatedCount ? `、${updatedCount} 更新` : ''}）`);
   try {
     casesData = finalCases;
-    casesManifest = { chunks: [] };
-    await migrateToChunks();
+    // 差量寫入：只更新有變動的 chunk，不重寫全部
+    if (changedIds.length > 0) {
+      await saveCasesChunks(...changedIds, _updateImpProg);
+    } else {
+      _updateImpProg(1, 1);
+    }
     let msg = `✓ 成功匯入 ${newCases.length} 筆新個案`;
     if (updatedCount) msg += `，更新 ${updatedCount} 筆重複`;
     if (skippedCount) msg += `，略過 ${skippedCount} 筆`;
