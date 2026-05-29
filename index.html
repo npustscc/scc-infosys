@@ -13309,23 +13309,27 @@ async function saveCasesChunks(...args) {
   }
   if (manifestChanged) await driveSaveJsonInCases('manifest.json', casesManifest);
   let done = 0;
-  await Promise.all(chunkNames.map(async name => {
-    // 先讀 Drive 最新版，避免覆蓋同時期其他人的改動
-    const driveMap = new Map();
-    try {
-      const fresh = await driveReadJson(`cases/${name}.json`);
-      (fresh?.cases || []).forEach(c => { if (c.id) driveMap.set(c.id, c); });
-    } catch (_) { /* 新 chunk，Drive 尚無此檔 */ }
-    // 覆蓋：本次被修改的個案 + Drive 沒有的新個案，用記憶體版本
-    casesData.filter(c => c.id && getCaseChunkName(c.id) === name).forEach(c => {
-      if (modifiedIds.has(c.id) || !driveMap.has(c.id)) driveMap.set(c.id, c);
-    });
-    // 移除已永久刪除的個案（manifest.deletedIds）
-    (casesManifest.deletedIds || []).forEach(id => driveMap.delete(id));
-    await driveSaveJsonInCases(`${name}.json`, { cases: [...driveMap.values()] });
-    done++;
-    if (onProgress) onProgress(done, chunkNames.length);
-  }));
+  // 逐批處理（每批 3 個），避免並發過多導致 Apps Script CORS/rate-limit 錯誤
+  const BATCH = 3;
+  for (let i = 0; i < chunkNames.length; i += BATCH) {
+    await Promise.all(chunkNames.slice(i, i + BATCH).map(async name => {
+      // 先讀 Drive 最新版，避免覆蓋同時期其他人的改動
+      const driveMap = new Map();
+      try {
+        const fresh = await driveReadJson(`cases/${name}.json`);
+        (fresh?.cases || []).forEach(c => { if (c.id) driveMap.set(c.id, c); });
+      } catch (_) { /* 新 chunk，Drive 尚無此檔 */ }
+      // 覆蓋：本次被修改的個案 + Drive 沒有的新個案，用記憶體版本
+      casesData.filter(c => c.id && getCaseChunkName(c.id) === name).forEach(c => {
+        if (modifiedIds.has(c.id) || !driveMap.has(c.id)) driveMap.set(c.id, c);
+      });
+      // 移除已永久刪除的個案（manifest.deletedIds）
+      (casesManifest.deletedIds || []).forEach(id => driveMap.delete(id));
+      await driveSaveJsonInCases(`${name}.json`, { cases: [...driveMap.values()] });
+      done++;
+      if (onProgress) onProgress(done, chunkNames.length);
+    }));
+  }
 }
 
 // 將當前 DRIVE_FOLDER_ID 內的所有檔案 / 子資料夾搬移到指定的共用雲端硬碟資料夾
