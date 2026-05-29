@@ -18801,53 +18801,74 @@ async function rbBatchPurge() {
     .map(el => el.dataset.id);
   if (!ids.length) { alert('請先勾選要刪除的項目。'); return; }
   if (!confirm(`確定永久刪除已勾選的 ${ids.length} 筆項目？此操作不可復原。`)) return;
-  showLoading('批次永久刪除中…', 5);
-  try {
-    if (tab === 'cases') {
-      ids.forEach(caseId => {
-        const idx = casesData.findIndex(c => c.id === caseId);
-        if (idx < 0) return;
-        casesData.splice(idx, 1);
-        if (!Array.isArray(casesManifest.deletedIds)) casesManifest.deletedIds = [];
-        if (!casesManifest.deletedIds.includes(caseId)) casesManifest.deletedIds.push(caseId);
-      });
-      await driveSaveJsonInCases('manifest.json', casesManifest);
-      await saveCasesChunks(...ids);
-      auditLog(`批次永久刪除個案 ${ids.join('、')}`);
-    } else if (tab === 'records') {
-      const affected = new Set();
-      ids.forEach(id => {
-        const [caseId, recordId] = id.split('|');
-        const c = casesData.find(c => c.id === caseId);
-        if (!c) return;
-        const idx = (c.records||[]).findIndex(r => r.id === recordId);
-        if (idx >= 0) { c.records.splice(idx, 1); affected.add(caseId); }
-      });
-      await saveCasesChunks(...affected);
-      auditLog(`批次永久刪除晤談記錄 ${ids.length} 筆`);
-    } else if (tab === 'psy') {
-      const affected = new Set();
-      ids.forEach(id => {
-        const [caseId, recordId] = id.split('|');
-        const c = casesData.find(c => c.id === caseId);
-        if (!c) return;
-        const idx = (c.psychiatristRecords||[]).findIndex(r => r.id === recordId);
-        if (idx >= 0) { c.psychiatristRecords.splice(idx, 1); affected.add(caseId); }
-      });
-      await saveCasesChunks(...affected);
-      auditLog(`批次永久刪除精神科評估 ${ids.length} 筆`);
-    } else if (tab === 'ii') {
-      ids.forEach(caseId => {
-        const c = casesData.find(c => c.id === caseId);
-        if (!c) return;
-        delete c.initialInterview;
-        c.updatedAt = new Date().toISOString();
-      });
-      await saveCasesChunks(...ids);
-      auditLog(`批次永久刪除初次晤談表 ${ids.length} 筆`);
+
+  // 記憶體內直接移除（同步），立即更新 UI
+  let affected = new Set();
+  let auditMsg = '';
+  if (tab === 'cases') {
+    ids.forEach(caseId => {
+      const idx = casesData.findIndex(c => c.id === caseId);
+      if (idx < 0) return;
+      casesData.splice(idx, 1);
+      if (!Array.isArray(casesManifest.deletedIds)) casesManifest.deletedIds = [];
+      if (!casesManifest.deletedIds.includes(caseId)) casesManifest.deletedIds.push(caseId);
+      affected.add(caseId);
+    });
+    auditMsg = `批次永久刪除個案 ${ids.join('、')}`;
+  } else if (tab === 'records') {
+    ids.forEach(id => {
+      const [caseId, recordId] = id.split('|');
+      const c = casesData.find(c => c.id === caseId);
+      if (!c) return;
+      const idx = (c.records||[]).findIndex(r => r.id === recordId);
+      if (idx >= 0) { c.records.splice(idx, 1); affected.add(caseId); }
+    });
+    auditMsg = `批次永久刪除晤談記錄 ${ids.length} 筆`;
+  } else if (tab === 'psy') {
+    ids.forEach(id => {
+      const [caseId, recordId] = id.split('|');
+      const c = casesData.find(c => c.id === caseId);
+      if (!c) return;
+      const idx = (c.psychiatristRecords||[]).findIndex(r => r.id === recordId);
+      if (idx >= 0) { c.psychiatristRecords.splice(idx, 1); affected.add(caseId); }
+    });
+    auditMsg = `批次永久刪除精神科評估 ${ids.length} 筆`;
+  } else if (tab === 'ii') {
+    ids.forEach(caseId => {
+      const c = casesData.find(c => c.id === caseId);
+      if (!c) return;
+      delete c.initialInterview;
+      c.updatedAt = new Date().toISOString();
+      affected.add(caseId);
+    });
+    auditMsg = `批次永久刪除初次晤談表 ${ids.length} 筆`;
+  }
+  renderRecycleBin(); renderCases(); // 立即更新 UI
+
+  // 背景儲存
+  const tabLabel = { cases:'個案', records:'晤談記錄', psy:'精神科評估', ii:'初次晤談表' }[tab] || tab;
+  const jobId = bgJobAdd(`批次永久刪除 ${tabLabel}`, `${ids.length} 筆`);
+  (async () => {
+    try {
+      if (tab === 'cases') {
+        await driveSaveJsonInCases('manifest.json', casesManifest);
+        bgJobProgress(jobId, 20);
+      }
+      const affectedArr = [...affected];
+      if (affectedArr.length) {
+        await saveCasesChunks(...affectedArr, (done, total) => {
+          const base = tab === 'cases' ? 20 : 0;
+          bgJobProgress(jobId, base + Math.round(done / total * (100 - base)));
+        });
+      }
+      auditLog(auditMsg);
+      bgJobDone(jobId);
+      showToast(`✓ 已永久刪除 ${ids.length} 筆${tabLabel}`, 'success');
+    } catch(e) {
+      bgJobFail(jobId, e.message);
+      showToast('批次永久刪除失敗：' + e.message, 'error', 6000);
     }
-    hideLoading(); renderRecycleBin(); renderCases();
-  } catch(e) { hideLoading(); alert('批次刪除失敗：' + e.message); }
+  })();
 }
 
 async function rbPurgeCase(caseId) {
