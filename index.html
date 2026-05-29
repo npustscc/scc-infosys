@@ -1403,7 +1403,7 @@
           <div style="font-size:1.05rem;font-weight:700;margin-bottom:16px;">🔒 您的檔案不會上傳到任何地方</div>
           <div style="font-size:.9rem;color:#4a5568;line-height:1.75;">
             <p style="margin:0 0 10px;">選擇 PDF 之後，所有的轉換工作都在<strong>您自己的電腦上</strong>完成，檔案不會傳送到 Google 雲端、伺服器或任何網路位置。</p>
-            <p style="margin:0 0 10px;">轉換結果會暫時存在<strong>瀏覽器本身</strong>（三天後自動清除），讓下次開啟同一份 PDF 時不用重新等待。</p>
+            <p style="margin:0 0 10px;">轉換結果只暫存在<strong>目前開著的這個視窗</strong>裡，關閉或重新整理頁面後就會消失。原始 PDF 仍在您的電腦上，需要時重新選擇即可再次轉換。</p>
             <p style="margin:0;">下載圖片時，檔案也是直接儲存到您電腦的下載資料夾，全程不經過網路。</p>
           </div>
           <div style="margin-top:20px;text-align:right;">
@@ -20377,48 +20377,17 @@ function renderIssuesBadge() {
 }
 
 // ══════════════════════════════════════════════
-//  PDF 轉圖片工具
+//  PDF 轉圖片工具（記憶體模式，不使用 localStorage）
 // ══════════════════════════════════════════════
-const PDF_TOOL_LS_PREFIX = 'scc_pdfimg_';
-const PDF_TOOL_TTL_MS    = 3 * 24 * 60 * 60 * 1000;
-
-function _pdfToolPruneOld() {
-  const now = Date.now();
-  Object.keys(localStorage).forEach(k => {
-    if (!k.startsWith(PDF_TOOL_LS_PREFIX)) return;
-    try {
-      const v = JSON.parse(localStorage.getItem(k));
-      if (!v?.createdAt || now - new Date(v.createdAt).getTime() > PDF_TOOL_TTL_MS) {
-        localStorage.removeItem(k);
-      }
-    } catch { localStorage.removeItem(k); }
-  });
-}
-
-function _pdfToolList() {
-  _pdfToolPruneOld();
-  const items = [];
-  Object.keys(localStorage).forEach(k => {
-    if (!k.startsWith(PDF_TOOL_LS_PREFIX)) return;
-    try {
-      const v = JSON.parse(localStorage.getItem(k));
-      if (v) items.push({ key: k, ...v });
-    } catch {}
-  });
-  return items.sort((a, b) => (b.createdAt || '') > (a.createdAt || '') ? 1 : -1);
-}
+let _pdfToolSessions = []; // { key, filename, createdAt, pages[] }
 
 function renderPdfToolPage() {
-  _pdfToolPruneOld();
-  const items = _pdfToolList();
   const el = document.getElementById('pdf-tool-results');
   if (!el) return;
-  if (!items.length) { el.innerHTML = ''; return; }
+  if (!_pdfToolSessions.length) { el.innerHTML = ''; return; }
 
-  el.innerHTML = items.map(item => {
+  el.innerHTML = _pdfToolSessions.map(item => {
     const kEsc = escHtml(item.key);
-    const expireMs = PDF_TOOL_TTL_MS - (Date.now() - new Date(item.createdAt).getTime());
-    const expireHrs = Math.max(0, Math.round(expireMs / 3600000));
     const thumbs = (item.pages || []).map((src, i) => `
       <div style="display:inline-block;text-align:center;margin:4px;">
         <img src="${src}" style="width:120px;height:auto;border:1px solid #e2e8f0;border-radius:4px;display:block;">
@@ -20430,9 +20399,9 @@ function renderPdfToolPage() {
         <div class="card-header" style="flex-wrap:wrap;gap:6px;">
           <div style="font-weight:600;font-size:.93rem;">${escHtml(item.filename || '（未命名）')}</div>
           <div style="margin-left:auto;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-            <span style="font-size:.78rem;color:#718096;">${(item.pages||[]).length} 頁・${expireHrs}h 後過期</span>
+            <span style="font-size:.78rem;color:#718096;">${(item.pages||[]).length} 頁・本次視窗有效</span>
             <button class="btn btn-primary btn-sm" onclick="pdfToolDownloadAll('${kEsc}')">全部下載</button>
-            <button class="btn btn-danger btn-sm" onclick="pdfToolDelete('${kEsc}')">刪除</button>
+            <button class="btn btn-danger btn-sm" onclick="pdfToolDelete('${kEsc}')">清除</button>
           </div>
         </div>
         <div style="padding:10px 12px;overflow-x:auto;white-space:nowrap;">${thumbs}</div>
@@ -20484,20 +20453,15 @@ async function pdfToolFileSelected(input) {
     }
 
     progressBar.style.width = '100%';
-    progressText.textContent = '完成！';
-    setTimeout(() => { progressWrap.style.display = 'none'; }, 1500);
+    progressText.textContent = '完成！轉換結果保留在本次視窗，請下載後再關閉頁面。';
+    setTimeout(() => { progressWrap.style.display = 'none'; }, 3000);
 
-    const entry = {
+    _pdfToolSessions.unshift({
+      key: 'pdfimg_' + Date.now(),
       filename: file.name.replace(/\.pdf$/i, ''),
       createdAt: new Date().toISOString(),
       pages,
-    };
-    const key = PDF_TOOL_LS_PREFIX + Date.now();
-    try {
-      localStorage.setItem(key, JSON.stringify(entry));
-    } catch {
-      alert('localStorage 空間不足，無法暫存圖片，請先刪除舊紀錄。');
-    }
+    });
     auditLog('使用 PDF 轉圖片工具', null, null, `共 ${total} 頁`);
     renderPdfToolPage();
   } catch (e) {
@@ -20507,23 +20471,21 @@ async function pdfToolFileSelected(input) {
 }
 
 function pdfToolDownloadAll(key) {
-  try {
-    const item = JSON.parse(localStorage.getItem(key));
-    if (!item?.pages?.length) return;
-    item.pages.forEach((src, i) => {
-      const a = document.createElement('a');
-      a.href = src;
-      a.download = (item.filename || 'page') + '_p' + (i + 1) + '.jpg';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-    });
-  } catch {}
+  const item = _pdfToolSessions.find(s => s.key === key);
+  if (!item?.pages?.length) return;
+  item.pages.forEach((src, i) => {
+    const a = document.createElement('a');
+    a.href = src;
+    a.download = (item.filename || 'page') + '_p' + (i + 1) + '.jpg';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  });
 }
 
 function pdfToolDelete(key) {
-  if (!confirm('確定刪除此轉換結果？')) return;
-  localStorage.removeItem(key);
+  if (!confirm('確定清除此轉換結果？')) return;
+  _pdfToolSessions = _pdfToolSessions.filter(s => s.key !== key);
   renderPdfToolPage();
 }
 </script>
