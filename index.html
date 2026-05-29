@@ -8352,18 +8352,25 @@ async function batchImportServiceTables(files) {
       const recordWs = wb.Sheets['輔導服務情形'] || wb.Sheets['輔導服務紀錄'] || wb.Sheets['輔導服務記錄'];
       const cases   = basicWs  ? _batchParseCasesSheet(basicWs, file.name)   : [];
       const records = recordWs ? _batchParseRecordsSheet(recordWs)            : [];
-      parsedFiles.push({ name: file.name, cases, records, error: null });
+      const fnMatch = file.name.match(/^(\d{3})-([12])/);
+      const semPrefix = fnMatch ? fnMatch[1] + fnMatch[2] : '';
+      const semMs = semPrefix ? semesterMonths(semPrefix) : [];
+      const outOfRangeRecords = semMs.length
+        ? records.filter(r => r.record.date && !semMs.includes(r.record.date.slice(0,7)))
+        : [];
+      parsedFiles.push({ name: file.name, cases, records, semPrefix, outOfRangeRecords, error: null });
     } catch (e) {
-      parsedFiles.push({ name: file.name, cases: [], records: [], error: e.message });
+      parsedFiles.push({ name: file.name, cases: [], records: [], semPrefix: '', outOfRangeRecords: [], error: e.message });
       auditLog('匯入失敗', null, null, `${file.name}：${e.message}`);
     }
   }
 
-  const allCases   = parsedFiles.flatMap(f => f.cases);
-  const allRecords = parsedFiles.flatMap(f => f.records);
+  const result = await _showBatchImportConfirm(parsedFiles);
+  if (!result.confirmed) { prog.style.display = 'none'; return; }
 
-  const confirmed = await _showBatchImportConfirm(parsedFiles);
-  if (!confirmed) { prog.style.display = 'none'; return; }
+  const allCases   = parsedFiles.filter(f => !f.error).flatMap(f => f.cases);
+  const allRecords = parsedFiles.filter(f => !f.error).flatMap(f => f.records)
+    .filter(r => !result.excludedIds.has(r.record.id));
 
   prog.innerHTML = `<span style="color:#718096;">寫入資料中（${allCases.length} 筆個案、${allRecords.length} 筆記錄）…</span>`;
   await _applyBatchImport(allCases, allRecords, sorted.length, prog);
@@ -8472,27 +8479,104 @@ function _showBatchImportConfirm(parsedFiles) {
   return new Promise(resolve => {
     const totalCases = parsedFiles.reduce((s,f) => s + f.cases.length, 0);
     const totalRecs  = parsedFiles.reduce((s,f) => s + f.records.length, 0);
+    const filesWithOOR = parsedFiles.filter(f => !f.error && (f.outOfRangeRecords||[]).length > 0);
+
+    // 預設排除所有超出範圍的記錄
+    const excludedIds = new Set();
+    parsedFiles.forEach(f => (f.outOfRangeRecords||[]).forEach(r => excludedIds.add(r.record.id)));
+
+    let activeTab = 'summary';
     const modal = document.createElement('div');
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.75);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
-    const rows = parsedFiles.map(f => f.error
-      ? `<tr><td style="padding:4px 8px;">${escHtml(f.name)}</td><td colspan="2" style="color:#c53030;font-size:.85rem;">${escHtml(f.error)}</td></tr>`
-      : `<tr><td style="padding:4px 8px;font-size:.875rem;">${escHtml(f.name)}</td><td style="padding:4px 8px;text-align:right;font-size:.875rem;">${f.cases.length} 筆</td><td style="padding:4px 8px;text-align:right;font-size:.875rem;">${f.records.length} 筆</td></tr>`
-    ).join('');
-    modal.innerHTML = `<div style="background:#fff;border-radius:12px;padding:24px;max-width:600px;width:100%;max-height:80vh;overflow-y:auto;">
-      <h3 style="margin:0 0 12px;font-size:1.05rem;">確認批次匯入服務總表</h3>
-      <p style="font-size:.875rem;color:#4a5568;margin-bottom:12px;">以下 <strong>${parsedFiles.length}</strong> 個檔案將依序以<strong>覆蓋模式</strong>匯入，共 <strong>${totalCases}</strong> 筆個案基本資料、<strong>${totalRecs}</strong> 筆輔導服務記錄。</p>
-      <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:16px;">
-        <thead><tr style="background:#f7fafc;"><th style="padding:5px 8px;text-align:left;font-size:.8rem;color:#718096;">檔案名稱</th><th style="padding:5px 8px;text-align:right;font-size:.8rem;color:#718096;">個案</th><th style="padding:5px 8px;text-align:right;font-size:.8rem;color:#718096;">記錄</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-      <div style="display:flex;gap:10px;justify-content:flex-end;">
-        <button id="_bic_cancel" class="btn btn-secondary">取消</button>
-        <button id="_bic_confirm" class="btn btn-primary">確認匯入</button>
-      </div>
-    </div>`;
+
+    const render = () => {
+      const tbStyle = (active, warn) => `padding:6px 14px;border:1.5px solid ${active?(warn?'#c05621':'#2b6cb0'):(warn?'#ed8936':'#e2e8f0')};background:${active?(warn?'#fffbeb':'#ebf8ff'):'#fff'};color:${active?(warn?'#c05621':'#2b6cb0'):(warn?'#c05621':'#4a5568')};border-radius:6px;cursor:pointer;font-size:.84rem;font-weight:${active?'700':'400'};`;
+      const tabBar = filesWithOOR.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
+        <button onclick="window._bicTab('summary')" style="${tbStyle(activeTab==='summary',false)}">摘要</button>
+        ${filesWithOOR.map(f => `<button onclick="window._bicTab('${escHtml(f.name)}')" style="${tbStyle(activeTab===f.name,true)}">${semesterLabel(f.semPrefix)||escHtml(f.name)} <span style="font-size:.78rem;">（${(f.outOfRangeRecords||[]).length}筆超出範圍）</span></button>`).join('')}
+      </div>` : '';
+
+      let content = '';
+      if (activeTab === 'summary') {
+        const rows = parsedFiles.map(f => f.error
+          ? `<tr><td style="padding:4px 8px;">${escHtml(f.name)}</td><td colspan="2" style="color:#c53030;font-size:.85rem;">${escHtml(f.error)}</td></tr>`
+          : `<tr><td style="padding:4px 8px;font-size:.875rem;">${escHtml(f.name)}${f.semPrefix?`<span style="font-size:.75rem;color:#718096;margin-left:6px;">${semesterLabel(f.semPrefix)}</span>`:''}</td><td style="padding:4px 8px;text-align:right;font-size:.875rem;">${f.cases.length} 筆</td><td style="padding:4px 8px;text-align:right;font-size:.875rem;">${f.records.length} 筆</td></tr>`
+        ).join('');
+        content = `
+          <p style="font-size:.875rem;color:#4a5568;margin-bottom:10px;">以下 <strong>${parsedFiles.length}</strong> 個檔案將依序以<strong>覆蓋模式</strong>匯入，共 <strong>${totalCases}</strong> 筆個案、<strong>${totalRecs}</strong> 筆記錄。</p>
+          ${excludedIds.size > 0 ? `<div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:.875rem;color:#9c4221;">⚠ 共 <strong>${excludedIds.size}</strong> 筆超出學期範圍的記錄預設<strong>不匯入</strong>。請切換上方分頁確認，取消勾選可納入匯入。</div>` : ''}
+          <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+            <thead><tr style="background:#f7fafc;">
+              <th style="padding:5px 8px;text-align:left;font-size:.8rem;color:#718096;">檔案名稱</th>
+              <th style="padding:5px 8px;text-align:right;font-size:.8rem;color:#718096;">個案</th>
+              <th style="padding:5px 8px;text-align:right;font-size:.8rem;color:#718096;">記錄</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>`;
+      } else {
+        const f = parsedFiles.find(pf => pf.name === activeTab);
+        if (f) {
+          const range = f.semPrefix ? semesterDateRange(f.semPrefix) : null;
+          const rangeStr = range ? `${range.first} ～ ${range.last}` : '（無法判斷）';
+          const oorRows = (f.outOfRangeRecords||[]).map(r => {
+            const isExcluded = excludedIds.has(r.record.id);
+            const reason = range ? ((r.record.date||'') < range.first ? '早於學期起始' : '晚於學期結束') : '超出範圍';
+            return `<tr style="background:${isExcluded?'#f7fafc':'#fffbeb'};">
+              <td style="padding:6px 10px;text-align:center;">
+                <input type="checkbox" ${isExcluded?'checked':''} title="勾選=排除不匯入" data-recid="${escHtml(r.record.id)}" onchange="window._bicToggle(this)" style="cursor:pointer;width:15px;height:15px;">
+              </td>
+              <td style="padding:6px 10px;font-size:.85rem;color:#4a5568;">${escHtml(r.record.date||'—')}</td>
+              <td style="padding:6px 10px;font-size:.88rem;font-weight:600;">${escHtml(r.studentName||'—')}</td>
+              <td style="padding:6px 10px;font-size:.82rem;color:#718096;">${escHtml(r.record.counselorName||'—')}</td>
+              <td style="padding:6px 10px;font-size:.8rem;color:#c05621;">${reason}</td>
+            </tr>`;
+          }).join('');
+          content = `
+            <div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:.875rem;">
+              <strong>${semesterLabel(f.semPrefix)||f.name}</strong> 學期範圍：${escHtml(rangeStr)}。
+              以下 ${(f.outOfRangeRecords||[]).length} 筆記錄日期不在此範圍。<strong>勾選 = 排除不匯入</strong>（預設勾選），取消勾選可納入匯入。
+            </div>
+            <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">
+              <thead><tr style="background:#f7fafc;">
+                <th style="padding:5px 8px;font-size:.78rem;color:#718096;">排除</th>
+                <th style="padding:5px 8px;text-align:left;font-size:.78rem;color:#718096;">日期</th>
+                <th style="padding:5px 8px;text-align:left;font-size:.78rem;color:#718096;">個案姓名</th>
+                <th style="padding:5px 8px;text-align:left;font-size:.78rem;color:#718096;">輔導人員</th>
+                <th style="padding:5px 8px;text-align:left;font-size:.78rem;color:#718096;">原因</th>
+              </tr></thead>
+              <tbody>${oorRows}</tbody>
+            </table>`;
+        }
+      }
+
+      const confirmLabel = excludedIds.size > 0
+        ? `確認匯入（排除 ${excludedIds.size} 筆超出範圍記錄）`
+        : '確認匯入';
+      modal.innerHTML = `<div style="background:#fff;border-radius:12px;padding:24px;max-width:680px;width:100%;max-height:85vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 25px 50px rgba(0,0,0,.25);">
+        <h3 style="margin:0 0 14px;font-size:1.05rem;flex-shrink:0;">確認批次匯入服務總表</h3>
+        <div style="flex-shrink:0;">${tabBar}</div>
+        <div style="flex:1;overflow-y:auto;">${content}</div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px;flex-shrink:0;">
+          <button id="_bic_cancel" class="btn btn-secondary">取消</button>
+          <button id="_bic_confirm" class="btn btn-primary">${confirmLabel}</button>
+        </div>
+      </div>`;
+      modal.querySelector('#_bic_confirm').onclick = () => { cleanup(); resolve({ confirmed: true, excludedIds }); };
+      modal.querySelector('#_bic_cancel').onclick  = () => { cleanup(); resolve({ confirmed: false, excludedIds: new Set() }); };
+    };
+
+    window._bicTab = (id) => { activeTab = id; render(); };
+    window._bicToggle = (cb) => {
+      const id = cb.dataset.recid;
+      if (cb.checked) excludedIds.add(id); else excludedIds.delete(id);
+      // 更新確認按鈕文字
+      const btn = modal.querySelector('#_bic_confirm');
+      if (btn) btn.textContent = excludedIds.size > 0 ? `確認匯入（排除 ${excludedIds.size} 筆超出範圍記錄）` : '確認匯入';
+    };
+    const cleanup = () => { delete window._bicTab; delete window._bicToggle; modal.remove(); };
+
+    render();
     document.body.appendChild(modal);
-    modal.querySelector('#_bic_confirm').onclick = () => { modal.remove(); resolve(true); };
-    modal.querySelector('#_bic_cancel').onclick  = () => { modal.remove(); resolve(false); };
   });
 }
 
@@ -14449,7 +14533,7 @@ async function importCounselingRecords(file) {
 
     // ── Phase 3: show review modal ──
     prog.innerHTML = `<span style="color:#718096;">開啟預覽介面…</span>`;
-    await showCounselingImportPreview(matchedItems, unmatchedItems, prog, _ncMapRec);
+    await showCounselingImportPreview(matchedItems, unmatchedItems, prog, _ncMapRec, fileSemPrefix);
 
   } catch(e) {
     auditLog('匯入失敗', null, null, `匯入輔導服務記錄失敗：${e.message}`);
@@ -14458,7 +14542,7 @@ async function importCounselingRecords(file) {
 }
 
 // 輔導記錄匯入預覽 modal
-function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCounselorsMap) {
+function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCounselorsMap, fileSemPrefix) {
   return new Promise(resolve => {
     let modal = document.getElementById('counsel-import-modal');
     if (modal) modal.remove();
@@ -14466,20 +14550,25 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCoun
     modal.id = 'counsel-import-modal';
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.75);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
 
+    const _semMsForFile = fileSemPrefix ? semesterMonths(fileSemPrefix) : [];
+    const _isOOR = rec => _semMsForFile.length > 0 && rec.date && !_semMsForFile.includes(rec.date.slice(0,7));
+
     // 每列維護一個狀態物件（可被使用者修改）
     const unmatchedState = unmatchedItems.map(item => ({
       ...item,
-      assignedCaseId: '',  // 使用者手動指派的 case id
-      skip: false,
-      saveToUnassigned: true, // 勾選 = 匯入後存入未歸屬記錄
+      assignedCaseId: '',
+      skip: _isOOR(item.record),
+      outOfRange: _isOOR(item.record),
+      saveToUnassigned: !_isOOR(item.record),
     }));
     const matchedState = matchedItems.map(item => ({
       ...item,
-      skip: false,
+      skip: _isOOR(item.record),
+      outOfRange: _isOOR(item.record),
     }));
     const ciNcMap  = newCounselorsMap || {};
     const ciNcKeys = Object.keys(ciNcMap);
-    let _ciShowTab = 'all'; // 'all','unmatched','matched','newcounselors'
+    let _ciShowTab = 'all'; // 'all','unmatched','matched','outofrange','newcounselors'
 
     const renderModal = () => {
       const filterVal = (modal.querySelector('#ci-filter-input')?.value || '').toLowerCase();
@@ -14487,6 +14576,7 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCoun
 
       const unmatchedVisible = unmatchedState.filter(s => {
         if (showTab === 'matched') return false;
+        if (showTab === 'outofrange' && !s.outOfRange) return false;
         if (!filterVal) return true;
         return s.studentName.includes(filterVal) ||
                s.record.date.includes(filterVal) ||
@@ -14494,6 +14584,7 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCoun
       });
       const matchedVisible = matchedState.filter(s => {
         if (showTab === 'unmatched') return false;
+        if (showTab === 'outofrange' && !s.outOfRange) return false;
         if (!filterVal) return true;
         return s.studentName.includes(filterVal) ||
                s.record.date.includes(filterVal) ||
@@ -14514,7 +14605,7 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCoun
       const unmatchedRows = unmatchedVisible.map((s, vi) => {
         const realIdx = unmatchedState.indexOf(s);
         const skipCls  = s.skip ? 'opacity:.4;' : (!s.saveToUnassigned ? 'opacity:.55;' : '');
-        const bgCls    = s.skip ? '#f7fafc' : !s.saveToUnassigned ? '#f7fafc' : s.assignedCaseId ? '#f0fff4' : '#fff5f5';
+        const bgCls    = s.skip ? '#f7fafc' : s.outOfRange ? '#fffbeb' : !s.saveToUnassigned ? '#f7fafc' : s.assignedCaseId ? '#f0fff4' : '#fff5f5';
         const saveLbl  = s.saveToUnassigned ? '<span style="color:#276749;font-size:.75rem;">暫存</span>' : '<span style="color:#a0aec0;font-size:.75rem;">略過</span>';
         return `<tr data-type="unmatched" data-real-idx="${realIdx}" style="background:${bgCls};${skipCls}">
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;text-align:center;">
@@ -14543,8 +14634,8 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCoun
       const matchedRows = matchedVisible.map((s, vi) => {
         const realIdx = matchedState.indexOf(s);
         const skipCls = s.skip ? 'opacity:.4;' : '';
-        return `<tr data-type="matched" data-real-idx="${realIdx}" style="background:${s.skip ? '#f7fafc' : '#fff'};${skipCls}">
-          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;white-space:nowrap;color:#718096;">${escHtml(s.record.date)}</td>
+        return `<tr data-type="matched" data-real-idx="${realIdx}" style="background:${s.skip ? '#f7fafc' : s.outOfRange ? '#fffbeb' : '#fff'};${skipCls}">
+          <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;white-space:nowrap;color:#718096;">${escHtml(s.record.date)}${s.outOfRange ? ' <span style="font-size:.7rem;color:#c05621;background:#feebc8;border-radius:3px;padding:0 3px;">超出範圍</span>' : ''}</td>
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.88rem;font-weight:600;">${escHtml(s.studentName)}</td>
           <td style="padding:7px 10px;border-bottom:1px solid #edf2f7;font-size:.82rem;color:#4a5568;">
             ${escHtml(s.record.counselorName||'—')}
@@ -14565,7 +14656,11 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCoun
       const tabStyle = (active) => active
         ? 'padding:6px 16px;border:1.5px solid #2b6cb0;background:#ebf8ff;color:#2b6cb0;border-radius:6px;cursor:pointer;font-size:.85rem;font-weight:600;'
         : 'padding:6px 16px;border:1.5px solid #e2e8f0;background:#fff;color:#4a5568;border-radius:6px;cursor:pointer;font-size:.85rem;';
-      const isAll = showTab === 'all', isUM = showTab === 'unmatched', isM = showTab === 'matched';
+      const oorTabStyle = (active) => active
+        ? 'padding:6px 16px;border:1.5px solid #c05621;background:#fffbeb;color:#c05621;border-radius:6px;cursor:pointer;font-size:.85rem;font-weight:600;'
+        : 'padding:6px 16px;border:1.5px solid #ed8936;background:#fff;color:#c05621;border-radius:6px;cursor:pointer;font-size:.85rem;';
+      const isAll = showTab === 'all', isUM = showTab === 'unmatched', isM = showTab === 'matched', isOOR = showTab === 'outofrange';
+      const _oorCount = matchedState.filter(s => s.outOfRange).length + unmatchedState.filter(s => s.outOfRange).length;
 
       modal.innerHTML = `
         <div style="background:#fff;border-radius:12px;max-width:1100px;width:100%;max-height:92vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 25px 50px rgba(0,0,0,.3);">
@@ -14574,6 +14669,7 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCoun
             <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
               <h3 style="margin:0;color:#1a5276;font-size:1.1rem;">匯入輔導記錄 — 預覽與確認</h3>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                ${_oorCount > 0 ? `<span style="padding:3px 10px;background:#fffbeb;border:1px solid #f6ad55;border-radius:99px;font-size:.8rem;color:#c05621;font-weight:600;">⚠ 超出學期範圍 ${_oorCount} 筆（預設不匯入）</span>` : ''}
                 ${unmatchedItems.length > 0 ? `<span style="padding:3px 10px;background:#fff5f5;border:1px solid #fc8181;border-radius:99px;font-size:.8rem;color:#c53030;font-weight:600;">⚠ 無法比對 ${unmatchedItems.length} 筆</span>` : ''}
                 <span style="padding:3px 10px;background:#f0fff4;border:1px solid #68d391;border-radius:99px;font-size:.8rem;color:#276749;font-weight:600;">✓ 已比對 ${matchedItems.length} 筆</span>
               </div>
@@ -14582,6 +14678,7 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCoun
               <button id="ci-tab-all" data-active="${isAll?'1':'0'}" style="${tabStyle(isAll)}" onclick="ciSwitchTab('all')">全部（${unmatchedItems.length + matchedItems.length}）</button>
               ${unmatchedItems.length > 0 ? `<button id="ci-tab-unmatched" data-active="${isUM?'1':'0'}" style="${tabStyle(isUM)}" onclick="ciSwitchTab('unmatched')">⚠ 無法比對（${unmatchedItems.length}）</button>` : ''}
               <button id="ci-tab-matched" data-active="${isM?'1':'0'}" style="${tabStyle(isM)}" onclick="ciSwitchTab('matched')">✓ 已比對（${matchedItems.length}）</button>
+              ${_oorCount > 0 ? `<button id="ci-tab-oor" style="${oorTabStyle(isOOR)}" onclick="ciSwitchTab('outofrange')">⚠ 超出學期範圍（${_oorCount}）</button>` : ''}
               ${ciNcKeys.length ? `<button id="ci-tab-nc" style="${tabStyle(showTab==='newcounselors')}" onclick="ciSwitchTab('newcounselors')">👤 新增人員（${ciNcKeys.length}）</button>` : ''}
               ${showTab !== 'newcounselors' ? `<input id="ci-filter-input" class="field-input" placeholder="搜尋姓名 / 案號 / 輔導人員…" style="flex:1;min-width:200px;font-size:.85rem;" oninput="ciFilter()" value="${escHtml(filterVal)}">
               <button type="button" class="btn btn-secondary btn-sm" onclick="ciSelAll(false)">全不選</button>
@@ -14686,9 +14783,10 @@ function showCounselingImportPreview(matchedItems, unmatchedItems, prog, newCoun
     // 掛載輔助函式到 window（modal 內 onclick 用）
     window.ciSwitchTab = (tab) => {
       _ciShowTab = tab;
-      ['all','unmatched','matched'].forEach(t => {
+      ['all','unmatched','matched','oor'].forEach(t => {
         const el = modal.querySelector(`#ci-tab-${t}`);
-        if (el) el.dataset.active = (t === tab ? '1' : '0');
+        const tabId = t === 'oor' ? 'outofrange' : t;
+        if (el) el.dataset.active = (tabId === tab ? '1' : '0');
       });
       renderModal();
     };
