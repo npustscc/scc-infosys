@@ -3642,8 +3642,12 @@ async function loadCases() {
       casesManifest = manifest;
       setLoadingProgress(60);
       const deletedSet = new Set(manifest.deletedIds || []);
-      const results = await Promise.all(
-        manifest.chunks.map(chunk => {
+      // 逐批讀取（每批 3 個），避免並發過多導致 Apps Script CORS/rate-limit 錯誤
+      const LOAD_BATCH = 3;
+      const results = [];
+      for (let i = 0; i < manifest.chunks.length; i += LOAD_BATCH) {
+        const batch = manifest.chunks.slice(i, i + LOAD_BATCH);
+        const batchResults = await Promise.all(batch.map(chunk => {
           // chunk 可能為 "1141001-020"（舊）或 "114/1141001-020"（新，依學年分資料夾）
           const chunkFile = `${chunk}.json`;
           let fid = fileMap && fileMap.get(chunkFile);
@@ -3659,8 +3663,9 @@ async function loadCases() {
           }
           return (fid ? driveReadJsonById(fid) : driveReadJson(`cases/${chunkFile}`))
             .catch(e => { console.warn('[loadCases] chunk 載入失敗:', chunkFile, e.message); return { cases: [] }; });
-        })
-      );
+        }));
+        results.push(...batchResults);
+      }
       setLoadingProgress(90);
       // 過濾「墓碑」與重複 ID（同一個案 ID 若在多個 chunk 殘存，僅取第一筆）
       const seen = new Set();
