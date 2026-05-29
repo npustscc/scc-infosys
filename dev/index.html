@@ -3195,7 +3195,7 @@ function showPage(pageId, navEl) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById(pageId).classList.add('active');
   if (navEl) navEl.classList.add('active');
-  if (!alreadyActive) window.scrollTo(0, 0);
+  if (!alreadyActive) { window.scrollTo(0, 0); _syslog('info', `USER 導航：${pageId}`); }
   updateFloatingBackBtn(pageId);
 }
 
@@ -3769,6 +3769,7 @@ async function loadCases() {
     renderCases();
   } finally {
     _setCasesLoadingProgress(-1);
+    _syslogFlushToDrive().catch(() => {});
   }
 }
 
@@ -9812,6 +9813,7 @@ async function finalizeImport(imported, prog) {
     renderCases();
     auditLog('批次匯入個案', `新增 ${newCases.length}、更新 ${updatedCount}、略過 ${skippedCount} 筆重複`);
     bgJobDone(_jobId);
+    _syslogFlushToDrive().catch(() => {});
   } catch (e) {
     _syslog('error', `匯入失敗：${e.message}`);
     prog.innerHTML = `<span style="color:#c53030;">✗ 寫入失敗：${escHtml(e.message)}</span>`;
@@ -13836,7 +13838,7 @@ function injectSharedDriveParams(url) {
 // ══════════════════════════════════════════════
 //  Apps Script Proxy（所有 Drive 操作將透過此函式）
 // ══════════════════════════════════════════════
-async function proxyCall(action, params = {}) {
+async function proxyCall(action, params = {}, _silent = false) {
   if (!gIdToken) throw new Error('尚未取得 ID token，請重新登入');
   const _isRead = _SYSLOG_READ_ACTIONS.has(action);
   const _logDetail = Object.entries(params)
@@ -13844,7 +13846,7 @@ async function proxyCall(action, params = {}) {
     .map(([k, v]) => `${k}=${typeof v === 'string' && v.length > 80 ? v.slice(0, 80) + '…' : v}`)
     .join(', ');
   const _t0 = Date.now();
-  _syslog(_isRead ? 'debug' : 'info', `→ ${action}`, _logDetail || undefined);
+  if (!_silent) _syslog(_isRead ? 'debug' : 'info', `→ ${action}`, _logDetail || undefined);
   const payload = JSON.stringify({ idToken: gIdToken, action, ...params });
   const form = new URLSearchParams();
   form.append('payload', payload);
@@ -13858,10 +13860,10 @@ async function proxyCall(action, params = {}) {
     const data = await r.json();
     if (data.status === 401 || data.error === '身份驗證失敗') throw new Error('身份驗證失敗，請重新登入');
     if (!data.success && data.pong === undefined) throw new Error(data.error || 'Apps Script 回應錯誤');
-    _syslog(_isRead ? 'debug' : 'success', `✓ ${action} (${Date.now() - _t0}ms)`);
+    if (!_silent) _syslog(_isRead ? 'debug' : 'success', `✓ ${action} (${Date.now() - _t0}ms)`);
     return data.data;
   } catch (e) {
-    _syslog('error', `✗ ${action}: ${e.message}`, _logDetail || undefined);
+    if (!_silent) _syslog('error', `✗ ${action}: ${e.message}`, _logDetail || undefined);
     throw e;
   }
 }
@@ -21231,6 +21233,8 @@ function _syslogRenderRow(entry) {
   const cnt = document.getElementById('_syslog_count');
   if (cnt) cnt.textContent = _syslogEntries.length;
   if (list.scrollTop + list.clientHeight >= list.scrollHeight - 60) list.scrollTop = list.scrollHeight;
+  _debugLogDirty = true;
+  _syslogSetSaveStatus('pending');
 }
 
 function _syslogClear() {
@@ -21257,6 +21261,70 @@ function toggleSyslog() {
 }
 
 document.addEventListener('keydown', e => { if (e.altKey && (e.key === 'l' || e.key === 'L')) { e.preventDefault(); toggleSyslog(); } });
+
+// ── Drive 持久化 ──
+let _debugLogFolderId = null;
+let _debugLogFilename = null;   // 本 session 的檔名（固定）
+let _debugLogDirty    = false;  // 有新 entry 尚未 flush
+
+function _debugLogEnsureFilename() {
+  if (_debugLogFilename) return _debugLogFilename;
+  const now  = new Date();
+  const date = now.toISOString().slice(0, 10);
+  const time = now.toLocaleTimeString('zh-TW', { hour12: false }).replace(/:/g, '-');
+  const who  = (currentUser?.email || 'unknown').split('@')[0].slice(0, 12);
+  _debugLogFilename = `${date}_${time}_${who}.json`;
+  return _debugLogFilename;
+}
+
+async function _debugLogEnsureFolder() {
+  if (_debugLogFolderId) return _debugLogFolderId;
+  const q   = `name='debug_log' and mimeType='application/vnd.google-apps.folder' and '${DRIVE_FOLDER_ID}' in parents and trashed=false`;
+  const res = await proxyCall('query', { q, fields: 'id' }, true);
+  if (res?.files?.length) { _debugLogFolderId = res.files[0].id; return _debugLogFolderId; }
+  const r = await proxyCall('createFolder', { name: 'debug_log', parentId: DRIVE_FOLDER_ID }, true);
+  _debugLogFolderId = r?.id || r;
+  return _debugLogFolderId;
+}
+
+async function _syslogFlushToDrive() {
+  if (!currentUser?.email || _syslogEntries.length === 0 || !_debugLogDirty) return;
+  _syslogSetSaveStatus('saving');
+  try {
+    const folderId = await _debugLogEnsureFolder();
+    const filename  = _debugLogEnsureFilename();
+    const payload   = JSON.stringify({
+      session: filename, user: currentUser.email,
+      savedAt: new Date().toISOString(), total: _syslogEntries.length,
+      entries: _syslogEntries,
+    });
+    // 先試 updateJson（path 方式），找不到時改 createFile
+    try {
+      await proxyCall('updateJson', { path: `debug_log/${filename}`, content: payload }, true);
+    } catch (e) {
+      if (!e.message.includes('找不到')) throw e;
+      await proxyCall('createFile', { name: filename, content: payload, mimeType: 'application/json', parentId: folderId }, true);
+    }
+    _debugLogDirty = false;
+    _syslogSetSaveStatus('saved');
+  } catch (e) {
+    console.warn('[debugLog] flush失敗:', e.message);
+    _syslogSetSaveStatus('error', e.message);
+  }
+}
+
+function _syslogSetSaveStatus(status, detail) {
+  const el = document.getElementById('_syslog_save');
+  if (!el) return;
+  const map = { saving:'⏳ 儲存中…', saved:'💾 已存至 GD', error:'⚠ 存取失敗', pending:'⏳ 待存' };
+  el.textContent = map[status] || status;
+  el.style.color = status === 'saved' ? '#68d391' : status === 'error' ? '#fc8181' : '#f6ad55';
+  if (detail) el.title = detail;
+}
+
+
+// 離開頁面時自動 flush
+window.addEventListener('beforeunload', () => { _syslogFlushToDrive().catch(() => {}); });
 </script>
 
 <!-- System Log Panel -->
@@ -21264,8 +21332,10 @@ document.addEventListener('keydown', e => { if (e.altKey && (e.key === 'l' || e.
   <div style="display:flex;align-items:center;padding:3px 10px;background:#161b22;gap:8px;flex-shrink:0;border-bottom:1px solid #30363d;">
     <span style="font-size:.78rem;font-weight:700;color:#58a6ff;letter-spacing:.06em;">SYSTEM LOG</span>
     <span id="_syslog_count" style="font-size:.7rem;color:#8b949e;background:#21262d;padding:0 6px;border-radius:10px;">0</span>
-    <span style="font-size:.7rem;color:#484f58;">Alt+L 切換</span>
+    <span id="_syslog_save" style="font-size:.7rem;color:#484f58;"></span>
+    <span style="font-size:.7rem;color:#484f58;">Alt+L</span>
     <div style="margin-left:auto;display:flex;gap:5px;">
+      <button onclick="_syslogFlushToDrive()" style="font-size:.7rem;background:transparent;border:1px solid #30363d;color:#8b949e;cursor:pointer;padding:1px 8px;border-radius:3px;">💾 存至 GD</button>
       <button onclick="_syslogClear()" style="font-size:.7rem;background:transparent;border:1px solid #30363d;color:#8b949e;cursor:pointer;padding:1px 8px;border-radius:3px;">清除</button>
       <button onclick="_syslogCopyAll()" style="font-size:.7rem;background:transparent;border:1px solid #30363d;color:#8b949e;cursor:pointer;padding:1px 8px;border-radius:3px;">複製全部</button>
       <button onclick="toggleSyslog()" style="font-size:.7rem;background:transparent;border:1px solid #30363d;color:#8b949e;cursor:pointer;padding:1px 8px;border-radius:3px;">✕</button>
