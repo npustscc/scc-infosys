@@ -13547,9 +13547,13 @@ async function migrateToChunks() {
     chunkMap[chunk].push(c);
   });
   const chunks = Object.keys(chunkMap).sort();
-  await Promise.all(chunks.map(chunk =>
-    driveSaveJsonInCases(`${chunk}.json`, { cases: chunkMap[chunk] })
-  ));
+  // 逐批儲存（每批 3 個），避免並發過多導致 Apps Script CORS/rate-limit 錯誤
+  const BATCH = 3;
+  for (let i = 0; i < chunks.length; i += BATCH) {
+    await Promise.all(chunks.slice(i, i + BATCH).map(chunk =>
+      driveSaveJsonInCases(`${chunk}.json`, { cases: chunkMap[chunk] })
+    ));
+  }
   // 保留既有墓碑（避免被遺忘的永久刪除復活）
   const prevDeletedIds = Array.isArray(casesManifest?.deletedIds) ? casesManifest.deletedIds : [];
   casesManifest = { chunks, deletedIds: prevDeletedIds };
