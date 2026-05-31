@@ -8977,7 +8977,7 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
     const _affArr = [...affectedIds];
     const _chunkCount = new Set(_affArr.map(getCaseChunkName)).size;
     _syslog('info', `批次匯入寫入：${_affArr.length} 筆個案 → ${_chunkCount} 個 chunk`);
-    await saveCasesChunks(..._affArr, (done, total) => {
+    await _batchWriteChunks(_affArr, (done, total) => {
       prog.innerHTML = `<span style="color:#718096;">寫入 chunk ${done}/${total}…</span>`;
     });
     let msg = `✓ 批次匯入完成`;
@@ -13473,6 +13473,39 @@ async function driveSaveJsonInCases(fileName, content) {
       await driveCreateJsonFile(leafName, content, parentId);
     }
   });
+}
+
+// 批次匯入專用：直接以 casesData 記憶體資料覆寫受影響的 chunk，不先讀 Drive
+// 避免 saveCasesChunks 的 read-merge-write 在 Drive 快取未刷新時寫入舊資料
+async function _batchWriteChunks(affectedIds, onProgress) {
+  const affSet = new Set(affectedIds);
+  const affChunks = new Set([...affSet].map(getCaseChunkName));
+  const chunkMap = {};
+  const deletedSet = new Set(casesManifest.deletedIds || []);
+  casesData.forEach(c => {
+    if (!c.id) return;
+    const name = getCaseChunkName(c.id);
+    if (!affChunks.has(name) || deletedSet.has(c.id)) return;
+    if (!chunkMap[name]) chunkMap[name] = [];
+    chunkMap[name].push(c);
+  });
+  const chunks = Object.keys(chunkMap).sort();
+  let manifestChanged = false;
+  for (const name of chunks) {
+    if (!casesManifest.chunks.includes(name)) {
+      casesManifest.chunks.push(name); casesManifest.chunks.sort(); manifestChanged = true;
+    }
+  }
+  if (manifestChanged) await driveSaveJsonInCases('manifest.json', casesManifest);
+  let done = 0;
+  const BATCH = 3;
+  for (let i = 0; i < chunks.length; i += BATCH) {
+    await Promise.all(chunks.slice(i, i + BATCH).map(async name => {
+      await driveSaveJsonInCases(`${name}.json`, { cases: chunkMap[name] });
+      done++;
+      if (onProgress) onProgress(done, chunks.length);
+    }));
+  }
 }
 
 async function saveCasesChunks(...args) {
