@@ -8936,17 +8936,37 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
 
   const nameMap = new Map();
   casesData.forEach(c => { if (!c.name) return; if (!nameMap.has(c.name)) nameMap.set(c.name,[]); nameMap.get(c.name).push(c); });
-  let addedRecs = 0, unmatchedRecs = 0;
+  let addedRecs = 0, updatedRecs = 0, skippedRecs = 0, unmatchedRecs = 0;
+  const _recKey = r => `${r.date || ''}|${r.time || ''}`;
+  const _recChanged = (a, b) =>
+    a.counselorEmail !== b.counselorEmail ||
+    a.interventionMode !== b.interventionMode ||
+    JSON.stringify(a.interviewees || []) !== JSON.stringify(b.interviewees || []) ||
+    JSON.stringify(a.topics || []) !== JSON.stringify(b.topics || []) ||
+    JSON.stringify(a.serviceItems || []) !== JSON.stringify(b.serviceItems || []) ||
+    (a.summary || '') !== (b.summary || '');
   for (const { studentName, record } of allRecords) {
     const cands = nameMap.get(studentName) || [];
     let target = null;
     if (cands.length === 1) { target = cands[0]; }
     else if (cands.length > 1) { const s = cands.filter(c=>c.openDate&&c.openDate<=(record.date||'9999')).sort((a,b)=>b.openDate.localeCompare(a.openDate)); target = s[0] || cands[0]; }
-    if (target) { if (!target.records) target.records=[]; target.records.push({...record, id:`REC-BATCH-${Date.now()}-${Math.random().toString(36).slice(2)}`}); addedRecs++; affectedIds.add(target.id); }
-    else unmatchedRecs++;
+    if (target) {
+      if (!target.records) target.records = [];
+      const key = _recKey(record);
+      const matchIdx = key ? target.records.findIndex(r => _recKey(r) === key) : -1;
+      if (matchIdx >= 0) {
+        if (_recChanged(target.records[matchIdx], record)) {
+          target.records[matchIdx] = { ...target.records[matchIdx], ...record, id: target.records[matchIdx].id, createdAt: target.records[matchIdx].createdAt, updatedAt: new Date().toISOString() };
+          updatedRecs++; affectedIds.add(target.id);
+        } else { skippedRecs++; }
+      } else {
+        target.records.push({ ...record, id: `REC-BATCH-${Date.now()}-${Math.random().toString(36).slice(2)}` });
+        addedRecs++; affectedIds.add(target.id);
+      }
+    } else { unmatchedRecs++; }
   }
 
-  _syslog('info', `批次匯入統計：新增 ${addedCases} 筆，更新 ${updatedCases} 筆，記錄 ${addedRecs} 筆，無法比對 ${unmatchedRecs} 筆`);
+  _syslog('info', `批次匯入統計：新增 ${addedCases} 筆，更新 ${updatedCases} 筆，記錄新增 ${addedRecs}/更新 ${updatedRecs}/略過 ${skippedRecs}/無法比對 ${unmatchedRecs} 筆`);
   prog.innerHTML = `<span style="color:#718096;">統計：新增 ${addedCases} 筆個案、更新 ${updatedCases} 筆…寫入中</span>`;
 
   const jobId = bgJobAdd(`批次匯入服務總表（${fileCount} 個檔案）`);
@@ -8960,12 +8980,14 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
     let msg = `✓ 批次匯入完成`;
     if (addedCases)    msg += `：新增 ${addedCases} 筆個案`;
     if (updatedCases)  msg += `${addedCases?'、':'：'}更新 ${updatedCases} 筆`;
-    if (addedRecs)     msg += `、新增 ${addedRecs} 筆輔導記錄`;
+    if (addedRecs)     msg += `、新增 ${addedRecs} 筆記錄`;
+    if (updatedRecs)   msg += `、更新 ${updatedRecs} 筆記錄`;
+    if (skippedRecs)   msg += `、略過 ${skippedRecs} 筆重複`;
     if (unmatchedRecs) msg += `（${unmatchedRecs} 筆記錄無法比對個案）`;
     prog.innerHTML = `<span style="color:#276749;font-weight:600;">${msg}</span>`;
     showToast(msg, 'success', 7000);
     bgJobDone(jobId);
-    auditLog('批次匯入服務總表', null, null, `${fileCount} 個檔案，${addedCases} 新增，${updatedCases} 更新，${addedRecs} 筆記錄`);
+    auditLog('批次匯入服務總表', null, null, `${fileCount} 個檔案，${addedCases} 新增，${updatedCases} 更新，記錄新增 ${addedRecs}/更新 ${updatedRecs}/略過 ${skippedRecs}`);
     renderCases();
   } catch(e) {
     bgJobFail(jobId, e.message);
