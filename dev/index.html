@@ -7908,6 +7908,7 @@ async function hardDeleteCase(caseId) {
 // ══════════════════════════════════════════════
 let _cnPage = 1;
 let _cnPageSize = 30;
+let _cnComposing = false;
 
 function renderCaseNums(resetPage) {
   if (resetPage) _cnPage = 1;
@@ -7986,7 +7987,10 @@ function renderCaseNums(resetPage) {
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <input type="search" id="cn-search" class="field-input" placeholder="搜尋案號／姓名／學號…"
             style="max-width:220px;padding:5px 10px;font-size:.87rem;"
-            value="${escHtml(q)}" oninput="_cnPage=1;renderCaseNums()" />
+            value="${escHtml(q)}"
+            oninput="if(!_cnComposing){_cnPage=1;renderCaseNums()}"
+            oncompositionstart="_cnComposing=true"
+            oncompositionend="_cnComposing=false;_cnPage=1;renderCaseNums()" />
           <label style="font-size:.85rem;color:#718096;white-space:nowrap;">每頁
             <select class="field-input" style="padding:4px 6px;font-size:.85rem;margin-left:4px;"
               onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select> 筆
@@ -8533,6 +8537,7 @@ async function batchImportServiceTables(files) {
         ? records.filter(r => r.record.date && !semMs.includes(r.record.date.slice(0,7)))
         : [];
       parsedFiles.push({ name: file.name, cases, records, semPrefix, outOfRangeRecords, error: null });
+      _syslog('info', `批次匯入：${file.name} → ${cases.length} 筆個案、${records.length} 筆記錄（OOR: ${outOfRangeRecords.length}）`);
     } catch (e) {
       parsedFiles.push({ name: file.name, cases: [], records: [], semPrefix: '', outOfRangeRecords: [], error: e.message });
       auditLog('匯入失敗', null, null, `${file.name}：${e.message}`);
@@ -8610,10 +8615,11 @@ function _batchParseCasesSheet(ws, fileName) {
   const findCounselorEmail = (t) => { for (const [e, info] of Object.entries(configData?.users||{})) { if (info.name && t.includes(info.name)) return e; } return ''; };
   const now = new Date().toISOString();
   const result = [];
+  let _skipped = 0;
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i];
     const id = String(r[1]||'').trim();
-    if (!id || id.length !== 7 || isNaN(parseInt(id))) continue;
+    if (!id || id.length !== 7 || isNaN(parseInt(id))) { _skipped++; continue; }
     const counselorText = String(r[5]||'').trim();
     const abRaw = String(r[0]||'').trim();
     const abType = abRaw.includes('B') ? 'B案' : 'A案';
@@ -8652,6 +8658,8 @@ function _batchParseCasesSheet(ws, fileName) {
       disability: '', isImported: true, createdAt: now, updatedAt: now,
     });
   }
+  if (_skipped > 0) _syslog('warn', `批次匯入解析 ${fileName}：跳過 ${_skipped} 列（欄位 B 非 7 位數字）`);
+  _syslog('debug', `批次匯入解析 ${fileName}：共 ${rows.length - 1} 列，有效 ${result.length} 筆，跳過 ${_skipped} 筆`);
   return result;
 }
 
@@ -8932,6 +8940,7 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
     if (addedRecs)     msg += `、新增 ${addedRecs} 筆輔導記錄`;
     if (unmatchedRecs) msg += `（${unmatchedRecs} 筆記錄無法比對個案）`;
     prog.innerHTML = `<span style="color:#276749;font-weight:600;">${msg}</span>`;
+    showToast(msg, 'success', 7000);
     bgJobDone(jobId);
     auditLog('批次匯入服務總表', null, null, `${fileCount} 個檔案，${addedCases} 新增，${updatedCases} 更新，${addedRecs} 筆記錄`);
     renderCases();
