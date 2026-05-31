@@ -8648,7 +8648,7 @@ function _batchParseCasesSheet(ws, fileName) {
       if (closeDateRaw && (!closeDate || closeDate < fileSemRange.first || closeDate > fileSemRange.last)) closeDate = fileSemRange.last;
     }
     result.push({
-      id, abType, openDate: openDateAD, name: String(r[4]||'').trim(),
+      id, abType, openDate: openDateAD, fileSem: fileSemPrefix, name: String(r[4]||'').trim(),
       studentId: String(r[13]||'').trim(), birthday: rocToAD(String(r[11]||'').trim()),
       idNumber: String(r[10]||'').trim(), legalGender: String(r[8]||'').trim(),
       genderIdentity: '', caseType, program, nationality, foreignCountry,
@@ -8882,15 +8882,19 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
     updatedCases++;
     affectedIds.add(ec.id);
     const impSem   = openDateToSemPrefix(ic.openDate);
+    const fileSem  = ic.fileSem || '';
     const exSems   = Array.isArray(ec.semesters) ? [...ec.semesters] : [openDateToSemPrefix(ec.openDate)].filter(Boolean);
     if (impSem && !exSems.includes(impSem)) exSems.push(impSem);
+    if (fileSem && !exSems.includes(fileSem)) exSems.push(fileSem);
     const snaps = { ...(ec.basicInfoSnapshots || {}) };
     const cSem = openDateToSemPrefix(ec.openDate);
     if (cSem && !snaps[cSem]) { const s={}; BASIC_INFO_SNAPSHOT_FIELDS.forEach(f=>{if(ec[f]!==undefined)s[f]=ec[f];}); snaps[cSem]=s; }
     if (impSem) { const s={}; BASIC_INFO_SNAPSHOT_FIELDS.forEach(f=>{if(ic[f]!==undefined)s[f]=ic[f];}); snaps[impSem]=s; }
+    if (fileSem && fileSem !== impSem) { const s={}; BASIC_INFO_SNAPSHOT_FIELDS.forEach(f=>{if(ic[f]!==undefined)s[f]=ic[f];}); snaps[fileSem]=s; }
     const curSem = currentSemesterPrefix();
     const semSt  = { ...(ec.semesterStatus || {}) };
     if (impSem && impSem < curSem) semSt[impSem] = 'closed';
+    if (fileSem && fileSem !== impSem && fileSem < curSem) semSt[fileSem] = 'closed';
     const merged = { ...ec, ...ic,
       records: ec.records || [], initialInterview: ec.initialInterview, initialInterviews: ec.initialInterviews,
       psychiatristRecords: ec.psychiatristRecords, semesterEvaluations: ec.semesterEvaluations,
@@ -8914,7 +8918,10 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
     addedCases++;
     affectedIds.add(c.id);
     const sem = openDateToSemPrefix(c.openDate);
+    const _fSem = c.fileSem || '';
     if (!Array.isArray(c.semesters) || !c.semesters.length) c.semesters = sem ? [sem] : [];
+    if (_fSem && !c.semesters.includes(_fSem)) c.semesters.push(_fSem);
+    c.semesters = [...new Set(c.semesters)].sort();
     if (!c.basicInfoSnapshots && sem) { const s={}; BASIC_INFO_SNAPSHOT_FIELDS.forEach(f=>{if(c[f]!==undefined)s[f]=c[f];}); c.basicInfoSnapshots={[sem]:s}; }
     if (sem && sem < curSemForNew) { c.semesterStatus = { ...(c.semesterStatus||{}), [sem]:'closed' }; c.status = 'closed'; }
     // Auto-attach psych test results from psychTestDB for new cases
