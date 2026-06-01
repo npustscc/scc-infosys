@@ -1115,6 +1115,13 @@
             <option value="past_unclosed">過去學期未結案</option>
             <option value="deleted" id="cf-status-deleted" style="display:none;">已刪除</option>
           </select>
+          <select id="cf-archived"
+            style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
+            onchange="caseFilters.archived=this.value;renderCases()">
+            <option value="unarchived">未封存</option>
+            <option value="archived">已封存</option>
+            <option value="">全部</option>
+          </select>
           <span id="cf-counselor-wrap" style="display:none;">
             <select id="cf-counselor"
               style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
@@ -3131,7 +3138,8 @@ let _versionEtag = null;
 let caseFilters = {
   q: '', status: '',
   semester: localStorage.getItem('scc_semester_pref') || currentSemesterPrefix(),
-  counselor: '', dateFrom: '', dateTo: ''
+  counselor: '', dateFrom: '', dateTo: '',
+  archived: 'unarchived'
 };
 
 // ══════════════════════════════════════════════
@@ -3816,6 +3824,8 @@ function renderCases() {
   // ── 篩選列 UI 控制 ──
   const cfStatusDeleted = document.getElementById('cf-status-deleted');
   if (cfStatusDeleted) cfStatusDeleted.style.display = isAdmin ? '' : 'none';
+  const cfArchivedSel = document.getElementById('cf-archived');
+  if (cfArchivedSel && cfArchivedSel.value !== caseFilters.archived) cfArchivedSel.value = caseFilters.archived ?? 'unarchived';
 
   const cfCounselorWrap = document.getElementById('cf-counselor-wrap');
   const cfCounselor     = document.getElementById('cf-counselor');
@@ -3835,7 +3845,12 @@ function renderCases() {
   }
 
   // ── 套用搜尋 / 篩選 ──
-  const { q, status, semester, counselor, dateFrom, dateTo } = caseFilters;
+  const { q, status, semester, counselor, dateFrom, dateTo, archived } = caseFilters;
+  if (archived === 'unarchived') {
+    visible = visible.filter(c => !c.archived);
+  } else if (archived === 'archived') {
+    visible = visible.filter(c => !!c.archived);
+  }
   if (semester) visible = visible.filter(c => {
     if (Array.isArray(c.semesters) && c.semesters.length) return c.semesters.includes(semester);
     return openDateToSemPrefix(c.openDate) === semester;
@@ -3922,10 +3937,17 @@ function renderCases() {
       actionBtn = isAdmin
         ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();restoreCaseAdmin('${cid}')">復原個案</button>`
         : '';
-    } else if (c.status === 'closed') {
-      actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();reopenCase('${cid}')">重開案</button>`;
+    } else if (c.archived) {
+      actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();unarchiveCase('${cid}')">解封存</button>`;
     } else {
-      actionBtn = `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();closeCaseConfirm('${cid}')">結案</button>`;
+      const mainBtn = c.status === 'closed'
+        ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();reopenCase('${cid}')">重開案</button>`
+        : `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();closeCaseConfirm('${cid}')">結案</button>`;
+      const canArchive = isAdmin || c.counselorEmail === currentUser?.email;
+      const archiveBtn = canArchive
+        ? `<button class="btn btn-secondary btn-sm" style="margin-left:4px;" onclick="event.stopPropagation();archiveCase('${cid}')">封存</button>`
+        : '';
+      actionBtn = mainBtn + archiveBtn;
     }
     const sessCount = (c.records||[]).filter(r => !r.deleted && r.status !== 'pending' && (!_semMs || _semMs.includes((r.date||'').slice(0,7)))).length;
     const transferBadge = (c.isTransferCase || transferCaseIds.has(c.id)) ? ' <span class="badge badge-teal">轉銜個案</span>' : '';
@@ -3947,9 +3969,10 @@ function renderCases() {
     const semTag = displaySems.length
       ? `<div style="margin-top:3px;">${displaySems.map(s => `<span style="display:inline-block;background:#f7fafc;border:1px solid #cbd5e0;color:#4a5568;border-radius:10px;padding:0 6px;font-size:.73rem;margin:1px 2px;">${escHtml(semesterLabel(s))}</span>`).join('')}</div>`
       : '';
+    const archivedBadge = c.archived ? ' <span style="display:inline-block;background:#e2e8f0;color:#4a5568;border-radius:4px;padding:1px 6px;font-size:.75rem;font-weight:600;">封存</span>' : '';
     const statusCell = c.deleted
       ? `<span class="badge-case-deleted">已刪除</span>`
-      : statusBadge(c.status) + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '');
+      : statusBadge(c.status) + archivedBadge + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '');
     const rowBg = !c.deleted && pastUnclosedSems.length ? 'background:#fffbeb;' : '';
     return `
     <tr class="${c.deleted ? 'case-deleted-row' : ''}" style="cursor:pointer;${rowBg}" onclick="showCaseDetail('${cid}')">
@@ -3991,7 +4014,7 @@ function renderCases() {
 
 function resetCaseFilters() {
   const sem = currentSemesterPrefix();
-  caseFilters = { q: '', status: '', semester: sem, counselor: '', dateFrom: '', dateTo: '' };
+  caseFilters = { q: '', status: '', semester: sem, counselor: '', dateFrom: '', dateTo: '', archived: 'unarchived' };
   caseSort = { col: null, dir: 1 };
   localStorage.setItem('scc_semester_pref', sem);
   syncUserPref_({ semesterPref: sem });
@@ -4000,6 +4023,8 @@ function resetCaseFilters() {
   });
   const cfSem = document.getElementById('cf-semester');
   if (cfSem) cfSem.value = sem;
+  const cfArch = document.getElementById('cf-archived');
+  if (cfArch) cfArch.value = 'unarchived';
   renderCases();
 }
 
@@ -7873,6 +7898,46 @@ async function restoreCaseAdmin(caseId) {
     Object.assign(casesData[idx], prev);
     hideLoading();
     alert('復原失敗：' + err.message);
+  }
+}
+
+async function archiveCase(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  if (!confirm(`確定要封存個案「${c.name}（${c.id}）」？\n\n封存後此個案將預設隱藏，但仍可透過篩選「已封存」查閱。`)) return;
+  const idx = casesData.findIndex(x => x.id === caseId);
+  casesData[idx].archived = true;
+  casesData[idx].updatedAt = new Date().toISOString();
+  showLoading('封存個案…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('封存個案', caseId);
+    hideLoading();
+    renderCases();
+  } catch (err) {
+    delete casesData[idx].archived;
+    hideLoading();
+    alert('封存失敗：' + err.message);
+  }
+}
+
+async function unarchiveCase(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  if (!confirm(`確定要解封存個案「${c.name}（${c.id}）」？`)) return;
+  const idx = casesData.findIndex(x => x.id === caseId);
+  delete casesData[idx].archived;
+  casesData[idx].updatedAt = new Date().toISOString();
+  showLoading('解封存個案…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('解封存個案', caseId);
+    hideLoading();
+    renderCases();
+  } catch (err) {
+    casesData[idx].archived = true;
+    hideLoading();
+    alert('解封存失敗：' + err.message);
   }
 }
 
@@ -15549,13 +15614,17 @@ function exportCasesCSV() {
   const semEl = document.getElementById('cf-semester');
   const counselorEl = document.getElementById('cf-counselor');
   const statusEl = document.getElementById('cf-status');
+  const archivedEl = document.getElementById('cf-archived');
   const q = qEl?.value.trim().toLowerCase() || '';
   const semFilter = semEl?.value || '';
   const counselorFilter = counselorEl?.value || '';
   const statusFilter = statusEl?.value || '';
+  const archivedFilter = archivedEl?.value ?? 'unarchived';
 
   const filtered = casesData.filter(c => {
     if (c.deleted) return false;
+    if (archivedFilter === 'unarchived' && c.archived) return false;
+    if (archivedFilter === 'archived' && !c.archived) return false;
     if (semFilter && semesterOf(c.openDate) !== semFilter) return false;
     if (statusFilter && c.status !== statusFilter) return false;
     if (counselorFilter) {
