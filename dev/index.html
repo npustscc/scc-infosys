@@ -8926,7 +8926,10 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
     if (_fSem && !c.semesters.includes(_fSem)) c.semesters.push(_fSem);
     c.semesters = [...new Set(c.semesters)].sort();
     if (!c.basicInfoSnapshots && sem) { const s={}; BASIC_INFO_SNAPSHOT_FIELDS.forEach(f=>{if(c[f]!==undefined)s[f]=c[f];}); c.basicInfoSnapshots={[sem]:s}; }
-    if (sem && sem < curSemForNew) { c.semesterStatus = { ...(c.semesterStatus||{}), [sem]:'closed' }; c.status = 'closed'; }
+    // 非當學期的所有 semesters 全部預設結案（不只 sem，fileSem 也要設）
+    if (!c.semesterStatus) c.semesterStatus = {};
+    c.semesters.forEach(s => { if (s && s < curSemForNew) c.semesterStatus[s] = 'closed'; });
+    c.status = _recomputeCaseStatus(c);
     // Auto-attach psych test results from psychTestDB for new cases
     const newSid = c.studentId;
     if (newSid && Array.isArray(psychTestDB[newSid]) && psychTestDB[newSid].length) {
@@ -8946,6 +8949,10 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
         const _first = _seenById.get(c.id);
         if (Array.isArray(c.semesters))
           _first.semesters = [...new Set([...(_first.semesters || []), ...c.semesters])].sort();
+        if (c.semesterStatus)
+          Object.assign(_first.semesterStatus || (_first.semesterStatus = {}), c.semesterStatus);
+        _first.semesters.forEach(s => { if (s && s < curSemForNew) { if (!_first.semesterStatus) _first.semesterStatus = {}; _first.semesterStatus[s] = 'closed'; } });
+        _first.status = _recomputeCaseStatus(_first);
         return false;
       }
       _seenById.set(c.id, c);
