@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8" />
@@ -854,6 +854,11 @@
   </style>
 </head>
 <body>
+<div id="dev-banner" style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#c05621;color:#fff;text-align:center;padding:5px 12px;font-size:.85rem;font-weight:700;letter-spacing:.05em;">
+  <span style="pointer-events:none;">🔧 測試版（dev）— 此版本的資料與正式版完全隔離，請勿用於實際業務</span>
+  <button onclick="toggleSyslog()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.5);color:#fff;font-size:.72rem;font-weight:700;cursor:pointer;padding:2px 10px;border-radius:3px;letter-spacing:.06em;">LOG</button>
+</div>
+<style>#app-header,#sidebar{margin-top:32px!important;}#app-header{top:32px!important;}#notif-panel{top:96px!important;}#app-header.compact~#notif-panel{top:76px!important;}#detail-student-sem-nav{top:calc(var(--hdr-h,60px) + 32px)!important;}#dev-banner+*{margin-top:32px;}</style>
 
 <!-- Loading overlay -->
 <div id="loading-overlay" style="display:none;">
@@ -1075,11 +1080,19 @@
       </div>
 
       <div id="cases-alert"></div>
+      <div id="cases-loading-bar" style="display:none;padding:24px 8px 8px;text-align:center;">
+        <div id="cases-loading-msg-text" style="font-size:.88rem;color:#4a5568;margin-bottom:10px;">載入個案資料…</div>
+        <div style="background:#e2e8f0;border-radius:4px;height:6px;width:280px;margin:0 auto;overflow:hidden;">
+          <div id="cases-loading-fill" style="background:#1a5276;height:100%;border-radius:4px;width:0%;transition:width .3s ease;"></div>
+        </div>
+        <div id="cases-loading-pct-text" style="font-size:.78rem;color:#718096;margin-top:6px;">0%</div>
+      </div>
 
       <div class="card">
         <div class="card-header">
           <h3>個案列表</h3>
           <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【封存個案說明】\n\n封存後，個案在列表中預設隱藏，適用於不再需要主動服務但仍需保存紀錄的個案。\n可透過篩選「已封存」查閱。統計分析仍會計入所有個案（含封存）。\n\n封存 ≠ 刪除：封存的個案資料完整保留，隨時可解除封存。')">？</button>
             <button class="btn btn-secondary" onclick="exportCasesCSV()">⬇ 匯出 CSV</button>
             <button class="btn btn-secondary" onclick="loadCases()">🔄 重新整理</button>
             <button class="btn btn-primary" id="btn-new-case" onclick="openNewCasePage()">＋ 新增個案</button>
@@ -1102,6 +1115,13 @@
             <option value="closed">已結案</option>
             <option value="past_unclosed">過去學期未結案</option>
             <option value="deleted" id="cf-status-deleted" style="display:none;">已刪除</option>
+          </select>
+          <select id="cf-archived"
+            style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
+            onchange="caseFilters.archived=this.value;renderCases()">
+            <option value="unarchived">未封存</option>
+            <option value="archived">已封存</option>
+            <option value="">全部</option>
           </select>
           <span id="cf-counselor-wrap" style="display:none;">
             <select id="cf-counselor"
@@ -1338,6 +1358,11 @@
           <input type="date" id="psychiatry-from" class="field-input" style="width:auto;" title="評估日期起" onchange="renderPsychiatryPage()">
           <span style="color:#718096;font-size:.85rem;align-self:center;">至</span>
           <input type="date" id="psychiatry-to" class="field-input" style="width:auto;" title="評估日期迄" onchange="renderPsychiatryPage()">
+          <select id="psychiatry-archived" class="field-input" style="width:auto;" onchange="renderPsychiatryPage()">
+            <option value="unarchived">未封存個案</option>
+            <option value="archived">已封存個案</option>
+            <option value="">全部個案</option>
+          </select>
           <button class="btn btn-secondary btn-sm" onclick="resetPsychiatryFilters()" title="重設篩選">重設</button>
           <button class="btn btn-primary" onclick="openPsychiatrySearch()">＋ 新增評估</button>
         </div>
@@ -2827,7 +2852,7 @@
 // ══════════════════════════════════════════════
 const CLIENT_ID   = '68582831293-fecbka17adht886tm6oh18vrdsdg1hbj.apps.googleusercontent.com';
 const SCOPES      = 'https://www.googleapis.com/auth/drive openid profile email';
-const DRIVE_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP'; // npust.scc 共用雲端硬碟內的 scc-infosys 子資料夾
+const DRIVE_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP'; // 正式版資料夾
 const BOOTSTRAP_ADMIN_EMAIL = 'linkinlol528101@gmail.com'; // 永久管理者備援帳號
 const CONFIG_FILE     = 'config.json';
 const CASES_INDEX     = 'cases/index.json'; // 舊格式（升級後僅作備份）
@@ -3119,7 +3144,8 @@ let _versionEtag = null;
 let caseFilters = {
   q: '', status: '',
   semester: localStorage.getItem('scc_semester_pref') || currentSemesterPrefix(),
-  counselor: '', dateFrom: '', dateTo: ''
+  counselor: '', dateFrom: '', dateTo: '',
+  archived: 'unarchived'
 };
 
 // ══════════════════════════════════════════════
@@ -3132,6 +3158,21 @@ function setLoadingProgress(pct) {
   if (fill) fill.style.width = p + '%';
   if (txt)  txt.textContent  = p + '%';
 }
+let _casesLoadingMsg = '';
+function _setCasesLoadingProgress(pct, msg) {
+  if (msg !== undefined) _casesLoadingMsg = msg;
+  const bar  = document.getElementById('cases-loading-bar');
+  if (!bar) return;
+  if (pct < 0) { bar.style.display = 'none'; return; }
+  bar.style.display = '';
+  const msgEl  = document.getElementById('cases-loading-msg-text');
+  const fillEl = document.getElementById('cases-loading-fill');
+  const pctEl  = document.getElementById('cases-loading-pct-text');
+  if (msgEl)  msgEl.textContent    = _casesLoadingMsg || '載入個案資料…';
+  if (fillEl) fillEl.style.width   = Math.max(pct, 0) + '%';
+  if (pctEl)  pctEl.textContent    = Math.max(pct, 0) + '%';
+}
+
 function showLoading(msg = '載入中…', pct = 0) {
   document.getElementById('loading-msg').textContent = msg;
   document.getElementById('loading-overlay').style.display = 'flex';
@@ -3168,7 +3209,7 @@ function showPage(pageId, navEl) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById(pageId).classList.add('active');
   if (navEl) navEl.classList.add('active');
-  if (!alreadyActive) window.scrollTo(0, 0);
+  if (!alreadyActive) { window.scrollTo(0, 0); _syslog('info', `USER 導航：${pageId}`); }
   updateFloatingBackBtn(pageId);
 }
 
@@ -3548,13 +3589,15 @@ async function afterLogin() {
     renderNotifBell();
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-layout').style.display  = 'flex';
-    setLoadingProgress(30);
+    hideLoading(); // 設定檔已載入，關閉全螢幕 overlay；個案改在背景載入
     checkPinSetup();
-    await loadCases(); // loadCases 接手 30→100%
-    loadPsychTestDB().catch(() => {}); // 心理測驗 DB（非關鍵，背景載入）
-    scanUnassignedRecords().catch(() => {}); // 每日掃描未歸屬記錄（fire-and-forget）
-    _migrateLocalStorageDrafts(); // 把 localStorage crash 草稿轉成待辦事項（fire-and-forget）
-    _syncPendingRecordsToTodos(); // 把 casesData 中遺失對應 todo 的 pending 記錄補回待辦事項
+    // cases 在背景載入，不阻擋 UI；完成後再跑後續初始化任務
+    loadCases().then(() => {
+      loadPsychTestDB().catch(() => {});
+      scanUnassignedRecords().catch(() => {});
+      _migrateLocalStorageDrafts();
+      _syncPendingRecordsToTodos();
+    }).catch(() => {}); // loadCases 內部已處理並顯示錯誤
   } catch (err) {
     hideLoading();
     // 找不到設定檔 → 顯示初始化畫面
@@ -3625,7 +3668,8 @@ function resolveUserRole() {
 // ══════════════════════════════════════════════
 async function loadCases() {
   setAlert('cases-alert', 'info', '');
-  showLoading('載入個案資料…', 30);
+  _setCasesLoadingProgress(5, '載入個案資料…');
+  _syslog('info', '開始載入個案資料');
   try {
     let manifest = null;
     let fileMap  = null;
@@ -3634,11 +3678,13 @@ async function loadCases() {
     try {
       fileMap = await getCasesFolderFileMap();
       const manifestId = fileMap.get('manifest.json');
+      _syslog('debug', `fileMap 取得：${fileMap.size} 個檔案，manifest ${manifestId ? '找到' : '未找到'}`);
       if (manifestId) manifest = await driveReadJsonById(manifestId);
     } catch (e) {
+      _syslog('warn', `getCasesFolderFileMap 失敗，改用路徑方式：${e.message}`);
       console.warn('[loadCases] 批次載入失敗，改用路徑方式:', e.message);
     }
-    setLoadingProgress(50);
+    _setCasesLoadingProgress(50);
 
     // fallback：逐層路徑查詢
     if (!manifest) {
@@ -3648,13 +3694,17 @@ async function loadCases() {
 
     if (manifest && Array.isArray(manifest.chunks) && manifest.chunks.length > 0) {
       casesManifest = manifest;
-      setLoadingProgress(60);
+      _syslog('info', `manifest 載入：${manifest.chunks.length} 個 chunks`);
+      _setCasesLoadingProgress(60);
       const deletedSet = new Set(manifest.deletedIds || []);
+      // 載入順序：新學期優先（最可能有活躍個案），舊學期最後（畢業/轉學個案）
+      const loadOrder = [...manifest.chunks].sort((a, b) => b.localeCompare(a));
       // 逐批讀取（每批 3 個），避免並發過多導致 Apps Script CORS/rate-limit 錯誤
       const LOAD_BATCH = 3;
       const results = [];
-      for (let i = 0; i < manifest.chunks.length; i += LOAD_BATCH) {
-        const batch = manifest.chunks.slice(i, i + LOAD_BATCH);
+      const totalChunks = loadOrder.length;
+      for (let i = 0; i < totalChunks; i += LOAD_BATCH) {
+        const batch = loadOrder.slice(i, i + LOAD_BATCH);
         const batchResults = await Promise.all(batch.map(chunk => {
           // chunk 可能為 "1141001-020"（舊）或 "114/1141001-020"（新，依學年分資料夾）
           const chunkFile = `${chunk}.json`;
@@ -3673,8 +3723,12 @@ async function loadCases() {
             .catch(e => { console.warn('[loadCases] chunk 載入失敗:', chunkFile, e.message); return { cases: [] }; });
         }));
         results.push(...batchResults);
+        const _loaded = Math.min(i + LOAD_BATCH, totalChunks);
+        const _cn = (loadOrder[_loaded - 1] || '').split('/').pop();
+        const _cm = _cn.match(/^(\d{3})(\d)(\d{3})-\d{4}(\d{3})$/);
+        const _cl = _cm ? `${_cm[1]}-${_cm[2]}學期 第${_cm[3]}-${_cm[4]}號` : _cn;
+        _setCasesLoadingProgress(60 + Math.round(30 * _loaded / totalChunks), `載入 ${_cl}（${_loaded}/${totalChunks}）`);
       }
-      setLoadingProgress(90);
       // 過濾「墓碑」與重複 ID（同一個案 ID 若在多個 chunk 殘存，僅取第一筆）
       const seen = new Set();
       casesData = results.flatMap(r => r.cases || [])
@@ -3726,13 +3780,16 @@ async function loadCases() {
         }
       }
     }
+    _syslog('success', `個案載入完成：${casesData.length} 筆`);
     renderCases();
   } catch (err) {
+    _syslog('error', `個案載入失敗：${err.message}`);
     casesData = [];
     setAlert('cases-alert', 'warn', `無法載入個案（${err.message}）。`);
     renderCases();
   } finally {
-    hideLoading();
+    _setCasesLoadingProgress(-1);
+    _syslogFlushToDrive().catch(() => {});
   }
 }
 
@@ -3773,6 +3830,8 @@ function renderCases() {
   // ── 篩選列 UI 控制 ──
   const cfStatusDeleted = document.getElementById('cf-status-deleted');
   if (cfStatusDeleted) cfStatusDeleted.style.display = isAdmin ? '' : 'none';
+  const cfArchivedSel = document.getElementById('cf-archived');
+  if (cfArchivedSel && cfArchivedSel.value !== caseFilters.archived) cfArchivedSel.value = caseFilters.archived ?? 'unarchived';
 
   const cfCounselorWrap = document.getElementById('cf-counselor-wrap');
   const cfCounselor     = document.getElementById('cf-counselor');
@@ -3792,7 +3851,12 @@ function renderCases() {
   }
 
   // ── 套用搜尋 / 篩選 ──
-  const { q, status, semester, counselor, dateFrom, dateTo } = caseFilters;
+  const { q, status, semester, counselor, dateFrom, dateTo, archived } = caseFilters;
+  if (archived === 'unarchived') {
+    visible = visible.filter(c => !c.archived);
+  } else if (archived === 'archived') {
+    visible = visible.filter(c => !!c.archived);
+  }
   if (semester) visible = visible.filter(c => {
     if (Array.isArray(c.semesters) && c.semesters.length) return c.semesters.includes(semester);
     return openDateToSemPrefix(c.openDate) === semester;
@@ -3879,10 +3943,17 @@ function renderCases() {
       actionBtn = isAdmin
         ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();restoreCaseAdmin('${cid}')">復原個案</button>`
         : '';
-    } else if (c.status === 'closed') {
-      actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();reopenCase('${cid}')">重開案</button>`;
+    } else if (c.archived) {
+      actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();unarchiveCase('${cid}')" title="解除封存後，此個案將重新出現在個案列表的預設檢視中。">解除封存</button>`;
     } else {
-      actionBtn = `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();closeCaseConfirm('${cid}')">結案</button>`;
+      const mainBtn = c.status === 'closed'
+        ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();reopenCase('${cid}')">重開案</button>`
+        : `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();closeCaseConfirm('${cid}')">結案</button>`;
+      const canArchive = isAdmin || c.counselorEmail === currentUser?.email;
+      const archiveBtn = canArchive
+        ? `<button class="btn btn-secondary btn-sm" style="margin-left:4px;" onclick="event.stopPropagation();archiveCase('${cid}')" title="封存後，此個案將在個案列表中預設隱藏（可透過篩選「已封存」查閱）。適用於不再需要主動服務的個案，統計分析仍會計入。">封存個案</button>`
+        : '';
+      actionBtn = mainBtn + archiveBtn;
     }
     const sessCount = (c.records||[]).filter(r => !r.deleted && r.status !== 'pending' && (!_semMs || _semMs.includes((r.date||'').slice(0,7)))).length;
     const transferBadge = (c.isTransferCase || transferCaseIds.has(c.id)) ? ' <span class="badge badge-teal">轉銜個案</span>' : '';
@@ -3904,9 +3975,10 @@ function renderCases() {
     const semTag = displaySems.length
       ? `<div style="margin-top:3px;">${displaySems.map(s => `<span style="display:inline-block;background:#f7fafc;border:1px solid #cbd5e0;color:#4a5568;border-radius:10px;padding:0 6px;font-size:.73rem;margin:1px 2px;">${escHtml(semesterLabel(s))}</span>`).join('')}</div>`
       : '';
+    const archivedBadge = c.archived ? ' <span style="display:inline-block;background:#e2e8f0;color:#4a5568;border-radius:4px;padding:1px 6px;font-size:.75rem;font-weight:600;">封存</span>' : '';
     const statusCell = c.deleted
       ? `<span class="badge-case-deleted">已刪除</span>`
-      : statusBadge(c.status) + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '');
+      : statusBadge(c.status) + archivedBadge + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '');
     const rowBg = !c.deleted && pastUnclosedSems.length ? 'background:#fffbeb;' : '';
     return `
     <tr class="${c.deleted ? 'case-deleted-row' : ''}" style="cursor:pointer;${rowBg}" onclick="showCaseDetail('${cid}')">
@@ -3948,7 +4020,7 @@ function renderCases() {
 
 function resetCaseFilters() {
   const sem = currentSemesterPrefix();
-  caseFilters = { q: '', status: '', semester: sem, counselor: '', dateFrom: '', dateTo: '' };
+  caseFilters = { q: '', status: '', semester: sem, counselor: '', dateFrom: '', dateTo: '', archived: 'unarchived' };
   caseSort = { col: null, dir: 1 };
   localStorage.setItem('scc_semester_pref', sem);
   syncUserPref_({ semesterPref: sem });
@@ -3957,6 +4029,8 @@ function resetCaseFilters() {
   });
   const cfSem = document.getElementById('cf-semester');
   if (cfSem) cfSem.value = sem;
+  const cfArch = document.getElementById('cf-archived');
+  if (cfArch) cfArch.value = 'unarchived';
   renderCases();
 }
 
@@ -4289,7 +4363,12 @@ td+td{padding-left:12pt}
 .sig-f{display:flex;align-items:flex-end;gap:6pt;font-size:10.5pt}
 .sig-l{border-bottom:.8pt solid #000;width:120pt;padding-bottom:2pt;text-align:center;font-size:10pt}
 .foot{font-size:7.5pt;color:#888;text-align:right;margin-top:10pt;border-top:.5pt solid #ccc;padding-top:4pt}
-</style></head><body><div class="wrap">
+</style></head><body>
+<div id="dev-banner" style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#c05621;color:#fff;text-align:center;padding:5px 12px;font-size:.85rem;font-weight:700;letter-spacing:.05em;">
+  <span style="pointer-events:none;">🔧 測試版（dev）— 此版本的資料與正式版完全隔離，請勿用於實際業務</span>
+  <button onclick="toggleSyslog()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.5);color:#fff;font-size:.72rem;font-weight:700;cursor:pointer;padding:2px 10px;border-radius:3px;letter-spacing:.06em;">LOG</button>
+</div>
+<style>#app-header,#sidebar{margin-top:32px!important;}#app-header{top:32px!important;}#notif-panel{top:96px!important;}#app-header.compact~#notif-panel{top:76px!important;}#detail-student-sem-nav{top:calc(var(--hdr-h,60px) + 32px)!important;}#dev-banner+*{margin-top:32px;}</style><div class="wrap">
 <div class="title">個　案　紀　錄　表</div>
 <table style="table-layout:fixed">
   <tr><td>姓名：${safe(c.name)}</td><td>出生年月日：${safe(bdDisp)}</td><td>系級：${safe(deptDisp)}</td></tr>
@@ -5261,6 +5340,7 @@ function showCaseDetail(caseId) {
     _buildCounselorHistoryBtn(c, _activeSem) +
     `&nbsp;&nbsp;${statusBadge(c.status)}` +
     ((c.isTransferCase || (transferData||[]).some(t => t.type === 'incoming' && t.caseId === c.id)) ? ' &nbsp;<span class="badge badge-teal">轉銜個案</span>' : '') +
+    (c.archived ? ' &nbsp;<span style="background:#e2e8f0;color:#4a5568;border-radius:4px;padding:2px 8px;font-size:.78rem;font-weight:600;">封存</span>' : '') +
     (c.deleted ? ` &nbsp;<span class="badge-case-deleted">已刪除 by ${escHtml(c.deletedByName || c.deletedBy || '?')}</span>` : '');
 
   const notesEl = document.getElementById('detail-import-notes');
@@ -5290,9 +5370,19 @@ function showCaseDetail(caseId) {
   if (!caseIsDeleted) {
     actionsHtml += `<button class="btn btn-secondary" onclick="showNewSemModal('${cid}')">新學期開案</button>`;
     if (_hasNewCounselorAlert(c)) actionsHtml += ` <button class="btn btn-secondary" style="font-size:.83rem;padding:4px 10px;" onclick="dismissNewCounselorAlert('${cid}')">取消新案提醒</button>`;
+    const canArchive = isAdminUser || c.counselorEmail === currentUser?.email;
+    if (canArchive) {
+      if (c.archived) {
+        actionsHtml += ` <button class="btn btn-secondary" onclick="unarchiveCase('${cid}')" title="解除封存後，此個案將重新出現在個案列表的預設檢視中。">解除封存</button>`;
+      } else {
+        actionsHtml += ` <button class="btn btn-secondary" onclick="archiveCase('${cid}')" title="封存後，此個案將在個案列表中預設隱藏（可透過篩選「已封存」查閱）。適用於不再需要主動服務的個案，統計分析仍會計入。">封存個案</button>`;
+      }
+    }
     if (isAdminUser) {
       actionsHtml += ` <button class="btn btn-danger" onclick="deleteCase('${cid}')">刪除個案</button>`;
-      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【錯誤建案處理流程】\\n\\n若此個案為錯誤建立，請依下列步驟操作：\\n1. 點擊「刪除個案」，將個案標記為已刪除（可復原）\\n2. 確認無誤後，再由主任或管理者點擊「永久刪除」\\n   → 個案紀錄與身分資料將完全移除，無法復原')">？</button>`;
+      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【功能說明】\\n\\n【封存個案】\\n封存後，此個案在個案列表中預設隱藏。\\n適用於不再需要主動服務、但仍需保存紀錄的個案。\\n可透過篩選「已封存」查閱，統計分析仍會計入。\\n\\n【錯誤建案處理流程】\\n若此個案為錯誤建立，請依下列步驟操作：\\n1. 點擊「刪除個案」，將個案標記為已刪除（可復原）\\n2. 確認無誤後，再由主任或管理者點擊「永久刪除」\\n   → 個案紀錄與身分資料將完全移除，無法復原')">？</button>`;
+    } else {
+      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【封存個案說明】\\n\\n封存後，此個案在個案列表中預設隱藏。\\n適用於不再需要主動服務、但仍需保存紀錄的個案。\\n可透過篩選「已封存」查閱，統計分析仍會計入。')">？</button>`;
     }
   } else {
     if (isAdminUser) {
@@ -7456,6 +7546,11 @@ function _buildEvalPrintHtml(c, ev, formTitle) {
     .desc { white-space:pre-wrap; font-size:10.5pt; border:1px solid #ccc; padding:8px; min-height:50px; }
     @media print { body { margin:15mm 14mm; } }
   </style></head><body>
+<div id="dev-banner" style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#c05621;color:#fff;text-align:center;padding:5px 12px;font-size:.85rem;font-weight:700;letter-spacing:.05em;">
+  <span style="pointer-events:none;">🔧 測試版（dev）— 此版本的資料與正式版完全隔離，請勿用於實際業務</span>
+  <button onclick="toggleSyslog()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.5);color:#fff;font-size:.72rem;font-weight:700;cursor:pointer;padding:2px 10px;border-radius:3px;letter-spacing:.06em;">LOG</button>
+</div>
+<style>#app-header,#sidebar{margin-top:32px!important;}#app-header{top:32px!important;}#notif-panel{top:96px!important;}#app-header.compact~#notif-panel{top:76px!important;}#detail-student-sem-nav{top:calc(var(--hdr-h,60px) + 32px)!important;}#dev-banner+*{margin-top:32px;}</style>
   <h2>國立屏東科技大學學生諮商中心 ${esc(formTitle)}</h2>
   <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)} &ensp;|&ensp; 主責：${esc(c.counselorName||c.counselorEmail||'—')} &ensp;|&ensp; 評估日期：${rocDate(ev.evaluatedAt)}</div>
   <div class="section">
@@ -7823,6 +7918,48 @@ async function restoreCaseAdmin(caseId) {
   }
 }
 
+async function archiveCase(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  if (!confirm(`確定要封存個案「${c.name}（${c.id}）」？\n\n封存後此個案將在個案列表中預設隱藏，但仍可透過篩選「已封存」查閱。統計分析仍會計入。`)) return;
+  const idx = casesData.findIndex(x => x.id === caseId);
+  casesData[idx].archived = true;
+  casesData[idx].updatedAt = new Date().toISOString();
+  showLoading('封存個案…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('封存個案', caseId);
+    hideLoading();
+    renderCases();
+    if (_detailCaseId === caseId) showCaseDetail(caseId);
+  } catch (err) {
+    delete casesData[idx].archived;
+    hideLoading();
+    alert('封存失敗：' + err.message);
+  }
+}
+
+async function unarchiveCase(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  if (!confirm(`確定要解除封存個案「${c.name}（${c.id}）」？`)) return;
+  const idx = casesData.findIndex(x => x.id === caseId);
+  delete casesData[idx].archived;
+  casesData[idx].updatedAt = new Date().toISOString();
+  showLoading('解除封存…');
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('解除封存個案', caseId);
+    hideLoading();
+    renderCases();
+    if (_detailCaseId === caseId) showCaseDetail(caseId);
+  } catch (err) {
+    casesData[idx].archived = true;
+    hideLoading();
+    alert('解除封存失敗：' + err.message);
+  }
+}
+
 async function hardDeleteCase(caseId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
@@ -7861,6 +7998,8 @@ async function hardDeleteCase(caseId) {
 // ══════════════════════════════════════════════
 let _cnPage = 1;
 let _cnPageSize = 30;
+let _cnComposing = false;
+let _cnArchived = 'unarchived';
 
 function renderCaseNums(resetPage) {
   if (resetPage) _cnPage = 1;
@@ -7874,6 +8013,9 @@ function renderCaseNums(resetPage) {
   } else {
     visible = casesData.filter(c => c.counselorEmail === currentUser?.email && !c.deleted);
   }
+
+  if (_cnArchived === 'unarchived') visible = visible.filter(c => !c.archived);
+  else if (_cnArchived === 'archived') visible = visible.filter(c => !!c.archived);
 
   const body = document.getElementById('casenums-body');
   if (!visible.length) {
@@ -7932,30 +8074,58 @@ function renderCaseNums(resetPage) {
       <button class="btn btn-secondary btn-sm" onclick="_cnPage=${totalPages};renderCaseNums()" ${_cnPage===totalPages?'disabled':''}>»</button>
     </div>` : '';
 
+  const emptyRow = '<tr><td colspan="5" style="text-align:center;color:#a0aec0;padding:20px;">無符合結果</td></tr>';
+
+  // 若 #cn-search 已存在，只更新動態部分（不銷毀 input，保留 IME session）
+  if (document.getElementById('cn-search')) {
+    const titleEl = document.getElementById('cn-title');
+    if (titleEl) titleEl.textContent = `案號查詢（共 ${total} 筆${q ? '，符合搜尋' : ''})`;
+    const tbodyEl = document.getElementById('cn-tbody');
+    if (tbodyEl) tbodyEl.innerHTML = rows || emptyRow;
+    const pTop = document.getElementById('cn-pagination-top');
+    if (pTop) pTop.innerHTML = paginationHtml;
+    const pBot = document.getElementById('cn-pagination-bot');
+    if (pBot) pBot.innerHTML = paginationHtml;
+    const sel = document.getElementById('cn-pagesize');
+    if (sel) sel.value = String(_cnPageSize);
+    const archSel = document.getElementById('cn-archived');
+    if (archSel && archSel.value !== _cnArchived) archSel.value = _cnArchived;
+    return;
+  }
+
+  // 第一次渲染：建立完整結構（含穩定 ID 供後續 surgical update 用）
   body.innerHTML = `
     <div class="card">
       <div class="card-header" style="flex-wrap:wrap;gap:8px;">
-        <h3>案號查詢（共 ${total} 筆${q ? '，符合搜尋' : ''}）</h3>
+        <h3 id="cn-title">案號查詢（共 ${total} 筆${q ? '，符合搜尋' : ''}）</h3>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <input type="search" id="cn-search" class="field-input" placeholder="搜尋案號／姓名／學號…"
             style="max-width:220px;padding:5px 10px;font-size:.87rem;"
-            value="${escHtml(q)}" oninput="_cnPage=1;renderCaseNums()" />
+            oninput="if(!_cnComposing){_cnPage=1;renderCaseNums()}"
+            oncompositionstart="_cnComposing=true"
+            oncompositionend="_cnComposing=false;_cnPage=1;renderCaseNums()" />
+          <select id="cn-archived" class="field-input" style="padding:4px 6px;font-size:.85rem;"
+            onchange="_cnArchived=this.value;_cnPage=1;renderCaseNums()">
+            <option value="unarchived" ${_cnArchived==='unarchived'?'selected':''}>未封存</option>
+            <option value="archived" ${_cnArchived==='archived'?'selected':''}>已封存</option>
+            <option value="" ${_cnArchived===''?'selected':''}>全部</option>
+          </select>
           <label style="font-size:.85rem;color:#718096;white-space:nowrap;">每頁
-            <select class="field-input" style="padding:4px 6px;font-size:.85rem;margin-left:4px;"
+            <select id="cn-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;margin-left:4px;"
               onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select> 筆
           </label>
         </div>
       </div>
-      ${paginationHtml}
+      <div id="cn-pagination-top">${paginationHtml}</div>
       <div style="overflow-x:auto;">
         <table>
           <thead>
             <tr><th>案號</th><th>姓名</th><th>學號</th><th>開案學期歷史</th><th>操作</th></tr>
           </thead>
-          <tbody>${rows || '<tr><td colspan="5" style="text-align:center;color:#a0aec0;padding:20px;">無符合結果</td></tr>'}</tbody>
+          <tbody id="cn-tbody">${rows || emptyRow}</tbody>
         </table>
       </div>
-      ${paginationHtml}
+      <div id="cn-pagination-bot">${paginationHtml}</div>
     </div>`;
 }
 
@@ -8400,37 +8570,43 @@ async function confirmClearAllCases() {
 
 async function recoverCasesFromDrive() {
   if (!confirm('嘗試從 Drive 上殘存的 chunk 檔案恢復個案資料？')) return;
-  showLoading('掃描 Drive chunk 檔案中…');
-  try {
-    const fileMap = await getCasesFolderFileMap();
-    const chunkEntries = [...fileMap.entries()].filter(
-      ([name]) => name !== 'manifest.json' && name !== 'index.json' && name.endsWith('.json')
-    );
-    if (chunkEntries.length === 0) {
-      hideLoading();
-      alert('Drive 上找不到任何 chunk 檔案，資料可能已完全遺失。');
-      return;
+  const jobId = bgJobAdd('從 Drive 恢復個案資料', '掃描 chunk 檔案中…');
+  (async () => {
+    try {
+      const fileMap = await getCasesFolderFileMap();
+      bgJobProgress(jobId, 15);
+      const chunkEntries = [...fileMap.entries()].filter(
+        ([name]) => name !== 'manifest.json' && name !== 'index.json' && name.endsWith('.json')
+      );
+      if (chunkEntries.length === 0) {
+        bgJobFail(jobId, '找不到任何 chunk 檔案，資料可能已完全遺失');
+        showToast('Drive 上找不到任何 chunk 檔案', 'error', 6000);
+        return;
+      }
+      const results = await Promise.all(
+        chunkEntries.map(([name, fid]) =>
+          driveReadJsonById(fid).catch(e => { console.warn('chunk 讀取失敗:', name, e.message); return { cases: [] }; })
+        )
+      );
+      bgJobProgress(jobId, 60);
+      const recovered = results.flatMap(r => r.cases || []);
+      if (recovered.length === 0) {
+        bgJobFail(jobId, 'chunk 檔案存在但內容為空');
+        showToast('chunk 檔案存在但內容為空，資料可能已遺失', 'error', 6000);
+        return;
+      }
+      casesData = recovered;
+      casesManifest = { chunks: [] };
+      bgJobProgress(jobId, 70);
+      await migrateToChunks();
+      renderCases();
+      bgJobDone(jobId);
+      showToast(`✓ 成功恢復 ${recovered.length} 筆個案`, 'success');
+    } catch(e) {
+      bgJobFail(jobId, e.message);
+      showToast('恢復失敗：' + e.message, 'error', 6000);
     }
-    showLoading(`找到 ${chunkEntries.length} 個 chunk 檔，下載中…`);
-    const results = await Promise.all(
-      chunkEntries.map(([name, fid]) =>
-        driveReadJsonById(fid).catch(e => { console.warn('chunk 讀取失敗:', name, e.message); return { cases: [] }; })
-      )
-    );
-    const recovered = results.flatMap(r => r.cases || []);
-    if (recovered.length === 0) {
-      hideLoading();
-      alert('chunk 檔案存在但內容為空，資料可能已遺失。');
-      return;
-    }
-    casesData = recovered;
-    casesManifest = { chunks: [] };
-    showLoading(`找到 ${recovered.length} 筆個案，重建 manifest 中…`);
-    await migrateToChunks();
-    renderCases();
-    hideLoading();
-    alert(`✓ 成功恢復 ${recovered.length} 筆個案！`);
-  } catch(e) { hideLoading(); alert('恢復失敗：' + e.message); }
+  })();
 }
 
 function handleImportFile(input) {
@@ -8480,6 +8656,7 @@ async function batchImportServiceTables(files) {
         ? records.filter(r => r.record.date && !semMs.includes(r.record.date.slice(0,7)))
         : [];
       parsedFiles.push({ name: file.name, cases, records, semPrefix, outOfRangeRecords, error: null });
+      _syslog('info', `批次匯入：${file.name} → ${cases.length} 筆個案、${records.length} 筆記錄（OOR: ${outOfRangeRecords.length}）`);
     } catch (e) {
       parsedFiles.push({ name: file.name, cases: [], records: [], semPrefix: '', outOfRangeRecords: [], error: e.message });
       auditLog('匯入失敗', null, null, `${file.name}：${e.message}`);
@@ -8557,10 +8734,11 @@ function _batchParseCasesSheet(ws, fileName) {
   const findCounselorEmail = (t) => { for (const [e, info] of Object.entries(configData?.users||{})) { if (info.name && t.includes(info.name)) return e; } return ''; };
   const now = new Date().toISOString();
   const result = [];
+  let _skipped = 0;
   for (let i = 1; i < rows.length; i++) {
     const r = rows[i];
     const id = String(r[1]||'').trim();
-    if (!id || id.length !== 7 || isNaN(parseInt(id))) continue;
+    if (!id || id.length !== 7 || isNaN(parseInt(id))) { _skipped++; continue; }
     const counselorText = String(r[5]||'').trim();
     const abRaw = String(r[0]||'').trim();
     const abType = abRaw.includes('B') ? 'B案' : 'A案';
@@ -8583,7 +8761,7 @@ function _batchParseCasesSheet(ws, fileName) {
       if (closeDateRaw && (!closeDate || closeDate < fileSemRange.first || closeDate > fileSemRange.last)) closeDate = fileSemRange.last;
     }
     result.push({
-      id, abType, openDate: openDateAD, name: String(r[4]||'').trim(),
+      id, abType, openDate: openDateAD, fileSem: fileSemPrefix, name: String(r[4]||'').trim(),
       studentId: String(r[13]||'').trim(), birthday: rocToAD(String(r[11]||'').trim()),
       idNumber: String(r[10]||'').trim(), legalGender: String(r[8]||'').trim(),
       genderIdentity: '', caseType, program, nationality, foreignCountry,
@@ -8599,6 +8777,8 @@ function _batchParseCasesSheet(ws, fileName) {
       disability: '', isImported: true, createdAt: now, updatedAt: now,
     });
   }
+  if (_skipped > 0) _syslog('warn', `批次匯入解析 ${fileName}：跳過 ${_skipped} 列（欄位 B 非 7 位數字）`);
+  _syslog('debug', `批次匯入解析 ${fileName}：共 ${rows.length - 1} 列，有效 ${result.length} 筆，跳過 ${_skipped} 筆`);
   return result;
 }
 
@@ -8805,23 +8985,42 @@ function _showBatchImportConfirm(parsedFiles, newCounselorsMap = {}) {
 
 async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
   const now = new Date().toISOString();
+  // importedMap 只保留同一 ID 的最後一筆（用於合併基本資料欄位）
   const importedMap = new Map(allCases.map(c => [c.id, c]));
+  // fileSemsByID 收集同一 ID 在所有批次檔案中出現過的所有 fileSem（避免多檔匯入時後者覆蓋前者）
+  const fileSemsByID = new Map();
+  allCases.forEach(c => {
+    if (!c.id) return;
+    if (!fileSemsByID.has(c.id)) fileSemsByID.set(c.id, new Set());
+    if (c.fileSem) fileSemsByID.get(c.id).add(c.fileSem);
+    const _s = openDateToSemPrefix(c.openDate);
+    if (_s) fileSemsByID.get(c.id).add(_s);
+  });
   let addedCases = 0, updatedCases = 0;
+  const affectedIds = new Set();
 
   casesData = casesData.map(ec => {
     const ic = importedMap.get(ec.id);
     if (!ic) return ec;
     updatedCases++;
     const impSem   = openDateToSemPrefix(ic.openDate);
+    const fileSem  = ic.fileSem || '';
     const exSems   = Array.isArray(ec.semesters) ? [...ec.semesters] : [openDateToSemPrefix(ec.openDate)].filter(Boolean);
+    // 套用此 ID 在所有匯入檔中出現過的全部 fileSem（修正：多學期批次時只保留最後一筆 fileSem 會漏加）
+    (fileSemsByID.get(ec.id) || new Set()).forEach(s => { if (s && !exSems.includes(s)) exSems.push(s); });
     if (impSem && !exSems.includes(impSem)) exSems.push(impSem);
+    if (fileSem && !exSems.includes(fileSem)) exSems.push(fileSem);
     const snaps = { ...(ec.basicInfoSnapshots || {}) };
     const cSem = openDateToSemPrefix(ec.openDate);
     if (cSem && !snaps[cSem]) { const s={}; BASIC_INFO_SNAPSHOT_FIELDS.forEach(f=>{if(ec[f]!==undefined)s[f]=ec[f];}); snaps[cSem]=s; }
     if (impSem) { const s={}; BASIC_INFO_SNAPSHOT_FIELDS.forEach(f=>{if(ic[f]!==undefined)s[f]=ic[f];}); snaps[impSem]=s; }
+    if (fileSem && fileSem !== impSem) { const s={}; BASIC_INFO_SNAPSHOT_FIELDS.forEach(f=>{if(ic[f]!==undefined)s[f]=ic[f];}); snaps[fileSem]=s; }
     const curSem = currentSemesterPrefix();
     const semSt  = { ...(ec.semesterStatus || {}) };
     if (impSem && impSem < curSem) semSt[impSem] = 'closed';
+    if (fileSem && fileSem !== impSem && fileSem < curSem) semSt[fileSem] = 'closed';
+    // 套用此 ID 在所有批次檔中的 fileSem 的結案狀態
+    (fileSemsByID.get(ec.id) || new Set()).forEach(s => { if (s && s < curSem) semSt[s] = 'closed'; });
     const merged = { ...ec, ...ic,
       records: ec.records || [], initialInterview: ec.initialInterview, initialInterviews: ec.initialInterviews,
       psychiatristRecords: ec.psychiatristRecords, semesterEvaluations: ec.semesterEvaluations,
@@ -8836,6 +9035,10 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
       const toAdd = psychTestDB[mergedSid].filter(t => !existSems.has(t.testSemester));
       if (toAdd.length) merged.psychTestResults = [...(merged.psychTestResults || []), ...toAdd];
     }
+    // 只有真的有變動時才寫入 Drive（避免 re-import 觸發所有 chunk 重寫）
+    const semsChanged = merged.semesters.join(',') !== (Array.isArray(ec.semesters) ? [...ec.semesters].sort() : []).join(',');
+    const infoChanged = BASIC_INFO_SNAPSHOT_FIELDS.some(f => ic[f] !== undefined && ic[f] !== '' && ec[f] !== ic[f]);
+    if (semsChanged || infoChanged) affectedIds.add(ec.id);
     return merged;
   });
 
@@ -8843,10 +9046,17 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
   const existingIds = new Set(casesData.map(c => c.id));
   allCases.filter(c => !existingIds.has(c.id)).forEach(c => {
     addedCases++;
+    affectedIds.add(c.id);
     const sem = openDateToSemPrefix(c.openDate);
+    const _fSem = c.fileSem || '';
     if (!Array.isArray(c.semesters) || !c.semesters.length) c.semesters = sem ? [sem] : [];
+    if (_fSem && !c.semesters.includes(_fSem)) c.semesters.push(_fSem);
+    c.semesters = [...new Set(c.semesters)].sort();
     if (!c.basicInfoSnapshots && sem) { const s={}; BASIC_INFO_SNAPSHOT_FIELDS.forEach(f=>{if(c[f]!==undefined)s[f]=c[f];}); c.basicInfoSnapshots={[sem]:s}; }
-    if (sem && sem < curSemForNew) { c.semesterStatus = { ...(c.semesterStatus||{}), [sem]:'closed' }; c.status = 'closed'; }
+    // 非當學期的所有 semesters 全部預設結案（不只 sem，fileSem 也要設）
+    if (!c.semesterStatus) c.semesterStatus = {};
+    c.semesters.forEach(s => { if (s && s < curSemForNew) c.semesterStatus[s] = 'closed'; });
+    c.status = _recomputeCaseStatus(c);
     // Auto-attach psych test results from psychTestDB for new cases
     const newSid = c.studentId;
     if (newSid && Array.isArray(psychTestDB[newSid]) && psychTestDB[newSid].length) {
@@ -8857,30 +9067,90 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
     casesData.push(c);
   });
 
+  // 去重：同一 ID 可能出現在多個 Excel（跨學期繼續個案），合併 semesters 後只保留第一筆
+  {
+    const _seenById = new Map();
+    casesData = casesData.filter(c => {
+      if (!c.id) return true;
+      if (_seenById.has(c.id)) {
+        const _first = _seenById.get(c.id);
+        if (Array.isArray(c.semesters))
+          _first.semesters = [...new Set([...(_first.semesters || []), ...c.semesters])].sort();
+        if (c.semesterStatus)
+          Object.assign(_first.semesterStatus || (_first.semesterStatus = {}), c.semesterStatus);
+        _first.semesters.forEach(s => { if (s && s < curSemForNew) { if (!_first.semesterStatus) _first.semesterStatus = {}; _first.semesterStatus[s] = 'closed'; } });
+        _first.status = _recomputeCaseStatus(_first);
+        return false;
+      }
+      _seenById.set(c.id, c);
+      return true;
+    });
+  }
+
   const nameMap = new Map();
   casesData.forEach(c => { if (!c.name) return; if (!nameMap.has(c.name)) nameMap.set(c.name,[]); nameMap.get(c.name).push(c); });
-  let addedRecs = 0, unmatchedRecs = 0;
+  let addedRecs = 0, updatedRecs = 0, skippedRecs = 0, unmatchedRecs = 0;
+  const _recKey = r => `${r.date || ''}|${r.time || ''}`;
+  const _recChanged = (a, b) =>
+    a.counselorEmail !== b.counselorEmail ||
+    a.interventionMode !== b.interventionMode ||
+    JSON.stringify(a.interviewees || []) !== JSON.stringify(b.interviewees || []) ||
+    JSON.stringify(a.topics || []) !== JSON.stringify(b.topics || []) ||
+    JSON.stringify(a.serviceItems || []) !== JSON.stringify(b.serviceItems || []) ||
+    (a.summary || '') !== (b.summary || '');
   for (const { studentName, record } of allRecords) {
     const cands = nameMap.get(studentName) || [];
     let target = null;
     if (cands.length === 1) { target = cands[0]; }
     else if (cands.length > 1) { const s = cands.filter(c=>c.openDate&&c.openDate<=(record.date||'9999')).sort((a,b)=>b.openDate.localeCompare(a.openDate)); target = s[0] || cands[0]; }
-    if (target) { if (!target.records) target.records=[]; target.records.push({...record, id:`REC-BATCH-${Date.now()}-${Math.random().toString(36).slice(2)}`}); addedRecs++; }
-    else unmatchedRecs++;
+    if (target) {
+      if (!target.records) target.records = [];
+      const key = _recKey(record);
+      const matchIdx = key ? target.records.findIndex(r => _recKey(r) === key) : -1;
+      if (matchIdx >= 0) {
+        if (_recChanged(target.records[matchIdx], record)) {
+          target.records[matchIdx] = { ...target.records[matchIdx], ...record, id: target.records[matchIdx].id, createdAt: target.records[matchIdx].createdAt, updatedAt: new Date().toISOString() };
+          updatedRecs++; affectedIds.add(target.id);
+        } else { skippedRecs++; }
+      } else {
+        target.records.push({ ...record, id: `REC-BATCH-${Date.now()}-${Math.random().toString(36).slice(2)}` });
+        addedRecs++; affectedIds.add(target.id);
+      }
+    } else { unmatchedRecs++; }
   }
+
+  _syslog('info', `批次匯入統計：新增 ${addedCases} 筆，更新 ${updatedCases} 筆，記錄新增 ${addedRecs}/更新 ${updatedRecs}/略過 ${skippedRecs}/無法比對 ${unmatchedRecs} 筆`);
+  prog.innerHTML = `<span style="color:#718096;">統計：新增 ${addedCases} 筆個案、更新 ${updatedCases} 筆…寫入中</span>`;
 
   const jobId = bgJobAdd(`批次匯入服務總表（${fileCount} 個檔案）`);
   try {
-    casesManifest = { chunks: [] };
-    await migrateToChunks();
+    const _affArr = [...affectedIds];
+    // 把「重新匯入的 ID」從墓碑清單移除，否則 _batchWriteChunks 會被 deletedSet 過濾掉
+    if (Array.isArray(casesManifest.deletedIds) && casesManifest.deletedIds.length > 0) {
+      const _affSet = new Set(_affArr);
+      const _before = casesManifest.deletedIds.length;
+      casesManifest.deletedIds = casesManifest.deletedIds.filter(id => !_affSet.has(id));
+      if (casesManifest.deletedIds.length < _before) {
+        _syslog('info', `移除墓碑：${_before - casesManifest.deletedIds.length} 筆（重新匯入）`);
+        await driveSaveJsonInCases('manifest.json', casesManifest);
+      }
+    }
+    const _chunkCount = new Set(_affArr.map(getCaseChunkName)).size;
+    _syslog('info', `批次匯入寫入：${_affArr.length} 筆個案 → ${_chunkCount} 個 chunk`);
+    await _batchWriteChunks(_affArr, (done, total) => {
+      prog.innerHTML = `<span style="color:#718096;">寫入 chunk ${done}/${total}…</span>`;
+    });
     let msg = `✓ 批次匯入完成`;
     if (addedCases)    msg += `：新增 ${addedCases} 筆個案`;
     if (updatedCases)  msg += `${addedCases?'、':'：'}更新 ${updatedCases} 筆`;
-    if (addedRecs)     msg += `、新增 ${addedRecs} 筆輔導記錄`;
+    if (addedRecs)     msg += `、新增 ${addedRecs} 筆記錄`;
+    if (updatedRecs)   msg += `、更新 ${updatedRecs} 筆記錄`;
+    if (skippedRecs)   msg += `、略過 ${skippedRecs} 筆重複`;
     if (unmatchedRecs) msg += `（${unmatchedRecs} 筆記錄無法比對個案）`;
     prog.innerHTML = `<span style="color:#276749;font-weight:600;">${msg}</span>`;
+    showToast(msg, 'success', 7000);
     bgJobDone(jobId);
-    auditLog('批次匯入服務總表', null, null, `${fileCount} 個檔案，${addedCases} 新增，${updatedCases} 更新，${addedRecs} 筆記錄`);
+    auditLog('批次匯入服務總表', null, null, `${fileCount} 個檔案，${addedCases} 新增，${updatedCases} 更新，記錄新增 ${addedRecs}/更新 ${updatedRecs}/略過 ${skippedRecs}`);
     renderCases();
   } catch(e) {
     bgJobFail(jobId, e.message);
@@ -9540,7 +9810,13 @@ function showImportMergePreview(imported, prog) {
 
     const diffNameHtml = diffNameDups.length === 0 ? '' : `
       <div style="margin-top:14px;padding:12px 14px;background:#fff8e1;border-radius:8px;border:1px solid #f6ad55;">
-        <div style="font-weight:600;color:#7d4e00;margin-bottom:8px;">⚠ 同案號但姓名不一致（${diffNameDups.length} 筆）— 請逐筆確認</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+          <div style="font-weight:600;color:#7d4e00;">⚠ 同案號但姓名不一致（${diffNameDups.length} 筆）— 請逐筆確認</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" type="button" onclick="window._impSetAllDiff('skip')">全部略過（保留現有）</button>
+            <button class="btn btn-secondary btn-sm" type="button" onclick="window._impSetAllDiff('use-imported')">全部以匯入取代</button>
+          </div>
+        </div>
         <div style="overflow-x:auto;">
           <table style="width:100%;border-collapse:collapse;font-size:.83rem;">
             <thead><tr style="background:#fef9c3;">
@@ -9604,6 +9880,13 @@ function showImportMergePreview(imported, prog) {
     document.body.appendChild(modal);
 
     window._impDiffChg = (id, action) => { diffChoices.set(id, action); };
+    window._impSetAllDiff = (action) => {
+      diffNameDups.forEach(d => {
+        diffChoices.set(d.imp.id, action);
+        const radios = modal.querySelectorAll(`[name="dc-${CSS.escape(d.imp.id)}"]`);
+        radios.forEach(r => { r.checked = (r.value === action); });
+      });
+    };
 
     modal.querySelector('#imp-merge-cancel').onclick = () => {
       modal.remove();
@@ -9708,20 +9991,61 @@ async function finalizeImport(imported, prog) {
   const updatedCount = sameNameDups.length + diffNameDups.filter(d => d.action === 'use-imported').length;
   const skippedCount = diffNameDups.filter(d => d.action === 'skip').length;
 
-  prog.innerHTML = `<span style="color:#718096;">寫入 Drive 中（${finalCases.length} 筆）…</span>`;
+  const changedIds = [
+    ...newCases.map(c => c.id),
+    ...sameNameDups.map(d => d.imp.id),
+    ...diffNameDups.filter(d => d.action === 'use-imported').map(d => d.imp.id),
+  ].filter(Boolean);
+  const totalChunks = [...new Set(changedIds.map(getCaseChunkName))].length || 1;
+
+  prog.innerHTML = `
+    <div style="font-size:.88rem;color:#718096;margin-bottom:8px;">
+      寫入 Drive 中（${finalCases.length} 筆，共 ${totalChunks} 個資料區塊）…
+    </div>
+    <div style="background:#e2e8f0;border-radius:4px;height:8px;width:100%;overflow:hidden;">
+      <div id="_imp_prog_fill" style="background:#2b6cb0;height:100%;width:0%;transition:width .3s ease;"></div>
+    </div>
+    <div id="_imp_prog_pct" style="font-size:.78rem;color:#718096;margin-top:4px;">0 / ${totalChunks} 區塊</div>`;
+
+  const _updateImpProg = (done, total) => {
+    const pct = Math.round(done / total * 100);
+    const fill = document.getElementById('_imp_prog_fill');
+    const lbl  = document.getElementById('_imp_prog_pct');
+    if (fill) fill.style.width = pct + '%';
+    if (lbl)  lbl.textContent  = `${done} / ${total} 區塊（${pct}%）`;
+  };
+
+  _syslog('info', `開始匯入：新增 ${newCases.length}、更新 ${updatedCount}、略過 ${skippedCount}，共 ${totalChunks} chunks`);
   const _jobId = bgJobAdd(`匯入個案（${newCases.length} 新增${updatedCount ? `、${updatedCount} 更新` : ''}）`);
   try {
     casesData = finalCases;
-    casesManifest = { chunks: [] };
-    await migrateToChunks();
+    // 把「重新匯入的 ID」從墓碑清單移除
+    if (changedIds.length > 0 && Array.isArray(casesManifest.deletedIds) && casesManifest.deletedIds.length > 0) {
+      const _cSet = new Set(changedIds);
+      const _before = casesManifest.deletedIds.length;
+      casesManifest.deletedIds = casesManifest.deletedIds.filter(id => !_cSet.has(id));
+      if (casesManifest.deletedIds.length < _before) await driveSaveJsonInCases('manifest.json', casesManifest);
+    }
+    // 差量寫入：只更新有變動的 chunk，不重寫全部
+    if (changedIds.length > 0) {
+      await saveCasesChunks(...changedIds, (done, total) => {
+        _syslog('debug', `chunk 寫入：${done}/${total}`);
+        _updateImpProg(done, total);
+      });
+    } else {
+      _updateImpProg(1, 1);
+    }
     let msg = `✓ 成功匯入 ${newCases.length} 筆新個案`;
     if (updatedCount) msg += `，更新 ${updatedCount} 筆重複`;
     if (skippedCount) msg += `，略過 ${skippedCount} 筆`;
+    _syslog('success', `匯入完成：${msg}`);
     prog.innerHTML = `<span style="color:#276749;font-weight:600;">${msg}！</span>`;
     renderCases();
     auditLog('批次匯入個案', `新增 ${newCases.length}、更新 ${updatedCount}、略過 ${skippedCount} 筆重複`);
     bgJobDone(_jobId);
+    _syslogFlushToDrive().catch(() => {});
   } catch (e) {
+    _syslog('error', `匯入失敗：${e.message}`);
     prog.innerHTML = `<span style="color:#c53030;">✗ 寫入失敗：${escHtml(e.message)}</span>`;
     bgJobFail(_jobId, e.message);
   }
@@ -10686,6 +11010,11 @@ function printInitialInterview(caseId) {
   .row { margin:3px 0; }
   .foot { margin-top:12px;font-size:10px;color:#666;text-align:right; }
 </style></head><body>
+<div id="dev-banner" style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#c05621;color:#fff;text-align:center;padding:5px 12px;font-size:.85rem;font-weight:700;letter-spacing:.05em;">
+  <span style="pointer-events:none;">🔧 測試版（dev）— 此版本的資料與正式版完全隔離，請勿用於實際業務</span>
+  <button onclick="toggleSyslog()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.5);color:#fff;font-size:.72rem;font-weight:700;cursor:pointer;padding:2px 10px;border-radius:3px;letter-spacing:.06em;">LOG</button>
+</div>
+<style>#app-header,#sidebar{margin-top:32px!important;}#app-header{top:32px!important;}#notif-panel{top:96px!important;}#app-header.compact~#notif-panel{top:76px!important;}#detail-student-sem-nav{top:calc(var(--hdr-h,60px) + 32px)!important;}#dev-banner+*{margin-top:32px;}</style>
 <h1>初次晤談紀錄表</h1>
 <table class="basic">
   <tr><td colspan="6"><b>個案基本資料</b>　案號：<b>${esc(c.id)}</b>　接案日期：${esc(c.openDate || '')}</td></tr>
@@ -10845,27 +11174,20 @@ async function mergeCounselorGroup(radioName, gi) {
   });
 
   if (!touched) { alert('沒有任何個案需要更新。'); return; }
-  showLoading(`整併中（${touched} 筆）…`);
-  try {
-    // 全部存回對應 chunk
-    const chunkSet = new Set();
-    casesData.forEach(c => chunkSet.add(getCaseChunkName(c.id)));
-    for (const ch of chunkSet) {
-      await saveCasesChunks(null); // saveCasesChunks 預期單個 case id；此處保守起見直接重寫整個 manifest
-      break;
+  openCounselorMergeTool(); renderCases(); // 立即更新 UI
+  const jobId = bgJobAdd(`整併主責人員：${keepName}`, `${touched} 筆個案`);
+  (async () => {
+    try {
+      casesManifest = { chunks: [] };
+      await migrateToChunks();
+      auditLog('整併主責人員', `${[...otherNames].join('、')} → ${keepName}`, `${touched} 筆`);
+      bgJobDone(jobId);
+      showToast(`✓ 已整併 ${touched} 筆個案的主責人員`, 'success');
+    } catch (err) {
+      bgJobFail(jobId, err.message);
+      showToast('整併失敗：' + err.message, 'error', 6000);
     }
-    // 為穩妥起見，呼叫一次完整重寫
-    casesManifest = { chunks: [] };
-    await migrateToChunks();
-    auditLog('整併主責人員', `${[...otherNames].join('、')} → ${keepName}`, `${touched} 筆`);
-    hideLoading();
-    alert(`✓ 已整併 ${touched} 筆個案的主責人員顯示名稱。`);
-    openCounselorMergeTool(); // 重新顯示
-    renderCases();
-  } catch (err) {
-    hideLoading();
-    alert('整併失敗：' + err.message);
-  }
+  })();
 }
 
 function renderCounselorLinkTool() {
@@ -10925,19 +11247,20 @@ async function applyCounselorLink(counselorText, selId) {
     touched++;
   });
   if (!touched) { alert('沒有找到符合的個案。'); return; }
-  showLoading(`連結中（${touched} 筆）…`);
-  try {
-    casesManifest = { chunks: [] };
-    await migrateToChunks();
-    auditLog('連結主責人員帳號', null, `${counselorText} → ${email}，${touched} 筆`);
-    hideLoading();
-    renderCounselorLinkTool();
-    renderCases();
-    alert(`✓ 已連結 ${touched} 筆個案。`);
-  } catch (err) {
-    hideLoading();
-    alert('連結失敗：' + err.message);
-  }
+  renderCounselorLinkTool(); renderCases(); // 立即更新 UI
+  const jobId = bgJobAdd(`連結主責人員：${counselorText} → ${userName}`, `${touched} 筆個案`);
+  (async () => {
+    try {
+      casesManifest = { chunks: [] };
+      await migrateToChunks();
+      auditLog('連結主責人員帳號', null, `${counselorText} → ${email}，${touched} 筆`);
+      bgJobDone(jobId);
+      showToast(`✓ 已連結 ${touched} 筆個案`, 'success');
+    } catch (err) {
+      bgJobFail(jobId, err.message);
+      showToast('連結失敗：' + err.message, 'error', 6000);
+    }
+  })();
 }
 
 function filterImportClosureRows() {
@@ -11594,7 +11917,7 @@ async function getOrCreateCasesSubfolder(name) {
   }
 }
 
-const _CASES_FOLDER_LS_KEY = 'scc_cases_folder_id_' + DRIVE_FOLDER_ID;
+const _CASES_FOLDER_LS_KEY = 'scc_cases_folder_id_v2';
 async function getCasesFolderId() {
   if (!_casesFolderIdCache) {
     const cached = localStorage.getItem(_CASES_FOLDER_LS_KEY) || null;
@@ -11605,15 +11928,22 @@ async function getCasesFolderId() {
     }
   }
   if (!_casesFolderIdCache) {
-    const q = `name='cases' and mimeType='application/vnd.google-apps.folder' and '${DRIVE_FOLDER_ID}' in parents and trashed=false`;
-    const res = await driveQuery(q, 'id');
-    if (!res.files || !res.files.length) {
-      const folderResult = await driveCreateFolder('cases', DRIVE_FOLDER_ID);
-      _casesFolderIdCache = folderResult?.id || folderResult;
-    } else {
-      _casesFolderIdCache = res.files[0].id;
+    // 優先使用 Apps Script 路徑解析（以 ROOT_FOLDER_ID 為根，dev/prod 皆正確）
+    try {
+      const res = await proxyCall('resolveDir', { path: 'cases' });
+      if (res?.id) _casesFolderIdCache = res.id;
+      // res?.id 為 undefined 表示 Apps Script 尚未部署新版，不設定 cache，落穿到 fallback
+    } catch (_e) { /* ignore */ }
+
+    // Fallback：直接查詢（Apps Script 尚未部署 resolveDir 時使用；dev 環境可能找到錯誤資料夾）
+    if (!_casesFolderIdCache) {
+      try {
+        const q = `name='cases' and mimeType='application/vnd.google-apps.folder' and '${DRIVE_FOLDER_ID}' in parents and trashed=false`;
+        const res = await driveQuery(q, 'id');
+        if (res.files && res.files.length) _casesFolderIdCache = res.files[0].id;
+      } catch (_e2) { /* ignore */ }
     }
-    localStorage.setItem(_CASES_FOLDER_LS_KEY, _casesFolderIdCache);
+    if (_casesFolderIdCache) localStorage.setItem(_CASES_FOLDER_LS_KEY, _casesFolderIdCache);
   }
   return _casesFolderIdCache;
 }
@@ -13281,23 +13611,74 @@ function renderTodosNotifList() {
 
 // ══════════════════════════════════════════════
 //  支援 "fileName" 或 "subfolder/fileName"（fileName 已含 .json 副檔名）
-async function driveSaveJsonInCases(fileName, content) {
-  const slashIdx = fileName.indexOf('/');
-  let parentId, leafName;
-  if (slashIdx >= 0) {
-    const sub = fileName.slice(0, slashIdx);
-    leafName = fileName.slice(slashIdx + 1);
-    parentId = await getOrCreateCasesSubfolder(sub);
-  } else {
-    parentId = await getCasesFolderId();
-    leafName = fileName;
+async function _withRetry(fn, maxRetries = 2, baseDelayMs = 1500) {
+  let lastErr;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try { return await fn(); } catch (e) {
+      lastErr = e;
+      if (attempt < maxRetries) {
+        const wait = baseDelayMs * (attempt + 1);
+        _syslog('warn', `重試 ${attempt + 1}/${maxRetries}（等待 ${wait}ms）：${e.message}`);
+        await new Promise(r => setTimeout(r, wait));
+      }
+    }
   }
-  const path = slashIdx >= 0 ? `cases/${fileName}` : `cases/${leafName}`;
-  try {
-    await driveUpdateJsonFile(path, content);
-  } catch (e) {
-    if (!e.message.includes('找不到')) throw e;
-    await driveCreateJsonFile(leafName, content, parentId);
+  _syslog('error', `重試耗盡（${maxRetries} 次）：${lastErr.message}`);
+  throw lastErr;
+}
+
+async function driveSaveJsonInCases(fileName, content) {
+  return _withRetry(async () => {
+    const slashIdx = fileName.indexOf('/');
+    const leafName = slashIdx >= 0 ? fileName.slice(slashIdx + 1) : fileName;
+    const path = `cases/${fileName}`;
+    try {
+      // 先嘗試路徑更新（不需要 folder ID，對既有檔案最快）
+      await driveUpdateJsonFile(path, content);
+    } catch (e) {
+      if (!e.message.includes('找不到')) throw e;
+      // 檔案不存在時才解析 parentId 並建立（避免 getCasesFolderId 在 Apps Script 未部署時卡住）
+      let parentId;
+      if (slashIdx >= 0) {
+        parentId = await getOrCreateCasesSubfolder(fileName.slice(0, slashIdx));
+      } else {
+        parentId = await getCasesFolderId();
+      }
+      await driveCreateJsonFile(leafName, content, parentId);
+    }
+  });
+}
+
+// 批次匯入專用：直接以 casesData 記憶體資料覆寫受影響的 chunk，不先讀 Drive
+// 避免 saveCasesChunks 的 read-merge-write 在 Drive 快取未刷新時寫入舊資料
+async function _batchWriteChunks(affectedIds, onProgress) {
+  const affSet = new Set(affectedIds);
+  const affChunks = new Set([...affSet].map(getCaseChunkName));
+  const chunkMap = {};
+  const deletedSet = new Set(casesManifest.deletedIds || []);
+  casesData.forEach(c => {
+    if (!c.id) return;
+    const name = getCaseChunkName(c.id);
+    if (!affChunks.has(name) || deletedSet.has(c.id)) return;
+    if (!chunkMap[name]) chunkMap[name] = [];
+    chunkMap[name].push(c);
+  });
+  const chunks = Object.keys(chunkMap).sort();
+  let manifestChanged = false;
+  for (const name of chunks) {
+    if (!casesManifest.chunks.includes(name)) {
+      casesManifest.chunks.push(name); casesManifest.chunks.sort(); manifestChanged = true;
+    }
+  }
+  if (manifestChanged) await driveSaveJsonInCases('manifest.json', casesManifest);
+  let done = 0;
+  const BATCH = 3;
+  for (let i = 0; i < chunks.length; i += BATCH) {
+    await Promise.all(chunks.slice(i, i + BATCH).map(async name => {
+      await driveSaveJsonInCases(`${name}.json`, { cases: chunkMap[name] });
+      done++;
+      if (onProgress) onProgress(done, chunks.length);
+    }));
   }
 }
 
@@ -13636,8 +14017,9 @@ async function driveReadJsonById(fileId) {
 
 let _casesFolderIdCache = null;
 async function getCasesFolderFileMap() {
-  const casesId = await getCasesFolderId();
-  const r = await proxyCall('listFolder', { folderId: casesId, fields: 'id,name,mimeType,modifiedTime', pageSize: 400 });
+  // 使用 listDir（Apps Script 路徑解析）確保從正確的 ROOT_FOLDER_ID 下找 cases 資料夾
+  // getCasesFolderId() 以前端 DRIVE_FOLDER_ID 為根，在 dev 環境與 Apps Script 根不一致時會找到錯誤資料夾
+  const r = await proxyCall('listDir', { path: 'cases', fields: 'id,name,mimeType,modifiedTime', pageSize: 400 });
   const map = new Map();
   const fileTimes = new Map();
   const subfolders = [];
@@ -13652,16 +14034,24 @@ async function getCasesFolderFileMap() {
       }
     }
   });
-  await Promise.all(subfolders.map(async sub => {
-    const subRes = await proxyCall('listFolder', { folderId: sub.id, fields: 'id,name,modifiedTime', pageSize: 400 });
-    (subRes.files || []).forEach(f => {
-      const key = `${sub.name}/${f.name}`;
-      const t = f.modifiedTime || '';
-      if (!map.has(key) || (fileTimes.get(key) || '') < t) {
-        map.set(key, f.id); fileTimes.set(key, t);
+  // 年份子資料夾逐批列表（每批 3 個），避免並發過多觸發 rate-limit；單個失敗不影響其他
+  const SUB_BATCH = 3;
+  for (let i = 0; i < subfolders.length; i += SUB_BATCH) {
+    await Promise.all(subfolders.slice(i, i + SUB_BATCH).map(async sub => {
+      try {
+        const subRes = await proxyCall('listFolder', { folderId: sub.id, fields: 'id,name,modifiedTime', pageSize: 400 });
+        (subRes.files || []).forEach(f => {
+          const key = `${sub.name}/${f.name}`;
+          const t = f.modifiedTime || '';
+          if (!map.has(key) || (fileTimes.get(key) || '') < t) {
+            map.set(key, f.id); fileTimes.set(key, t);
+          }
+        });
+      } catch (e) {
+        console.warn('[getCasesFolderFileMap] 子資料夾列表失敗:', sub.name, e.message);
       }
-    });
-  }));
+    }));
+  }
   return map;
 }
 
@@ -13713,21 +14103,34 @@ function injectSharedDriveParams(url) {
 // ══════════════════════════════════════════════
 //  Apps Script Proxy（所有 Drive 操作將透過此函式）
 // ══════════════════════════════════════════════
-async function proxyCall(action, params = {}) {
+async function proxyCall(action, params = {}, _silent = false) {
   if (!gIdToken) throw new Error('尚未取得 ID token，請重新登入');
+  const _isRead = _SYSLOG_READ_ACTIONS.has(action);
+  const _logDetail = Object.entries(params)
+    .filter(([k]) => k !== 'content')
+    .map(([k, v]) => `${k}=${typeof v === 'string' && v.length > 80 ? v.slice(0, 80) + '…' : v}`)
+    .join(', ');
+  const _t0 = Date.now();
+  if (!_silent) _syslog(_isRead ? 'debug' : 'info', `→ ${action}`, _logDetail || undefined);
   const payload = JSON.stringify({ idToken: gIdToken, action, ...params });
   const form = new URLSearchParams();
   form.append('payload', payload);
-  const r = await fetch(APPS_SCRIPT_URL, {
-    method: 'POST',
-    body: form,
-    redirect: 'follow',
-  });
-  if (!r.ok) throw new Error(`Apps Script 呼叫失敗 (${r.status})`);
-  const data = await r.json();
-  if (data.status === 401 || data.error === '身份驗證失敗') throw new Error('身份驗證失敗，請重新登入');
-  if (!data.success && data.pong === undefined) throw new Error(data.error || 'Apps Script 回應錯誤');
-  return data.data;
+  try {
+    const r = await fetch(APPS_SCRIPT_URL, {
+      method: 'POST',
+      body: form,
+      redirect: 'follow',
+    });
+    if (!r.ok) throw new Error(`Apps Script 呼叫失敗 (${r.status})`);
+    const data = await r.json();
+    if (data.status === 401 || data.error === '身份驗證失敗') throw new Error('身份驗證失敗，請重新登入');
+    if (!data.success && data.pong === undefined) throw new Error(data.error || 'Apps Script 回應錯誤');
+    if (!_silent) _syslog(_isRead ? 'debug' : 'success', `✓ ${action} (${Date.now() - _t0}ms)`);
+    return data.data;
+  } catch (e) {
+    if (!_silent) _syslog('error', `✗ ${action}: ${e.message}`, _logDetail || undefined);
+    throw e;
+  }
 }
 
 async function apiFetch(url, options = {}) {
@@ -15242,13 +15645,17 @@ function exportCasesCSV() {
   const semEl = document.getElementById('cf-semester');
   const counselorEl = document.getElementById('cf-counselor');
   const statusEl = document.getElementById('cf-status');
+  const archivedEl = document.getElementById('cf-archived');
   const q = qEl?.value.trim().toLowerCase() || '';
   const semFilter = semEl?.value || '';
   const counselorFilter = counselorEl?.value || '';
   const statusFilter = statusEl?.value || '';
+  const archivedFilter = archivedEl?.value ?? 'unarchived';
 
   const filtered = casesData.filter(c => {
     if (c.deleted) return false;
+    if (archivedFilter === 'unarchived' && c.archived) return false;
+    if (archivedFilter === 'archived' && !c.archived) return false;
     if (semFilter && semesterOf(c.openDate) !== semFilter) return false;
     if (statusFilter && c.status !== statusFilter) return false;
     if (counselorFilter) {
@@ -15468,6 +15875,11 @@ body{font-family:'微軟正黑體','Microsoft JhengHei','Noto Sans TC',sans-seri
 .sig-l{border-bottom:.8pt solid #000;min-width:120pt;padding-bottom:2pt;text-align:center;font-size:10pt}
 .foot{font-size:7.5pt;color:#888;text-align:right;margin-top:12pt;border-top:.5pt solid #ccc;padding-top:4pt}
 </style></head><body>
+<div id="dev-banner" style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#c05621;color:#fff;text-align:center;padding:5px 12px;font-size:.85rem;font-weight:700;letter-spacing:.05em;">
+  <span style="pointer-events:none;">🔧 測試版（dev）— 此版本的資料與正式版完全隔離，請勿用於實際業務</span>
+  <button onclick="toggleSyslog()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.5);color:#fff;font-size:.72rem;font-weight:700;cursor:pointer;padding:2px 10px;border-radius:3px;letter-spacing:.06em;">LOG</button>
+</div>
+<style>#app-header,#sidebar{margin-top:32px!important;}#app-header{top:32px!important;}#notif-panel{top:96px!important;}#app-header.compact~#notif-panel{top:76px!important;}#detail-student-sem-nav{top:calc(var(--hdr-h,60px) + 32px)!important;}#dev-banner+*{margin-top:32px;}</style>
 ${records.map((r, i) => renderOne(r, i)).join('\n')}
 <div class="foot">${printerName ? esc(printerName)+' 於 ' : ''}${esc(printTime)} 列印　共 ${records.length} 筆晤談紀錄　國立屏東科技大學學生諮商中心資訊系統</div>
 <script>window.addEventListener('load',()=>{
@@ -15868,7 +16280,7 @@ function _parseBkGcTitle(title) {
 }
 
 async function syncFromCalendar(silent = false) {
-  if (!silent) showLoading('從 Google Calendar 同步中…');
+  const jobId = silent ? null : bgJobAdd('Google Calendar 同步', '取得事件中…');
   try {
     const minus30 = new Date(); minus30.setDate(minus30.getDate() - 30);
     const plus90  = new Date(); plus90.setDate(plus90.getDate() + 90);
@@ -15987,8 +16399,8 @@ async function syncFromCalendar(silent = false) {
       auditActions.forEach(a => auditLog(a.action, a.caseId, null, a.detail));
       renderBookingsPage();
     }
+    if (jobId) bgJobProgress(jobId, 80);
     if (!silent) {
-      hideLoading();
       setAlert('bookings-alert', 'ok', changed ? 'Google Calendar 同步完成，已更新本機資料。' : 'Google Calendar 同步完成，無變動。');
     }
 
@@ -16010,8 +16422,10 @@ async function syncFromCalendar(silent = false) {
         } catch (_) {}
       }
     }
+    if (jobId) bgJobDone(jobId);
   } catch (e) {
-    if (!silent) { hideLoading(); setAlert('bookings-alert', 'warn', '同步失敗：' + e.message); }
+    if (jobId) bgJobFail(jobId, e.message);
+    if (!silent) setAlert('bookings-alert', 'warn', '同步失敗：' + e.message);
     console.warn('syncFromCalendar failed', e);
   }
 }
@@ -16252,7 +16666,6 @@ function renderPsychTestDBPage() {
           <th style="padding:7px 10px;white-space:nowrap;">班級</th>
           <th style="padding:7px 10px;white-space:nowrap;">學期</th>
           <th style="padding:7px 10px;white-space:nowrap;">高關懷</th>
-          <th style="padding:7px 10px;white-space:nowrap;">效度</th>
           <th style="padding:7px 10px;text-align:center;white-space:nowrap;" title="整體量表結果">AL</th>
           <th style="padding:7px 10px;text-align:center;white-space:nowrap;" title="外部情境向度">D1</th>
           <th style="padding:7px 10px;text-align:center;white-space:nowrap;" title="內在個人向度">D2</th>
@@ -16262,14 +16675,12 @@ function renderPsychTestDBPage() {
         <tbody>${rows.map(r => {
           const highColor = (r.highConcern === '是' || r.highConcern === true) ? '#c53030' : '#a0aec0';
           const highW     = (r.highConcern === '是') ? '600' : '400';
-          const validColor = r.validity === '有效' ? '#276749' : r.validity === '無效' ? '#c53030' : '#718096';
           return `<tr style="border-bottom:1px solid #e2e8f0;cursor:pointer;" onclick="showPsychTestDBDetail('${escHtml(r.sid)}','${escHtml(r.testSemester||'')}')">
             <td style="padding:6px 10px;font-family:monospace;font-size:.82rem;">${escHtml(r.sid)}</td>
             <td style="padding:6px 10px;font-family:monospace;font-size:.82rem;color:${r.caseId?'#2b6cb0':'#a0aec0'};">${escHtml(r.caseId || '—')}</td>
             <td style="padding:6px 10px;font-size:.82rem;color:#718096;">${escHtml(r.className || '—')}</td>
             <td style="padding:6px 10px;white-space:nowrap;">${r.testSemester ? escHtml(semesterLabel(r.testSemester)) : '—'}</td>
             <td style="padding:6px 10px;color:${highColor};font-weight:${highW};">${escHtml(String(r.highConcern || '—'))}</td>
-            <td style="padding:6px 10px;color:${validColor};font-size:.82rem;">${escHtml(r.validity || '—')}</td>
             ${scoreCell(r.AL)}${scoreCell(r.D1)}${scoreCell(r.D2)}
             <td style="padding:6px 10px;font-size:.78rem;color:#a0aec0;white-space:nowrap;">${(r.importedAt||'').slice(0,10)||'—'}</td>
             <td style="padding:6px 10px;" onclick="event.stopPropagation()">
@@ -18359,30 +18770,40 @@ async function openSemesterDeleteModal() {
   const caseNote = casesInSems.length > 0 ? `\n個案基本資料：${casesInSems.length} 筆（含無記錄者）` : '';
   if (!confirm(`確定要軟刪除以下資料？\n\n學期：${selectedSems.map(s => semesterLabel(s)).join('、')}\n晤談記錄：${totalRecs} 筆${psyNote}${caseNote}\n\n資料將移至資源回收桶，30 天後永久刪除。`)) return;
 
-  showLoading('批次刪除：標記資料中…', 5);
-  try {
-    for (const { c, recs, psyRecs } of toProcess) {
-      recs.forEach(r => { r.deleted = true; r.deletedAt = now; r.deletedBy = deletedBy; r.deletedByName = deletedByName; });
-      psyRecs.forEach(pr => { pr.deleted = true; pr.deletedAt = now; pr.deletedBy = deletedBy; pr.deletedByName = deletedByName; });
-      c.updatedAt = now;
+  // 記憶體內直接標記（同步、快速）
+  for (const { c, recs, psyRecs } of toProcess) {
+    recs.forEach(r => { r.deleted = true; r.deletedAt = now; r.deletedBy = deletedBy; r.deletedByName = deletedByName; });
+    psyRecs.forEach(pr => { pr.deleted = true; pr.deletedAt = now; pr.deletedBy = deletedBy; pr.deletedByName = deletedByName; });
+    c.updatedAt = now;
+  }
+  const allIds = [...new Set(toProcess.map(({ c }) => c.id))];
+  // 所有記錄已刪或本無記錄的個案
+  const emptyCases = casesInSems.filter(c => (c.records||[]).every(r => r.deleted));
+  renderCases(); // 立即更新 UI，不等儲存
+  // 非同步背景儲存
+  const jobId = bgJobAdd(
+    `批次刪除 ${selectedSems.map(s => semesterLabel(s)).join('、')}`,
+    `${totalRecs} 筆記錄，${allIds.length} 個案`
+  );
+  (async () => {
+    try {
+      if (allIds.length) {
+        await saveCasesChunks(...allIds, (done, total) => {
+          bgJobProgress(jobId, Math.round(done / total * 90));
+        });
+      }
+      auditLog(`批次軟刪除學期 ${selectedSems.join('、')} 記錄 ${totalRecs} 筆${totalPsy > 0 ? `，精神科 ${totalPsy} 筆` : ''}`);
+      bgJobDone(jobId);
+      if (emptyCases.length > 0) {
+        await promptEmptyCaseDeletion(emptyCases, now);
+      } else {
+        showToast(`✓ 已將 ${totalRecs} 筆記錄移入資源回收桶`, 'success');
+      }
+    } catch(e) {
+      bgJobFail(jobId, e.message);
+      showToast('批次刪除儲存失敗：' + e.message, 'error', 6000);
     }
-    const allIds = [...new Set(toProcess.map(({ c }) => c.id))];
-    setLoadingProgress(10);
-    if (allIds.length) {
-      await saveCasesChunks(...allIds, (done, total) => {
-        const pct = 10 + Math.round(done / total * 70);
-        showLoading(`批次刪除：寫入 ${done}/${total} 個資料段…`, pct);
-      });
-    }
-    showLoading('批次刪除：完成收尾…', 82);
-    auditLog(`批次軟刪除學期 ${selectedSems.join('、')} 記錄 ${totalRecs} 筆${totalPsy > 0 ? `，精神科 ${totalPsy} 筆` : ''}`);
-    // 所有記錄已刪或本無記錄的個案（含所選學期無記錄的個案）
-    const emptyCases = casesInSems.filter(c => (c.records||[]).every(r => r.deleted));
-    hideLoading();
-    if (emptyCases.length > 0) await promptEmptyCaseDeletion(emptyCases, now);
-    else alert(`✓ 已將 ${toProcess.length} 個案的 ${totalRecs} 筆記錄移入資源回收桶。`);
-    renderCases();
-  } catch(e) { hideLoading(); alert('批次刪除失敗：' + e.message); }
+  })();
 }
 
 async function promptEmptyCaseDeletion(emptyCases, now) {
@@ -18419,27 +18840,31 @@ async function promptEmptyCaseDeletion(emptyCases, now) {
       const selIds = [...modal.querySelectorAll('.ecd-chk:checked')].map(c => c.value);
       modal.remove();
       if (!selIds.length) { resolve(); return; }
-      showLoading('刪除個案中…', 5);
+      const deletedBy = currentUser.email;
+      const deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
+      const validIds = [];
+      for (const caseId of selIds) {
+        const idx = casesData.findIndex(c => c.id === caseId);
+        if (idx < 0) continue;
+        Object.assign(casesData[idx], { deleted:true, deletedAt:nowStr, deletedBy, deletedByName, updatedAt:nowStr });
+        validIds.push(caseId);
+      }
+      renderCases();
+      resolve();
+      if (!validIds.length) return;
+      // 背景儲存
+      const jobId2 = bgJobAdd(`刪除空個案基本資料`, `${validIds.length} 筆`);
       try {
-        const deletedBy = currentUser.email;
-        const deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
-        const validIds = [];
-        for (const caseId of selIds) {
-          const idx = casesData.findIndex(c => c.id === caseId);
-          if (idx < 0) continue;
-          Object.assign(casesData[idx], { deleted:true, deletedAt:nowStr, deletedBy, deletedByName, updatedAt:nowStr });
-          validIds.push(caseId);
-        }
-        if (validIds.length) {
-          await saveCasesChunks(...validIds, (done, total) => {
-            showLoading(`刪除個案基本資料 ${done}/${total} 個資料段…`, 10 + Math.round(done / total * 85));
-          });
-        }
+        await saveCasesChunks(...validIds, (done, total) => {
+          bgJobProgress(jobId2, Math.round(done / total * 90));
+        });
         auditLog(`批次軟刪除空個案 ${validIds.length} 筆`);
-        hideLoading();
-        alert(`✓ 完成。${validIds.length} 個個案已移入資源回收桶。`);
-        resolve();
-      } catch(e) { hideLoading(); alert('刪除失敗：' + e.message); resolve(); }
+        bgJobDone(jobId2);
+        showToast(`✓ ${validIds.length} 個個案已移入資源回收桶`, 'success');
+      } catch(e) {
+        bgJobFail(jobId2, e.message);
+        showToast('刪除個案失敗：' + e.message, 'error', 6000);
+      }
     };
   });
 }
@@ -18647,53 +19072,74 @@ async function rbBatchPurge() {
     .map(el => el.dataset.id);
   if (!ids.length) { alert('請先勾選要刪除的項目。'); return; }
   if (!confirm(`確定永久刪除已勾選的 ${ids.length} 筆項目？此操作不可復原。`)) return;
-  showLoading('批次永久刪除中…', 5);
-  try {
-    if (tab === 'cases') {
-      ids.forEach(caseId => {
-        const idx = casesData.findIndex(c => c.id === caseId);
-        if (idx < 0) return;
-        casesData.splice(idx, 1);
-        if (!Array.isArray(casesManifest.deletedIds)) casesManifest.deletedIds = [];
-        if (!casesManifest.deletedIds.includes(caseId)) casesManifest.deletedIds.push(caseId);
-      });
-      await driveSaveJsonInCases('manifest.json', casesManifest);
-      await saveCasesChunks(...ids);
-      auditLog(`批次永久刪除個案 ${ids.join('、')}`);
-    } else if (tab === 'records') {
-      const affected = new Set();
-      ids.forEach(id => {
-        const [caseId, recordId] = id.split('|');
-        const c = casesData.find(c => c.id === caseId);
-        if (!c) return;
-        const idx = (c.records||[]).findIndex(r => r.id === recordId);
-        if (idx >= 0) { c.records.splice(idx, 1); affected.add(caseId); }
-      });
-      await saveCasesChunks(...affected);
-      auditLog(`批次永久刪除晤談記錄 ${ids.length} 筆`);
-    } else if (tab === 'psy') {
-      const affected = new Set();
-      ids.forEach(id => {
-        const [caseId, recordId] = id.split('|');
-        const c = casesData.find(c => c.id === caseId);
-        if (!c) return;
-        const idx = (c.psychiatristRecords||[]).findIndex(r => r.id === recordId);
-        if (idx >= 0) { c.psychiatristRecords.splice(idx, 1); affected.add(caseId); }
-      });
-      await saveCasesChunks(...affected);
-      auditLog(`批次永久刪除精神科評估 ${ids.length} 筆`);
-    } else if (tab === 'ii') {
-      ids.forEach(caseId => {
-        const c = casesData.find(c => c.id === caseId);
-        if (!c) return;
-        delete c.initialInterview;
-        c.updatedAt = new Date().toISOString();
-      });
-      await saveCasesChunks(...ids);
-      auditLog(`批次永久刪除初次晤談表 ${ids.length} 筆`);
+
+  // 記憶體內直接移除（同步），立即更新 UI
+  let affected = new Set();
+  let auditMsg = '';
+  if (tab === 'cases') {
+    ids.forEach(caseId => {
+      const idx = casesData.findIndex(c => c.id === caseId);
+      if (idx < 0) return;
+      casesData.splice(idx, 1);
+      if (!Array.isArray(casesManifest.deletedIds)) casesManifest.deletedIds = [];
+      if (!casesManifest.deletedIds.includes(caseId)) casesManifest.deletedIds.push(caseId);
+      affected.add(caseId);
+    });
+    auditMsg = `批次永久刪除個案 ${ids.join('、')}`;
+  } else if (tab === 'records') {
+    ids.forEach(id => {
+      const [caseId, recordId] = id.split('|');
+      const c = casesData.find(c => c.id === caseId);
+      if (!c) return;
+      const idx = (c.records||[]).findIndex(r => r.id === recordId);
+      if (idx >= 0) { c.records.splice(idx, 1); affected.add(caseId); }
+    });
+    auditMsg = `批次永久刪除晤談記錄 ${ids.length} 筆`;
+  } else if (tab === 'psy') {
+    ids.forEach(id => {
+      const [caseId, recordId] = id.split('|');
+      const c = casesData.find(c => c.id === caseId);
+      if (!c) return;
+      const idx = (c.psychiatristRecords||[]).findIndex(r => r.id === recordId);
+      if (idx >= 0) { c.psychiatristRecords.splice(idx, 1); affected.add(caseId); }
+    });
+    auditMsg = `批次永久刪除精神科評估 ${ids.length} 筆`;
+  } else if (tab === 'ii') {
+    ids.forEach(caseId => {
+      const c = casesData.find(c => c.id === caseId);
+      if (!c) return;
+      delete c.initialInterview;
+      c.updatedAt = new Date().toISOString();
+      affected.add(caseId);
+    });
+    auditMsg = `批次永久刪除初次晤談表 ${ids.length} 筆`;
+  }
+  renderRecycleBin(); renderCases(); // 立即更新 UI
+
+  // 背景儲存
+  const tabLabel = { cases:'個案', records:'晤談記錄', psy:'精神科評估', ii:'初次晤談表' }[tab] || tab;
+  const jobId = bgJobAdd(`批次永久刪除 ${tabLabel}`, `${ids.length} 筆`);
+  (async () => {
+    try {
+      if (tab === 'cases') {
+        await driveSaveJsonInCases('manifest.json', casesManifest);
+        bgJobProgress(jobId, 20);
+      }
+      const affectedArr = [...affected];
+      if (affectedArr.length) {
+        await saveCasesChunks(...affectedArr, (done, total) => {
+          const base = tab === 'cases' ? 20 : 0;
+          bgJobProgress(jobId, base + Math.round(done / total * (100 - base)));
+        });
+      }
+      auditLog(auditMsg);
+      bgJobDone(jobId);
+      showToast(`✓ 已永久刪除 ${ids.length} 筆${tabLabel}`, 'success');
+    } catch(e) {
+      bgJobFail(jobId, e.message);
+      showToast('批次永久刪除失敗：' + e.message, 'error', 6000);
     }
-    hideLoading(); renderRecycleBin(); renderCases();
-  } catch(e) { hideLoading(); alert('批次刪除失敗：' + e.message); }
+  })();
 }
 
 async function rbPurgeCase(caseId) {
@@ -19325,6 +19771,11 @@ function printTransferAssessment(transferId) {
     th{background:#f5f5f5;padding:6px 10px;border:1px solid #ccc;font-size:11pt;}
     .sect{border:1px solid #ccc;padding:10px;border-radius:4px;margin-bottom:14px;}
     .no-print{margin-bottom:12px;} @media print{.no-print{display:none;}}</style></head><body>
+<div id="dev-banner" style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#c05621;color:#fff;text-align:center;padding:5px 12px;font-size:.85rem;font-weight:700;letter-spacing:.05em;">
+  <span style="pointer-events:none;">🔧 測試版（dev）— 此版本的資料與正式版完全隔離，請勿用於實際業務</span>
+  <button onclick="toggleSyslog()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.5);color:#fff;font-size:.72rem;font-weight:700;cursor:pointer;padding:2px 10px;border-radius:3px;letter-spacing:.06em;">LOG</button>
+</div>
+<style>#app-header,#sidebar{margin-top:32px!important;}#app-header{top:32px!important;}#notif-panel{top:96px!important;}#app-header.compact~#notif-panel{top:76px!important;}#detail-student-sem-nav{top:calc(var(--hdr-h,60px) + 32px)!important;}#dev-banner+*{margin-top:32px;}</style>
     <div class="no-print"><button onclick="window.print()">列印</button></div>
     <h2>轉銜學生初評參考指標</h2>
     <p style="text-align:center;font-size:11pt;color:#555;">本文件為保密性文件；僅供學校內部輔導專業評估使用</p>
@@ -19417,9 +19868,12 @@ function renderPsychiatryPage() {
   const to   = (document.getElementById('psychiatry-to')?.value   || '');
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
 
+  const archivedFilter = document.getElementById('psychiatry-archived')?.value ?? 'unarchived';
   const rows = [];
   for (const c of casesData) {
     if (c.deleted) continue;
+    if (archivedFilter === 'unarchived' && c.archived) continue;
+    if (archivedFilter === 'archived' && !c.archived) continue;
     for (const pr of (c.psychiatristRecords || [])) {
       const isCreator = pr.createdBy === currentUser?.email;
       const isPrimary = c.counselorEmail === currentUser?.email;
@@ -19499,6 +19953,8 @@ function renderPsychiatryPage() {
 function resetPsychiatryFilters() {
   ['psychiatry-q','psychiatry-from','psychiatry-to'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   ['psychiatry-diag','psychiatry-tag'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const archEl = document.getElementById('psychiatry-archived');
+  if (archEl) archEl.value = 'unarchived';
   renderPsychiatryPage();
 }
 
@@ -19795,6 +20251,11 @@ function printPsychiatristRecord(caseId, recordId) {
     td,th{border:1px solid #888;padding:8px 12px;vertical-align:top;}
     th{background:#f5f5f5;font-weight:bold;width:22%;}
     .no-print{margin-bottom:12px;} @media print{.no-print{display:none;}}</style></head><body>
+<div id="dev-banner" style="position:fixed;top:0;left:0;right:0;z-index:99999;background:#c05621;color:#fff;text-align:center;padding:5px 12px;font-size:.85rem;font-weight:700;letter-spacing:.05em;">
+  <span style="pointer-events:none;">🔧 測試版（dev）— 此版本的資料與正式版完全隔離，請勿用於實際業務</span>
+  <button onclick="toggleSyslog()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.5);color:#fff;font-size:.72rem;font-weight:700;cursor:pointer;padding:2px 10px;border-radius:3px;letter-spacing:.06em;">LOG</button>
+</div>
+<style>#app-header,#sidebar{margin-top:32px!important;}#app-header{top:32px!important;}#notif-panel{top:96px!important;}#app-header.compact~#notif-panel{top:76px!important;}#detail-student-sem-nav{top:calc(var(--hdr-h,60px) + 32px)!important;}#dev-banner+*{margin-top:32px;}</style>
     <div class="no-print"><button onclick="window.print()">列印</button></div>
     <h2>精神科醫師會談評估表</h2>
     <table>
@@ -21052,7 +21513,147 @@ function pdfToolDelete(key) {
   _pdfToolSessions = _pdfToolSessions.filter(s => s.key !== key);
   renderPdfToolPage();
 }
+
+// ══════════════════════════════════════════════
+//  系統記錄（System Log）
+// ══════════════════════════════════════════════
+const _SYSLOG_MAX = 1000;
+let _syslogEntries = [];
+const _SYSLOG_COLOR = { debug:'#718096', info:'#63b3ed', warn:'#f6ad55', error:'#fc8181', success:'#68d391' };
+const _SYSLOG_READ_ACTIONS = new Set(['readJson','readJsonById','query','listFolder','getMetadata','ping','downloadFileBase64']);
+
+function _syslog(level, msg, detail) {
+  const now = new Date();
+  const t = now.toLocaleTimeString('zh-TW', { hour12: false }) + '.' + String(now.getMilliseconds()).padStart(3, '0');
+  const entry = { t, level, msg, detail: detail !== undefined ? (typeof detail === 'object' ? JSON.stringify(detail) : String(detail)) : null };
+  _syslogEntries.push(entry);
+  if (_syslogEntries.length > _SYSLOG_MAX) _syslogEntries.shift();
+  _syslogRenderRow(entry);
+}
+
+function _syslogRenderRow(entry) {
+  const list = document.getElementById('_syslog_list');
+  if (!list) return;
+  const c = _SYSLOG_COLOR[entry.level] || '#e2e8f0';
+  const row = document.createElement('div');
+  row.style.cssText = 'padding:2px 10px;border-bottom:1px solid #1a202c;line-height:1.4;';
+  const lvlPad = entry.level.toUpperCase().padEnd(7);
+  const detailHtml = entry.detail ? ` <span style="color:#4a5568;font-size:.9em">— ${escHtml(entry.detail.slice(0, 200))}</span>` : '';
+  row.innerHTML = `<span style="color:#2d3748">${entry.t}</span> <span style="color:${c};font-weight:700">[${lvlPad}]</span> <span style="color:#cbd5e0">${escHtml(entry.msg)}</span>${detailHtml}`;
+  list.appendChild(row);
+  const cnt = document.getElementById('_syslog_count');
+  if (cnt) cnt.textContent = _syslogEntries.length;
+  if (list.scrollTop + list.clientHeight >= list.scrollHeight - 60) list.scrollTop = list.scrollHeight;
+  _debugLogDirty = true;
+  _syslogSetSaveStatus('pending');
+}
+
+function _syslogClear() {
+  _syslogEntries = [];
+  const list = document.getElementById('_syslog_list');
+  if (list) list.innerHTML = '';
+  const cnt = document.getElementById('_syslog_count');
+  if (cnt) cnt.textContent = '0';
+}
+
+function _syslogCopyAll() {
+  const text = _syslogEntries.map(e => `${e.t} [${e.level.toUpperCase()}] ${e.msg}${e.detail ? ' — ' + e.detail : ''}`).join('\n');
+  navigator.clipboard.writeText(text)
+    .then(() => showToast('已複製系統記錄到剪貼簿', 'success', 2500))
+    .catch(() => { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); showToast('已複製', 'success', 2000); });
+}
+
+function toggleSyslog() {
+  const panel = document.getElementById('_syslog_panel');
+  if (!panel) return;
+  const showing = panel.style.display === 'flex';
+  panel.style.display = showing ? 'none' : 'flex';
+  if (!showing) { const list = document.getElementById('_syslog_list'); if (list) setTimeout(() => { list.scrollTop = list.scrollHeight; }, 30); }
+}
+
+document.addEventListener('keydown', e => { if (e.altKey && (e.key === 'l' || e.key === 'L')) { e.preventDefault(); toggleSyslog(); } });
+
+// ── Drive 持久化 ──
+let _debugLogFolderId = null;
+let _debugLogFilename = null;   // 本 session 的檔名（固定）
+let _debugLogDirty    = false;  // 有新 entry 尚未 flush
+
+function _debugLogEnsureFilename() {
+  if (_debugLogFilename) return _debugLogFilename;
+  const now  = new Date();
+  const date = now.toISOString().slice(0, 10);
+  const time = now.toLocaleTimeString('zh-TW', { hour12: false }).replace(/:/g, '-');
+  const who  = (currentUser?.email || 'unknown').split('@')[0].slice(0, 12);
+  _debugLogFilename = `${date}_${time}_${who}.json`;
+  return _debugLogFilename;
+}
+
+async function _debugLogEnsureFolder() {
+  if (_debugLogFolderId) return _debugLogFolderId;
+  const q   = `name='debug_log' and mimeType='application/vnd.google-apps.folder' and '${DRIVE_FOLDER_ID}' in parents and trashed=false`;
+  const res = await proxyCall('query', { q, fields: 'id' }, true);
+  if (res?.files?.length) { _debugLogFolderId = res.files[0].id; return _debugLogFolderId; }
+  const r = await proxyCall('createFolder', { name: 'debug_log', parentId: DRIVE_FOLDER_ID }, true);
+  _debugLogFolderId = r?.id || r;
+  return _debugLogFolderId;
+}
+
+async function _syslogFlushToDrive() {
+  if (!currentUser?.email || _syslogEntries.length === 0 || !_debugLogDirty) return;
+  _syslogSetSaveStatus('saving');
+  try {
+    const folderId = await _debugLogEnsureFolder();
+    const filename  = _debugLogEnsureFilename();
+    const payload   = JSON.stringify({
+      session: filename, user: currentUser.email,
+      savedAt: new Date().toISOString(), total: _syslogEntries.length,
+      entries: _syslogEntries,
+    });
+    // 先試 updateJson（path 方式），找不到時改 createFile
+    try {
+      await proxyCall('updateJson', { path: `debug_log/${filename}`, content: payload }, true);
+    } catch (e) {
+      if (!e.message.includes('找不到')) throw e;
+      await proxyCall('createFile', { name: filename, content: payload, mimeType: 'application/json', parentId: folderId }, true);
+    }
+    _debugLogDirty = false;
+    _syslogSetSaveStatus('saved');
+  } catch (e) {
+    console.warn('[debugLog] flush失敗:', e.message);
+    _syslogSetSaveStatus('error', e.message);
+  }
+}
+
+function _syslogSetSaveStatus(status, detail) {
+  const el = document.getElementById('_syslog_save');
+  if (!el) return;
+  const map = { saving:'⏳ 儲存中…', saved:'💾 已存至 GD', error:'⚠ 存取失敗', pending:'⏳ 待存' };
+  el.textContent = map[status] || status;
+  el.style.color = status === 'saved' ? '#68d391' : status === 'error' ? '#fc8181' : '#f6ad55';
+  if (detail) el.title = detail;
+}
+
+
+// 離開頁面時自動 flush
+window.addEventListener('beforeunload', () => { _syslogFlushToDrive().catch(() => {}); });
 </script>
+
+<!-- System Log Panel -->
+<div id="_syslog_panel" style="display:none;position:fixed;bottom:0;left:0;right:0;height:240px;z-index:99990;background:#0d1117;color:#e2e8f0;border-top:2px solid #4a5568;flex-direction:column;">
+  <div style="display:flex;align-items:center;padding:3px 10px;background:#161b22;gap:8px;flex-shrink:0;border-bottom:1px solid #30363d;">
+    <span style="font-size:.78rem;font-weight:700;color:#58a6ff;letter-spacing:.06em;">SYSTEM LOG</span>
+    <span id="_syslog_count" style="font-size:.7rem;color:#8b949e;background:#21262d;padding:0 6px;border-radius:10px;">0</span>
+    <span id="_syslog_save" style="font-size:.7rem;color:#484f58;"></span>
+    <span style="font-size:.7rem;color:#484f58;">Alt+L</span>
+    <div style="margin-left:auto;display:flex;gap:5px;">
+      <button onclick="_syslogFlushToDrive()" style="font-size:.7rem;background:transparent;border:1px solid #30363d;color:#8b949e;cursor:pointer;padding:1px 8px;border-radius:3px;">💾 存至 GD</button>
+      <button onclick="_syslogClear()" style="font-size:.7rem;background:transparent;border:1px solid #30363d;color:#8b949e;cursor:pointer;padding:1px 8px;border-radius:3px;">清除</button>
+      <button onclick="_syslogCopyAll()" style="font-size:.7rem;background:transparent;border:1px solid #30363d;color:#8b949e;cursor:pointer;padding:1px 8px;border-radius:3px;">複製全部</button>
+      <button onclick="toggleSyslog()" style="font-size:.7rem;background:transparent;border:1px solid #30363d;color:#8b949e;cursor:pointer;padding:1px 8px;border-radius:3px;">✕</button>
+    </div>
+  </div>
+  <div id="_syslog_list" style="flex:1;overflow-y:auto;font-family:'Consolas','Menlo','Courier New',monospace;font-size:.74rem;"></div>
+</div>
 
 </body>
 </html>
