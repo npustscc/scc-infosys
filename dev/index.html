@@ -1092,6 +1092,7 @@
         <div class="card-header">
           <h3>個案列表</h3>
           <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【封存個案說明】\n\n封存後，個案在列表中預設隱藏，適用於不再需要主動服務但仍需保存紀錄的個案。\n可透過篩選「已封存」查閱。統計分析仍會計入所有個案（含封存）。\n\n封存 ≠ 刪除：封存的個案資料完整保留，隨時可解除封存。')">？</button>
             <button class="btn btn-secondary" onclick="exportCasesCSV()">⬇ 匯出 CSV</button>
             <button class="btn btn-secondary" onclick="loadCases()">🔄 重新整理</button>
             <button class="btn btn-primary" id="btn-new-case" onclick="openNewCasePage()">＋ 新增個案</button>
@@ -1357,6 +1358,11 @@
           <input type="date" id="psychiatry-from" class="field-input" style="width:auto;" title="評估日期起" onchange="renderPsychiatryPage()">
           <span style="color:#718096;font-size:.85rem;align-self:center;">至</span>
           <input type="date" id="psychiatry-to" class="field-input" style="width:auto;" title="評估日期迄" onchange="renderPsychiatryPage()">
+          <select id="psychiatry-archived" class="field-input" style="width:auto;" onchange="renderPsychiatryPage()">
+            <option value="unarchived">未封存個案</option>
+            <option value="archived">已封存個案</option>
+            <option value="">全部個案</option>
+          </select>
           <button class="btn btn-secondary btn-sm" onclick="resetPsychiatryFilters()" title="重設篩選">重設</button>
           <button class="btn btn-primary" onclick="openPsychiatrySearch()">＋ 新增評估</button>
         </div>
@@ -3938,14 +3944,14 @@ function renderCases() {
         ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();restoreCaseAdmin('${cid}')">復原個案</button>`
         : '';
     } else if (c.archived) {
-      actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();unarchiveCase('${cid}')">解封存</button>`;
+      actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();unarchiveCase('${cid}')" title="解除封存後，此個案將重新出現在個案列表的預設檢視中。">解除封存</button>`;
     } else {
       const mainBtn = c.status === 'closed'
         ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();reopenCase('${cid}')">重開案</button>`
         : `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();closeCaseConfirm('${cid}')">結案</button>`;
       const canArchive = isAdmin || c.counselorEmail === currentUser?.email;
       const archiveBtn = canArchive
-        ? `<button class="btn btn-secondary btn-sm" style="margin-left:4px;" onclick="event.stopPropagation();archiveCase('${cid}')">封存</button>`
+        ? `<button class="btn btn-secondary btn-sm" style="margin-left:4px;" onclick="event.stopPropagation();archiveCase('${cid}')" title="封存後，此個案將在個案列表中預設隱藏（可透過篩選「已封存」查閱）。適用於不再需要主動服務的個案，統計分析仍會計入。">封存個案</button>`
         : '';
       actionBtn = mainBtn + archiveBtn;
     }
@@ -5334,6 +5340,7 @@ function showCaseDetail(caseId) {
     _buildCounselorHistoryBtn(c, _activeSem) +
     `&nbsp;&nbsp;${statusBadge(c.status)}` +
     ((c.isTransferCase || (transferData||[]).some(t => t.type === 'incoming' && t.caseId === c.id)) ? ' &nbsp;<span class="badge badge-teal">轉銜個案</span>' : '') +
+    (c.archived ? ' &nbsp;<span style="background:#e2e8f0;color:#4a5568;border-radius:4px;padding:2px 8px;font-size:.78rem;font-weight:600;">封存</span>' : '') +
     (c.deleted ? ` &nbsp;<span class="badge-case-deleted">已刪除 by ${escHtml(c.deletedByName || c.deletedBy || '?')}</span>` : '');
 
   const notesEl = document.getElementById('detail-import-notes');
@@ -5363,9 +5370,19 @@ function showCaseDetail(caseId) {
   if (!caseIsDeleted) {
     actionsHtml += `<button class="btn btn-secondary" onclick="showNewSemModal('${cid}')">新學期開案</button>`;
     if (_hasNewCounselorAlert(c)) actionsHtml += ` <button class="btn btn-secondary" style="font-size:.83rem;padding:4px 10px;" onclick="dismissNewCounselorAlert('${cid}')">取消新案提醒</button>`;
+    const canArchive = isAdminUser || c.counselorEmail === currentUser?.email;
+    if (canArchive) {
+      if (c.archived) {
+        actionsHtml += ` <button class="btn btn-secondary" onclick="unarchiveCase('${cid}')" title="解除封存後，此個案將重新出現在個案列表的預設檢視中。">解除封存</button>`;
+      } else {
+        actionsHtml += ` <button class="btn btn-secondary" onclick="archiveCase('${cid}')" title="封存後，此個案將在個案列表中預設隱藏（可透過篩選「已封存」查閱）。適用於不再需要主動服務的個案，統計分析仍會計入。">封存個案</button>`;
+      }
+    }
     if (isAdminUser) {
       actionsHtml += ` <button class="btn btn-danger" onclick="deleteCase('${cid}')">刪除個案</button>`;
-      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【錯誤建案處理流程】\\n\\n若此個案為錯誤建立，請依下列步驟操作：\\n1. 點擊「刪除個案」，將個案標記為已刪除（可復原）\\n2. 確認無誤後，再由主任或管理者點擊「永久刪除」\\n   → 個案紀錄與身分資料將完全移除，無法復原')">？</button>`;
+      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【功能說明】\\n\\n【封存個案】\\n封存後，此個案在個案列表中預設隱藏。\\n適用於不再需要主動服務、但仍需保存紀錄的個案。\\n可透過篩選「已封存」查閱，統計分析仍會計入。\\n\\n【錯誤建案處理流程】\\n若此個案為錯誤建立，請依下列步驟操作：\\n1. 點擊「刪除個案」，將個案標記為已刪除（可復原）\\n2. 確認無誤後，再由主任或管理者點擊「永久刪除」\\n   → 個案紀錄與身分資料將完全移除，無法復原')">？</button>`;
+    } else {
+      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【封存個案說明】\\n\\n封存後，此個案在個案列表中預設隱藏。\\n適用於不再需要主動服務、但仍需保存紀錄的個案。\\n可透過篩選「已封存」查閱，統計分析仍會計入。')">？</button>`;
     }
   } else {
     if (isAdminUser) {
@@ -7904,7 +7921,7 @@ async function restoreCaseAdmin(caseId) {
 async function archiveCase(caseId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
-  if (!confirm(`確定要封存個案「${c.name}（${c.id}）」？\n\n封存後此個案將預設隱藏，但仍可透過篩選「已封存」查閱。`)) return;
+  if (!confirm(`確定要封存個案「${c.name}（${c.id}）」？\n\n封存後此個案將在個案列表中預設隱藏，但仍可透過篩選「已封存」查閱。統計分析仍會計入。`)) return;
   const idx = casesData.findIndex(x => x.id === caseId);
   casesData[idx].archived = true;
   casesData[idx].updatedAt = new Date().toISOString();
@@ -7914,6 +7931,7 @@ async function archiveCase(caseId) {
     auditLog('封存個案', caseId);
     hideLoading();
     renderCases();
+    if (_detailCaseId === caseId) showCaseDetail(caseId);
   } catch (err) {
     delete casesData[idx].archived;
     hideLoading();
@@ -7924,20 +7942,21 @@ async function archiveCase(caseId) {
 async function unarchiveCase(caseId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
-  if (!confirm(`確定要解封存個案「${c.name}（${c.id}）」？`)) return;
+  if (!confirm(`確定要解除封存個案「${c.name}（${c.id}）」？`)) return;
   const idx = casesData.findIndex(x => x.id === caseId);
   delete casesData[idx].archived;
   casesData[idx].updatedAt = new Date().toISOString();
-  showLoading('解封存個案…');
+  showLoading('解除封存…');
   try {
     await saveCasesChunks(caseId);
-    auditLog('解封存個案', caseId);
+    auditLog('解除封存個案', caseId);
     hideLoading();
     renderCases();
+    if (_detailCaseId === caseId) showCaseDetail(caseId);
   } catch (err) {
     casesData[idx].archived = true;
     hideLoading();
-    alert('解封存失敗：' + err.message);
+    alert('解除封存失敗：' + err.message);
   }
 }
 
@@ -7980,6 +7999,7 @@ async function hardDeleteCase(caseId) {
 let _cnPage = 1;
 let _cnPageSize = 30;
 let _cnComposing = false;
+let _cnArchived = 'unarchived';
 
 function renderCaseNums(resetPage) {
   if (resetPage) _cnPage = 1;
@@ -7993,6 +8013,9 @@ function renderCaseNums(resetPage) {
   } else {
     visible = casesData.filter(c => c.counselorEmail === currentUser?.email && !c.deleted);
   }
+
+  if (_cnArchived === 'unarchived') visible = visible.filter(c => !c.archived);
+  else if (_cnArchived === 'archived') visible = visible.filter(c => !!c.archived);
 
   const body = document.getElementById('casenums-body');
   if (!visible.length) {
@@ -8065,6 +8088,8 @@ function renderCaseNums(resetPage) {
     if (pBot) pBot.innerHTML = paginationHtml;
     const sel = document.getElementById('cn-pagesize');
     if (sel) sel.value = String(_cnPageSize);
+    const archSel = document.getElementById('cn-archived');
+    if (archSel && archSel.value !== _cnArchived) archSel.value = _cnArchived;
     return;
   }
 
@@ -8079,6 +8104,12 @@ function renderCaseNums(resetPage) {
             oninput="if(!_cnComposing){_cnPage=1;renderCaseNums()}"
             oncompositionstart="_cnComposing=true"
             oncompositionend="_cnComposing=false;_cnPage=1;renderCaseNums()" />
+          <select id="cn-archived" class="field-input" style="padding:4px 6px;font-size:.85rem;"
+            onchange="_cnArchived=this.value;_cnPage=1;renderCaseNums()">
+            <option value="unarchived" ${_cnArchived==='unarchived'?'selected':''}>未封存</option>
+            <option value="archived" ${_cnArchived==='archived'?'selected':''}>已封存</option>
+            <option value="" ${_cnArchived===''?'selected':''}>全部</option>
+          </select>
           <label style="font-size:.85rem;color:#718096;white-space:nowrap;">每頁
             <select id="cn-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;margin-left:4px;"
               onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select> 筆
@@ -19837,9 +19868,12 @@ function renderPsychiatryPage() {
   const to   = (document.getElementById('psychiatry-to')?.value   || '');
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
 
+  const archivedFilter = document.getElementById('psychiatry-archived')?.value ?? 'unarchived';
   const rows = [];
   for (const c of casesData) {
     if (c.deleted) continue;
+    if (archivedFilter === 'unarchived' && c.archived) continue;
+    if (archivedFilter === 'archived' && !c.archived) continue;
     for (const pr of (c.psychiatristRecords || [])) {
       const isCreator = pr.createdBy === currentUser?.email;
       const isPrimary = c.counselorEmail === currentUser?.email;
@@ -19919,6 +19953,8 @@ function renderPsychiatryPage() {
 function resetPsychiatryFilters() {
   ['psychiatry-q','psychiatry-from','psychiatry-to'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   ['psychiatry-diag','psychiatry-tag'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const archEl = document.getElementById('psychiatry-archived');
+  if (archEl) archEl.value = 'unarchived';
   renderPsychiatryPage();
 }
 
