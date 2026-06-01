@@ -8975,6 +8975,16 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
   const jobId = bgJobAdd(`批次匯入服務總表（${fileCount} 個檔案）`);
   try {
     const _affArr = [...affectedIds];
+    // 把「重新匯入的 ID」從墓碑清單移除，否則 _batchWriteChunks 會被 deletedSet 過濾掉
+    if (Array.isArray(casesManifest.deletedIds) && casesManifest.deletedIds.length > 0) {
+      const _affSet = new Set(_affArr);
+      const _before = casesManifest.deletedIds.length;
+      casesManifest.deletedIds = casesManifest.deletedIds.filter(id => !_affSet.has(id));
+      if (casesManifest.deletedIds.length < _before) {
+        _syslog('info', `移除墓碑：${_before - casesManifest.deletedIds.length} 筆（重新匯入）`);
+        await driveSaveJsonInCases('manifest.json', casesManifest);
+      }
+    }
     const _chunkCount = new Set(_affArr.map(getCaseChunkName)).size;
     _syslog('info', `批次匯入寫入：${_affArr.length} 筆個案 → ${_chunkCount} 個 chunk`);
     await _batchWriteChunks(_affArr, (done, total) => {
@@ -9859,6 +9869,13 @@ async function finalizeImport(imported, prog) {
   const _jobId = bgJobAdd(`匯入個案（${newCases.length} 新增${updatedCount ? `、${updatedCount} 更新` : ''}）`);
   try {
     casesData = finalCases;
+    // 把「重新匯入的 ID」從墓碑清單移除
+    if (changedIds.length > 0 && Array.isArray(casesManifest.deletedIds) && casesManifest.deletedIds.length > 0) {
+      const _cSet = new Set(changedIds);
+      const _before = casesManifest.deletedIds.length;
+      casesManifest.deletedIds = casesManifest.deletedIds.filter(id => !_cSet.has(id));
+      if (casesManifest.deletedIds.length < _before) await driveSaveJsonInCases('manifest.json', casesManifest);
+    }
     // 差量寫入：只更新有變動的 chunk，不重寫全部
     if (changedIds.length > 0) {
       await saveCasesChunks(...changedIds, (done, total) => {
