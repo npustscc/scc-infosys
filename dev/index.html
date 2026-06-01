@@ -19521,11 +19521,12 @@ function renderTransferPage() {
   const tabBtn = (id, label, count) =>
     `<button onclick="window._transferTab='${id}';window._transferStatusFilter='all';renderTransferPage()" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:${tab===id?'700':'400'};background:${tab===id?'#3498db':'#f0f4f8'};color:${tab===id?'#fff':'#4a5568'};">${label}（${count}）</button>`;
   const importOutBtn = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'outgoing')"><span class="btn btn-secondary btn-sm">📥 匯入轉出名單</span></label>`;
-  const importInBtn  = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'incoming')"><span class="btn btn-secondary btn-sm">📥 匯入轉進名單</span></label>`;
+  const importInBtn  = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'incoming')"><span class="btn btn-secondary btn-sm">📥 匯入轉入名單</span></label>`;
+  const dlTemplateBtn = `<button class="btn btn-secondary btn-sm" onclick="downloadTransferImportTemplate()" data-tip="下載轉入名單 Excel 範例檔，填寫後即可批次匯入。">📄 下載範例</button>`;
   const addOutBtn = `<button class="btn btn-primary btn-sm" onclick="openTransferAssessmentModal(null,'outgoing')">＋ 手動新增</button>`;
   const addInBtn  = `<button class="btn btn-primary btn-sm" onclick="openTransferAssessmentModal(null,'incoming')">＋ 手動新增</button>`;
 
-  // ── 轉進個案的開案狀態篩選 ──
+  // ── 轉入個案的開案狀態篩選 ──
   const sfBtn = (f, label) =>
     `<button onclick="window._transferStatusFilter='${f}';renderTransferPage()" style="padding:5px 14px;border:1px solid ${tsf===f?'#3498db':'#cbd5e0'};border-radius:6px;cursor:pointer;font-size:.82rem;font-weight:${tsf===f?'700':'400'};background:${tsf===f?'#ebf8ff':'#f7fafc'};color:${tsf===f?'#2b6cb0':'#4a5568'};">${label}</button>`;
   const statusFilterBar = tab === 'incoming'
@@ -19544,15 +19545,15 @@ function renderTransferPage() {
   }
 
   const listHtml = list.length === 0
-    ? `<div class="empty-state"><div class="icon">🔄</div><p>尚無${tab==='outgoing'?'轉出':'轉進'}學生</p></div>`
+    ? `<div class="empty-state"><div class="icon">🔄</div><p>尚無${tab==='outgoing'?'轉出':'轉入'}學生</p></div>`
     : list.map(_renderTransferRow).join('');
   const actionBar = tab === 'outgoing'
     ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importOutBtn}${addOutBtn}</div>`
-    : `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importInBtn}${addInBtn}</div>`;
+    : `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importInBtn}${dlTemplateBtn}${addInBtn}</div>`;
   document.getElementById('transfer-body').innerHTML = `
     <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;">
       ${tabBtn('outgoing','轉出學生',outgoing.length)}
-      ${tabBtn('incoming','轉進學生',incoming.length)}
+      ${tabBtn('incoming','轉入學生',incoming.length)}
     </div>
     ${actionBar}
     ${statusFilterBar}
@@ -19605,6 +19606,23 @@ function _renderTransferRow(r) {
   </div>`;
 }
 
+async function downloadTransferImportTemplate() {
+  if (!window.XLSX) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+      s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
+      document.head.appendChild(s);
+    });
+  }
+  const headers = ['高關懷學生姓名', '學號', '身分證字號', '就讀班級/系所', '法定性別（男/女）', '出生年月日（西元，如1999-01-15）', '來源學校'];
+  const ws = XLSX.utils.aoa_to_sheet([headers]);
+  ws['!cols'] = [14, 12, 14, 16, 14, 24, 16].map(wch => ({ wch }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '轉入名單');
+  XLSX.writeFile(wb, '樣版_轉銜學生批次匯入檔案.xlsx');
+}
+
 async function handleImportTransferExcel(input, type) {
   if (!input.files?.length) return;
   const file = input.files[0]; input.value = '';
@@ -19630,6 +19648,7 @@ async function showTransferImportPreview(rows, type) {
     else if (/身分證/.test(h)) colIdx.idNumber = i;
     else if (/出生|生日/.test(h)) colIdx.birthday = i;
     else if (/班級|系所|科系/.test(h)) colIdx.department = i;
+    else if (/法定性別|性別/.test(h)) colIdx.legalGender = i;
     else if (/來源學校|原就讀/.test(h)) colIdx.fromSchool = i;
     else if (/轉至|接收學校/.test(h)) colIdx.toSchool = i;
   });
@@ -19639,6 +19658,7 @@ async function showTransferImportPreview(rows, type) {
     idNumber: colIdx.idNumber !== undefined ? String(r[colIdx.idNumber]||'').trim() : '',
     birthday: colIdx.birthday !== undefined ? String(r[colIdx.birthday]||'').trim() : '',
     department: colIdx.department !== undefined ? String(r[colIdx.department]||'').trim() : '',
+    legalGender: colIdx.legalGender !== undefined ? String(r[colIdx.legalGender]||'').trim() : '',
     fromSchool: colIdx.fromSchool !== undefined ? String(r[colIdx.fromSchool]||'').trim() : '',
     toSchool: colIdx.toSchool !== undefined ? String(r[colIdx.toSchool]||'').trim() : '',
   })).filter(s => s.name || s.studentId);
@@ -19646,7 +19666,7 @@ async function showTransferImportPreview(rows, type) {
   students.forEach(s => { s._dup = transferData.some(t => t.type === type && t.name === s.name && t.studentId === s.studentId && s.studentId); });
 
   let sel = new Set(students.map((_,i) => i).filter(i => !students[i]._dup));
-  const typeName = type === 'outgoing' ? '轉出' : '轉進';
+  const typeName = type === 'outgoing' ? '轉出' : '轉入';
   const colH4 = type === 'incoming' ? '來源學校' : '轉至學校';
   const colV4 = s => type === 'incoming' ? s.fromSchool : s.toSchool;
 
@@ -19693,7 +19713,7 @@ async function showTransferImportPreview(rows, type) {
     toImport.forEach(s => {
       const ex = s._dup ? transferData.find(t => t.type===type && t.name===s.name && t.studentId===s.studentId) : null;
       if (ex) { Object.assign(ex, { ...s, type, updatedAt: now }); }
-      else { transferData.push({ id:'tr_'+Date.now()+'_'+Math.random().toString(36).slice(2), type, ...s, createdAt:now, updatedAt:now, createdBy:currentUser?.email, createdByName:currentUser?.name }); }
+      else { transferData.push({ id:'tr_'+Date.now()+'_'+Math.random().toString(36).slice(2), type, ...s, createdAt:now, updatedAt:now, createdBy:currentUser?.email, createdByName:currentUser?.name, filledBy:currentUser?.name||currentUser?.email||'', filledDate:now.slice(0,10) }); }
     });
     renderTransferPage();
     const _bgId = bgJobAdd(`匯入${typeName}學生名單（${toImport.length}筆）`);
@@ -19743,7 +19763,7 @@ function openTransferAssessmentModal(transferId, type) {
     <div id="transfer-assessment-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:600;overflow-y:auto;display:flex;align-items:flex-start;justify-content:center;padding:20px;">
       <div style="background:#fff;border-radius:12px;padding:28px;width:95%;max-width:800px;margin:auto;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
-          <h3 style="font-size:1.1rem;">${isNew?'新增':'編輯'}轉銜學生初評（${t==='outgoing'?'轉出':'轉進'}）</h3>
+          <h3 style="font-size:1.1rem;">${isNew?'新增':'編輯'}轉銜學生初評（${t==='outgoing'?'轉出':'轉入'}）</h3>
           <button onclick="document.getElementById('transfer-assessment-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
         </div>
         ${isNew && t === 'incoming' ? `
