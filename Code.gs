@@ -32,6 +32,8 @@
         case 'updateContentById':  result = updateContentById_(params); break;
         case 'query':              result = driveQuery_(params); break;
         case 'listFolder':         result = listFolder_(params); break;
+        case 'listDir':            result = listDir_(params); break;
+        case 'resolveDir':         result = resolveDir_(params); break;
         case 'createCalendarEvent':  result = createCalendarEvent_(params); break;
         case 'updateCalendarEvent':  result = updateCalendarEvent_(params); break;
         case 'deleteCalendarEvent':  result = deleteCalendarEvent_(params); break;
@@ -309,6 +311,30 @@
   }
 
   function listFolder_({ folderId, fields, pageSize }) {
+    return driveGet_('files', {
+      q: "'" + folderId + "' in parents and trashed=false",
+      fields: 'files(' + (fields || 'id,name,mimeType') + ')',
+      pageSize: String(pageSize || 400)
+    });
+  }
+
+  // 以 ROOT_FOLDER_ID 為起點解析資料夾路徑，回傳資料夾 ID
+  function resolveDir_({ path }) {
+    const parts = path.split('/');
+    let curId = ROOT_FOLDER_ID;
+    for (let i = 0; i < parts.length; i++) {
+      const q = "name='" + parts[i] + "' and mimeType='application/vnd.google-apps.folder'" +
+                " and '" + curId + "' in parents and trashed=false";
+      const res = driveGet_('files', { q: q, fields: 'files(id)', pageSize: '1' });
+      if (!res.files || res.files.length === 0) throw new Error('Folder not found: ' + parts[i]);
+      curId = res.files[0].id;
+    }
+    return { id: curId };
+  }
+
+  // 以 ROOT_FOLDER_ID 為起點解析路徑，再列出該資料夾內容
+  function listDir_({ path, fields, pageSize }) {
+    const { id: folderId } = resolveDir_({ path });
     return driveGet_('files', {
       q: "'" + folderId + "' in parents and trashed=false",
       fields: 'files(' + (fields || 'id,name,mimeType') + ')',

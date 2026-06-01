@@ -11799,7 +11799,7 @@ async function getOrCreateCasesSubfolder(name) {
   }
 }
 
-const _CASES_FOLDER_LS_KEY = 'scc_cases_folder_id_' + DRIVE_FOLDER_ID;
+const _CASES_FOLDER_LS_KEY = 'scc_cases_folder_id_v2';
 async function getCasesFolderId() {
   if (!_casesFolderIdCache) {
     const cached = localStorage.getItem(_CASES_FOLDER_LS_KEY) || null;
@@ -11810,15 +11810,17 @@ async function getCasesFolderId() {
     }
   }
   if (!_casesFolderIdCache) {
-    const q = `name='cases' and mimeType='application/vnd.google-apps.folder' and '${DRIVE_FOLDER_ID}' in parents and trashed=false`;
-    const res = await driveQuery(q, 'id');
-    if (!res.files || !res.files.length) {
-      const folderResult = await driveCreateFolder('cases', DRIVE_FOLDER_ID);
-      _casesFolderIdCache = folderResult?.id || folderResult;
-    } else {
-      _casesFolderIdCache = res.files[0].id;
+    try {
+      // 使用 Apps Script 路徑解析取得正確的 cases 資料夾 ID（以 ROOT_FOLDER_ID 為根）
+      const res = await proxyCall('resolveDir', { path: 'cases' });
+      _casesFolderIdCache = res?.id;
+    } catch (_e) {
+      // Apps Script 版本較舊時 fallback 至直接查詢
+      const q = `name='cases' and mimeType='application/vnd.google-apps.folder' and '${DRIVE_FOLDER_ID}' in parents and trashed=false`;
+      const res = await driveQuery(q, 'id');
+      if (res.files && res.files.length) _casesFolderIdCache = res.files[0].id;
     }
-    localStorage.setItem(_CASES_FOLDER_LS_KEY, _casesFolderIdCache);
+    if (_casesFolderIdCache) localStorage.setItem(_CASES_FOLDER_LS_KEY, _casesFolderIdCache);
   }
   return _casesFolderIdCache;
 }
@@ -13892,8 +13894,9 @@ async function driveReadJsonById(fileId) {
 
 let _casesFolderIdCache = null;
 async function getCasesFolderFileMap() {
-  const casesId = await getCasesFolderId();
-  const r = await proxyCall('listFolder', { folderId: casesId, fields: 'id,name,mimeType,modifiedTime', pageSize: 400 });
+  // 使用 listDir（Apps Script 路徑解析）確保從正確的 ROOT_FOLDER_ID 下找 cases 資料夾
+  // getCasesFolderId() 以前端 DRIVE_FOLDER_ID 為根，在 dev 環境與 Apps Script 根不一致時會找到錯誤資料夾
+  const r = await proxyCall('listDir', { path: 'cases', fields: 'id,name,mimeType,modifiedTime', pageSize: 400 });
   const map = new Map();
   const fileTimes = new Map();
   const subfolders = [];
