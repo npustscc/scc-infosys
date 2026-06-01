@@ -8881,7 +8881,17 @@ function _showBatchImportConfirm(parsedFiles, newCounselorsMap = {}) {
 
 async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
   const now = new Date().toISOString();
+  // importedMap 只保留同一 ID 的最後一筆（用於合併基本資料欄位）
   const importedMap = new Map(allCases.map(c => [c.id, c]));
+  // fileSemsByID 收集同一 ID 在所有批次檔案中出現過的所有 fileSem（避免多檔匯入時後者覆蓋前者）
+  const fileSemsByID = new Map();
+  allCases.forEach(c => {
+    if (!c.id) return;
+    if (!fileSemsByID.has(c.id)) fileSemsByID.set(c.id, new Set());
+    if (c.fileSem) fileSemsByID.get(c.id).add(c.fileSem);
+    const _s = openDateToSemPrefix(c.openDate);
+    if (_s) fileSemsByID.get(c.id).add(_s);
+  });
   let addedCases = 0, updatedCases = 0;
   const affectedIds = new Set();
 
@@ -8892,6 +8902,8 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
     const impSem   = openDateToSemPrefix(ic.openDate);
     const fileSem  = ic.fileSem || '';
     const exSems   = Array.isArray(ec.semesters) ? [...ec.semesters] : [openDateToSemPrefix(ec.openDate)].filter(Boolean);
+    // 套用此 ID 在所有匯入檔中出現過的全部 fileSem（修正：多學期批次時只保留最後一筆 fileSem 會漏加）
+    (fileSemsByID.get(ec.id) || new Set()).forEach(s => { if (s && !exSems.includes(s)) exSems.push(s); });
     if (impSem && !exSems.includes(impSem)) exSems.push(impSem);
     if (fileSem && !exSems.includes(fileSem)) exSems.push(fileSem);
     const snaps = { ...(ec.basicInfoSnapshots || {}) };
@@ -8903,6 +8915,8 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
     const semSt  = { ...(ec.semesterStatus || {}) };
     if (impSem && impSem < curSem) semSt[impSem] = 'closed';
     if (fileSem && fileSem !== impSem && fileSem < curSem) semSt[fileSem] = 'closed';
+    // 套用此 ID 在所有批次檔中的 fileSem 的結案狀態
+    (fileSemsByID.get(ec.id) || new Set()).forEach(s => { if (s && s < curSem) semSt[s] = 'closed'; });
     const merged = { ...ec, ...ic,
       records: ec.records || [], initialInterview: ec.initialInterview, initialInterviews: ec.initialInterviews,
       psychiatristRecords: ec.psychiatristRecords, semesterEvaluations: ec.semesterEvaluations,
