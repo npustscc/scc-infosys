@@ -11810,15 +11810,20 @@ async function getCasesFolderId() {
     }
   }
   if (!_casesFolderIdCache) {
+    // 優先使用 Apps Script 路徑解析（以 ROOT_FOLDER_ID 為根，dev/prod 皆正確）
     try {
-      // 使用 Apps Script 路徑解析取得正確的 cases 資料夾 ID（以 ROOT_FOLDER_ID 為根）
       const res = await proxyCall('resolveDir', { path: 'cases' });
-      _casesFolderIdCache = res?.id;
-    } catch (_e) {
-      // Apps Script 版本較舊時 fallback 至直接查詢
-      const q = `name='cases' and mimeType='application/vnd.google-apps.folder' and '${DRIVE_FOLDER_ID}' in parents and trashed=false`;
-      const res = await driveQuery(q, 'id');
-      if (res.files && res.files.length) _casesFolderIdCache = res.files[0].id;
+      if (res?.id) _casesFolderIdCache = res.id;
+      // res?.id 為 undefined 表示 Apps Script 尚未部署新版，不設定 cache，落穿到 fallback
+    } catch (_e) { /* ignore */ }
+
+    // Fallback：直接查詢（Apps Script 尚未部署 resolveDir 時使用；dev 環境可能找到錯誤資料夾）
+    if (!_casesFolderIdCache) {
+      try {
+        const q = `name='cases' and mimeType='application/vnd.google-apps.folder' and '${DRIVE_FOLDER_ID}' in parents and trashed=false`;
+        const res = await driveQuery(q, 'id');
+        if (res.files && res.files.length) _casesFolderIdCache = res.files[0].id;
+      } catch (_e2) { /* ignore */ }
     }
     if (_casesFolderIdCache) localStorage.setItem(_CASES_FOLDER_LS_KEY, _casesFolderIdCache);
   }
@@ -13507,20 +13512,20 @@ async function _withRetry(fn, maxRetries = 2, baseDelayMs = 1500) {
 async function driveSaveJsonInCases(fileName, content) {
   return _withRetry(async () => {
     const slashIdx = fileName.indexOf('/');
-    let parentId, leafName;
-    if (slashIdx >= 0) {
-      const sub = fileName.slice(0, slashIdx);
-      leafName = fileName.slice(slashIdx + 1);
-      parentId = await getOrCreateCasesSubfolder(sub);
-    } else {
-      parentId = await getCasesFolderId();
-      leafName = fileName;
-    }
-    const path = slashIdx >= 0 ? `cases/${fileName}` : `cases/${leafName}`;
+    const leafName = slashIdx >= 0 ? fileName.slice(slashIdx + 1) : fileName;
+    const path = `cases/${fileName}`;
     try {
+      // 先嘗試路徑更新（不需要 folder ID，對既有檔案最快）
       await driveUpdateJsonFile(path, content);
     } catch (e) {
       if (!e.message.includes('找不到')) throw e;
+      // 檔案不存在時才解析 parentId 並建立（避免 getCasesFolderId 在 Apps Script 未部署時卡住）
+      let parentId;
+      if (slashIdx >= 0) {
+        parentId = await getOrCreateCasesSubfolder(fileName.slice(0, slashIdx));
+      } else {
+        parentId = await getCasesFolderId();
+      }
       await driveCreateJsonFile(leafName, content, parentId);
     }
   });
