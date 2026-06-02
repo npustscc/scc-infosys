@@ -1362,6 +1362,22 @@
           <button class="btn btn-secondary btn-sm" onclick="prefResetBkFreqs()">清除排序記憶</button>
         </div>
       </div>
+      <div class="card">
+        <div class="card-header"><h3>離開確認</h3></div>
+        <div style="padding:16px 20px;">
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+            <input type="checkbox" id="pref-confirm-leave" style="width:16px;height:16px;margin-top:2px;flex-shrink:0;" />
+            <span>
+              <strong>關閉或離開頁面時顯示確認提示</strong><br>
+              <span style="font-size:.82rem;color:#718096;">關閉頁籤或點擊瀏覽器上一頁時，會跳出「離開此網站？」提示，可防止意外離開。</span>
+            </span>
+          </label>
+          <div style="margin-top:10px;">
+            <button class="btn btn-primary btn-sm" onclick="saveLeaveConfirmPref()">儲存</button>
+          </div>
+        </div>
+      </div>
+
       </div><!-- /prefs-grid -->
     </div>
 
@@ -4427,7 +4443,9 @@ async function dismissNewCounselorAlert(caseId) {
 let _bgJobs = [];
 let _notifTab = 'notifs';
 window.addEventListener('beforeunload', function(e) {
-  if (_bgJobs.some(j => j.state === 'running')) { e.preventDefault(); e.returnValue = ''; }
+  if (_bgJobs.some(j => j.state === 'running') || _userPref_('confirmBeforeLeave', true)) {
+    e.preventDefault(); e.returnValue = '';
+  }
 });
 
 function bgJobAdd(label, detail) {
@@ -8502,8 +8520,8 @@ function renderCaseNums(resetPage) {
   if (_cnArchived === 'unarchived') visible = visible.filter(c => !c.archived);
   else if (_cnArchived === 'archived') visible = visible.filter(c => !!c.archived);
 
-  if (_cnClosureStatus === 'closed') visible = visible.filter(c => c.status === 'closed');
-  else if (_cnClosureStatus === 'active') visible = visible.filter(c => c.status !== 'closed');
+  if (_cnClosureStatus === 'closed') visible = visible.filter(c => c.status === 'closed' && !_hasPastUnclosed(c));
+  else if (_cnClosureStatus === 'active') visible = visible.filter(c => c.status !== 'closed' || _hasPastUnclosed(c));
 
   const counselorMap = new Map();
   if (isAdminUser) {
@@ -15558,6 +15576,8 @@ function renderPrefsPage() {
   document.getElementById('pref-error').style.display   = 'none';
   document.getElementById('pref-success').style.display = 'none';
   document.getElementById('pref-counselor-freq').checked = _userPref_('counselorFreqMode', false);
+  const clEl = document.getElementById('pref-confirm-leave');
+  if (clEl) clEl.checked = _userPref_('confirmBeforeLeave', true);
 
   // 同步鎖定按鈕可見性
   const lockBtn = document.getElementById('header-lock-btn');
@@ -15567,6 +15587,11 @@ function renderPrefsPage() {
 
 }
 
+function saveLeaveConfirmPref() {
+  const val = document.getElementById('pref-confirm-leave')?.checked ?? true;
+  syncUserPref_({ confirmBeforeLeave: val });
+  showToast(val ? '已啟用離開確認提示' : '已關閉離開確認提示');
+}
 function toggleCustomTimeout(sel) {
   document.getElementById('pref-timeout-custom').style.display = sel.value === 'custom' ? '' : 'none';
 }
