@@ -4219,11 +4219,7 @@ function renderCases() {
     const displaySems = caseFilters.semester ? [caseFilters.semester] : caseSems;
     const semTag = displaySems.length
       ? `<div style="margin-top:3px;">${displaySems.map(s => {
-          const semStat = (c.semesterStatus?.[s] || c.status || 'active');
-          const isClosed = semStat === 'closed';
-          const bg = isClosed ? '#f7fafc' : '#fffbeb';
-          const border = isClosed ? '#cbd5e0' : '#f6ad55';
-          const color = isClosed ? '#4a5568' : '#744210';
+          const { bg, border, color } = _semLightStyle(c, s);
           return `<span style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:0 6px;font-size:.73rem;margin:1px 2px;">${escHtml(semesterLabel(s))}</span>`;
         }).join('')}</div>`
       : '';
@@ -5494,7 +5490,10 @@ function _renderStudentSemNav(caseId, relatedCases) {
     ${relatedCases.map(rc => {
       const isCurrent = rc.id === caseId;
       const isClosed = rc.status === 'closed';
-      const semLabel = semesterLabel(openDateToSemPrefix(rc.openDate));
+      const rcSem = openDateToSemPrefix(rc.openDate);
+      const semLbl = semesterLabel(rcSem);
+      const ls = _semLightStyle(rc, rcSem);
+      const dot = `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${ls.border};margin-left:5px;vertical-align:middle;"></span>`;
       let bg, border, color, fw;
       if (isCurrent) {
         bg = '#ebf8ff'; border = '#3182ce'; color = '#1a5276'; fw = '700';
@@ -5508,7 +5507,7 @@ function _renderStudentSemNav(caseId, relatedCases) {
         style="padding:4px 14px;border-radius:16px;border:1px solid ${border};
                background:${bg};color:${color};
                font-size:.82rem;font-weight:${fw};cursor:pointer;white-space:nowrap;">
-        ${escHtml(semLabel)}${closedNote}
+        ${escHtml(semLbl)}${closedNote}${dot}
       </button>`;
     }).join('')}
   </div>`;
@@ -6297,11 +6296,13 @@ function showCaseDetail(caseId) {
           <span style="font-size:.8rem;color:#718096;font-weight:600;white-space:nowrap;">學期：</span>
           ${_csems.map(s => {
             const isAct = _caseDetailMode === 'semester' && s === _activeSem;
+            const _ls = _semLightStyle(c, s);
+            const _dot = `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${_ls.border};margin-left:5px;vertical-align:middle;"></span>`;
             return `<button onclick="_switchCaseSem('${escHtml(s)}','${escHtml(c.id)}')"
               style="padding:4px 14px;border-radius:16px;border:1px solid ${isAct?'#3182ce':'#e2e8f0'};
                      background:${isAct?'#ebf8ff':'#fff'};color:${isAct?'#1a5276':'#4a5568'};
                      font-size:.82rem;font-weight:${isAct?'700':'400'};cursor:pointer;white-space:nowrap;">
-              ${escHtml(semesterLabel(s))}
+              ${escHtml(semesterLabel(s))}${_dot}
             </button>`;
           }).join('')}
         </div>
@@ -8110,6 +8111,19 @@ function _recomputeCaseStatus(c) {
   return (c.semesterStatus || {})[latestSem] || 'active';
 }
 
+function _semLightStyle(c, sem) {
+  const evals = c.semesterEvaluations || [];
+  const hasTypedClosures = evals.some(e => e.type === 'closure');
+  const ev = evals.find(e => e.type === 'closure' && e.semester === sem)
+    || (!hasTypedClosures ? (c.closureEvaluation || null) : null);
+  const styles = {
+    '紅燈': { bg:'#fde8e8', border:'#fc8181', color:'#c0392b' },
+    '橙燈': { bg:'#fdebd0', border:'#f6ad55', color:'#9c4a00' },
+    '黃燈': { bg:'#fef9e7', border:'#ecc94b', color:'#7d6608' },
+    '綠燈': { bg:'#d5f5e3', border:'#68d391', color:'#1d6a3a' },
+  };
+  return styles[ev?.light] || { bg:'#f0f4f8', border:'#cbd5e0', color:'#718096' };
+}
 function _hasPastUnclosed(c) {
   const curSem = currentSemesterPrefix();
   const sems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)];
@@ -8416,16 +8430,23 @@ function renderCaseNums(resetPage) {
   const studentSems = {};
   const studentSemCounselors = {};
   const studentSemStatus = {};
+  const studentSemLight = {};
   casesData.forEach(c => {
     if (!c.studentId) return;
-    const sem = openDateToSemPrefix(c.openDate);
-    if (!sem) return;
-    if (!studentSems[c.studentId]) studentSems[c.studentId] = new Set();
-    studentSems[c.studentId].add(sem);
-    if (!studentSemCounselors[c.studentId]) studentSemCounselors[c.studentId] = {};
-    if (!studentSemStatus[c.studentId]) studentSemStatus[c.studentId] = {};
-    studentSemCounselors[c.studentId][sem] = formatCounselorLabel(c.counselorEmail) || c.counselorName || c.counselorText || '';
-    studentSemStatus[c.studentId][sem] = (c.semesterStatus?.[sem] || c.status || 'active');
+    const caseSems = (Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)]).filter(Boolean);
+    caseSems.forEach(sem => {
+      if (!studentSems[c.studentId]) studentSems[c.studentId] = new Set();
+      studentSems[c.studentId].add(sem);
+      if (!studentSemCounselors[c.studentId]) studentSemCounselors[c.studentId] = {};
+      if (!studentSemStatus[c.studentId]) studentSemStatus[c.studentId] = {};
+      if (!studentSemLight[c.studentId]) studentSemLight[c.studentId] = {};
+      studentSemCounselors[c.studentId][sem] = configData?.users?.[c.counselorEmail]?.name || c.counselorName || c.counselorText || '';
+      studentSemStatus[c.studentId][sem] = (c.semesterStatus?.[sem] || c.status || 'active');
+      const evals = c.semesterEvaluations || [];
+      const hasTypedClosures = evals.some(e => e.type === 'closure');
+      const ev = evals.find(e => e.type === 'closure' && e.semester === sem) || (!hasTypedClosures ? (c.closureEvaluation || null) : null);
+      studentSemLight[c.studentId][sem] = ev?.light || '';
+    });
   });
 
   const q = document.getElementById('cn-search')?.value?.trim().toLowerCase() || '';
@@ -8447,11 +8468,15 @@ function renderCaseNums(resetPage) {
   const rows = paged.map(c => {
     const sems = c.studentId ? [...(studentSems[c.studentId] || [])].sort() : [];
     const semChips = sems.map(s => {
-      const isClosed = (studentSemStatus[c.studentId]?.[s] || 'active') === 'closed';
+      const lightKey = studentSemLight[c.studentId]?.[s] || '';
+      const lightStyles = {
+        '紅燈': { bg:'#fde8e8', border:'#fc8181', color:'#c0392b' },
+        '橙燈': { bg:'#fdebd0', border:'#f6ad55', color:'#9c4a00' },
+        '黃燈': { bg:'#fef9e7', border:'#ecc94b', color:'#7d6608' },
+        '綠燈': { bg:'#d5f5e3', border:'#68d391', color:'#1d6a3a' },
+      };
+      const { bg, border, color } = lightStyles[lightKey] || { bg:'#f0f4f8', border:'#cbd5e0', color:'#718096' };
       const cName = studentSemCounselors[c.studentId]?.[s] || '';
-      const bg = isClosed ? '#ebf8ff' : '#fffbeb';
-      const border = isClosed ? '#90cdf4' : '#f6ad55';
-      const color = isClosed ? '#2b6cb0' : '#744210';
       return `<span style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:1px 8px;font-size:.78rem;margin:1px 2px;white-space:nowrap;">${escHtml(semesterLabel(s))}${cName ? `<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(cName)}</span>` : ''}</span>`;
     }).join('') || '<span style="color:#a0aec0;">—</span>';
     const editBtn = !c.deleted
