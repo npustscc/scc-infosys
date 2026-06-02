@@ -853,36 +853,7 @@
     @keyframes attach-spin { to { transform:rotate(360deg); } }
     .attach-spinner { display:inline-block;width:13px;height:13px;border:2px solid #bee3f8;border-top-color:#3182ce;border-radius:50%;animation:attach-spin .8s linear infinite;flex-shrink:0; }
 
-    /* ── Hover 說明 tooltip ── */
-    [data-tip] { position: relative; }
-    [data-tip]::after {
-      content: attr(data-tip);
-      position: absolute;
-      bottom: calc(100% + 8px);
-      left: 50%;
-      transform: translateX(-50%);
-      background: rgba(26,34,56,.94);
-      color: #fff;
-      padding: 7px 11px;
-      border-radius: 7px;
-      font-size: .74rem;
-      font-weight: 400;
-      line-height: 1.5;
-      white-space: normal;
-      min-width: 130px;
-      max-width: 230px;
-      text-align: center;
-      pointer-events: none;
-      opacity: 0;
-      visibility: hidden;
-      transition: opacity .15s;
-      transition-delay: 0s;
-      z-index: 3000;
-      box-shadow: 0 3px 10px rgba(0,0,0,.28);
-    }
-    [data-tip]:hover::after { opacity: 1; visibility: visible; transition-delay: .7s; }
-    [data-tip].tip-left::after  { left: auto; right: 0;    transform: none; }
-    [data-tip].tip-right::after { left: 0;    right: auto; transform: none; }
+    /* ── Hover 說明 tooltip（由 JS #_tip_el 實作，position:fixed 確保不被 stacking context 遮蔽） ── */
   </style>
 </head>
 <body>
@@ -1124,7 +1095,7 @@
         <div class="card-header">
           <h3>個案列表</h3>
           <div style="display:flex;gap:8px;">
-            <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【封存個案說明】\n\n封存後，個案在列表中預設隱藏，適用於不再需要主動服務但仍需保存紀錄的個案。\n可透過篩選「已封存」查閱。統計分析仍會計入所有個案（含封存）。\n\n封存 ≠ 刪除：封存的個案資料完整保留，隨時可解除封存。')">？</button>
+            <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" data-tip="封存後，個案在列表中預設隱藏，適用於不再需要主動服務但仍需保存紀錄的個案。可透過篩選「已封存」查閱，統計分析仍會計入所有個案（含封存）。&#10;&#10;封存 ≠ 刪除：資料完整保留，隨時可解除封存。">？</button>
             <button class="btn btn-secondary" onclick="exportCasesCSV()">⬇ 匯出 CSV</button>
             <button class="btn btn-secondary" onclick="loadCases()" data-tip="從 Drive 重新讀取最新個案資料。">🔄 重新整理</button>
             <button class="btn btn-primary" id="btn-new-case" onclick="openNewCasePage()" data-tip="開立本學期新個案，填寫姓名、學號等基本資料後儲存。">＋ 新增個案</button>
@@ -1177,6 +1148,9 @@
           <button class="btn btn-secondary btn-sm"
             data-tip="將所有勾選個案封存。封存後可透過篩選「已封存」查閱，統計分析仍計入。"
             onclick="batchArchiveCases([..._casesSelected])">批次封存</button>
+          <button class="btn btn-secondary btn-sm"
+            data-tip="將所有勾選個案解除封存，使其重新出現在未封存列表中。"
+            onclick="batchUnarchiveCases([..._casesSelected])">批次解封</button>
           <button class="btn btn-secondary btn-sm" onclick="_casesSelected.clear();renderCases()">取消選取</button>
         </div>
         <div id="cases-table-wrap">
@@ -5457,16 +5431,16 @@ function showCaseDetail(caseId) {
     const canArchive = isAdminUser || c.counselorEmail === currentUser?.email;
     if (canArchive) {
       if (c.archived) {
-        actionsHtml += ` <button class="btn btn-secondary" onclick="unarchiveCase('${cid}')" title="解除封存後，此個案將重新出現在個案列表的預設檢視中。">解除封存</button>`;
+        actionsHtml += ` <button class="btn btn-secondary" onclick="unarchiveCase('${cid}')" data-tip="解除封存後，此個案將重新出現在個案列表的預設檢視中。">解除封存</button>`;
       } else {
-        actionsHtml += ` <button class="btn btn-secondary" onclick="archiveCase('${cid}')" title="封存後，此個案將在個案列表中預設隱藏（可透過篩選「已封存」查閱）。適用於不再需要主動服務的個案，統計分析仍會計入。">封存個案</button>`;
+        actionsHtml += ` <button class="btn btn-secondary" onclick="archiveCase('${cid}')" data-tip="封存後，此個案將在個案列表中預設隱藏（可透過篩選「已封存」查閱）。適用於不再需要主動服務的個案，統計分析仍會計入。">封存個案</button>`;
       }
     }
     if (isAdminUser) {
       actionsHtml += ` <button class="btn btn-danger" onclick="deleteCase('${cid}')" data-tip="將個案標記為已刪除（軟刪除，可復原）。確認無誤後再由管理者執行永久刪除。">刪除個案</button>`;
-      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【功能說明】\\n\\n【封存個案】\\n封存後，此個案在個案列表中預設隱藏。\\n適用於不再需要主動服務、但仍需保存紀錄的個案。\\n可透過篩選「已封存」查閱，統計分析仍會計入。\\n\\n【錯誤建案處理流程】\\n若此個案為錯誤建立，請依下列步驟操作：\\n1. 點擊「刪除個案」，將個案標記為已刪除（可復原）\\n2. 確認無誤後，再由主任或管理者點擊「永久刪除」\\n   → 個案紀錄與身分資料將完全移除，無法復原')">？</button>`;
+      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" data-tip="【封存個案】封存後此個案在列表中預設隱藏，可透過篩選「已封存」查閱，統計分析仍計入。&#10;【錯誤建案】點「刪除個案」→ 確認無誤後由管理者「永久刪除」（無法復原）。">？</button>`;
     } else {
-      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" title="說明" onclick="alert('【封存個案說明】\\n\\n封存後，此個案在個案列表中預設隱藏。\\n適用於不再需要主動服務、但仍需保存紀錄的個案。\\n可透過篩選「已封存」查閱，統計分析仍會計入。')">？</button>`;
+      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" data-tip="封存後，此個案在個案列表中預設隱藏。適用於不再需要主動服務、但仍需保存紀錄的個案。可透過篩選「已封存」查閱，統計分析仍會計入。">？</button>`;
     }
   } else {
     if (isAdminUser) {
@@ -8080,6 +8054,40 @@ async function batchArchiveCases(ids) {
   }
 }
 
+async function batchUnarchiveCases(ids) {
+  const toUnarchive = ids.filter(id => {
+    const c = casesData.find(x => x.id === id);
+    return c && c.archived && !c.deleted;
+  });
+  if (!toUnarchive.length) { alert('沒有可解封的個案（未封存或已刪除者自動跳過）。'); return; }
+  if (!confirm(`確定要批次解除封存 ${toUnarchive.length} 個個案？\n\n解除後個案將重新出現在未封存列表中。`)) return;
+  const now = new Date().toISOString();
+  toUnarchive.forEach(id => {
+    const idx = casesData.findIndex(x => x.id === id);
+    if (idx >= 0) { delete casesData[idx].archived; casesData[idx].updatedAt = now; }
+  });
+  _cnSelected.clear();
+  _casesSelected.clear();
+  renderCases();
+  if (document.getElementById('cn-search')) renderCaseNums();
+  const jobId = bgJobAdd(`批次解封 ${toUnarchive.length} 個個案`);
+  try {
+    bgJobProgress(jobId, 20);
+    await saveCasesChunks(...toUnarchive);
+    bgJobProgress(jobId, 85);
+    toUnarchive.forEach(id => auditLog('解除封存個案', id));
+    bgJobDone(jobId);
+  } catch(e) {
+    toUnarchive.forEach(id => {
+      const idx = casesData.findIndex(x => x.id === id);
+      if (idx >= 0) casesData[idx].archived = true;
+    });
+    bgJobFail(jobId, e.message);
+    renderCases();
+    if (document.getElementById('cn-search')) renderCaseNums();
+  }
+}
+
 async function hardDeleteCase(caseId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
@@ -8120,6 +8128,7 @@ let _cnPage = 1;
 let _cnPageSize = 30;
 let _cnComposing = false;
 let _cnArchived = 'unarchived';
+let _cnCounselor = '';
 let _cnSelected = new Set();
 let _casesSelected = new Set();
 
@@ -8138,6 +8147,22 @@ function renderCaseNums(resetPage) {
 
   if (_cnArchived === 'unarchived') visible = visible.filter(c => !c.archived);
   else if (_cnArchived === 'archived') visible = visible.filter(c => !!c.archived);
+
+  const counselorMap = new Map();
+  if (isAdminUser) {
+    visible.forEach(c => {
+      const key = c.counselorEmail || c.counselorName || c.counselorText || '';
+      if (!key) return;
+      const label = c.counselorEmail
+        ? (formatCounselorLabel(c.counselorEmail) || c.counselorName || c.counselorEmail)
+        : (c.counselorText || c.counselorName || key);
+      if (!counselorMap.has(key)) counselorMap.set(key, label);
+    });
+    if (_cnCounselor) visible = visible.filter(c => {
+      const key = c.counselorEmail || c.counselorName || c.counselorText || '';
+      return key === _cnCounselor;
+    });
+  }
 
   const body = document.getElementById('casenums-body');
   if (!visible.length) {
@@ -8166,7 +8191,7 @@ function renderCaseNums(resetPage) {
   const start = (_cnPage - 1) * pageSize;
   const paged = pageSize > 0 ? filtered.slice(start, start + pageSize) : filtered;
 
-  const allPageIds = paged.filter(c => !c.deleted && !c.archived).map(c => c.id);
+  const allPageIds = paged.filter(c => !c.deleted).map(c => c.id);
   const allChecked = allPageIds.length > 0 && allPageIds.every(id => _cnSelected.has(id));
   const someChecked = allPageIds.some(id => _cnSelected.has(id));
 
@@ -8178,7 +8203,7 @@ function renderCaseNums(resetPage) {
     const editBtn = !c.deleted
       ? `<button class="btn btn-secondary btn-sm" onclick="editCaseNum('${escHtml(c.id)}')">修改案號</button>`
       : '—';
-    const canCheck = !c.deleted && !c.archived;
+    const canCheck = !c.deleted;
     const chk = canCheck
       ? `<input type="checkbox" class="cn-row-chk" data-id="${escHtml(c.id)}" ${_cnSelected.has(c.id) ? 'checked' : ''} onchange="_cnChkChange(this)">`
       : '';
@@ -8221,6 +8246,13 @@ function renderCaseNums(resetPage) {
     if (sel) sel.value = String(_cnPageSize);
     const archSel = document.getElementById('cn-archived');
     if (archSel && archSel.value !== _cnArchived) archSel.value = _cnArchived;
+    const cnslSel = document.getElementById('cn-counselor');
+    if (cnslSel && isAdminUser) {
+      const prev = cnslSel.value;
+      cnslSel.innerHTML = '<option value="">全部人員</option>' +
+        [...counselorMap.entries()].map(([k,v]) => `<option value="${escHtml(k)}"${k===_cnCounselor?' selected':''}>${escHtml(v)}</option>`).join('');
+      if (!cnslSel.querySelector(`option[value="${escHtml(prev)}"]`)) cnslSel.value = '';
+    }
     const saEl = document.getElementById('cn-select-all');
     if (saEl) { saEl.checked = allChecked; saEl.indeterminate = !allChecked && someChecked; }
     _syncCnBatchBar();
@@ -8244,6 +8276,11 @@ function renderCaseNums(resetPage) {
             <option value="archived" ${_cnArchived==='archived'?'selected':''}>已封存</option>
             <option value="" ${_cnArchived===''?'selected':''}>全部</option>
           </select>
+          ${isAdminUser ? `<select id="cn-counselor" class="field-input" style="padding:4px 6px;font-size:.85rem;"
+            onchange="_cnCounselor=this.value;_cnPage=1;renderCaseNums()">
+            <option value="">全部人員</option>
+            ${[...counselorMap.entries()].map(([k,v])=>`<option value="${escHtml(k)}"${k===_cnCounselor?' selected':''}>${escHtml(v)}</option>`).join('')}
+          </select>` : ''}
           <label style="font-size:.85rem;color:#718096;white-space:nowrap;">每頁
             <select id="cn-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;margin-left:4px;"
               onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select> 筆
@@ -8255,6 +8292,9 @@ function renderCaseNums(resetPage) {
         <button class="btn btn-secondary btn-sm"
           data-tip="將所有勾選個案封存。封存後可透過篩選「已封存」查閱，統計分析仍計入。"
           onclick="batchArchiveCases([..._cnSelected])">批次封存</button>
+        <button class="btn btn-secondary btn-sm"
+          data-tip="將所有勾選個案解除封存，使其重新出現在未封存列表中。"
+          onclick="batchUnarchiveCases([..._cnSelected])">批次解封</button>
         <button class="btn btn-secondary btn-sm" onclick="_cnSelected.clear();renderCaseNums()">取消選取</button>
       </div>
       <div id="cn-pagination-top">${paginationHtml}</div>
@@ -21855,5 +21895,51 @@ window.addEventListener('beforeunload', () => { _syslogFlushToDrive().catch(() =
   <div id="_syslog_list" style="flex:1;overflow-y:auto;font-family:'Consolas','Menlo','Courier New',monospace;font-size:.74rem;"></div>
 </div>
 
+
+<div id="_tip_el" style="position:fixed;z-index:99999;background:rgba(26,34,56,.94);color:#fff;padding:7px 11px;border-radius:7px;font-size:.74rem;font-weight:400;line-height:1.5;max-width:260px;text-align:center;pointer-events:none;opacity:0;transition:opacity .15s;white-space:normal;box-shadow:0 3px 10px rgba(0,0,0,.28);display:none;"></div>
+<script>
+(function(){
+  const tip = document.getElementById('_tip_el');
+  let timer, lastEl;
+  function showTip(el) {
+    const text = el.getAttribute('data-tip');
+    if (!text) return;
+    tip.textContent = text;
+    tip.style.display = 'block';
+    tip.style.opacity = '0';
+    requestAnimationFrame(() => {
+      const r = el.getBoundingClientRect();
+      const tw = tip.offsetWidth, th = tip.offsetHeight;
+      let left = r.left + r.width / 2 - tw / 2;
+      let top = r.top - th - 8;
+      left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+      if (top < 8) top = r.bottom + 8;
+      tip.style.left = left + 'px';
+      tip.style.top = top + 'px';
+      tip.style.opacity = '1';
+    });
+  }
+  document.addEventListener('mouseover', e => {
+    const el = e.target.closest('[data-tip]');
+    if (!el || el === lastEl) return;
+    lastEl = el;
+    clearTimeout(timer);
+    timer = setTimeout(() => showTip(el), 700);
+  });
+  document.addEventListener('mouseout', e => {
+    if (!e.target.closest('[data-tip]')) return;
+    clearTimeout(timer);
+    lastEl = null;
+    tip.style.opacity = '0';
+    setTimeout(() => { if (tip.style.opacity === '0') tip.style.display = 'none'; }, 160);
+  });
+  document.addEventListener('click', () => {
+    clearTimeout(timer);
+    lastEl = null;
+    tip.style.opacity = '0';
+    setTimeout(() => { if (tip.style.opacity === '0') tip.style.display = 'none'; }, 160);
+  });
+})();
+</script>
 </body>
 </html>
