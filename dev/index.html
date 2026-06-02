@@ -7995,13 +7995,14 @@ async function saveClosureEval() {
   }));
 
   document.getElementById('btn-confirm-closure').disabled = true;
-  showLoading(isClosure ? '儲存結案評估…' : '儲存學期評估…');
 
   const idx = casesData.findIndex(c => c.id === _closureCaseId);
-  if (idx === -1) { hideLoading(); return; }
+  if (idx === -1) return;
+  const caseId = _closureCaseId;
+  const caseName = casesData[idx].name;
 
   const evalData = {
-    dimensions, statusLight: light, closureReason: reason, ...evalPayload,
+    dimensions, statusLight: light, light, closureReason: reason, ...evalPayload,
     evaluatorEmail: currentUser.email,
     evaluatorName: configData?.users?.[currentUser.email]?.name || currentUser.name,
     evaluatedAt: new Date().toISOString(),
@@ -8016,35 +8017,40 @@ async function saveClosureEval() {
   const evalSem = _closureEvalSem || currentSemesterPrefix();
   const evalType = isClosure ? 'closure' : 'semester';
   casesData[idx].updatedAt = new Date().toISOString();
-  // Per-semester status: mark this semester as closed
   if (!casesData[idx].semesterStatus) casesData[idx].semesterStatus = {};
   casesData[idx].semesterStatus[evalSem] = 'closed';
   casesData[idx].status = _recomputeCaseStatus(casesData[idx]);
   if (!casesData[idx].semesterEvaluations) casesData[idx].semesterEvaluations = [];
-  // Replace existing eval for this semester+type (allow re-evaluation)
   casesData[idx].semesterEvaluations = casesData[idx].semesterEvaluations.filter(
     e => !(e.semester === evalSem && e.type === evalType)
   );
   casesData[idx].semesterEvaluations.push({ ...evalData, semester: evalSem, type: evalType });
-  if (isClosure) casesData[idx].closureEvaluation = { ...evalData, semester: evalSem }; // backward compat
+  if (isClosure) casesData[idx].closureEvaluation = { ...evalData, semester: evalSem };
 
-  try {
-    await saveCasesChunks(_closureCaseId);
-    auditLog(isClosure ? '執行結案' : '儲存學期評估', _closureCaseId, null, semesterLabel(evalSem) + '學期');
-    _closureEvalDraft = null;
-    try { localStorage.removeItem('scc_closure_draft_' + _closureCaseId); } catch {}
-    hideLoading();
-    renderCases();
-    showCaseDetail(_closureCaseId);
-  } catch (err) {
-    casesData[idx].status = prev.status;
-    casesData[idx].semesterStatus = prev.semesterStatus;
-    casesData[idx].closureEvaluation = prev.closureEvaluation;
-    casesData[idx].semesterEvaluations = prev.semesterEvaluations;
-    hideLoading();
-    document.getElementById('btn-confirm-closure').disabled = false;
-    _closAlert('儲存失敗：' + err.message);
-  }
+  // 樂觀更新：立即導回個案詳細
+  _closureEvalDraft = null;
+  try { localStorage.removeItem('scc_closure_draft_' + caseId); } catch {}
+  renderCases();
+  showCaseDetail(caseId);
+
+  // 背景儲存
+  const jobId = bgJobAdd(isClosure ? '儲存結案評估' : '儲存學期評估', caseName);
+  (async () => {
+    try {
+      await saveCasesChunks(caseId);
+      bgJobDone(jobId);
+      auditLog(isClosure ? '執行結案' : '儲存學期評估', caseId, null, semesterLabel(evalSem) + '學期');
+    } catch (err) {
+      bgJobFail(jobId, err.message);
+      const ri = casesData.findIndex(x => x.id === caseId);
+      if (ri !== -1) {
+        casesData[ri].status = prev.status;
+        casesData[ri].semesterStatus = prev.semesterStatus;
+        casesData[ri].closureEvaluation = prev.closureEvaluation;
+        casesData[ri].semesterEvaluations = prev.semesterEvaluations;
+      }
+    }
+  })();
 }
 
 function backToCaseList() {
@@ -8169,17 +8175,21 @@ function _recomputeCaseStatus(c) {
 }
 
 function _semLightStyle(c, sem) {
+  const status = c.semesterStatus?.[sem] ?? (c.status === 'closed' ? 'closed' : 'active');
   const evals = c.semesterEvaluations || [];
   const hasTypedClosures = evals.some(e => e.type === 'closure');
   const ev = evals.find(e => e.type === 'closure' && e.semester === sem)
     || (!hasTypedClosures ? (c.closureEvaluation || null) : null);
+  const lightVal = ev?.light || ev?.statusLight || '';
   const styles = {
     '紅燈': { bg:'#fde8e8', border:'#fc8181', color:'#c0392b' },
     '橙燈': { bg:'#fdebd0', border:'#f6ad55', color:'#9c4a00' },
     '黃燈': { bg:'#fef9e7', border:'#ecc94b', color:'#7d6608' },
     '綠燈': { bg:'#d5f5e3', border:'#68d391', color:'#1d6a3a' },
   };
-  return styles[ev?.light] || { bg:'#f0f4f8', border:'#cbd5e0', color:'#718096' };
+  if (styles[lightVal]) return styles[lightVal];
+  if (status !== 'closed') return { bg:'#ebf8ff', border:'#63b3ed', color:'#2b6cb0' };
+  return { bg:'#f0f4f8', border:'#cbd5e0', color:'#718096' };
 }
 function _hasPastUnclosed(c) {
   const curSem = currentSemesterPrefix();
@@ -8438,10 +8448,16 @@ async function hardDeleteCase(caseId) {
 // ══════════════════════════════════════════════
 //  案號管理
 // ══════════════════════════════════════════════
+let _cnSavePrefTimer = null;
+function _saveCnPrefs() {
+  clearTimeout(_cnSavePrefTimer);
+  _cnSavePrefTimer = setTimeout(() => saveUserTodos(), 1200);
+}
 let _cnPage = 1;
 let _cnPageSize = 30;
 let _cnComposing = false;
 let _cnArchived = 'unarchived';
+let _cnClosureStatus = '';
 let _cnCounselor = '';
 let _cnSelected = new Set();
 let _casesSelected = new Set();
@@ -8461,6 +8477,9 @@ function renderCaseNums(resetPage) {
 
   if (_cnArchived === 'unarchived') visible = visible.filter(c => !c.archived);
   else if (_cnArchived === 'archived') visible = visible.filter(c => !!c.archived);
+
+  if (_cnClosureStatus === 'closed') visible = visible.filter(c => c.status === 'closed');
+  else if (_cnClosureStatus === 'active') visible = visible.filter(c => c.status !== 'closed');
 
   const counselorMap = new Map();
   if (isAdminUser) {
@@ -8502,7 +8521,7 @@ function renderCaseNums(resetPage) {
       const evals = c.semesterEvaluations || [];
       const hasTypedClosures = evals.some(e => e.type === 'closure');
       const ev = evals.find(e => e.type === 'closure' && e.semester === sem) || (!hasTypedClosures ? (c.closureEvaluation || null) : null);
-      studentSemLight[c.studentId][sem] = ev?.light || '';
+      studentSemLight[c.studentId][sem] = ev?.light || ev?.statusLight || '';
     });
   });
 
@@ -8526,13 +8545,15 @@ function renderCaseNums(resetPage) {
     const sems = c.studentId ? [...(studentSems[c.studentId] || [])].sort() : [];
     const semChips = sems.map(s => {
       const lightKey = studentSemLight[c.studentId]?.[s] || '';
+      const semStatus = studentSemStatus[c.studentId]?.[s] || 'active';
       const lightStyles = {
         '紅燈': { bg:'#fde8e8', border:'#fc8181', color:'#c0392b' },
         '橙燈': { bg:'#fdebd0', border:'#f6ad55', color:'#9c4a00' },
         '黃燈': { bg:'#fef9e7', border:'#ecc94b', color:'#7d6608' },
         '綠燈': { bg:'#d5f5e3', border:'#68d391', color:'#1d6a3a' },
       };
-      const { bg, border, color } = lightStyles[lightKey] || { bg:'#f0f4f8', border:'#cbd5e0', color:'#718096' };
+      const { bg, border, color } = lightStyles[lightKey]
+        || (semStatus !== 'closed' ? { bg:'#ebf8ff', border:'#63b3ed', color:'#2b6cb0' } : { bg:'#f0f4f8', border:'#cbd5e0', color:'#718096' });
       const cName = studentSemCounselors[c.studentId]?.[s] || '';
       return `<span style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:1px 8px;font-size:.78rem;margin:1px 2px;white-space:nowrap;">${escHtml(semesterLabel(s))}${cName ? `<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(cName)}</span>` : ''}</span>`;
     }).join('') || '<span style="color:#a0aec0;">—</span>';
@@ -8582,6 +8603,8 @@ function renderCaseNums(resetPage) {
     if (sel) sel.value = String(_cnPageSize);
     const archSel = document.getElementById('cn-archived');
     if (archSel && archSel.value !== _cnArchived) archSel.value = _cnArchived;
+    const clSel = document.getElementById('cn-closure-status');
+    if (clSel && clSel.value !== _cnClosureStatus) clSel.value = _cnClosureStatus;
     const cnslSel = document.getElementById('cn-counselor');
     if (cnslSel && isAdminUser) {
       const prev = cnslSel.value;
@@ -8607,10 +8630,16 @@ function renderCaseNums(resetPage) {
             oncompositionstart="_cnComposing=true"
             oncompositionend="_cnComposing=false;_cnPage=1;renderCaseNums()" />
           <select id="cn-archived" class="field-input" style="padding:4px 6px;font-size:.85rem;"
-            onchange="_cnArchived=this.value;_cnPage=1;_cnSelected.clear();renderCaseNums()">
+            onchange="_cnArchived=this.value;_cnPage=1;_cnSelected.clear();renderCaseNums();_saveCnPrefs()">
             <option value="unarchived" ${_cnArchived==='unarchived'?'selected':''}>未封存</option>
             <option value="archived" ${_cnArchived==='archived'?'selected':''}>已封存</option>
             <option value="" ${_cnArchived===''?'selected':''}>全部</option>
+          </select>
+          <select id="cn-closure-status" class="field-input" style="padding:4px 6px;font-size:.85rem;"
+            onchange="_cnClosureStatus=this.value;_cnPage=1;_cnSelected.clear();renderCaseNums();_saveCnPrefs()">
+            <option value="" ${_cnClosureStatus===''?'selected':''}>全部狀態</option>
+            <option value="active" ${_cnClosureStatus==='active'?'selected':''}>未結案</option>
+            <option value="closed" ${_cnClosureStatus==='closed'?'selected':''}>已結案</option>
           </select>
           ${isAdminUser ? `<select id="cn-counselor" class="field-input" style="padding:4px 6px;font-size:.85rem;"
             onchange="_cnCounselor=this.value;_cnPage=1;renderCaseNums()">
@@ -12553,6 +12582,9 @@ async function loadUserTodos() {
       const raw = await driveReadJsonById(_todoFileId);
       todosData = Array.isArray(raw?.todos) ? raw.todos : [];
       _suppressedTodoRecordIds = new Set(Array.isArray(raw?.suppressedRecordIds) ? raw.suppressedRecordIds : []);
+      const _prefs = raw?.caseSearchPrefs || {};
+      if (_prefs.closureStatus !== undefined) _cnClosureStatus = _prefs.closureStatus;
+      if (_prefs.archived !== undefined) _cnArchived = _prefs.archived;
     } else {
       todosData = [];
       _suppressedTodoRecordIds = new Set();
@@ -12568,7 +12600,7 @@ async function saveUserTodos() {
   const email = currentUser?.email;
   if (!email) return;
   const fileName = `todos_${email}.json`;
-  const content = { todos: todosData, suppressedRecordIds: [..._suppressedTodoRecordIds], updatedAt: new Date().toISOString() };
+  const content = { todos: todosData, suppressedRecordIds: [..._suppressedTodoRecordIds], caseSearchPrefs: { closureStatus: _cnClosureStatus, archived: _cnArchived }, updatedAt: new Date().toISOString() };
   const usersId = await getUsersFolderId();
   if (!_todoFileId) {
     const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
