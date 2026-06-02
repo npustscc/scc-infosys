@@ -4277,7 +4277,7 @@ function renderCases() {
     const semTag = displaySems.length
       ? `<div style="margin-top:3px;">${displaySems.map(s => {
           const { bg, border, color } = _semLightStyle(c, s);
-          return `<span style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:0 6px;font-size:.73rem;margin:1px 2px;">${escHtml(semesterLabel(s))}</span>`;
+          return `<span onclick="event.stopPropagation();showCaseDetailAtSem('${cid}','${s}')" style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:0 6px;font-size:.73rem;margin:1px 2px;cursor:pointer;" data-tip="點選跳至該學期詳細資料">${escHtml(semesterLabel(s))}</span>`;
         }).join('')}</div>`
       : '';
     const archivedBadge = c.archived ? ' <span style="display:inline-block;background:#e2e8f0;color:#4a5568;border-radius:4px;padding:1px 6px;font-size:.75rem;font-weight:600;">封存</span>' : '';
@@ -5310,6 +5310,15 @@ function _switchCaseSem(sem, caseId) {
   showCaseDetail(caseId);
   requestAnimationFrame(() => window.scrollTo(0, sy));
 }
+function showCaseDetailAtSem(caseId, sem) {
+  _recPage = 1;
+  _detailCaseId = caseId;
+  _caseDetailActiveSem = sem;
+  _caseDetailMode = 'semester';
+  _caseDetailPsychIdx = 0;
+  _detailSemFilter = 'current';
+  showCaseDetail(caseId);
+}
 
 // ── 大專院校學生心理健康關懷量表向度對照
 const PSYCH_TEST_DIMS = {
@@ -5546,25 +5555,18 @@ function _renderStudentSemNav(caseId, relatedCases) {
     <span style="font-size:.8rem;color:#718096;font-weight:600;white-space:nowrap;">歷年學期：</span>
     ${relatedCases.map(rc => {
       const isCurrent = rc.id === caseId;
-      const isClosed = rc.status === 'closed';
       const rcSem = openDateToSemPrefix(rc.openDate);
       const semLbl = semesterLabel(rcSem);
       const ls = _semLightStyle(rc, rcSem);
-      const dot = `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${ls.border};margin-left:5px;vertical-align:middle;"></span>`;
-      let bg, border, color, fw;
-      if (isCurrent) {
-        bg = '#ebf8ff'; border = '#3182ce'; color = '#1a5276'; fw = '700';
-      } else if (isClosed) {
-        bg = '#fff'; border = '#e2e8f0'; color = '#718096'; fw = '400';
-      } else {
-        bg = '#fffbeb'; border = '#f6ad55'; color = '#744210'; fw = '400';
-      }
-      const closedNote = (!isCurrent && isClosed) ? ' <span style="font-size:.65rem;color:#a0aec0;">已結</span>' : '';
+      const bg = isCurrent ? '#ebf8ff' : ls.bg;
+      const border = isCurrent ? '#3182ce' : ls.border;
+      const color = isCurrent ? '#1a5276' : ls.color;
+      const fw = isCurrent ? '700' : '500';
       return `<button onclick="showCaseDetail('${escHtml(rc.id)}')"
         style="padding:4px 14px;border-radius:16px;border:1px solid ${border};
                background:${bg};color:${color};
                font-size:.82rem;font-weight:${fw};cursor:pointer;white-space:nowrap;">
-        ${escHtml(semLbl)}${closedNote}${dot}
+        ${escHtml(semLbl)}
       </button>`;
     }).join('')}
   </div>`;
@@ -6354,12 +6356,12 @@ function showCaseDetail(caseId) {
           ${_csems.map(s => {
             const isAct = _caseDetailMode === 'semester' && s === _activeSem;
             const _ls = _semLightStyle(c, s);
-            const _dot = `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${_ls.border};margin-left:5px;vertical-align:middle;"></span>`;
             return `<button onclick="_switchCaseSem('${escHtml(s)}','${escHtml(c.id)}')"
-              style="padding:4px 14px;border-radius:16px;border:1px solid ${isAct?'#3182ce':'#e2e8f0'};
-                     background:${isAct?'#ebf8ff':'#fff'};color:${isAct?'#1a5276':'#4a5568'};
-                     font-size:.82rem;font-weight:${isAct?'700':'400'};cursor:pointer;white-space:nowrap;">
-              ${escHtml(semesterLabel(s))}${_dot}
+              style="padding:4px 14px;border-radius:16px;
+                     border:1px solid ${isAct?'#3182ce':_ls.border};
+                     background:${isAct?'#ebf8ff':_ls.bg};color:${isAct?'#1a5276':_ls.color};
+                     font-size:.82rem;font-weight:${isAct?'700':'500'};cursor:pointer;white-space:nowrap;">
+              ${escHtml(semesterLabel(s))}
             </button>`;
           }).join('')}
         </div>
@@ -8188,7 +8190,11 @@ function _semLightStyle(c, sem) {
     '綠燈': { bg:'#d5f5e3', border:'#68d391', color:'#1d6a3a' },
   };
   if (styles[lightVal]) return styles[lightVal];
-  if (status !== 'closed') return { bg:'#ebf8ff', border:'#63b3ed', color:'#2b6cb0' };
+  if (status !== 'closed') {
+    const curSem = currentSemesterPrefix();
+    if (sem && sem < curSem) return { bg:'#fff7ed', border:'#ea580c', color:'#9a3412' };
+    return { bg:'#ebf8ff', border:'#63b3ed', color:'#2b6cb0' };
+  }
   return { bg:'#f0f4f8', border:'#cbd5e0', color:'#718096' };
 }
 function _hasPastUnclosed(c) {
@@ -8453,6 +8459,17 @@ function _saveCnPrefs() {
   clearTimeout(_cnSavePrefTimer);
   _cnSavePrefTimer = setTimeout(() => saveUserTodos(), 1200);
 }
+function _cnClearFilters() {
+  _cnArchived = 'unarchived';
+  _cnClosureStatus = '';
+  _cnCounselor = '';
+  _cnPage = 1;
+  _cnSelected.clear();
+  const searchEl = document.getElementById('cn-search');
+  if (searchEl) searchEl.value = '';
+  renderCaseNums();
+  _saveCnPrefs();
+}
 let _cnPage = 1;
 let _cnPageSize = 30;
 let _cnComposing = false;
@@ -8507,6 +8524,7 @@ function renderCaseNums(resetPage) {
   const studentSemCounselors = {};
   const studentSemStatus = {};
   const studentSemLight = {};
+  const studentSemCaseId = {};
   casesData.forEach(c => {
     if (!c.studentId) return;
     const caseSems = (Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)]).filter(Boolean);
@@ -8516,8 +8534,10 @@ function renderCaseNums(resetPage) {
       if (!studentSemCounselors[c.studentId]) studentSemCounselors[c.studentId] = {};
       if (!studentSemStatus[c.studentId]) studentSemStatus[c.studentId] = {};
       if (!studentSemLight[c.studentId]) studentSemLight[c.studentId] = {};
+      if (!studentSemCaseId[c.studentId]) studentSemCaseId[c.studentId] = {};
       studentSemCounselors[c.studentId][sem] = configData?.users?.[c.counselorEmail]?.name || c.counselorName || c.counselorText || '';
       studentSemStatus[c.studentId][sem] = (c.semesterStatus?.[sem] || c.status || 'active');
+      studentSemCaseId[c.studentId][sem] = c.id;
       const evals = c.semesterEvaluations || [];
       const hasTypedClosures = evals.some(e => e.type === 'closure');
       const ev = evals.find(e => e.type === 'closure' && e.semester === sem) || (!hasTypedClosures ? (c.closureEvaluation || null) : null);
@@ -8552,21 +8572,25 @@ function renderCaseNums(resetPage) {
         '黃燈': { bg:'#fef9e7', border:'#ecc94b', color:'#7d6608' },
         '綠燈': { bg:'#d5f5e3', border:'#68d391', color:'#1d6a3a' },
       };
+      const _curSem = currentSemesterPrefix();
       const { bg, border, color } = lightStyles[lightKey]
-        || (semStatus !== 'closed' ? { bg:'#ebf8ff', border:'#63b3ed', color:'#2b6cb0' } : { bg:'#f0f4f8', border:'#cbd5e0', color:'#718096' });
+        || (semStatus !== 'closed'
+          ? (s < _curSem ? { bg:'#fff7ed', border:'#ea580c', color:'#9a3412' } : { bg:'#ebf8ff', border:'#63b3ed', color:'#2b6cb0' })
+          : { bg:'#f0f4f8', border:'#cbd5e0', color:'#718096' });
       const cName = studentSemCounselors[c.studentId]?.[s] || '';
-      return `<span style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:1px 8px;font-size:.78rem;margin:1px 2px;white-space:nowrap;">${escHtml(semesterLabel(s))}${cName ? `<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(cName)}</span>` : ''}</span>`;
+      const chipCaseId = studentSemCaseId[c.studentId]?.[s] || c.id;
+      return `<span onclick="event.stopPropagation();showCaseDetailAtSem('${escHtml(chipCaseId)}','${escHtml(s)}')" style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:1px 8px;font-size:.78rem;margin:1px 2px;white-space:nowrap;cursor:pointer;" data-tip="點選跳至該學期詳細資料">${escHtml(semesterLabel(s))}${cName ? `<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(cName)}</span>` : ''}</span>`;
     }).join('') || '<span style="color:#a0aec0;">—</span>';
     const editBtn = !c.deleted
-      ? `<button class="btn btn-secondary btn-sm" onclick="editCaseNum('${escHtml(c.id)}')">修改案號</button>`
+      ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();editCaseNum('${escHtml(c.id)}')">修改案號</button>`
       : '—';
     const canCheck = !c.deleted;
     const chk = canCheck
-      ? `<input type="checkbox" class="cn-row-chk" data-id="${escHtml(c.id)}" ${_cnSelected.has(c.id) ? 'checked' : ''} onchange="_cnChkChange(this)">`
+      ? `<input type="checkbox" class="cn-row-chk" data-id="${escHtml(c.id)}" ${_cnSelected.has(c.id) ? 'checked' : ''} onchange="event.stopPropagation();_cnChkChange(this)">`
       : '';
     return `
-    <tr class="${c.deleted ? 'case-deleted-row' : ''}">
-      <td style="width:36px;text-align:center;">${chk}</td>
+    <tr class="${c.deleted ? 'case-deleted-row' : ''}" style="cursor:${c.deleted?'default':'pointer'};" ${c.deleted?'':` onclick="showCaseDetail('${escHtml(c.id)}')"`}>
+      <td style="width:36px;text-align:center;" onclick="event.stopPropagation()">${chk}</td>
       <td><strong style="color:#1a5276;">${escHtml(c.id || '—')}</strong></td>
       <td>${escHtml(c.name || '—')}</td>
       <td>${escHtml(c.studentId || '—')}</td>
@@ -8605,6 +8629,8 @@ function renderCaseNums(resetPage) {
     if (archSel && archSel.value !== _cnArchived) archSel.value = _cnArchived;
     const clSel = document.getElementById('cn-closure-status');
     if (clSel && clSel.value !== _cnClosureStatus) clSel.value = _cnClosureStatus;
+    const clearBtn = document.getElementById('cn-clear-btn');
+    if (clearBtn) clearBtn.disabled = (_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor&&!(document.getElementById('cn-search')?.value?.trim()));
     const cnslSel = document.getElementById('cn-counselor');
     if (cnslSel && isAdminUser) {
       const prev = cnslSel.value;
@@ -8650,6 +8676,8 @@ function renderCaseNums(resetPage) {
             <select id="cn-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;margin-left:4px;"
               onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select> 筆
           </label>
+          <button id="cn-clear-btn" class="btn btn-secondary btn-sm" onclick="_cnClearFilters()"
+            ${(_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor)?'disabled':''}>清除篩選</button>
         </div>
       </div>
       <div id="cn-batch-bar" style="display:none;padding:8px 16px;background:#ebf8ff;border-bottom:1px solid #bee3f8;display:flex;align-items:center;gap:10px;">
