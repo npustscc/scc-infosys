@@ -34,6 +34,19 @@
     }
     #app-header.compact { height: 40px; padding: 0 16px; }
     #detail-student-sem-nav { position: sticky; top: var(--hdr-h, 60px); z-index: 400; background: #fff; }
+    /* ── Chunk Load Bar ── */
+    #chunk-load-bar { position:sticky; top:60px; z-index:498; background:#1a365d; display:none; transition:opacity .5s; }
+    #app-header.compact ~ * #chunk-load-bar, #app-header.compact + #chunk-load-bar { top:40px; }
+    #clb-track { height:5px; background:rgba(255,255,255,.12); overflow:hidden; }
+    #clb-fill { height:100%; background:#48bb78; width:0%; transition:width .5s ease; }
+    #clb-panel { max-height:0; overflow:hidden; transition:max-height .3s ease; }
+    .clb-chip { display:inline-flex; align-items:center; gap:3px; font-size:.68rem; padding:2px 7px; border-radius:10px; border:1px solid rgba(255,255,255,.18); color:rgba(255,255,255,.8); white-space:nowrap; cursor:default; user-select:none; }
+    .clb-chip[data-state="ok"]      { background:rgba(72,187,120,.2);  border-color:rgba(72,187,120,.45); }
+    .clb-chip[data-state="cached"]  { background:rgba(72,187,120,.12); border-color:rgba(72,187,120,.3);  color:rgba(255,255,255,.6); }
+    .clb-chip[data-state="loading"] { background:rgba(66,153,225,.2);  border-color:rgba(66,153,225,.45); }
+    .clb-chip[data-state="fail"]    { background:rgba(245,101,101,.22);border-color:rgba(245,101,101,.5); cursor:pointer; }
+    .clb-chip[data-state="retry"]   { background:rgba(236,201,75,.2);  border-color:rgba(236,201,75,.45); }
+    .clb-chip[data-state="pending"] { background:rgba(255,255,255,.06); }
     #app-header h1 { font-size: 1.05rem; font-weight: 600; letter-spacing: .03em; transition: font-size .2s; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     #app-header.compact h1 { font-size: .82rem; }
     #user-info { display: flex; align-items: center; gap: 12px; font-size: .875rem; }
@@ -894,6 +907,18 @@
   </div>
   <button id="header-scroll-top" onclick="scrollToTop()" title="回到頂端" style="display:none;">↑ 頂端</button>
 </header>
+<!-- ── Chunk Load Bar ── -->
+<div id="chunk-load-bar"
+     onmouseenter="document.getElementById('clb-panel').style.maxHeight='220px'"
+     onmouseleave="document.getElementById('clb-panel').style.maxHeight='0'">
+  <div id="clb-track"><div id="clb-fill"></div></div>
+  <div id="clb-panel">
+    <div style="padding:7px 14px 10px;">
+      <div style="font-size:.68rem;color:rgba(255,255,255,.4);margin-bottom:5px;">個案 chunks 載入狀態（失敗項目可點選重新載入）</div>
+      <div id="clb-chunks" style="display:flex;flex-wrap:wrap;gap:4px;"></div>
+    </div>
+  </div>
+</div>
 <div id="notif-panel">
   <div style="border-bottom:1px solid #e2e8f0;">
     <div style="display:flex;">
@@ -3677,6 +3702,139 @@ function resolveUserRole() {
 }
 
 // ══════════════════════════════════════════════
+//  Chunk localStorage 快取輔助
+// ══════════════════════════════════════════════
+const _CK_META_KEY = () => 'scc_ck_meta_' + DRIVE_FOLDER_ID;
+const _CK_DATA_KEY = n => 'scc_ck_' + DRIVE_FOLDER_ID + '_' + n.replace(/\//g, '|');
+function _ckMetaRead() { try { return JSON.parse(localStorage.getItem(_CK_META_KEY()) || '{}'); } catch { return {}; } }
+function _ckSave(name, data, modTime) {
+  if (!modTime) return;
+  try {
+    localStorage.setItem(_CK_DATA_KEY(name), JSON.stringify(data));
+    const meta = _ckMetaRead(); meta[name] = { modTime };
+    localStorage.setItem(_CK_META_KEY(), JSON.stringify(meta));
+  } catch(e) { console.warn('[ckSave] localStorage:', e.message); }
+}
+function _ckLoad(name, meta, expectedModTime) {
+  const m = meta[name];
+  if (!m || !expectedModTime || m.modTime !== expectedModTime) return null;
+  try { return JSON.parse(localStorage.getItem(_CK_DATA_KEY(name))); } catch { return null; }
+}
+
+// ══════════════════════════════════════════════
+//  Chunk Load Bar（banner 下方進度條）
+// ══════════════════════════════════════════════
+const _clbStatus = new Map();
+let _clbTotal = 0;
+
+function _clbChunkLabel(chunk) {
+  const leaf = chunk.split('/').pop();
+  const m = leaf.match(/^(\d{3})(\d)(\d{3})-\d{4}(\d{3})$/);
+  if (m) return `${m[1]}-${m[2]} #${m[3]}~${m[4]}`;
+  return leaf;
+}
+
+function _clbInit(chunks) {
+  _clbStatus.clear();
+  _clbTotal = chunks.length;
+  const container = document.getElementById('clb-chunks');
+  if (container) container.innerHTML = '';
+  chunks.forEach(chunk => {
+    _clbStatus.set(chunk, { state: 'pending', count: 0 });
+    const chip = document.createElement('span');
+    chip.className = 'clb-chip';
+    chip.dataset.chunk = chunk;
+    chip.dataset.state = 'pending';
+    chip.textContent = _clbChunkLabel(chunk);
+    chip.onclick = () => _clbReloadChunk(chunk);
+    if (container) container.appendChild(chip);
+  });
+  const bar = document.getElementById('chunk-load-bar');
+  if (bar) { bar.style.display = ''; bar.style.opacity = '1'; }
+  _clbFillUpdate();
+}
+
+function _clbSetState(chunk, state, count) {
+  const s = _clbStatus.get(chunk);
+  if (!s) return;
+  s.state = state;
+  if (count !== undefined) s.count = count;
+  const chip = document.querySelector(`.clb-chip[data-chunk="${CSS.escape(chunk)}"]`);
+  if (chip) {
+    chip.dataset.state = state;
+    const icon = { ok: '✓', cached: '⚡', loading: '…', fail: '✗', retry: '↺', pending: '' }[state] || '';
+    chip.textContent = (icon ? icon + ' ' : '') + _clbChunkLabel(chunk) + (s.count ? ` (${s.count})` : '');
+  }
+  _clbFillUpdate();
+}
+
+function _clbFillUpdate() {
+  const done = [..._clbStatus.values()].filter(s => s.state === 'ok' || s.state === 'cached').length;
+  const anyFail = [..._clbStatus.values()].some(s => s.state === 'fail');
+  const pct = _clbTotal > 0 ? Math.round(100 * done / _clbTotal) : 0;
+  const fill = document.getElementById('clb-fill');
+  if (fill) { fill.style.width = pct + '%'; fill.style.background = anyFail ? '#fc8181' : '#48bb78'; }
+}
+
+function _clbDone() {
+  const anyFail = [..._clbStatus.values()].some(s => s.state === 'fail');
+  if (!anyFail) {
+    setTimeout(() => {
+      const bar = document.getElementById('chunk-load-bar');
+      if (bar) { bar.style.opacity = '0'; setTimeout(() => { if (bar) { bar.style.display = 'none'; bar.style.opacity = '1'; } }, 550); }
+    }, 3000);
+  }
+}
+
+async function _clbReloadChunk(chunk) {
+  const s = _clbStatus.get(chunk);
+  if (!s || s.state === 'loading' || s.state === 'retry') return;
+  // 衝突偵測：目前詳細頁個案屬於同學期 chunk，警告
+  if (window._detailCaseId) {
+    const dc = (window.casesData || []).find(c => c.id === window._detailCaseId);
+    if (dc && typeof openDateToSemPrefix === 'function') {
+      const dcSem = openDateToSemPrefix(dc.openDate);
+      const chunkSem = chunk.split('/').pop().slice(0, 4);
+      if (dcSem && dcSem === chunkSem) {
+        if (!confirm(`目前正在檢視的個案（${dc.studentName || dc.id}）屬於此 chunk，\n重新載入可能影響目前的操作，確定繼續嗎？`)) return;
+      }
+    }
+  }
+  // 若有背景工作進行中，同樣警告
+  if ((window._bgJobs || []).some(j => j.state === 'running')) {
+    if (!confirm('目前有背景工作進行中，重新載入 chunk 可能影響資料一致性，確定繼續嗎？')) return;
+  }
+  _clbSetState(chunk, 'retry');
+  try {
+    const { map: fm, fileTimes: ft } = await getCasesFolderFileMap();
+    const fullFile = chunk + '.json';
+    const leaf = chunk.split('/').pop() + '.json';
+    const yearPfx = chunk.slice(0, 3);
+    let fid = fm.get(fullFile) || fm.get(`${yearPfx}/${fullFile}`) || fm.get(leaf);
+    const modTime = ft.get(fullFile) || ft.get(`${yearPfx}/${fullFile}`) || ft.get(leaf) || '';
+    const data = await (fid ? driveReadJsonById(fid) : driveReadJson(`cases/${fullFile}`));
+    if (modTime) _ckSave(chunk, data, modTime);
+    // 從 casesData 移除舊 chunk 個案並加入新資料（依 semStart 比對）
+    const chunkSem = chunk.split('/').pop().slice(0, 4);
+    const newCases = (data.cases || []).filter(c => c?.id);
+    const newIds = new Set(newCases.map(c => c.id));
+    const sameChunkIds = new Set((window.casesData || []).filter(c => {
+      const cs = typeof openDateToSemPrefix === 'function' ? openDateToSemPrefix(c.openDate) : '';
+      return cs === chunkSem;
+    }).map(c => c.id));
+    window.casesData = (window.casesData || []).filter(c => !sameChunkIds.has(c.id) || newIds.has(c.id));
+    newCases.forEach(nc => { if (!window.casesData.find(c => c.id === nc.id)) window.casesData.push(nc); });
+    casesData = window.casesData;
+    _clbSetState(chunk, 'ok', newCases.length);
+    renderCases();
+    if (window._detailCaseId) renderCaseDetail(window._detailCaseId);
+  } catch(e) {
+    _clbSetState(chunk, 'fail');
+    _syslog && _syslog('error', `chunk ${chunk} 重新載入失敗：${e.message}`);
+  }
+}
+
+// ══════════════════════════════════════════════
 //  載入個案列表
 // ══════════════════════════════════════════════
 async function loadCases() {
@@ -3686,10 +3844,11 @@ async function loadCases() {
   try {
     let manifest = null;
     let fileMap  = null;
+    let fileTimesMap = null;
 
     // 嘗試批次取得 cases 資料夾所有檔案 ID（減少 API 呼叫次數）
     try {
-      fileMap = await getCasesFolderFileMap();
+      ({ map: fileMap, fileTimes: fileTimesMap } = await getCasesFolderFileMap());
       const manifestId = fileMap.get('manifest.json');
       _syslog('debug', `fileMap 取得：${fileMap.size} 個檔案，manifest ${manifestId ? '找到' : '未找到'}`);
       if (manifestId) manifest = await driveReadJsonById(manifestId);
@@ -3710,48 +3869,116 @@ async function loadCases() {
       _syslog('info', `manifest 載入：${manifest.chunks.length} 個 chunks`);
       _setCasesLoadingProgress(60);
       const deletedSet = new Set(manifest.deletedIds || []);
-      // 載入順序：新學期優先（最可能有活躍個案），舊學期最後（畢業/轉學個案）
+      // 載入順序：新學期優先（最可能有活躍個案），舊學期最後
       const loadOrder = [...manifest.chunks].sort((a, b) => b.localeCompare(a));
-      // 逐批讀取（每批 3 個），避免並發過多導致 Apps Script CORS/rate-limit 錯誤
-      const LOAD_BATCH = 3;
-      const results = [];
+      const LOAD_BATCH = 5;
       const totalChunks = loadOrder.length;
-      for (let i = 0; i < totalChunks; i += LOAD_BATCH) {
-        const batch = loadOrder.slice(i, i + LOAD_BATCH);
-        const batchResults = await Promise.all(batch.map(chunk => {
-          // chunk 可能為 "1141001-020"（舊）或 "114/1141001-020"（新，依學年分資料夾）
-          const chunkFile = `${chunk}.json`;
-          let fid = fileMap && fileMap.get(chunkFile);
-          // 兼容：若 manifest 還是舊路徑，但檔案實際已搬到 "<year>/file" 位置
-          if (!fid && fileMap && !chunk.includes('/')) {
-            const yearPrefix = chunk.slice(0, 3);
-            fid = fileMap.get(`${yearPrefix}/${chunkFile}`);
-          }
-          // 兼容：若 manifest 為新路徑但實際還在根目錄
-          if (!fid && fileMap && chunk.includes('/')) {
-            const leaf = chunk.split('/').pop() + '.json';
-            fid = fileMap.get(leaf);
-          }
-          return (fid ? driveReadJsonById(fid) : driveReadJson(`cases/${chunkFile}`))
-            .catch(e => { console.warn('[loadCases] chunk 載入失敗:', chunkFile, e.message); return { cases: [] }; });
-        }));
-        results.push(...batchResults);
-        const _loaded = Math.min(i + LOAD_BATCH, totalChunks);
-        const _cn = (loadOrder[_loaded - 1] || '').split('/').pop();
-        const _cm = _cn.match(/^(\d{3})(\d)(\d{3})-\d{4}(\d{3})$/);
-        const _cl = _cm ? `${_cm[1]}-${_cm[2]}學期 第${_cm[3]}-${_cm[4]}號` : _cn;
-        _setCasesLoadingProgress(60 + Math.round(30 * _loaded / totalChunks), `載入 ${_cl}（${_loaded}/${totalChunks}）`);
+
+      // chunk 路徑與 modTime 解析輔助
+      const _resolveChunk = chunk => {
+        const fullFile = `${chunk}.json`;
+        const leaf = chunk.split('/').pop() + '.json';
+        const yearPfx = chunk.slice(0, 3);
+        let fid = fileMap?.get(fullFile);
+        let modTime = fileTimesMap?.get(fullFile) || '';
+        if (!fid && !chunk.includes('/')) {
+          const alt = `${yearPfx}/${fullFile}`;
+          fid = fileMap?.get(alt);
+          if (fid) modTime = fileTimesMap?.get(alt) || modTime;
+        }
+        if (!fid && chunk.includes('/')) {
+          fid = fileMap?.get(leaf);
+          if (fid) modTime = fileTimesMap?.get(leaf) || modTime;
+        }
+        return { fid, drivePathFile: `cases/${fullFile}`, modTime };
+      };
+
+      // 初始化 chunk bar
+      _clbInit(loadOrder);
+
+      // 讀取 localStorage 快取 metadata，分類：快取命中 vs 需從 Drive 讀取
+      const ckMeta = _ckMetaRead();
+      const cachedResults = [];
+      const toFetch = [];
+      for (const chunk of loadOrder) {
+        const { fid, drivePathFile, modTime } = _resolveChunk(chunk);
+        const cached = _ckLoad(chunk, ckMeta, modTime);
+        if (cached) {
+          _clbSetState(chunk, 'cached', (cached.cases || []).length);
+          cachedResults.push({ chunk, data: cached });
+        } else {
+          toFetch.push({ chunk, fid, drivePathFile, modTime });
+        }
       }
-      // 過濾「墓碑」與重複 ID（同一個案 ID 若在多個 chunk 殘存，僅取第一筆）
+
+      // 快取命中的立即渲染（讓使用者先看到已快取的個案）
+      if (cachedResults.length > 0) {
+        const seen0 = new Set();
+        casesData = cachedResults.flatMap(r => r.data.cases || [])
+          .filter(c => { if (!c?.id || deletedSet.has(c.id) || seen0.has(c.id)) return false; seen0.add(c.id); return true; });
+        renderCases();
+        _syslog('info', `快取命中 ${cachedResults.length} 個 chunks，已渲染 ${casesData.length} 筆`);
+      }
+
+      // 逐批從 Drive 讀取需要更新的 chunks（每批 5 個）
+      const fetchedResults = [];
+      const failedChunks = [];
+      for (let i = 0; i < toFetch.length; i += LOAD_BATCH) {
+        const batch = toFetch.slice(i, i + LOAD_BATCH);
+        batch.forEach(({ chunk }) => _clbSetState(chunk, 'loading'));
+        const batchResults = await Promise.all(batch.map(async ({ chunk, fid, drivePathFile, modTime }) => {
+          try {
+            const data = await (fid ? driveReadJsonById(fid) : driveReadJson(drivePathFile));
+            _ckSave(chunk, data, modTime);
+            _clbSetState(chunk, 'ok', (data.cases || []).length);
+            return { chunk, data, ok: true };
+          } catch(e) {
+            console.warn('[loadCases] chunk 載入失敗:', chunk, e.message);
+            failedChunks.push({ chunk, fid, drivePathFile, modTime });
+            _clbSetState(chunk, 'fail');
+            // 降級：若快取有舊資料則沿用
+            const fallback = (() => { try { const raw = localStorage.getItem(_CK_DATA_KEY(chunk)); return raw ? JSON.parse(raw) : null; } catch { return null; } })();
+            return { chunk, data: fallback || { cases: [] }, ok: false };
+          }
+        }));
+        fetchedResults.push(...batchResults);
+        const _loaded = cachedResults.length + Math.min(i + LOAD_BATCH, toFetch.length);
+        _setCasesLoadingProgress(60 + Math.round(30 * _loaded / totalChunks),
+          `載入中（${_loaded}/${totalChunks}）`);
+      }
+
+      // 重試失敗 chunks（等 1s，重試一次）
+      if (failedChunks.length > 0) {
+        _syslog('warn', `${failedChunks.length} 個 chunks 載入失敗，1 秒後重試`);
+        await new Promise(r => setTimeout(r, 1000));
+        await Promise.all(failedChunks.map(async ({ chunk, fid, drivePathFile, modTime }) => {
+          _clbSetState(chunk, 'retry');
+          try {
+            const data = await (fid ? driveReadJsonById(fid) : driveReadJson(drivePathFile));
+            _ckSave(chunk, data, modTime);
+            const idx = fetchedResults.findIndex(r => r.chunk === chunk);
+            if (idx >= 0) fetchedResults[idx] = { chunk, data, ok: true };
+            _clbSetState(chunk, 'ok', (data.cases || []).length);
+            _syslog('info', `chunk ${chunk} 重試成功`);
+          } catch(e) {
+            _clbSetState(chunk, 'fail');
+            _syslog('warn', `chunk ${chunk} 重試失敗：${e.message}`);
+          }
+        }));
+      }
+
+      // 合併快取 + 新取資料，dedup
+      const allResults = [...cachedResults.map(r => r.data), ...fetchedResults.map(r => r.data)];
       const seen = new Set();
-      casesData = results.flatMap(r => r.cases || [])
+      casesData = allResults.flatMap(r => r.cases || [])
         .filter(c => {
           if (!c?.id) return false;
-          if (deletedSet.has(c.id)) return false; // 已永久刪除
-          if (seen.has(c.id)) return false;        // 同 ID 已收錄
+          if (deletedSet.has(c.id)) return false;
+          if (seen.has(c.id)) return false;
           seen.add(c.id);
           return true;
         });
+      _clbDone();
     } else {
       // manifest 為空或不存在，先嘗試從殘存 chunk 檔自動恢復
       const chunkEntries = fileMap
@@ -8797,7 +9024,7 @@ async function confirmClearAllCases() {
   showLoading('清空中…');
   try {
     let fileMap;
-    try { fileMap = await getCasesFolderFileMap(); } catch { fileMap = new Map(); }
+    try { ({ map: fileMap } = await getCasesFolderFileMap()); } catch { fileMap = new Map(); }
     const chunkIds = [...fileMap.entries()]
       .filter(([name]) => name !== 'manifest.json' && name !== 'index.json' && name.endsWith('.json'))
       .map(([, id]) => id);
@@ -8820,7 +9047,7 @@ async function recoverCasesFromDrive() {
   const jobId = bgJobAdd('從 Drive 恢復個案資料', '掃描 chunk 檔案中…');
   (async () => {
     try {
-      const fileMap = await getCasesFolderFileMap();
+      const { map: fileMap } = await getCasesFolderFileMap();
       bgJobProgress(jobId, 15);
       const chunkEntries = [...fileMap.entries()].filter(
         ([name]) => name !== 'manifest.json' && name !== 'index.json' && name.endsWith('.json')
@@ -14299,7 +14526,7 @@ async function getCasesFolderFileMap() {
       }
     }));
   }
-  return map;
+  return { map, fileTimes };
 }
 
 async function driveCreateFolder(name, parentId) {
