@@ -3991,7 +3991,14 @@ function renderCases() {
     const caseSems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)].filter(Boolean);
     const displaySems = caseFilters.semester ? [caseFilters.semester] : caseSems;
     const semTag = displaySems.length
-      ? `<div style="margin-top:3px;">${displaySems.map(s => `<span style="display:inline-block;background:#f7fafc;border:1px solid #cbd5e0;color:#4a5568;border-radius:10px;padding:0 6px;font-size:.73rem;margin:1px 2px;">${escHtml(semesterLabel(s))}</span>`).join('')}</div>`
+      ? `<div style="margin-top:3px;">${displaySems.map(s => {
+          const semStat = (c.semesterStatus?.[s] || c.status || 'active');
+          const isClosed = semStat === 'closed';
+          const bg = isClosed ? '#f7fafc' : '#fffbeb';
+          const border = isClosed ? '#cbd5e0' : '#f6ad55';
+          const color = isClosed ? '#4a5568' : '#744210';
+          return `<span style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:0 6px;font-size:.73rem;margin:1px 2px;">${escHtml(semesterLabel(s))}</span>`;
+        }).join('')}</div>`
       : '';
     const archivedBadge = c.archived ? ' <span style="display:inline-block;background:#e2e8f0;color:#4a5568;border-radius:4px;padding:1px 6px;font-size:.75rem;font-weight:600;">封存</span>' : '';
     const statusCell = c.deleted
@@ -5259,12 +5266,21 @@ function _renderStudentSemNav(caseId, relatedCases) {
     <span style="font-size:.8rem;color:#718096;font-weight:600;white-space:nowrap;">歷年學期：</span>
     ${relatedCases.map(rc => {
       const isCurrent = rc.id === caseId;
+      const isClosed = rc.status === 'closed';
       const semLabel = semesterLabel(openDateToSemPrefix(rc.openDate));
-      const closedNote = rc.status === 'closed' ? ' <span style="font-size:.65rem;color:#a0aec0;">已結</span>' : '';
+      let bg, border, color, fw;
+      if (isCurrent) {
+        bg = '#ebf8ff'; border = '#3182ce'; color = '#1a5276'; fw = '700';
+      } else if (isClosed) {
+        bg = '#fff'; border = '#e2e8f0'; color = '#718096'; fw = '400';
+      } else {
+        bg = '#fffbeb'; border = '#f6ad55'; color = '#744210'; fw = '400';
+      }
+      const closedNote = (!isCurrent && isClosed) ? ' <span style="font-size:.65rem;color:#a0aec0;">已結</span>' : '';
       return `<button onclick="showCaseDetail('${escHtml(rc.id)}')"
-        style="padding:4px 14px;border-radius:16px;border:1px solid ${isCurrent?'#3182ce':'#e2e8f0'};
-               background:${isCurrent?'#ebf8ff':'#fff'};color:${isCurrent?'#1a5276':'#4a5568'};
-               font-size:.82rem;font-weight:${isCurrent?'700':'400'};cursor:pointer;white-space:nowrap;">
+        style="padding:4px 14px;border-radius:16px;border:1px solid ${border};
+               background:${bg};color:${color};
+               font-size:.82rem;font-weight:${fw};cursor:pointer;white-space:nowrap;">
         ${escHtml(semLabel)}${closedNote}
       </button>`;
     }).join('')}
@@ -8171,12 +8187,18 @@ function renderCaseNums(resetPage) {
   }
 
   const studentSems = {};
+  const studentSemCounselors = {};
+  const studentSemStatus = {};
   casesData.forEach(c => {
     if (!c.studentId) return;
     const sem = openDateToSemPrefix(c.openDate);
     if (!sem) return;
     if (!studentSems[c.studentId]) studentSems[c.studentId] = new Set();
     studentSems[c.studentId].add(sem);
+    if (!studentSemCounselors[c.studentId]) studentSemCounselors[c.studentId] = {};
+    if (!studentSemStatus[c.studentId]) studentSemStatus[c.studentId] = {};
+    studentSemCounselors[c.studentId][sem] = formatCounselorLabel(c.counselorEmail) || c.counselorName || c.counselorText || '';
+    studentSemStatus[c.studentId][sem] = (c.semesterStatus?.[sem] || c.status || 'active');
   });
 
   const q = document.getElementById('cn-search')?.value?.trim().toLowerCase() || '';
@@ -8197,9 +8219,14 @@ function renderCaseNums(resetPage) {
 
   const rows = paged.map(c => {
     const sems = c.studentId ? [...(studentSems[c.studentId] || [])].sort() : [];
-    const semChips = sems.map(s =>
-      `<span style="display:inline-block;background:#ebf8ff;border:1px solid #90cdf4;color:#2b6cb0;border-radius:10px;padding:1px 8px;font-size:.78rem;margin:1px 2px;">${escHtml(semesterLabel(s))}</span>`
-    ).join('') || '<span style="color:#a0aec0;">—</span>';
+    const semChips = sems.map(s => {
+      const isClosed = (studentSemStatus[c.studentId]?.[s] || 'active') === 'closed';
+      const cName = studentSemCounselors[c.studentId]?.[s] || '';
+      const bg = isClosed ? '#ebf8ff' : '#fffbeb';
+      const border = isClosed ? '#90cdf4' : '#f6ad55';
+      const color = isClosed ? '#2b6cb0' : '#744210';
+      return `<span style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:1px 8px;font-size:.78rem;margin:1px 2px;white-space:nowrap;">${escHtml(semesterLabel(s))}${cName ? `<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(cName)}</span>` : ''}</span>`;
+    }).join('') || '<span style="color:#a0aec0;">—</span>';
     const editBtn = !c.deleted
       ? `<button class="btn btn-secondary btn-sm" onclick="editCaseNum('${escHtml(c.id)}')">修改案號</button>`
       : '—';
@@ -14397,11 +14424,14 @@ function auditLog(action, caseId = null, recordId = null, detail = null) {
       let raw;
       try { raw = await driveReadJson(AUDIT_LOG_FILE); }
       catch { raw = null; /* 檔案尚未建立 */ }
-      // 若讀取失敗（raw === null）且可能已有歷史資料，則跳過寫入，避免覆蓋
       if (raw === null) {
-        // 嘗試建立新檔（只在檔案確實不存在時）
-        try { await driveCreateJsonFile('audit_log.json', { logs: [entry] }, DRIVE_FOLDER_ID); }
-        catch { /* 已存在則忽略 */ }
+        // 檔案不在 ROOT_FOLDER_ID 路徑：先嘗試不帶 parentId 建立（Apps Script 預設用 ROOT_FOLDER_ID）
+        // 若已存在（可能在 DRIVE_FOLDER_ID 子夾）則用 DRIVE_FOLDER_ID 再試一次
+        try { await driveCreateJsonFile('audit_log.json', { logs: [entry] }); }
+        catch {
+          try { await driveCreateJsonFile('audit_log.json', { logs: [entry] }, DRIVE_FOLDER_ID); }
+          catch { /* 已存在則忽略 */ }
+        }
         return;
       }
       const data = (Array.isArray(raw?.logs)) ? raw : { logs: [] };
@@ -14584,6 +14614,13 @@ async function renderAuditLog() {
   } catch (e) {
     body.innerHTML = `<div class="alert alert-error">讀取失敗：${escHtml(e.message)}</div>`;
     return;
+  }
+
+  // 合併本 session 尚未寫入 Drive 的在地快取（dev 環境 Drive 路徑可能不一致時確保當下操作可見）
+  const driveTs = new Set(logs.map(l => l.t));
+  const cachedOnly = (window._auditLogsCache || []).filter(l => !driveTs.has(l.t));
+  if (cachedOnly.length) {
+    logs = [...logs, ...cachedOnly].sort((a, b) => (a.t || '') < (b.t || '') ? -1 : 1);
   }
 
   // 篩選控制列
