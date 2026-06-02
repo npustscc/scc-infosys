@@ -3702,23 +3702,78 @@ function resolveUserRole() {
 }
 
 // ══════════════════════════════════════════════
-//  Chunk localStorage 快取輔助
+//  Chunk IndexedDB 快取輔助（替代 localStorage，無 5MB 額度限制）
 // ══════════════════════════════════════════════
 const _CK_META_KEY = () => 'scc_ck_meta_' + DRIVE_FOLDER_ID;
 const _CK_DATA_KEY = n => 'scc_ck_' + DRIVE_FOLDER_ID + '_' + n.replace(/\//g, '|');
-function _ckMetaRead() { try { return JSON.parse(localStorage.getItem(_CK_META_KEY()) || '{}'); } catch { return {}; } }
-function _ckSave(name, data, modTime) {
+
+let _idb = null;
+async function _idbOpen() {
+  if (_idb) return _idb;
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('scc_chunk_cache', 1);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('chunks')) db.createObjectStore('chunks');
+      if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta');
+    };
+    req.onsuccess = e => { _idb = e.target.result; resolve(_idb); };
+    req.onerror = e => reject(e.target.error);
+  });
+}
+async function _ckMetaRead() {
+  try {
+    const db = await _idbOpen();
+    return await new Promise(resolve => {
+      const tx = db.transaction('meta', 'readonly');
+      const req = tx.objectStore('meta').get(_CK_META_KEY());
+      req.onsuccess = () => resolve(req.result || {});
+      req.onerror = () => resolve({});
+    });
+  } catch { return {}; }
+}
+async function _ckSave(name, data, modTime) {
   if (!modTime) return;
   try {
-    localStorage.setItem(_CK_DATA_KEY(name), JSON.stringify(data));
-    const meta = _ckMetaRead(); meta[name] = { modTime };
-    localStorage.setItem(_CK_META_KEY(), JSON.stringify(meta));
-  } catch(e) { console.warn('[ckSave] localStorage:', e.message); }
+    const db = await _idbOpen();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(['chunks', 'meta'], 'readwrite');
+      tx.objectStore('chunks').put(data, _CK_DATA_KEY(name));
+      const metaStore = tx.objectStore('meta');
+      const getReq = metaStore.get(_CK_META_KEY());
+      getReq.onsuccess = () => {
+        const m = getReq.result || {};
+        m[name] = { modTime };
+        metaStore.put(m, _CK_META_KEY());
+      };
+      tx.oncomplete = resolve;
+      tx.onerror = reject;
+    });
+  } catch(e) { console.warn('[ckSave] IndexedDB:', e.message); }
 }
-function _ckLoad(name, meta, expectedModTime) {
+async function _ckLoad(name, meta, expectedModTime) {
   const m = meta[name];
   if (!m || !expectedModTime || m.modTime !== expectedModTime) return null;
-  try { return JSON.parse(localStorage.getItem(_CK_DATA_KEY(name))); } catch { return null; }
+  try {
+    const db = await _idbOpen();
+    return await new Promise(resolve => {
+      const tx = db.transaction('chunks', 'readonly');
+      const req = tx.objectStore('chunks').get(_CK_DATA_KEY(name));
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch { return null; }
+}
+async function _ckLoadAny(name) {
+  try {
+    const db = await _idbOpen();
+    return await new Promise(resolve => {
+      const tx = db.transaction('chunks', 'readonly');
+      const req = tx.objectStore('chunks').get(_CK_DATA_KEY(name));
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch { return null; }
 }
 
 // ══════════════════════════════════════════════
@@ -3813,7 +3868,7 @@ async function _clbReloadChunk(chunk) {
     let fid = fm.get(fullFile) || fm.get(`${yearPfx}/${fullFile}`) || fm.get(leaf);
     const modTime = ft.get(fullFile) || ft.get(`${yearPfx}/${fullFile}`) || ft.get(leaf) || '';
     const data = await (fid ? driveReadJsonById(fid) : driveReadJson(`cases/${fullFile}`));
-    if (modTime) _ckSave(chunk, data, modTime);
+    if (modTime) await _ckSave(chunk, data, modTime);
     // 從 casesData 移除舊 chunk 個案並加入新資料（依 semStart 比對）
     const chunkSem = chunk.split('/').pop().slice(0, 4);
     const newCases = (data.cases || []).filter(c => c?.id);
@@ -3896,13 +3951,15 @@ async function loadCases() {
       // 初始化 chunk bar
       _clbInit(loadOrder);
 
-      // 讀取 localStorage 快取 metadata，分類：快取命中 vs 需從 Drive 讀取
-      const ckMeta = _ckMetaRead();
+      // 讀取 IndexedDB 快取 metadata，分類：快取命中 vs 需從 Drive 讀取
+      const ckMeta = await _ckMetaRead();
+      const _resolvedChunks = loadOrder.map(chunk => ({ chunk, ..._resolveChunk(chunk) }));
+      const _cacheChecks = await Promise.all(_resolvedChunks.map(async ({ chunk, fid, drivePathFile, modTime }) => ({
+        chunk, fid, drivePathFile, modTime, cached: await _ckLoad(chunk, ckMeta, modTime)
+      })));
       const cachedResults = [];
       const toFetch = [];
-      for (const chunk of loadOrder) {
-        const { fid, drivePathFile, modTime } = _resolveChunk(chunk);
-        const cached = _ckLoad(chunk, ckMeta, modTime);
+      for (const { chunk, cached, fid, drivePathFile, modTime } of _cacheChecks) {
         if (cached) {
           _clbSetState(chunk, 'cached', (cached.cases || []).length);
           cachedResults.push({ chunk, data: cached });
@@ -3937,7 +3994,7 @@ async function loadCases() {
             failedChunks.push({ chunk, fid, drivePathFile, modTime });
             _clbSetState(chunk, 'fail');
             // 降級：若快取有舊資料則沿用
-            const fallback = (() => { try { const raw = localStorage.getItem(_CK_DATA_KEY(chunk)); return raw ? JSON.parse(raw) : null; } catch { return null; } })();
+            const fallback = await _ckLoadAny(chunk);
             return { chunk, data: fallback || { cases: [] }, ok: false };
           }
         }));
