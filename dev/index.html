@@ -5786,8 +5786,8 @@ function showCaseDetail(caseId) {
     _iiLabel = '編輯初次晤談表'; _iiOncl = `openInitialInterviewPage('${cid}')`;
   }
   // 判斷此學期是否有結案評估可列印
-  const _semHasClosureEval = (c.semesterEvaluations || []).some(e => e.type === 'closure' && e.semester === _activeSem)
-    || (!( (c.semesterEvaluations||[]).some(e => e.type === 'closure') ) && !!c.closureEvaluation);
+  const _semHasClosureEval = !!_getLatestActiveEval(c, _activeSem, 'closure')
+    || (!((c.semesterEvaluations||[]).some(e => e.type === 'closure' && !e.deletedAt && !e.replacedBy)) && !!c.closureEvaluation);
   // 判斷此學期是否可刪除（超過1個學期且無紀錄）
   const _semMonths = semesterMonths(_activeSem || '');
   const _semHasRecords = (c.records||[]).some(r => !r.deleted && _semMonths.includes((r.date||'').slice(0,7)));
@@ -6218,29 +6218,46 @@ function showCaseDetail(caseId) {
       `<div style="margin-bottom:10px;">${addBtn}</div><div>${emptyMsg}${cards}</div>`);
   })();
 
-  // 結案評估區塊（支援多份、可 collapse、軟刪除）
+  // 結案/學期評估：合併單一卡片，依填表時間排序，歷程淡化呈現
   const evalHtml = (() => {
     const allEvals = c.semesterEvaluations || [];
-    const hasTypedClosures = allEvals.some(e => e.type === 'closure' && !e.deletedAt && !e.replacedBy);
-    let activeClosureEvals = _getActiveEvals(c, _activeSem, 'closure');
-    if (!hasTypedClosures && c.closureEvaluation) {
-      activeClosureEvals = [{ ...c.closureEvaluation, _isLegacy: true }];
+    const semEvals = allEvals.filter(e => !_activeSem || e.semester === _activeSem);
+    const hasAnyTyped = allEvals.some(e => !e.deletedAt && !e.replacedBy);
+    let displayEvals = [...semEvals];
+    if (!hasAnyTyped && c.closureEvaluation) {
+      const legSem = c.closureEvaluation.semester || _activeSem;
+      if (!_activeSem || legSem === _activeSem)
+        displayEvals = [{ ...c.closureEvaluation, _isLegacy: true, type: c.closureEvaluation.type || 'closure' }];
     }
-    if (!activeClosureEvals.length) return '';
+    if (!displayEvals.length) return '';
+    // 依填表時間降冪（最新在前）
+    displayEvals.sort((a, b) => (b.evaluatedAt||'').localeCompare(a.evaluatedAt||''));
     const lightMap = { '紅燈':'light-red','橙燈':'light-orange','黃燈':'light-yellow','綠燈':'light-green' };
-    const renderOneEval = (ev, isOpen, isHistory) => {
-      const rawId = ev.evalId || '_legacy_';
-      const safeId = rawId.replace(/[^a-zA-Z0-9_]/g, '_');
+    let firstActive = true;
+    const cards = displayEvals.map(ev => {
+      const isActive = !ev.deletedAt && !ev.replacedBy;
+      const isOpen = isActive && firstActive;
+      if (isActive) firstActive = false;
+      const isClosure = (ev.type || 'closure') === 'closure';
+      const typeLabel = isClosure ? '結案評估' : '學期評估';
+      const typeStyle = isClosure
+        ? 'background:#fde8e8;color:#c0392b;border:1px solid #fc8181;'
+        : 'background:#e9d8fd;color:#553c9a;border:1px solid #b794f4;';
+      const safeId = ((ev.evalId || (ev._isLegacy ? '_legacy_' : '_noid_' + (ev.evaluatedAt||'')))).replace(/[^a-zA-Z0-9_]/g,'_');
       const lightVal = ev.light || ev.statusLight || '';
       const evalDate = ev.evaluatedAt ? ev.evaluatedAt.slice(0,10) : '—';
-      const histTag = isHistory
-        ? (ev.deletedAt
-          ? `<span style="background:#fde8e8;color:#c53030;border-radius:4px;padding:1px 5px;font-size:.72rem;">已刪除</span>`
-          : `<span style="background:#e2e8f0;color:#718096;border-radius:4px;padding:1px 5px;font-size:.72rem;">已取代</span>`)
-        : '';
-      const delBtn = !isHistory && ev.evalId && !ev._isLegacy
-        ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();softDeleteEval('${escHtml(cid)}','${escHtml(ev.evalId)}')"
-            style="font-size:.72rem;padding:2px 7px;color:#c53030;border-color:#fc8181;">刪除</button>` : '';
+      let statusTag = '', actionBtn = '';
+      if (ev.deletedAt) {
+        statusTag = `<span style="background:#fde8e8;color:#c53030;border-radius:4px;padding:1px 5px;font-size:.72rem;">已刪除 ${ev.deletedAt.slice(0,10)}</span>`;
+        if (ev.evalId) actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();restoreDeletedEval('${escHtml(cid)}','${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;">還原</button>`;
+      } else if (ev.replacedBy) {
+        statusTag = `<span style="background:#e2e8f0;color:#718096;border-radius:4px;padding:1px 5px;font-size:.72rem;">已取代</span>`;
+      } else if (ev.evalId && !ev._isLegacy) {
+        actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();softDeleteEval('${escHtml(cid)}','${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;color:#c53030;border-color:#fc8181;">刪除</button>`;
+      }
+      const opacity = isActive ? '' : 'opacity:.6;';
+      const borderColor = isActive ? (isClosure ? '#bee3f8' : '#d6bcfa') : '#e2e8f0';
+      const bannerBg = isActive ? (isClosure ? '#ebf8ff' : '#faf5ff') : '#f9fafb';
       const dimRows = (ev.dimensions||[]).map(d =>
         `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f0f4f8;font-size:.84rem;">
           <span style="color:#4a5568;">${escHtml(d.label)}</span>
@@ -6264,96 +6281,27 @@ function showCaseDetail(caseId) {
           <div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.treatmentProvided)}</div></div>` : ''}
         ${ev.description ? `<div style="margin-top:10px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">質性描述</div>
           <div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.description)}</div></div>` : ''}
-        ${!isHistory && ev.evalId ? `<div style="margin-top:12px;">
-          <button class="btn btn-secondary btn-sm" onclick="printClosureEval('${escHtml(cid)}',null,null,'${escHtml(ev.evalId)}')">列印結案評估</button>
+        ${isActive && ev.evalId ? `<div style="margin-top:12px;">
+          <button class="btn btn-secondary btn-sm" onclick="printClosureEval('${escHtml(cid)}',null,null,'${escHtml(ev.evalId)}')">列印${typeLabel}</button>
         </div>` : ''}`;
-      return `<div style="border:1px solid ${isHistory?'#e2e8f0':'#bee3f8'};border-radius:8px;margin-bottom:8px;overflow:hidden;">
-        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:${isHistory?'#f7fafc':'#ebf8ff'};cursor:pointer;" onclick="toggleEvalCard('${safeId}')">
-          <span style="font-weight:600;font-size:.86rem;flex:1;">${escHtml(ev.evaluatorName||ev.evaluatorEmail||'評估表')}</span>
-          <span style="font-size:.78rem;color:#718096;">${evalDate}</span>
+      return `<div style="border:1px solid ${borderColor};border-radius:8px;margin-bottom:8px;overflow:hidden;${opacity}">
+        <div style="display:flex;align-items:center;gap:6px;padding:8px 12px;background:${bannerBg};cursor:pointer;" onclick="toggleEvalCard('${safeId}')">
+          <span style="${typeStyle}border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;flex-shrink:0;">${typeLabel}</span>
+          <span style="font-weight:600;font-size:.86rem;flex:1;${!isActive?'color:#a0aec0;':''}">${escHtml(ev.evaluatorName||ev.evaluatorEmail||typeLabel)}</span>
+          <span style="font-size:.78rem;color:#a0aec0;">${evalDate}</span>
           <span class="badge ${lightMap[lightVal]||'badge-gray'}" style="font-size:.74rem;">${escHtml(lightVal||'—')}</span>
-          ${histTag}${delBtn}
+          ${statusTag}${actionBtn}
           <span id="evalcard-icon-${safeId}">${isOpen?'▲':'▶'}</span>
         </div>
         <div id="evalcard-body-${safeId}" style="${isOpen?'':'display:none;'}padding:10px 14px;">${body}</div>
       </div>`;
-    };
-    // 最新的一份預設展開，其餘收起
-    let html = activeClosureEvals.map((ev, i) =>
-      renderOneEval(ev, i === activeClosureEvals.length - 1, false)
-    ).join('');
-    // 歷程（replaced / deleted）
-    const histEvals = allEvals.filter(e =>
-      e.type === 'closure' && (!_activeSem || e.semester === _activeSem) && (e.deletedAt || e.replacedBy)
-    ).sort((a, b) => (a.evaluatedAt||'').localeCompare(b.evaluatedAt||''));
-    if (histEvals.length) {
-      const hSafeId = 'hist_cl_' + cid.replace(/[^a-zA-Z0-9]/g,'_');
-      html += `<div style="margin-top:4px;">
-        <div style="cursor:pointer;font-size:.81rem;color:#718096;padding:5px 2px;" onclick="toggleEvalCard('${hSafeId}')">
-          <span id="evalcard-icon-${hSafeId}">▶</span> 歷程（${histEvals.length} 筆）</div>
-        <div id="evalcard-body-${hSafeId}" style="display:none;">${histEvals.map(ev => renderOneEval(ev, false, true)).join('')}</div>
-      </div>`;
-    }
-    return mkSection('eval', '結案評估', html);
+    }).join('');
+    const addBtn = `<div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+      <button class="btn btn-secondary btn-sm" onclick="closeCaseConfirm('${escHtml(cid)}')">＋ 新增評估</button>
+    </div>`;
+    return mkSection('eval', '結案 / 學期評估', addBtn + cards);
   })();
-
-  // 學期評估記錄（支援多份、可 collapse、軟刪除）
-  const semEvalHtml = (() => {
-    const allEvals = c.semesterEvaluations || [];
-    const activeSemEvals = _getActiveEvals(c, _activeSem, 'semester');
-    if (!activeSemEvals.length) return '';
-    const lightMap = { '紅燈':'light-red','橙燈':'light-orange','黃燈':'light-yellow','綠燈':'light-green' };
-    const renderSemCard = (ev, isOpen, isHistory) => {
-      const rawId = ev.evalId || ('_selegacy_' + (ev.evaluatedAt||''));
-      const safeId = rawId.replace(/[^a-zA-Z0-9_]/g,'_');
-      const lightVal = ev.light || ev.statusLight || '';
-      const evalDate = ev.evaluatedAt ? ev.evaluatedAt.slice(0,10) : '—';
-      const histTag = isHistory
-        ? (ev.deletedAt
-          ? `<span style="background:#fde8e8;color:#c53030;border-radius:4px;padding:1px 5px;font-size:.72rem;">已刪除</span>`
-          : `<span style="background:#e2e8f0;color:#718096;border-radius:4px;padding:1px 5px;font-size:.72rem;">已取代</span>`)
-        : '';
-      const delBtn = !isHistory && ev.evalId
-        ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();softDeleteEval('${escHtml(cid)}','${escHtml(ev.evalId)}')"
-            style="font-size:.72rem;padding:2px 7px;color:#c53030;border-color:#fc8181;">刪除</button>` : '';
-      const dimRows = (ev.dimensions||[]).map(d =>
-        `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f0f4f8;font-size:.82rem;">
-          <span style="color:#4a5568;">${escHtml(d.label)}</span>
-          <span class="badge ${d.level==='低'?'badge-green':d.level==='中'?'badge-orange':'light-red'}">${escHtml(d.level)}</span>
-        </div>`).join('');
-      const body = `
-        <div style="margin-bottom:8px;">${dimRows}</div>
-        ${ev.description ? `<div style="font-size:.88rem;white-space:pre-wrap;margin-top:6px;">${escHtml(ev.description)}</div>` : ''}
-        ${!isHistory && ev.evalId ? `<div style="margin-top:10px;">
-          <button class="btn btn-secondary btn-sm" onclick="printClosureEval('${escHtml(cid)}',null,null,'${escHtml(ev.evalId)}')">列印學期評估</button>
-        </div>` : ''}`;
-      return `<div style="border:1px solid ${isHistory?'#e2e8f0':'#e2e8f0'};border-radius:8px;margin-bottom:8px;overflow:hidden;">
-        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:${isHistory?'#f7fafc':'#f7fafc'};cursor:pointer;" onclick="toggleEvalCard('${safeId}')">
-          <span style="font-weight:600;font-size:.86rem;flex:1;">${escHtml(ev.evaluatorName||ev.evaluatorEmail||'學期評估')}</span>
-          <span style="font-size:.78rem;color:#718096;">${evalDate}</span>
-          <span class="badge ${lightMap[lightVal]||'badge-gray'}" style="font-size:.74rem;">${escHtml(lightVal||'—')}</span>
-          ${histTag}${delBtn}
-          <span id="evalcard-icon-${safeId}">${isOpen?'▲':'▶'}</span>
-        </div>
-        <div id="evalcard-body-${safeId}" style="${isOpen?'':'display:none;'}padding:10px 14px;">${body}</div>
-      </div>`;
-    };
-    let html = activeSemEvals.map((ev, i) =>
-      renderSemCard(ev, i === activeSemEvals.length - 1, false)
-    ).join('');
-    const histSemEvals = allEvals.filter(e =>
-      e.type === 'semester' && (!_activeSem || e.semester === _activeSem) && (e.deletedAt || e.replacedBy)
-    ).sort((a, b) => (a.evaluatedAt||'').localeCompare(b.evaluatedAt||''));
-    if (histSemEvals.length) {
-      const hSafeId = 'hist_sem_' + cid.replace(/[^a-zA-Z0-9]/g,'_');
-      html += `<div style="margin-top:4px;">
-        <div style="cursor:pointer;font-size:.81rem;color:#718096;padding:5px 2px;" onclick="toggleEvalCard('${hSafeId}')">
-          <span id="evalcard-icon-${hSafeId}">▶</span> 歷程（${histSemEvals.length} 筆）</div>
-        <div id="evalcard-body-${hSafeId}" style="display:none;">${histSemEvals.map(ev => renderSemCard(ev, false, true)).join('')}</div>
-      </div>`;
-    }
-    return mkSection('semeval', '學期評估記錄', html);
-  })();
+  const semEvalHtml = '';
 
   if (_caseDetailMode === 'psychtest') {
     document.getElementById('detail-body').innerHTML = _renderPsychTestReport(c, _caseDetailPsychIdx);
@@ -7847,6 +7795,9 @@ function showEvalTypeModal(caseId) {
 function showEvalExistingModal(caseId, evalSem, existingClosure, existingSemester) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
+  // 確保 legacy eval 有 evalId（舊資料可能沒有），避免編輯時找不到
+  if (existingClosure && !existingClosure.evalId) existingClosure.evalId = _genEvalId();
+  if (existingSemester && !existingSemester.evalId) existingSemester.evalId = _genEvalId();
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   let editBtns = '';
@@ -8405,6 +8356,30 @@ function _semLightStyle(c, sem) {
     return { bg:'#ebf8ff', border:'#63b3ed', color:'#2b6cb0' };
   }
   return { bg:'#f0f4f8', border:'#cbd5e0', color:'#718096' };
+}
+async function restoreDeletedEval(caseId, evalId) {
+  const idx = casesData.findIndex(c => c.id === caseId);
+  if (idx === -1) return;
+  const eIdx = (casesData[idx].semesterEvaluations || []).findIndex(e => e.evalId === evalId);
+  if (eIdx < 0) return;
+  const prevEval = { ...casesData[idx].semesterEvaluations[eIdx] };
+  casesData[idx].semesterEvaluations[eIdx].deletedAt = null;
+  showCaseDetail(caseId);
+  const jobId = bgJobAdd('還原評估表', casesData[idx].name);
+  (async () => {
+    try {
+      await saveCasesChunks(caseId);
+      bgJobDone(jobId);
+      auditLog('還原評估表', caseId, null, evalId);
+    } catch (err) {
+      bgJobFail(jobId, err.message);
+      const ri = casesData.findIndex(x => x.id === caseId);
+      if (ri !== -1 && casesData[ri].semesterEvaluations?.[eIdx]) {
+        casesData[ri].semesterEvaluations[eIdx] = prevEval;
+        showCaseDetail(caseId);
+      }
+    }
+  })();
 }
 async function softDeleteEval(caseId, evalId) {
   if (!confirm('確定要刪除此評估表嗎？資料將保留 30 日。')) return;
