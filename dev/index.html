@@ -2866,6 +2866,7 @@
           <option value="event_records">事件處理記錄草稿</option>
           <option value="autosave">自動備援</option>
           <option value="manual">手動待辦</option>
+          <option value="case_assignment">待派案</option>
         </select>
         <select class="field-select" id="todos-filter-status" onchange="renderTodosPage()" style="max-width:130px;">
           <option value="pending">未完成</option>
@@ -2877,6 +2878,7 @@
         <label id="todos-select-all-label" style="font-size:.85rem;cursor:pointer;user-select:none;"><input type="checkbox" id="todos-select-all" onchange="_toggleTodosSelectAll(this)"> 全選</label>
         <button class="btn btn-sm" id="todos-batch-delete-btn" style="display:none;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_batchDeleteTodos()">刪除選取</button>
       </div>
+      <div id="todos-assignment-section"></div>
       <div id="todos-unclosed-summary"></div>
       <div id="todos-body"></div>
     </div>
@@ -3289,6 +3291,13 @@ function showToast(msg, type = 'success', duration = 3500) {
 }
 
 function showPage(pageId, navEl) {
+  // 離開待辦頁時標記待派案 todo 為已讀
+  const prevPage = document.querySelector('.page.active')?.id;
+  if (prevPage === 'page-todos' && pageId !== 'page-todos') {
+    let changed = false;
+    todosData.forEach(t => { if (t.type === 'case_assignment' && !t.done && !t.notifRead) { t.notifRead = true; changed = true; } });
+    if (changed) saveUserTodos().catch(() => {});
+  }
   const alreadyActive = document.getElementById(pageId)?.classList.contains('active');
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -4141,17 +4150,35 @@ async function loadCases() {
 // ══════════════════════════════════════════════
 //  渲染個案表格
 // ══════════════════════════════════════════════
+function _getLatestCounselorEmail(c) {
+  const sems = (Array.isArray(c.semesters) && c.semesters.length
+    ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean)).sort();
+  for (let i = sems.length - 1; i >= 0; i--) {
+    const snap = c.basicInfoSnapshots?.[sems[i]];
+    if (snap?.counselorEmail) return snap.counselorEmail;
+  }
+  return c.counselorEmail || '';
+}
+
 function renderCases() {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
 
-  // 過濾個案
+  // 過濾個案：只有最新學期主責 / 個管 可以看到自己的個案；無主責或已封存者所有人可見
   let visible = casesData;
-  if (!isAdmin && extraRole !== '個案管理員') {
-    visible = casesData.filter(c => !c.counselorEmail || c.counselorEmail === currentUser.email);
-  } else if (extraRole === '個案管理員' && configData &&
-             configData.users && configData.users[currentUser.email]) {
-    const allowed = configData.users[currentUser.email].allowedCases || [];
-    visible = casesData.filter(c => allowed.includes(c.id));
+  if (!isAdmin) {
+    visible = casesData.filter(c => {
+      if (c.archived) return true;
+      const latestCounselor = _getLatestCounselorEmail(c);
+      if (!latestCounselor) return true; // 未派案，所有人可見
+      if (latestCounselor === currentUser.email) return true;
+      if (c.caseManagerEmail === currentUser.email) return true;
+      // 向後相容：個案管理員 extraRole 的 allowedCases
+      if (extraRole === '個案管理員') {
+        const allowed = configData?.users?.[currentUser.email]?.allowedCases || [];
+        if (allowed.includes(c.id)) return true;
+      }
+      return false;
+    });
   }
 
   // 非管理者看不到已刪除個案
@@ -4318,7 +4345,7 @@ function renderCases() {
     })();
     const pastUnclosedSems = _pastUnclosedSems(c);
     const pastUnclosedTag = pastUnclosedSems.length
-      ? `<div style="font-size:.72rem;color:#9c4221;background:#feebc8;border-radius:3px;padding:1px 5px;margin-top:3px;display:inline-block;">${pastUnclosedSems.map(s => semesterLabel(s)).join('、')} 學期未完成結案</div>`
+      ? `<div style="font-size:.72rem;color:#9c4221;background:#feebc8;border-radius:3px;padding:1px 5px;margin-top:3px;display:inline-block;">${pastUnclosedSems.map(s => `<span onclick="event.stopPropagation();showCaseDetailAtSem('${escHtml(cid)}','${escHtml(s)}')" style="cursor:pointer;text-decoration:underline;" data-tip="點選跳至該學期結案評估">${semesterLabel(s)}</span>`).join('、')} 學期未完成結案</div>`
       : '';
     const caseSems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)].filter(Boolean);
     const displaySems = caseFilters.semester ? [caseFilters.semester] : caseSems;
@@ -7803,16 +7830,18 @@ function toggleEvalCard(safeId) {
   if (iconEl) iconEl.textContent = isOpen ? '▶' : '▲';
 }
 
-function showEvalTypeModal(caseId) {
+function showEvalTypeModal(caseId, evalSem) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
+  const sem = evalSem || _caseDetailActiveSem || currentSemesterPrefix();
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.innerHTML = `
     <div class="modal-box" style="max-width:400px;text-align:center;">
       <div class="modal-header"><h3 style="margin:0;">請選擇評估類型</h3></div>
       <div class="modal-body" style="padding:20px 16px;">
-        <p style="font-size:.88rem;color:#4a5568;margin-bottom:18px;">個案：<strong>${escHtml(c.name)}（${escHtml(c.id)}）</strong></p>
+        <p style="font-size:.88rem;color:#4a5568;margin-bottom:4px;">個案：<strong>${escHtml(c.name)}（${escHtml(c.id)}）</strong></p>
+        <p style="font-size:.88rem;color:#3182ce;font-weight:600;margin-bottom:14px;">學期：${escHtml(semesterLabel(sem))}</p>
         <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;">
           <button class="btn btn-warning" style="flex:1;min-width:120px;padding:14px 10px;font-size:.95rem;"
             onclick="this.closest('.modal-overlay').remove();openClosureEvalPage('${escHtml(caseId)}','semester')">
@@ -8560,7 +8589,7 @@ function closeCaseConfirm(caseId) {
   if (existingClosure || existingSemester) {
     showEvalExistingModal(caseId, evalSem, existingClosure, existingSemester);
   } else {
-    showEvalTypeModal(caseId);
+    showEvalTypeModal(caseId, evalSem);
   }
 }
 
@@ -11296,14 +11325,10 @@ function _iiSaveFreq(gk, f) { try { localStorage.setItem(_iiChipFreqKey(gk), JSO
 
 function _iiInitChipGroup(gk, defOpts, savedSel, savedCustom) {
   const freq = _iiGetFreq(gk);
-  const opts = [...defOpts];
-  (savedCustom || []).forEach(c => { if (!opts.includes(c)) opts.push(c); });
-  opts.sort((a, b) => {
-    const fa = freq[a] || 0, fb = freq[b] || 0;
-    if (fb !== fa) return fb - fa;
-    const ia = defOpts.indexOf(a), ib = defOpts.indexOf(b);
-    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
-  });
+  // 固定選項保持原始順序在前，自訂 chip 依使用頻率排序在後
+  const customOpts = (savedCustom || []).filter(c => !defOpts.includes(c));
+  customOpts.sort((a, b) => (freq[b] || 0) - (freq[a] || 0));
+  const opts = [...defOpts, ...customOpts];
   _iiChipData[gk] = { opts, sel: new Set(savedSel || []), custom: new Set(savedCustom || []) };
 }
 
@@ -11846,6 +11871,9 @@ async function saveInitialInterview() {
     : casesData[cidx].initialInterview;
   snap.createdAt = prev?.createdAt || snap.updatedAt;
   snap.createdBy = prev?.createdBy || currentUser?.email;
+  // 鎖定初談者（首次填寫時固定）
+  snap.filledBy     = prev?.filledBy     || currentUser?.email;
+  snap.filledByName = prev?.filledByName || configData?.users?.[currentUser?.email]?.name || currentUser?.name || '';
   delete snap.status; delete snap.draftSavedAt;
   if (_isMultiSem && _initialInterviewSem) {
     if (!casesData[cidx].initialInterviews) casesData[cidx].initialInterviews = {};
@@ -11855,9 +11883,29 @@ async function saveInitialInterview() {
     casesData[cidx].initialInterview = snap;
   }
   casesData[cidx].updatedAt = snap.updatedAt;
+  // 初談者成為個管（若尚未設定）
+  if (!casesData[cidx].caseManagerEmail) casesData[cidx].caseManagerEmail = snap.filledBy;
   // mark corresponding todo as done
   const _iiTodo = todosData.find(t => t.caseId === _initialInterviewCaseId && t.type === 'initial_interview' && !t.done);
   if (_iiTodo) { _iiTodo.done = true; _iiTodo.doneAt = new Date().toISOString(); saveUserTodos().catch(()=>{}); _syncTodoBadge(); }
+  // 建立/更新待派案 todo
+  const _existAssign = todosData.find(t => t.type === 'case_assignment' && t.caseId === _initialInterviewCaseId && !t.done);
+  const _caseName = casesData[cidx].name;
+  const _assignItem = {
+    id: _existAssign?.id || _genTodoId(),
+    type: 'case_assignment',
+    label: `待派案：${_caseName}（${_initialInterviewCaseId}）`,
+    caseId: _initialInterviewCaseId,
+    caseLabel: `${_caseName}（${_initialInterviewCaseId}）`,
+    assignedCounselor: snap.resultCounselor || '',
+    filledBy: snap.filledBy,
+    filledByName: snap.filledByName,
+    createdAt: _existAssign?.createdAt || new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    done: false, notifRead: false,
+  };
+  _putTodoItem(_assignItem);
+  saveUserTodos().catch(() => {});
 
   const jobId = bgJobAdd('儲存初次晤談表…');
   try {
@@ -13721,7 +13769,92 @@ async function _onTodosUserFilterChange() {
 
 // ── 待辦事項頁面渲染 ──
 
+// ── 待派案 todo 渲染（req 2）───────────────────────────────────────────────
+function _renderAssignmentTodos() {
+  const section = document.getElementById('todos-assignment-section');
+  if (!section) return;
+  const items = todosData.filter(t => t.type === 'case_assignment' && !t.done);
+  if (!items.length) { section.innerHTML = ''; return; }
+  const unread = items.filter(t => !t.notifRead);
+  const read   = items.filter(t => t.notifRead);
+  const counselorOpts = Object.entries(configData?.users || {})
+    .filter(([, u]) => !u.disabled)
+    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}</option>`).join('');
+
+  const renderCard = (t, isRead) => {
+    const hasAssigned = !!t.assignedCounselor;
+    const bgCol = isRead ? '#f7fafc' : (hasAssigned ? '#f0fff4' : '#fffbeb');
+    const borderCol = isRead ? '#e2e8f0' : (hasAssigned ? '#68d391' : '#f6ad55');
+    const badge = hasAssigned
+      ? `<span class="badge badge-green" style="font-size:.72rem;">已選主責</span>`
+      : `<span class="badge badge-orange" style="font-size:.72rem;">待選主責</span>`;
+    return `<div style="background:${bgCol};border:1px solid ${borderCol};border-radius:8px;padding:12px 14px;margin-bottom:8px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+        <span style="font-weight:600;font-size:.9rem;">待派案：${escHtml(t.caseLabel||t.label||'')}</span>
+        ${badge}
+        ${isRead ? '<span class="badge" style="background:#e2e8f0;color:#4a5568;font-size:.72rem;">已讀</span>' : ''}
+      </div>
+      ${t.filledByName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">初談者：${escHtml(t.filledByName)}</div>` : ''}
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <label style="font-size:.85rem;font-weight:600;">指派主責：</label>
+        <select id="assign-sel-${t.id}" class="field-select" style="max-width:200px;">
+          <option value="">—請選擇輔導人員—</option>
+          ${counselorOpts}
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="_confirmCaseAssignment('${t.id}')">確認派案</button>
+      </div>
+    </div>`;
+  };
+
+  let html = '';
+  if (unread.length) html += `<div style="font-weight:600;font-size:.88rem;color:#9c4221;margin-bottom:6px;">🔔 待派案（${unread.length} 件）</div>` + unread.map(t => renderCard(t, false)).join('');
+  if (read.length) html += `<div style="font-weight:600;font-size:.85rem;color:#718096;margin-top:10px;margin-bottom:6px;">已讀待派案（${read.length} 件）</div>` + read.map(t => renderCard(t, true)).join('');
+  section.innerHTML = `<div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;padding:12px 16px;margin-bottom:14px;">${html}</div>`;
+
+  // 還原已選值
+  items.forEach(t => {
+    const sel = document.getElementById('assign-sel-' + t.id);
+    if (sel && t.assignedCounselor) sel.value = t.assignedCounselor;
+  });
+}
+
+async function _confirmCaseAssignment(todoId) {
+  const t = todosData.find(x => x.id === todoId);
+  if (!t) return;
+  const sel = document.getElementById('assign-sel-' + todoId);
+  const counselorEmail = sel?.value || '';
+  if (!counselorEmail) { alert('請選擇輔導人員後再確認派案。'); return; }
+  const cidx = casesData.findIndex(c => c.id === t.caseId);
+  if (cidx === -1) { alert('找不到個案資料。'); return; }
+  const counselorName = configData?.users?.[counselorEmail]?.name || counselorEmail;
+  // 更新個案主責（全案層級 + 最新學期快照）
+  casesData[cidx].counselorEmail = counselorEmail;
+  casesData[cidx].counselorName  = counselorName;
+  const sems = (Array.isArray(casesData[cidx].semesters) && casesData[cidx].semesters.length
+    ? [...casesData[cidx].semesters] : [openDateToSemPrefix(casesData[cidx].openDate)].filter(Boolean)).sort();
+  const latestSem = sems[sems.length - 1];
+  if (latestSem && casesData[cidx].basicInfoSnapshots?.[latestSem]) {
+    casesData[cidx].basicInfoSnapshots[latestSem].counselorEmail = counselorEmail;
+    casesData[cidx].basicInfoSnapshots[latestSem].counselorName  = counselorName;
+  }
+  // 標記 todo 完成
+  t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail;
+  _syncTodoBadge();
+  // 背景儲存
+  const jobId = bgJobAdd('確認派案', casesData[cidx].name);
+  try {
+    await Promise.all([saveCasesChunks(t.caseId), saveUserTodos()]);
+    bgJobDone(jobId);
+    auditLog('確認派案', t.caseId, null, `指派給 ${counselorName}`);
+    renderCases();
+    renderTodosPage();
+  } catch (err) {
+    bgJobFail(jobId, err.message);
+  }
+}
+
 function renderTodosPage() {
+  _renderAssignmentTodos();
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
 
   // ── 管理者：初始化人員篩選下拉 ──
@@ -15636,6 +15769,7 @@ async function renderAuditLog() {
       <input type="date" id="af-date-from" class="field-input" style="max-width:150px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()" />
       <span style="font-size:.85rem;color:#718096;">至</span>
       <input type="date" id="af-date-to" class="field-input" style="max-width:150px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()" />
+      <input type="text" id="af-case" class="field-input" style="max-width:180px;padding:5px 8px;font-size:.85rem;" placeholder="個案（姓名/案號/學號）" oninput="filterAuditLog()" />
       <button class="btn btn-secondary btn-sm" onclick="renderAuditLog()">🔄 重新整理</button>
       <span id="af-count" style="font-size:.82rem;color:#718096;margin-left:auto;">${logs.length} 筆</span>
     </div>`;
@@ -15686,6 +15820,7 @@ function filterAuditLog() {
   const person = document.getElementById('af-person')?.value || '';
   const from   = document.getElementById('af-date-from')?.value || '';
   const to     = document.getElementById('af-date-to')?.value || '';
+  const caseQ  = (document.getElementById('af-case')?.value || '').trim().toLowerCase();
   // 記憶篩選條件
   try {
     const _auditKey = 'scc_audit_filter_' + (currentUser?.email || '');
@@ -15698,6 +15833,16 @@ function filterAuditLog() {
     if (person && (l.name || l.email) !== person) return false;
     if (from && l.t < from) return false;
     if (to   && l.t.slice(0,10) > to) return false;
+    if (caseQ) {
+      const cid = (l.caseId || '').toLowerCase();
+      if (cid.includes(caseQ)) return true;
+      const c = casesData.find(x => x.id === l.caseId);
+      if (c) {
+        if ((c.name || '').toLowerCase().includes(caseQ)) return true;
+        if ((c.studentId || '').toLowerCase().includes(caseQ)) return true;
+      }
+      return false;
+    }
     return true;
   });
 
