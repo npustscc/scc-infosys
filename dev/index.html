@@ -1656,7 +1656,7 @@
             <div id="cl-reason-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;"></div>
           </div>
           <div class="full" id="cl-closure-date-section" style="display:none;">
-            <label class="field-label">結案日期<span class="req">*</span></label>
+            <label class="field-label" id="cl-date-field-label">結案日期<span class="req">*</span></label>
             <div style="display:flex;flex-direction:column;gap:8px;margin-top:4px;">
               <label><input type="radio" name="cl-date-mode" value="session" onchange="_clDateModeChange('session')" checked/> 本學期會談日
                 <select id="cl-date-session-select" style="margin-left:8px;max-width:180px;"></select></label>
@@ -6492,8 +6492,10 @@ function showCaseDetail(caseId) {
       const _isHistSem = _caseDetailMode === 'semester' && _activeSem !== _csems[_csems.length - 1];
       nav.style.display = '';
       nav.innerHTML = _testChipsHtml +
-        `<div style="display:flex;gap:6px;flex-wrap:wrap;padding:10px 14px;background:${_isHistSem?'#fffbeb':'#f7fafc'};border:1px solid ${_isHistSem?'#f6ad55':'#e2e8f0'};border-radius:8px;align-items:center;margin-bottom:${_isHistSem?'4':'14'}px;">
-          <span style="font-size:.8rem;color:#718096;font-weight:600;white-space:nowrap;">學期：</span>
+        `<div style="padding:10px 14px;background:${_isHistSem?'#fffbeb':'#f7fafc'};border:1px solid ${_isHistSem?'#f6ad55':'#e2e8f0'};border-radius:8px;align-items:center;margin-bottom:${_isHistSem?'4':'14'}px;">
+          <div style="display:flex;gap:6px;flex-wrap:nowrap;overflow-x:auto;align-items:center;scrollbar-width:thin;padding-bottom:4px;"
+               onwheel="this.scrollLeft+=event.deltaY*0.7;event.preventDefault();">
+          <span style="font-size:.8rem;color:#718096;font-weight:600;white-space:nowrap;flex-shrink:0;">學期：</span>
           ${_csems.map(s => {
             const isAct = _caseDetailMode === 'semester' && s === _activeSem;
             const _ls = _semLightStyle(c, s);
@@ -6506,6 +6508,7 @@ function showCaseDetail(caseId) {
               ${escHtml(semesterLabel(s))}
             </button>`;
           }).join('')}
+          </div>
         </div>
         ${_isHistSem ? `<div style="background:#fffbeb;border:1px solid #f6ad55;color:#744210;border-radius:6px;padding:6px 14px;margin-bottom:14px;font-size:.82rem;">⚠ 目前顯示 <strong>${escHtml(semesterLabel(_activeSem))}</strong> 的歷史版本基本資料</div>` : ''}`;
     }
@@ -8095,7 +8098,9 @@ function openClosureEvalPage(caseId, evalType, editingEvalId) {
 
   // 4-4: 結案日期
   const dateSec = document.getElementById('cl-closure-date-section');
-  if (dateSec) dateSec.style.display = isClosure ? '' : 'none';
+  if (dateSec) dateSec.style.display = '';
+  const dateLabelEl = document.getElementById('cl-date-field-label');
+  if (dateLabelEl) dateLabelEl.innerHTML = `${isClosure ? '結案日期' : '評估日期'}<span class="req">*</span>`;
   if (isClosure) _clDateSet(prefill?.closureDate || '', evalSem, c.records || []);
 
   // 4-12/4-13: 後續安排
@@ -8376,7 +8381,9 @@ function _switchEvalType() {
   document.getElementById('cl-qualitative-closure').style.display = isClosure ? '' : 'none';
   document.getElementById('cl-qualitative-semester').style.display = isClosure ? 'none' : '';
   const dateSec = document.getElementById('cl-closure-date-section');
-  if (dateSec) dateSec.style.display = isClosure ? '' : 'none';
+  if (dateSec) dateSec.style.display = '';
+  const dateLabelEl = document.getElementById('cl-date-field-label');
+  if (dateLabelEl) dateLabelEl.innerHTML = `${isClosure ? '結案日期' : '評估日期'}<span class="req">*</span>`;
 }
 
 // ── 既有評估參考卡（4-18）────────────────────────────────────────────────────
@@ -8557,8 +8564,6 @@ async function saveClosureEval() {
     evalPayload = { description };
   }
   const followup = _clFollowupGet();
-  // 4-13: 內部轉案必須選擇輔導人員
-  if (followup === 'transfer') { _closAlert('請選擇內部轉案的輔導人員。'); return; }
 
   const dimensions = CLOSURE_DIMS.map((dim, i) => ({
     label: dim,
@@ -8621,18 +8626,23 @@ async function saveClosureEval() {
   renderCases();
   showCaseDetail(caseId);
 
-  // 4-13: 內部轉案 → 主責轉移
-  if (isClosure && followup?.startsWith('transfer:')) {
-    const newCounselorEmail = followup.slice(9);
-    const newCounselorName = configData?.users?.[newCounselorEmail]?.name || newCounselorEmail;
-    casesData[idx].counselorEmail = newCounselorEmail;
-    casesData[idx].counselorName  = newCounselorName;
-    const latestSem2 = (Array.isArray(casesData[idx].semesters) && casesData[idx].semesters.length
-      ? [...casesData[idx].semesters] : [openDateToSemPrefix(casesData[idx].openDate)].filter(Boolean)).sort().pop();
-    if (latestSem2 && casesData[idx].basicInfoSnapshots?.[latestSem2]) {
-      casesData[idx].basicInfoSnapshots[latestSem2].counselorEmail = newCounselorEmail;
-      casesData[idx].basicInfoSnapshots[latestSem2].counselorName  = newCounselorName;
-    }
+  // 4-13: 內部轉案 → 建立派案 todo（不立即轉移，等待待辦確認）
+  if (followup === 'transfer' || followup?.startsWith('transfer:')) {
+    const transferEmail = followup?.startsWith('transfer:') ? followup.slice(9) : '';
+    const transferName  = configData?.users?.[transferEmail]?.name || transferEmail || '';
+    _putTodoItem({
+      id: _genTodoId(), type: 'internal_transfer',
+      label: `內部轉案派案：${caseName}（${caseId}）`,
+      caseId, caseLabel: `${caseName}（${caseId}）`,
+      assignedCounselor: transferEmail,
+      assignedCounselorName: transferName,
+      fromCounselor: currentUser.email,
+      fromCounselorName: configData?.users?.[currentUser.email]?.name || currentUser.name,
+      evalType,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      done: false, notifRead: false,
+    });
+    saveUserTodos().catch(() => {});
   }
 
   // 4-9: 紅橘燈評估通知主任
@@ -8657,7 +8667,7 @@ async function saveClosureEval() {
       bgJobDone(jobId);
       auditLog(isClosure ? '執行結案' : '儲存學期評估', caseId, null, semesterLabel(evalSem) + '學期');
       // 4-12: 原主責續接 → 自動開下學期案
-      if (isClosure && followup === 'self') {
+      if (followup === 'self') {
         const srcCase = casesData.find(x => x.id === caseId);
         if (srcCase) await _autoOpenNextSemCase(srcCase, evalSem);
       }
@@ -13945,7 +13955,7 @@ async function _onTodosUserFilterChange() {
 function _renderAssignmentTodos() {
   const section = document.getElementById('todos-assignment-section');
   if (!section) return;
-  const items = todosData.filter(t => t.type === 'case_assignment' && !t.done);
+  const items = todosData.filter(t => (t.type === 'case_assignment' || t.type === 'internal_transfer') && !t.done);
   if (!items.length) { section.innerHTML = ''; return; }
   const unread = items.filter(t => !t.notifRead);
   const read   = items.filter(t => t.notifRead);
@@ -13954,25 +13964,34 @@ function _renderAssignmentTodos() {
     .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}</option>`).join('');
 
   const renderCard = (t) => {
+    const isTransfer = t.type === 'internal_transfer';
     const hasAssigned = !!t.assignedCounselor;
     const bgCol = hasAssigned ? '#f0fff4' : '#fffbeb';
     const borderCol = hasAssigned ? '#68d391' : '#f6ad55';
     const badge = hasAssigned
       ? `<span class="badge badge-green" style="font-size:.72rem;">已選主責</span>`
       : `<span class="badge badge-orange" style="font-size:.72rem;">待選主責</span>`;
+    const typeTag = isTransfer
+      ? `<span class="badge" style="background:#fde8e8;color:#c0392b;font-size:.72rem;">內部轉案</span>`
+      : `<span class="badge" style="background:#e9d8fd;color:#553c9a;font-size:.72rem;">初談派案</span>`;
+    const subInfo = isTransfer
+      ? (t.fromCounselorName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">原主責：${escHtml(t.fromCounselorName)}</div>` : '')
+      : (t.filledByName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">初談者：${escHtml(t.filledByName)}</div>` : '');
+    const confirmFn = isTransfer ? '_confirmInternalTransfer' : '_confirmCaseAssignment';
     return `<div style="background:${bgCol};border:1px solid ${borderCol};border-radius:8px;padding:12px 14px;margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
-        <span style="font-weight:600;font-size:.9rem;">待派案：${escHtml(t.caseLabel||t.label||'')}</span>
+        ${typeTag}
+        <span style="font-weight:600;font-size:.9rem;">${escHtml(t.caseLabel||t.label||'')}</span>
         ${badge}
       </div>
-      ${t.filledByName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">初談者：${escHtml(t.filledByName)}</div>` : ''}
+      ${subInfo}
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <label style="font-size:.85rem;font-weight:600;">指派主責：</label>
         <select id="assign-sel-${t.id}" class="field-select" style="max-width:200px;">
           <option value="">—請選擇輔導人員—</option>
           ${counselorOpts}
         </select>
-        <button class="btn btn-primary btn-sm" onclick="_confirmCaseAssignment('${t.id}')">確認派案</button>
+        <button class="btn btn-primary btn-sm" onclick="${confirmFn}('${t.id}')">確認派案</button>
       </div>
     </div>`;
   };
@@ -13994,6 +14013,36 @@ function _renderAssignmentTodos() {
     const sel = document.getElementById('assign-sel-' + t.id);
     if (sel && t.assignedCounselor) sel.value = t.assignedCounselor;
   });
+}
+
+async function _confirmInternalTransfer(todoId) {
+  const t = todosData.find(x => x.id === todoId);
+  if (!t) return;
+  const sel = document.getElementById('assign-sel-' + todoId);
+  const counselorEmail = sel?.value || '';
+  if (!counselorEmail) { alert('請選擇輔導人員後再確認轉案。'); return; }
+  const cidx = casesData.findIndex(c => c.id === t.caseId);
+  if (cidx === -1) { alert('找不到個案資料。'); return; }
+  const counselorName = configData?.users?.[counselorEmail]?.name || counselorEmail;
+  casesData[cidx].counselorEmail = counselorEmail;
+  casesData[cidx].counselorName  = counselorName;
+  const sems = (Array.isArray(casesData[cidx].semesters) && casesData[cidx].semesters.length
+    ? [...casesData[cidx].semesters] : [openDateToSemPrefix(casesData[cidx].openDate)].filter(Boolean)).sort();
+  const latestSem = sems[sems.length - 1];
+  if (latestSem && casesData[cidx].basicInfoSnapshots?.[latestSem]) {
+    casesData[cidx].basicInfoSnapshots[latestSem].counselorEmail = counselorEmail;
+    casesData[cidx].basicInfoSnapshots[latestSem].counselorName  = counselorName;
+  }
+  t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
+  _syncTodoBadge();
+  const jobId = bgJobAdd('確認內部轉案', casesData[cidx].name);
+  try {
+    await Promise.all([saveCasesChunks(t.caseId), saveUserTodos()]);
+    bgJobDone(jobId);
+    auditLog('確認內部轉案', t.caseId, null, `轉給 ${counselorName}`);
+    renderCases();
+    renderTodosPage();
+  } catch (err) { bgJobFail(jobId, err.message); }
 }
 
 async function _confirmCaseAssignment(todoId) {
@@ -14113,15 +14162,43 @@ function renderTodosPage() {
       const sems = Object.keys(bySem).sort();
       const isReminderRead = todosData.find(t => t.type === 'unclosed_reminder' && !t.done && t.notifRead);
       if (sems.length && !isReminderRead) {
+        // 建立個案明細列表
+        const caseRows = [];
+        casesData.filter(c => !c.deleted).forEach(c => {
+          _pastUnclosedSems(c).forEach(sem => {
+            const snap = c.basicInfoSnapshots?.[sem] || {};
+            const counselor = snap.counselorText || snap.counselorName || snap.counselorEmail ||
+              c.counselorText || c.counselorName || c.counselorEmail || '—';
+            caseRows.push({ c, sem, counselor });
+          });
+        });
+        caseRows.sort((a, b) => a.sem.localeCompare(b.sem) || a.c.name.localeCompare(b.c.name, 'zh'));
         summaryHtml = `<div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-            <span style="font-weight:600;font-size:.9rem;color:#9c4221;">⚠ 過去學期未結案提醒</span>
-            <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;" onclick="_dismissUnclosedReminder()">已讀，不再提醒</button>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+            <span style="font-weight:600;font-size:.9rem;color:#9c4221;">⚠ 過去學期未結案（${caseRows.length} 筆）</span>
+            <div style="display:flex;gap:6px;">
+              <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;background:#fff;border-color:#ed8936;color:#c05621;" onclick="goCasesPastUnclosed()">前往個案列表</button>
+              <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;" onclick="_dismissUnclosedReminder()">已讀，不再提醒</button>
+            </div>
           </div>
-          ${sems.map(s => `<div style="display:flex;align-items:center;gap:10px;font-size:.875rem;margin-bottom:4px;">
-            <span style="color:#744210;">${semesterLabel(s)} 學期共有 <strong>${bySem[s]}</strong> 案未結案</span>
-            <button class="btn btn-sm" style="padding:2px 10px;font-size:.78rem;background:#fff;border-color:#ed8936;color:#c05621;" onclick="goCasesPastUnclosed()">前往個案列表</button>
-          </div>`).join('')}
+          <div style="overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:.83rem;">
+              <thead><tr style="background:#fef3c7;">
+                <th style="padding:5px 8px;text-align:left;border-bottom:1px solid #f6ad55;white-space:nowrap;">案名</th>
+                <th style="padding:5px 8px;text-align:left;border-bottom:1px solid #f6ad55;white-space:nowrap;">案號</th>
+                <th style="padding:5px 8px;text-align:left;border-bottom:1px solid #f6ad55;white-space:nowrap;">未結案學期</th>
+                <th style="padding:5px 8px;text-align:left;border-bottom:1px solid #f6ad55;white-space:nowrap;">學期主責</th>
+              </tr></thead>
+              <tbody>
+                ${caseRows.map(r => `<tr onclick="showCaseDetailAtSem('${escHtml(r.c.id)}','${escHtml(r.sem)}')" style="cursor:pointer;border-bottom:1px solid #fde68a;" class="hover-row">
+                  <td style="padding:5px 8px;">${escHtml(r.c.name)}</td>
+                  <td style="padding:5px 8px;font-family:monospace;">${escHtml(r.c.id)}</td>
+                  <td style="padding:5px 8px;">${escHtml(semesterLabel(r.sem))}</td>
+                  <td style="padding:5px 8px;">${escHtml(r.counselor)}</td>
+                </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
         </div>`;
       }
     }
@@ -14151,7 +14228,7 @@ function renderTodosPage() {
     return;
   }
 
-  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案' };
+  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒' };
 
   body.innerHTML = filtered.map(t => {
     const tLabel = typeLabels[t.type] || t.type;
