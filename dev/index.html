@@ -3703,6 +3703,7 @@ async function afterLogin() {
       _migrateLocalStorageDrafts();
       _syncPendingRecordsToTodos();
       _checkPastSemUnclosedForDirectors();
+      _cleanupDeletedEvals();
     }).catch(() => {}); // loadCases 內部已處理並顯示錯誤
   } catch (err) {
     hideLoading();
@@ -6326,7 +6327,8 @@ function showCaseDetail(caseId) {
       const safeId = ((ev.evalId || (ev._isLegacy ? '_legacy_' : '_noid_' + (ev.evaluatedAt||'')))).replace(/[^a-zA-Z0-9_]/g,'_');
       const lightVal = ev.light || ev.statusLight || '';
       const evalDate = ev.evaluatedAt ? ev.evaluatedAt.slice(0,10) : '—';
-      const closureDateBadge = ev.closureDate ? `<span style="font-size:.72rem;color:#718096;background:#f0f4f8;border-radius:3px;padding:1px 5px;">結案 ${ev.closureDate}</span>` : '';
+      const _cdLabel = (ev.type||'closure') === 'closure' ? '結案' : '評估';
+      const closureDateBadge = ev.closureDate ? `<span style="font-size:.72rem;color:#718096;background:#f0f4f8;border-radius:3px;padding:1px 5px;">${_cdLabel} ${ev.closureDate}</span>` : '';
       let statusTag = '', actionBtn = '';
       if (ev.deletedAt) {
         statusTag = `<span style="background:#fde8e8;color:#c53030;border-radius:4px;padding:1px 5px;font-size:.72rem;">已刪除 ${ev.deletedAt.slice(0,10)}</span>`;
@@ -8475,7 +8477,7 @@ function _buildEvalPrintHtml(c, ev, formTitle) {
 </div>
 <style>#app-header,#sidebar{margin-top:32px!important;}#app-header{top:32px!important;}#notif-panel{top:96px!important;}#app-header.compact~#notif-panel{top:76px!important;}#detail-student-sem-nav{top:calc(var(--hdr-h,60px) + 32px)!important;}#dev-banner+*{margin-top:32px;}</style>
   <h2>國立屏東科技大學學生諮商中心 ${esc(formTitle)}</h2>
-  <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)} &ensp;|&ensp; 主責：${esc(c.counselorName||c.counselorEmail||'—')} &ensp;|&ensp; 評估日期：${rocDate(ev.evaluatedAt)}${ev.closureDate?` &ensp;|&ensp; 結案日期：${rocDate(ev.closureDate)}`:''}</div>
+  <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)} &ensp;|&ensp; 主責：${esc(c.counselorName||c.counselorEmail||'—')}${ev.closureDate?` &ensp;|&ensp; ${(ev.type||'closure')==='closure'?'結案日期':'評估日期'}：${rocDate(ev.closureDate)}`:''} &ensp;|&ensp; 填表日期：${rocDate(ev.evaluatedAt)}</div>
   <div class="section">
     <table>
       <thead><tr><th style="width:80%;">向度</th><th style="width:20%;text-align:center;">風險等級</th></tr></thead>
@@ -13459,6 +13461,21 @@ async function saveUserTodos() {
     const nf = await driveCreateJsonFile(fileName, content, usersId);
     if (nf?.id) _todoFileId = nf.id;
   }
+}
+
+function _cleanupDeletedEvals() {
+  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  let changed = false;
+  for (const c of casesData) {
+    if (!Array.isArray(c.semesterEvaluations)) continue;
+    const before = c.semesterEvaluations.length;
+    c.semesterEvaluations = c.semesterEvaluations.filter(ev => {
+      if (!ev.deletedAt) return true;
+      return new Date(ev.deletedAt).getTime() > thirtyDaysAgo;
+    });
+    if (c.semesterEvaluations.length !== before) changed = true;
+  }
+  if (changed) renderCases();
 }
 
 function _cleanupOldTodos() {
