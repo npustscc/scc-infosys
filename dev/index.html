@@ -1675,6 +1675,10 @@
                 <input type="checkbox" id="cl-cb-internal-transfer" onchange="_clFollowupChange('transfer',this.checked)"/> 內部轉案
               </label>
             </div>
+            <div id="cl-transfer-counselor-wrap" style="display:none;margin-top:8px;">
+              <label class="field-label" style="margin-bottom:4px;">轉案輔導人員<span class="req">*</span></label>
+              <select id="cl-transfer-counselor" class="field-select" style="max-width:240px;"></select>
+            </div>
             <div id="cl-followup-notice" style="display:none;font-size:.82rem;color:#d69e2e;margin-top:4px;"></div>
           </div>
         </div>
@@ -6183,6 +6187,7 @@ function showCaseDetail(caseId) {
       <div class="record-card" id="${iiId}" style="border:1.5px solid #b2d8b2;background:#f6fbf6;">
         <div class="record-card-header">
           <span style="font-weight:700;color:#276749;">📋 初次晤談紀錄表</span>
+          ${ii.filledByName ? `<span style="background:#e9d8fd;color:#553c9a;border:1px solid #d6bcfa;border-radius:12px;padding:1px 8px;font-size:.74rem;">初談者：${escHtml(ii.filledByName)}</span>` : ''}
           <div style="display:flex;gap:6px;align-items:center;">
             ${iiEditable
               ? `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="openInitialInterviewPage('${cid}')">編輯</button>`
@@ -6321,6 +6326,7 @@ function showCaseDetail(caseId) {
       const safeId = ((ev.evalId || (ev._isLegacy ? '_legacy_' : '_noid_' + (ev.evaluatedAt||'')))).replace(/[^a-zA-Z0-9_]/g,'_');
       const lightVal = ev.light || ev.statusLight || '';
       const evalDate = ev.evaluatedAt ? ev.evaluatedAt.slice(0,10) : '—';
+      const closureDateBadge = ev.closureDate ? `<span style="font-size:.72rem;color:#718096;background:#f0f4f8;border-radius:3px;padding:1px 5px;">結案 ${ev.closureDate}</span>` : '';
       let statusTag = '', actionBtn = '';
       if (ev.deletedAt) {
         statusTag = `<span style="background:#fde8e8;color:#c53030;border-radius:4px;padding:1px 5px;font-size:.72rem;">已刪除 ${ev.deletedAt.slice(0,10)}</span>`;
@@ -6353,8 +6359,17 @@ function showCaseDetail(caseId) {
             <span style="font-size:.88rem;">${escHtml(ev.closureReason)}</span></div>` : ''}
           ${ev.closureDate ? `<div><span style="font-size:.78rem;color:#a0aec0;">結案日期</span><br>
             <span style="font-size:.88rem;">${escHtml(ev.closureDate)}</span></div>` : ''}
-          ${ev.followup ? `<div><span style="font-size:.78rem;color:#a0aec0;">後續安排</span><br>
-            <span style="font-size:.88rem;">${ev.followup==='self'?'原主責續接':ev.followup==='transfer'?'內部轉案':escHtml(ev.followup)}</span></div>` : ''}
+          ${ev.followup ? (() => {
+            const fp = ev.followup;
+            let label;
+            if (fp === 'self') label = '原主責續接';
+            else if (fp?.startsWith('transfer:')) {
+              const email = fp.slice(9);
+              const name = configData?.users?.[email]?.name || email;
+              label = `內部轉案 → ${name}`;
+            } else label = fp;
+            return `<div><span style="font-size:.78rem;color:#a0aec0;">後續安排</span><br><span style="font-size:.88rem;">${escHtml(label)}</span></div>`;
+          })() : ''}
           <div><span style="font-size:.78rem;color:#a0aec0;">填表人</span><br>
             <span style="font-size:.88rem;">${escHtml(ev.evaluatorName||ev.evaluatorEmail||'—')}</span></div>
         </div>
@@ -6372,6 +6387,7 @@ function showCaseDetail(caseId) {
           <span style="${typeStyle}border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;flex-shrink:0;">${typeLabel}</span>
           <span style="font-weight:600;font-size:.86rem;flex:1;${!isActive?'color:#a0aec0;':''}">${escHtml(ev.evaluatorName||ev.evaluatorEmail||typeLabel)}</span>
           <span style="font-size:.78rem;color:#a0aec0;">${evalDate}</span>
+          ${closureDateBadge}
           <span class="badge ${lightMap[lightVal]||'badge-gray'}" style="font-size:.74rem;">${escHtml(lightVal||'—')}</span>
           ${statusTag}${actionBtn}
           <span id="evalcard-icon-${safeId}">${isOpen?'▲':'▶'}</span>
@@ -7975,14 +7991,30 @@ function openClosureEvalPage(caseId, evalType, editingEvalId) {
       dimensions: (draft.dims || []).map((level, i) => ({ label: CLOSURE_DIMS[i], level })),
     };
   }
-  // 4-7: 若無草稿與編輯目標，從最近一次被刪除的評估帶入
+  // 4-7: 若無草稿與編輯目標，從最近一次被刪除的評估帶入（同類型優先，其次跨類型）
   if (!prefill && !_closureEditingEvalId) {
     const deletedEvals = (c.semesterEvaluations || []).filter(e =>
-      e.deletedAt && !e.replacedBy && (e.type||'closure') === _closureEvalType && e.semester === evalSem
+      e.deletedAt && !e.replacedBy && e.semester === evalSem
     );
     if (deletedEvals.length) {
-      prefill = deletedEvals.reduce((a, b) => (a.deletedAt||'') > (b.deletedAt||'') ? a : b);
+      const sameType = deletedEvals.filter(e => (e.type||'closure') === _closureEvalType);
+      const source = (sameType.length ? sameType : deletedEvals)
+        .reduce((a, b) => (a.deletedAt||'') > (b.deletedAt||'') ? a : b);
+      prefill = { ...source };
       _prefillFromDeleted = true;
+      // 跨類型轉換欄位
+      if ((source.type||'closure') !== _closureEvalType) {
+        if (_closureEvalType === 'semester') {
+          const parts = [
+            source.chiefComplaint ? `主訴問題：\n${source.chiefComplaint}` : '',
+            source.assessment ? `評估：\n${source.assessment}` : '',
+            source.treatmentProvided ? `已提供輔導處遇：\n${source.treatmentProvided}` : '',
+          ].filter(Boolean);
+          prefill.description = parts.join('\n\n');
+        } else {
+          prefill.chiefComplaint = source.description || '';
+        }
+      }
     }
   }
 
@@ -8270,14 +8302,31 @@ function _clDateSet(val, evalSem, caseRecords) {
 }
 
 // ── 後續安排（4-12/4-13）────────────────────────────────────────────────────
+function _populateCounselorSelect(sel, selectedEmail) {
+  const opts = Object.entries(configData?.users || {})
+    .filter(([, u]) => !u.disabled)
+    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}</option>`).join('');
+  sel.innerHTML = `<option value="">—請選擇輔導人員—</option>` + opts;
+  if (selectedEmail) sel.value = selectedEmail;
+}
+
 function _clFollowupChange(type, checked) {
+  const wrap = document.getElementById('cl-transfer-counselor-wrap');
+  const sel  = document.getElementById('cl-transfer-counselor');
   if (checked) {
-    if (type === 'self') document.getElementById('cl-cb-internal-transfer').checked = false;
-    else document.getElementById('cl-cb-followup-self').checked = false;
-    const msg = type === 'self' ? '✔ 已標記為原主責續接' : '✔ 已標記為內部轉案，請記得完成轉銜流程';
+    if (type === 'self') {
+      document.getElementById('cl-cb-internal-transfer').checked = false;
+      if (wrap) wrap.style.display = 'none';
+    } else {
+      document.getElementById('cl-cb-followup-self').checked = false;
+      if (wrap) wrap.style.display = '';
+      if (sel) _populateCounselorSelect(sel);
+    }
+    const msg = type === 'self' ? '✔ 已標記為原主責續接' : '✔ 已標記為內部轉案，請選擇轉案輔導人員';
     const n = document.getElementById('cl-followup-notice');
     if (n) { n.textContent = msg; n.style.display = ''; }
   } else {
+    if (type === 'transfer' && wrap) wrap.style.display = 'none';
     const selfOn = document.getElementById('cl-cb-followup-self')?.checked;
     const transOn = document.getElementById('cl-cb-internal-transfer')?.checked;
     if (!selfOn && !transOn) {
@@ -8289,19 +8338,29 @@ function _clFollowupChange(type, checked) {
 
 function _clFollowupGet() {
   if (document.getElementById('cl-cb-followup-self')?.checked) return 'self';
-  if (document.getElementById('cl-cb-internal-transfer')?.checked) return 'transfer';
+  if (document.getElementById('cl-cb-internal-transfer')?.checked) {
+    const counselorEmail = document.getElementById('cl-transfer-counselor')?.value || '';
+    return counselorEmail ? `transfer:${counselorEmail}` : 'transfer';
+  }
   return '';
 }
 
 function _clFollowupSet(val) {
   const s = document.getElementById('cl-cb-followup-self');
   const t = document.getElementById('cl-cb-internal-transfer');
+  const wrap = document.getElementById('cl-transfer-counselor-wrap');
+  const sel  = document.getElementById('cl-transfer-counselor');
   const n = document.getElementById('cl-followup-notice');
   if (s) s.checked = val === 'self';
-  if (t) t.checked = val === 'transfer';
+  const isTransfer = val === 'transfer' || val?.startsWith('transfer:');
+  if (t) t.checked = isTransfer;
+  if (wrap) wrap.style.display = isTransfer ? '' : 'none';
+  if (isTransfer && sel) {
+    _populateCounselorSelect(sel, val?.startsWith('transfer:') ? val.slice(9) : '');
+  }
   if (n) {
     if (val === 'self') { n.textContent = '✔ 已標記為原主責續接'; n.style.display = ''; }
-    else if (val === 'transfer') { n.textContent = '✔ 已標記為內部轉案，請記得完成轉銜流程'; n.style.display = ''; }
+    else if (isTransfer) { n.textContent = '✔ 已標記為內部轉案，請選擇轉案輔導人員'; n.style.display = ''; }
     else n.style.display = 'none';
   }
 }
@@ -8498,6 +8557,8 @@ async function saveClosureEval() {
     evalPayload = { description };
   }
   const followup = _clFollowupGet();
+  // 4-13: 內部轉案必須選擇輔導人員
+  if (followup === 'transfer') { _closAlert('請選擇內部轉案的輔導人員。'); return; }
 
   const dimensions = CLOSURE_DIMS.map((dim, i) => ({
     label: dim,
@@ -8560,6 +8621,20 @@ async function saveClosureEval() {
   renderCases();
   showCaseDetail(caseId);
 
+  // 4-13: 內部轉案 → 主責轉移
+  if (isClosure && followup?.startsWith('transfer:')) {
+    const newCounselorEmail = followup.slice(9);
+    const newCounselorName = configData?.users?.[newCounselorEmail]?.name || newCounselorEmail;
+    casesData[idx].counselorEmail = newCounselorEmail;
+    casesData[idx].counselorName  = newCounselorName;
+    const latestSem2 = (Array.isArray(casesData[idx].semesters) && casesData[idx].semesters.length
+      ? [...casesData[idx].semesters] : [openDateToSemPrefix(casesData[idx].openDate)].filter(Boolean)).sort().pop();
+    if (latestSem2 && casesData[idx].basicInfoSnapshots?.[latestSem2]) {
+      casesData[idx].basicInfoSnapshots[latestSem2].counselorEmail = newCounselorEmail;
+      casesData[idx].basicInfoSnapshots[latestSem2].counselorName  = newCounselorName;
+    }
+  }
+
   // 4-9: 紅橘燈評估通知主任
   if (light === '紅燈' || light === '橙燈') {
     const evalTypeLabel = isClosure ? '結案評估' : '學期評估';
@@ -8581,6 +8656,11 @@ async function saveClosureEval() {
       await saveCasesChunks(caseId);
       bgJobDone(jobId);
       auditLog(isClosure ? '執行結案' : '儲存學期評估', caseId, null, semesterLabel(evalSem) + '學期');
+      // 4-12: 原主責續接 → 自動開下學期案
+      if (isClosure && followup === 'self') {
+        const srcCase = casesData.find(x => x.id === caseId);
+        if (srcCase) await _autoOpenNextSemCase(srcCase, evalSem);
+      }
     } catch (err) {
       bgJobFail(jobId, err.message);
       const ri = casesData.findIndex(x => x.id === caseId);
@@ -8616,6 +8696,58 @@ function nextSemesterPrefix(prefix) {
   const semType = prefix.slice(-1);
   const rocYear = parseInt(prefix.slice(0, -1));
   return semType === '1' ? `${rocYear}2` : `${rocYear + 1}1`;
+}
+
+function _semPrefixToApproxDate(prefix) {
+  if (!prefix || prefix.length < 4) return new Date().toISOString().slice(0, 10);
+  const rocYear = parseInt(prefix.slice(0, -1));
+  const adYear  = rocYear + 1911;
+  return prefix.slice(-1) === '1' ? `${adYear}-09-01` : `${adYear + 1}-02-01`;
+}
+
+function _generateCaseIdForSem(semPrefix) {
+  const prefix = semPrefix.slice(0, 4);
+  const maxSeq = casesData.reduce((max, c) => {
+    if (c.id?.startsWith(prefix)) {
+      const n = parseInt(c.id.slice(prefix.length), 10);
+      if (!isNaN(n)) return Math.max(max, n);
+    }
+    return max;
+  }, 0);
+  return `${prefix}${String(maxSeq + 1).padStart(3, '0')}`;
+}
+
+async function _autoOpenNextSemCase(sourceCase, evalSem) {
+  const nextSem  = nextSemesterPrefix(evalSem);
+  const openDate = _semPrefixToApproxDate(nextSem);
+  // 確認同學生下一學期無既有個案
+  const existing = casesData.find(c => {
+    if (c.deleted || c.id === sourceCase.id) return false;
+    const sems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)];
+    return c.studentId === sourceCase.studentId && sems.includes(nextSem);
+  });
+  if (existing) {
+    bgJobDone(null, `${semesterLabel(nextSem)}個案已存在（${existing.id}），略過自動開案`);
+    return;
+  }
+  const newId = _generateCaseIdForSem(nextSem);
+  const COPY_FIELDS = ['name','studentId','legalGender','genderIdentity','birthday','idNumber','nationality','foreignCountry','ethnicity','ethnicityNote','department','grade','program','classNo','disability','phone','email','residence','address','emergencyName','emergencyPhone','emergencyRelation','source','topics','caseManagerEmail'];
+  const newCase = { id: newId, openDate, status: 'active', semesters: [nextSem],
+    counselorEmail: sourceCase.counselorEmail, counselorName: sourceCase.counselorName, counselorText: sourceCase.counselorText,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  COPY_FIELDS.forEach(f => { if (sourceCase[f] !== undefined) newCase[f] = sourceCase[f]; });
+  casesData.push(newCase);
+  renderCases();
+  const jobId2 = bgJobAdd('自動開下學期案', `${sourceCase.name}（${newId}）`);
+  try {
+    await saveCasesChunks(newId);
+    auditLog('自動開下學期案', newId, null, `來源：${sourceCase.id}，${semesterLabel(nextSem)}學期`);
+    bgJobDone(jobId2, `已自動建立 ${semesterLabel(nextSem)} 學期新案 ${newId}`);
+  } catch (err) {
+    bgJobFail(jobId2, err.message);
+    const ri = casesData.findIndex(c => c.id === newId);
+    if (ri >= 0) casesData.splice(ri, 1);
+  }
 }
 
 function showNewSemModal(caseId) {
@@ -8807,6 +8939,14 @@ function _pastUnclosedSems(c) {
   const sems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)];
   return sems.filter(s => s && s < curSem && (c.semesterStatus?.[s] || 'active') !== 'closed');
 }
+function _dismissUnclosedReminder() {
+  const reminders = todosData.filter(t => t.type === 'unclosed_reminder' && !t.done);
+  reminders.forEach(t => { t.notifRead = true; });
+  if (reminders.length) saveUserTodos().catch(() => {});
+  _syncTodoBadge();
+  renderTodosPage();
+}
+
 function goCasesPastUnclosed() {
   caseFilters.status = 'past_unclosed';
   caseFilters.semester = '';
@@ -13337,7 +13477,7 @@ function _removeTodoItem(id) {
 }
 
 function _syncTodoBadge() {
-  const pending = todosData.filter(t => !t.done).length;
+  const pending = todosData.filter(t => !t.done && !(t.type === 'unclosed_reminder' && t.notifRead)).length;
   const badge = document.getElementById('todos-nav-badge');
   if (badge) {
     badge.textContent = pending > 99 ? '99+' : pending;
@@ -13424,16 +13564,28 @@ function _checkPastSemUnclosedForDirectors() {
   const semList = [...unclosedSems].sort().map(s => semesterLabel(s)).join('、');
   const notifKey = `past_sem_unclosed_${[...unclosedSems].sort().join('_')}`;
   if (!me.notifications) me.notifications = [];
-  // 避免重複：同內容 key 已存在且未讀則不再新增
-  if (me.notifications.find(n => n.id === notifKey && !n.read)) return;
-  me.notifications = me.notifications.filter(n => n.id !== notifKey);
-  me.notifications.unshift({
-    id: notifKey, type: 'past_sem_unclosed', caseId: '', caseName: '',
-    message: `提醒：${semList} 學期仍有個案尚未完成結案評估，請確認是否需要處理。`,
-    createdAt: new Date().toISOString(), read: false,
-  });
-  renderNotifBell();
-  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  if (!me.notifications.find(n => n.id === notifKey && !n.read)) {
+    me.notifications = me.notifications.filter(n => n.id !== notifKey);
+    me.notifications.unshift({
+      id: notifKey, type: 'past_sem_unclosed', caseId: '', caseName: '',
+      message: `提醒：${semList} 學期仍有個案尚未完成結案評估，請確認是否需要處理。`,
+      createdAt: new Date().toISOString(), read: false,
+    });
+    renderNotifBell();
+    driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  }
+  // 建立/更新 todo 項目（讓左側 badge 顯示）
+  const todoKey = `unclosed_reminder_${[...unclosedSems].sort().join('_')}`;
+  if (!todosData.find(t => t.id === todoKey && !t.done)) {
+    todosData = todosData.filter(t => t.type !== 'unclosed_reminder' || t.done);
+    _putTodoItem({
+      id: todoKey, type: 'unclosed_reminder',
+      label: `未結案提醒：${semList} 學期`,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      done: false, notifRead: false,
+    });
+    saveUserTodos().catch(() => {});
+  }
 }
 
 function _syncPendingRecordsToTodos() {
@@ -13959,9 +14111,13 @@ function renderTodosPage() {
         _pastUnclosedSems(c).forEach(s => { bySem[s] = (bySem[s] || 0) + 1; });
       });
       const sems = Object.keys(bySem).sort();
-      if (sems.length) {
+      const isReminderRead = todosData.find(t => t.type === 'unclosed_reminder' && !t.done && t.notifRead);
+      if (sems.length && !isReminderRead) {
         summaryHtml = `<div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
-          <div style="font-weight:600;font-size:.9rem;color:#9c4221;margin-bottom:8px;">⚠ 過去學期未結案提醒</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <span style="font-weight:600;font-size:.9rem;color:#9c4221;">⚠ 過去學期未結案提醒</span>
+            <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;" onclick="_dismissUnclosedReminder()">已讀，不再提醒</button>
+          </div>
           ${sems.map(s => `<div style="display:flex;align-items:center;gap:10px;font-size:.875rem;margin-bottom:4px;">
             <span style="color:#744210;">${semesterLabel(s)} 學期共有 <strong>${bySem[s]}</strong> 案未結案</span>
             <button class="btn btn-sm" style="padding:2px 10px;font-size:.78rem;background:#fff;border-color:#ed8936;color:#c05621;" onclick="goCasesPastUnclosed()">前往個案列表</button>
