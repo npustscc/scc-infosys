@@ -7900,7 +7900,8 @@ function openClosureEvalPage(caseId, evalType, editingEvalId) {
         <label><input type="radio" name="dim-${i}" value="低" ${savedLevel==='低'?'checked':''}/> <span class="badge badge-green">低</span></label>
         <label><input type="radio" name="dim-${i}" value="中" ${savedLevel==='中'?'checked':''}/> <span class="badge badge-orange">中</span></label>
         <label><input type="radio" name="dim-${i}" value="高" ${savedLevel==='高'?'checked':''}/> <span class="badge" style="background:#fde8e8;color:#c0392b;">高</span></label>
-        <label><input type="radio" name="dim-${i}" value="不清楚" ${savedLevel==='不清楚'?'checked':''}/> 不清楚／無</label>
+        <label><input type="radio" name="dim-${i}" value="不清楚" ${savedLevel==='不清楚'?'checked':''}/> 不清楚</label>
+        <label><input type="radio" name="dim-${i}" value="無" ${savedLevel==='無'?'checked':''}/> 無</label>
       </div>
     </div>`;
   }).join('');
@@ -7927,7 +7928,7 @@ function openClosureEvalPage(caseId, evalType, editingEvalId) {
 
 // ── 結案原因 chips ──────────────────────────────────────────────────────
 const _CL_REASON_FIXED = ['個案主述問題已緩解','個案無意願會談','退學','返家休養'];
-let _clReasonSelected = '';
+let _clReasonSelected = [];
 function _clReasonAllOpts() {
   return [..._CL_REASON_FIXED, ...(configData?.closureReasonCustomOpts || [])];
 }
@@ -7937,7 +7938,7 @@ function _clReasonRender() {
   if (!wrap) return;
   const allOpts = _clReasonAllOpts();
   const chipHtml = allOpts.map(opt => {
-    const active = _clReasonSelected === opt;
+    const active = _clReasonSelected.includes(opt);
     const isCustom = !_CL_REASON_FIXED.includes(opt);
     const delBtn = isCustom
       ? `<span onclick="event.stopPropagation();_clReasonDeleteCustom('${escHtml(opt).replace(/'/g,"\\'")}')
@@ -7951,7 +7952,9 @@ function _clReasonRender() {
 }
 
 function _clReasonSelect(opt) {
-  _clReasonSelected = opt;
+  const idx = _clReasonSelected.indexOf(opt);
+  if (idx >= 0) _clReasonSelected.splice(idx, 1);
+  else _clReasonSelected.push(opt);
   _clReasonRender();
 }
 
@@ -7971,18 +7974,20 @@ async function _clReasonDeleteCustom(opt) {
   if (!confirm(`確定要刪除結案原因「${opt}」？此為全系統共享選項。`)) return;
   const idx = (configData.closureReasonCustomOpts || []).indexOf(opt);
   if (idx >= 0) configData.closureReasonCustomOpts.splice(idx, 1);
-  if (_clReasonSelected === opt) _clReasonSelected = '';
+  const ri = _clReasonSelected.indexOf(opt);
+  if (ri >= 0) _clReasonSelected.splice(ri, 1);
   _clReasonRender();
   driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
 }
 
 function _clReasonGet() {
-  return _clReasonSelected;
+  return _clReasonSelected.join('、');
 }
 
 function _clReasonSet(val) {
-  if (!val) { _clReasonSelected = ''; _clReasonRender(); return; }
-  _clReasonSelected = val;
+  if (!val) { _clReasonSelected = []; _clReasonRender(); return; }
+  // 支援舊格式（單一字串）與新格式（"原因A、原因B"）
+  _clReasonSelected = val.split('、').map(s => s.trim()).filter(Boolean);
   _clReasonRender();
 }
 
@@ -8094,7 +8099,12 @@ function printClosureEval(caseId, semIdx, semPrefix, evalId) {
     ev = c.closureEvaluation;
     formTitle = '結案評估表';
   }
-  if (!ev) { alert('此學期尚無評估資料。'); return; }
+  if (!ev) {
+    alert(caseId == null && semIdx == null && semPrefix == null && evalId == null
+      ? '請先儲存評估後再點選列印。'
+      : '此學期尚無評估資料。');
+    return;
+  }
   const html = _buildEvalPrintHtml(c, ev, formTitle);
   const w = window.open('','_blank');
   if (w) { w.document.write(html); w.document.close(); }
@@ -8110,7 +8120,7 @@ async function saveClosureEval() {
     document.getElementById('closure-alert').scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
   if (!light)  { _closAlert('請選擇狀態評估燈號。'); return; }
-  if (!reason) { _closAlert('請選擇結案原因。'); return; }
+  if (!reason) { _closAlert('請選擇至少一個結案原因。'); return; }
 
   let evalPayload;
   if (isClosure) {
