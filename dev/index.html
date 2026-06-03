@@ -1597,7 +1597,11 @@
         <div class="page-title" id="closure-eval-page-title" style="margin:0;border:none;padding:0;">結案評估表</div>
       </div>
       <div id="closure-case-info" class="alert alert-info" style="margin-bottom:16px;"></div>
+      <div id="closure-ref-eval" style="display:none;margin-bottom:12px;"></div>
       <div id="closure-edit-notice" class="alert alert-warn" style="display:none;margin-bottom:12px;"></div>
+      <div id="closure-switch-type-wrap" style="display:none;margin-bottom:8px;">
+        <button class="btn btn-secondary btn-sm" onclick="_switchEvalType()">切換評估類型</button>
+      </div>
       <div id="closure-alert"></div>
 
       <div class="form-section">
@@ -1611,14 +1615,18 @@
           <div class="full">
             <label class="field-label">狀態評估<span class="req">*</span></label>
             <div class="radio-group">
-              <label><input type="radio" name="cl-light" value="紅燈" />
+              <label><input type="radio" name="cl-light" value="紅燈" onchange="_onLightChange(this.value)"/>
                 <span class="badge light-red">🔴 紅燈</span> 個案仍有高度自殺/自傷或傷人之危機</label>
-              <label><input type="radio" name="cl-light" value="橙燈" />
+              <label><input type="radio" name="cl-light" value="橙燈" onchange="_onLightChange(this.value)"/>
                 <span class="badge light-orange">🟠 橙燈</span> 個案有嚴重情緒/精神困擾</label>
-              <label><input type="radio" name="cl-light" value="黃燈" />
+              <label><input type="radio" name="cl-light" value="黃燈" onchange="_onLightChange(this.value)"/>
                 <span class="badge light-yellow">🟡 黃燈</span> 個案危機狀況已解除</label>
-              <label><input type="radio" name="cl-light" value="綠燈" />
+              <label><input type="radio" name="cl-light" value="綠燈" onchange="_onLightChange(this.value)"/>
                 <span class="badge light-green">🟢 綠燈</span> 個案狀況穩定</label>
+            </div>
+            <div class="full" id="cl-light-desc-wrap" style="display:none;margin-top:8px;">
+              <label class="field-label">狀態說明<span class="req">*</span></label>
+              <div id="cl-light-desc-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;"></div>
             </div>
           </div>
           <!-- 結案評估表：三個分開欄位 -->
@@ -1639,6 +1647,28 @@
           <div class="full">
             <label class="field-label">結案原因<span class="req">*</span></label>
             <div id="cl-reason-chips" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;"></div>
+          </div>
+          <div class="full" id="cl-closure-date-section" style="display:none;">
+            <label class="field-label">結案日期<span class="req">*</span></label>
+            <div style="display:flex;flex-direction:column;gap:8px;margin-top:4px;">
+              <label><input type="radio" name="cl-date-mode" value="session" onchange="_clDateModeChange('session')" checked/> 本學期會談日
+                <select id="cl-date-session-select" style="margin-left:8px;max-width:180px;"></select></label>
+              <label><input type="radio" name="cl-date-mode" value="today" onchange="_clDateModeChange('today')"/> 填表日</label>
+              <label><input type="radio" name="cl-date-mode" value="custom" onchange="_clDateModeChange('custom')"/> 自填
+                <input type="date" id="cl-date-custom" style="margin-left:8px;display:none;"/></label>
+            </div>
+          </div>
+          <div class="full" id="cl-followup-section">
+            <label class="field-label">後續安排</label>
+            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:4px;">
+              <label style="display:flex;align-items:center;gap:6px;">
+                <input type="checkbox" id="cl-cb-followup-self" onchange="_clFollowupChange('self',this.checked)"/> 原主責續接
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;">
+                <input type="checkbox" id="cl-cb-internal-transfer" onchange="_clFollowupChange('transfer',this.checked)"/> 內部轉案
+              </label>
+            </div>
+            <div id="cl-followup-notice" style="display:none;font-size:.82rem;color:#d69e2e;margin-top:4px;"></div>
           </div>
         </div>
       </div>
@@ -3652,6 +3682,7 @@ async function afterLogin() {
       scanUnassignedRecords().catch(() => {});
       _migrateLocalStorageDrafts();
       _syncPendingRecordsToTodos();
+      _checkPastSemUnclosedForDirectors();
     }).catch(() => {}); // loadCases 內部已處理並顯示錯誤
   } catch (err) {
     hideLoading();
@@ -4399,7 +4430,7 @@ function resetCaseFilters() {
 // ══════════════════════════════════════════════
 //  通知系統
 // ══════════════════════════════════════════════
-function addNotificationToUser(toEmail, type, caseId, caseName) {
+function addNotificationToUser(toEmail, type, caseId, caseName, customMsg) {
   if (!toEmail || !configData?.users?.[toEmail]) return false;
   if (toEmail === currentUser?.email) return false;
   const user = configData.users[toEmail];
@@ -4414,7 +4445,7 @@ function addNotificationToUser(toEmail, type, caseId, caseName) {
   user.notifications.unshift({
     id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
     type, caseId, caseName,
-    message: msgs[type] || type,
+    message: customMsg || msgs[type] || type,
     createdAt: new Date().toISOString(),
     read: false,
   });
@@ -6253,7 +6284,9 @@ function showCaseDetail(caseId) {
       } else if (ev.replacedBy) {
         statusTag = `<span style="background:#e2e8f0;color:#718096;border-radius:4px;padding:1px 5px;font-size:.72rem;">已取代</span>`;
       } else if (ev.evalId && !ev._isLegacy) {
-        actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();softDeleteEval('${escHtml(cid)}','${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;color:#c53030;border-color:#fc8181;">刪除</button>`;
+        actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printClosureEval('${escHtml(cid)}',null,null,'${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;">列印</button>
+<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();openClosureEvalPage('${escHtml(cid)}','${ev.type||'closure'}','${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;">編輯</button>
+<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();softDeleteEval('${escHtml(cid)}','${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;color:#c53030;border-color:#fc8181;">刪除</button>`;
       }
       const opacity = isActive ? '' : 'opacity:.6;';
       const borderColor = isActive ? (isClosure ? '#bee3f8' : '#d6bcfa') : '#e2e8f0';
@@ -6268,8 +6301,14 @@ function showCaseDetail(caseId) {
         <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;">
           <div><span style="font-size:.78rem;color:#a0aec0;">狀態評估</span><br>
             <span class="badge ${lightMap[lightVal]||'badge-gray'}">${escHtml(lightVal||'—')}</span></div>
+          ${ev.lightDescription ? `<div><span style="font-size:.78rem;color:#a0aec0;">狀態說明</span><br>
+            <span style="font-size:.88rem;">${escHtml(ev.lightDescription)}</span></div>` : ''}
           ${ev.closureReason ? `<div><span style="font-size:.78rem;color:#a0aec0;">結案原因</span><br>
             <span style="font-size:.88rem;">${escHtml(ev.closureReason)}</span></div>` : ''}
+          ${ev.closureDate ? `<div><span style="font-size:.78rem;color:#a0aec0;">結案日期</span><br>
+            <span style="font-size:.88rem;">${escHtml(ev.closureDate)}</span></div>` : ''}
+          ${ev.followup ? `<div><span style="font-size:.78rem;color:#a0aec0;">後續安排</span><br>
+            <span style="font-size:.88rem;">${ev.followup==='self'?'原主責續接':ev.followup==='transfer'?'內部轉案':escHtml(ev.followup)}</span></div>` : ''}
           <div><span style="font-size:.78rem;color:#a0aec0;">填表人</span><br>
             <span style="font-size:.88rem;">${escHtml(ev.evaluatorName||ev.evaluatorEmail||'—')}</span></div>
         </div>
@@ -6281,9 +6320,7 @@ function showCaseDetail(caseId) {
           <div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.treatmentProvided)}</div></div>` : ''}
         ${ev.description ? `<div style="margin-top:10px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">質性描述</div>
           <div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.description)}</div></div>` : ''}
-        ${isActive && ev.evalId ? `<div style="margin-top:12px;">
-          <button class="btn btn-secondary btn-sm" onclick="printClosureEval('${escHtml(cid)}',null,null,'${escHtml(ev.evalId)}')">列印${typeLabel}</button>
-        </div>` : ''}`;
+        `;
       return `<div style="border:1px solid ${borderColor};border-radius:8px;margin-bottom:8px;overflow:hidden;${opacity}">
         <div style="display:flex;align-items:center;gap:6px;padding:8px 12px;background:${bannerBg};cursor:pointer;" onclick="toggleEvalCard('${safeId}')">
           <span style="${typeStyle}border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;flex-shrink:0;">${typeLabel}</span>
@@ -7864,8 +7901,11 @@ function openClosureEvalPage(caseId, evalType, editingEvalId) {
   document.getElementById('closure-case-info').textContent =
     `個案：${c.name}（${c.id}）　主責：${c.counselorName || c.counselorEmail}`;
 
+  const evalSem = _closureEvalSem;
+
   // 編輯模式：從既有 eval 預填；新增模式：從 draft 還原
   let prefill = null;
+  let _prefillFromDeleted = false;
   if (_closureEditingEvalId) {
     prefill = (c.semesterEvaluations || []).find(e => e.evalId === _closureEditingEvalId) || null;
   }
@@ -7878,17 +7918,54 @@ function openClosureEvalPage(caseId, evalType, editingEvalId) {
       ? rawDraft : null;
     if (draft) prefill = {
       light: draft.light, closureReason: draft.reason,
+      lightDescription: draft.lightDescription,
+      closureDate: draft.closureDate,
+      followup: draft.followup,
       chiefComplaint: draft.chiefComplaint, assessment: draft.assessment,
       treatmentProvided: draft.treatmentProvided, description: draft.description,
       dimensions: (draft.dims || []).map((level, i) => ({ label: CLOSURE_DIMS[i], level })),
     };
   }
+  // 4-7: 若無草稿與編輯目標，從最近一次被刪除的評估帶入
+  if (!prefill && !_closureEditingEvalId) {
+    const deletedEvals = (c.semesterEvaluations || []).filter(e =>
+      e.deletedAt && !e.replacedBy && (e.type||'closure') === _closureEvalType && e.semester === evalSem
+    );
+    if (deletedEvals.length) {
+      prefill = deletedEvals.reduce((a, b) => (a.deletedAt||'') > (b.deletedAt||'') ? a : b);
+      _prefillFromDeleted = true;
+    }
+  }
 
-  // 標題提示（編輯模式）
+  // 標題提示
   const editNotice = document.getElementById('closure-edit-notice');
   if (editNotice) {
-    editNotice.style.display = _closureEditingEvalId ? '' : 'none';
-    editNotice.textContent = _closureEditingEvalId ? '⚠ 編輯模式：儲存後原評估將標記為「已取代」，並新增一筆紀錄。' : '';
+    if (_closureEditingEvalId) {
+      editNotice.style.display = ''; editNotice.className = 'alert alert-warn';
+      editNotice.textContent = '⚠ 編輯模式：儲存後原評估將標記為「已取代」，並新增一筆紀錄。';
+    } else if (_prefillFromDeleted) {
+      editNotice.style.display = ''; editNotice.className = 'alert alert-info';
+      editNotice.textContent = '📋 已從上次刪除的評估帶入資料，請確認後儲存。';
+    } else {
+      editNotice.style.display = 'none'; editNotice.textContent = '';
+    }
+  }
+
+  // 切換類型按鈕（編輯模式才顯示）
+  const switchWrap = document.getElementById('closure-switch-type-wrap');
+  if (switchWrap) switchWrap.style.display = _closureEditingEvalId ? '' : 'none';
+
+  // 4-18: 顯示既有評估供參考（新增模式且此學期已有評估）
+  const existingActiveEvals = (c.semesterEvaluations || []).filter(e =>
+    !e.deletedAt && !e.replacedBy && e.semester === evalSem
+  );
+  const refEl = document.getElementById('closure-ref-eval');
+  if (refEl) {
+    if (!_closureEditingEvalId && existingActiveEvals.length > 0) {
+      refEl.style.display = ''; refEl.innerHTML = _buildRefEvalHtml(existingActiveEvals);
+    } else {
+      refEl.style.display = 'none'; refEl.innerHTML = '';
+    }
   }
 
   // 產生八向度
@@ -7913,6 +7990,9 @@ function openClosureEvalPage(caseId, evalType, editingEvalId) {
   } else {
     document.querySelectorAll('input[name="cl-light"]').forEach(r => r.checked = false);
   }
+  // 4-2/4-3: 燈號說明 chips
+  _clLightDescSet(prefill?.lightDescription || '', lightVal);
+
   if (isClosure) {
     if (document.getElementById('cl-chief-complaint')) document.getElementById('cl-chief-complaint').value = prefill?.chiefComplaint || '';
     if (document.getElementById('cl-assessment'))      document.getElementById('cl-assessment').value = prefill?.assessment || '';
@@ -7921,6 +8001,15 @@ function openClosureEvalPage(caseId, evalType, editingEvalId) {
     document.getElementById('cl-description').value = prefill?.description || '';
   }
   _clReasonSet(prefill?.closureReason || '');
+
+  // 4-4: 結案日期
+  const dateSec = document.getElementById('cl-closure-date-section');
+  if (dateSec) dateSec.style.display = isClosure ? '' : 'none';
+  if (isClosure) _clDateSet(prefill?.closureDate || '', evalSem, c.records || []);
+
+  // 4-12/4-13: 後續安排
+  _clFollowupSet(prefill?.followup || '');
+
   setAlert('closure-alert', '', '');
   document.getElementById('btn-confirm-closure').disabled = false;
   showPage('page-closure-eval', null);
@@ -7991,6 +8080,176 @@ function _clReasonSet(val) {
   _clReasonRender();
 }
 
+// ── 燈號說明 chips（4-2/4-3）────────────────────────────────────────────────
+const _CL_LIGHT_DESC_OPTS = {
+  '紅燈': ['個案仍有高度自殺/自傷或傷人之危機'],
+  '橙燈': ['個案有嚴重情緒/精神困擾'],
+  '黃燈': ['個案危機狀況已解除'],
+  '綠燈': ['個案狀況穩定'],
+};
+let _clLightDescSelected = [];
+
+function _clLightDescRender(light) {
+  const wrap = document.getElementById('cl-light-desc-wrap');
+  const chipDiv = document.getElementById('cl-light-desc-chips');
+  if (!wrap || !chipDiv) return;
+  const opts = _CL_LIGHT_DESC_OPTS[light] || [];
+  wrap.style.display = opts.length ? '' : 'none';
+  chipDiv.innerHTML = opts.map(opt => {
+    const active = _clLightDescSelected.includes(opt);
+    return `<span onclick="_clLightDescSelect('${escHtml(opt).replace(/'/g,"\\'")}')
+" style="cursor:pointer;padding:6px 14px;border-radius:20px;font-size:.88rem;border:1.5px solid ${active?'#3182ce':'#cbd5e0'};background:${active?'#ebf8ff':'#fff'};color:${active?'#2b6cb0':'#4a5568'};user-select:none;transition:all .15s;">${escHtml(opt)}</span>`;
+  }).join('');
+}
+
+function _clLightDescSelect(opt) {
+  const idx = _clLightDescSelected.indexOf(opt);
+  if (idx >= 0) _clLightDescSelected.splice(idx, 1);
+  else _clLightDescSelected.push(opt);
+  const light = document.querySelector('input[name="cl-light"]:checked')?.value || '';
+  _clLightDescRender(light);
+}
+
+function _onLightChange(light) {
+  const preset = (_CL_LIGHT_DESC_OPTS[light] || [])[0];
+  if (preset) _clLightDescSelected = [preset];
+  else _clLightDescSelected = [];
+  _clLightDescRender(light);
+}
+
+function _clLightDescGet() { return _clLightDescSelected.join('、'); }
+
+function _clLightDescSet(val, light) {
+  _clLightDescSelected = val ? val.split('、').filter(Boolean) : [];
+  if (!val && light) {
+    const preset = (_CL_LIGHT_DESC_OPTS[light] || [])[0];
+    if (preset) _clLightDescSelected = [preset];
+  }
+  _clLightDescRender(light || '');
+}
+
+// ── 結案日期（4-4）──────────────────────────────────────────────────────────
+function _clDateModeChange(mode) {
+  const sel = document.getElementById('cl-date-session-select');
+  const custom = document.getElementById('cl-date-custom');
+  if (sel) sel.style.display = mode === 'session' ? '' : 'none';
+  if (custom) custom.style.display = mode === 'custom' ? '' : 'none';
+}
+
+function _clDateGet() {
+  const mode = document.querySelector('input[name="cl-date-mode"]:checked')?.value || 'session';
+  if (mode === 'session') return document.getElementById('cl-date-session-select')?.value || '';
+  if (mode === 'custom') return document.getElementById('cl-date-custom')?.value || '';
+  return new Date().toISOString().slice(0, 10);
+}
+
+function _clDateSet(val, evalSem, caseRecords) {
+  const dates = (caseRecords || [])
+    .filter(r => r.date && !r.deleted && openDateToSemPrefix(r.date) === evalSem)
+    .map(r => r.date)
+    .filter((v, i, a) => a.indexOf(v) === i)
+    .sort().reverse();
+  const sel = document.getElementById('cl-date-session-select');
+  if (sel) {
+    sel.innerHTML = dates.length
+      ? dates.map(d => `<option value="${escHtml(d)}">${d}</option>`).join('')
+      : `<option value="">（本學期無晤談紀錄）</option>`;
+  }
+  if (!val) {
+    const r = document.querySelector('input[name="cl-date-mode"][value="session"]');
+    if (r) { r.checked = true; _clDateModeChange('session'); }
+    if (sel && dates.length) sel.value = dates[0];
+    return;
+  }
+  if (dates.includes(val)) {
+    const r = document.querySelector('input[name="cl-date-mode"][value="session"]');
+    if (r) { r.checked = true; _clDateModeChange('session'); }
+    if (sel) sel.value = val;
+  } else if (val === new Date().toISOString().slice(0, 10)) {
+    const r = document.querySelector('input[name="cl-date-mode"][value="today"]');
+    if (r) { r.checked = true; _clDateModeChange('today'); }
+  } else {
+    const r = document.querySelector('input[name="cl-date-mode"][value="custom"]');
+    if (r) { r.checked = true; _clDateModeChange('custom'); }
+    const ci = document.getElementById('cl-date-custom');
+    if (ci) ci.value = val;
+  }
+}
+
+// ── 後續安排（4-12/4-13）────────────────────────────────────────────────────
+function _clFollowupChange(type, checked) {
+  if (checked) {
+    if (type === 'self') document.getElementById('cl-cb-internal-transfer').checked = false;
+    else document.getElementById('cl-cb-followup-self').checked = false;
+    const msg = type === 'self' ? '✔ 已標記為原主責續接' : '✔ 已標記為內部轉案，請記得完成轉銜流程';
+    const n = document.getElementById('cl-followup-notice');
+    if (n) { n.textContent = msg; n.style.display = ''; }
+  } else {
+    const selfOn = document.getElementById('cl-cb-followup-self')?.checked;
+    const transOn = document.getElementById('cl-cb-internal-transfer')?.checked;
+    if (!selfOn && !transOn) {
+      const n = document.getElementById('cl-followup-notice');
+      if (n) n.style.display = 'none';
+    }
+  }
+}
+
+function _clFollowupGet() {
+  if (document.getElementById('cl-cb-followup-self')?.checked) return 'self';
+  if (document.getElementById('cl-cb-internal-transfer')?.checked) return 'transfer';
+  return '';
+}
+
+function _clFollowupSet(val) {
+  const s = document.getElementById('cl-cb-followup-self');
+  const t = document.getElementById('cl-cb-internal-transfer');
+  const n = document.getElementById('cl-followup-notice');
+  if (s) s.checked = val === 'self';
+  if (t) t.checked = val === 'transfer';
+  if (n) {
+    if (val === 'self') { n.textContent = '✔ 已標記為原主責續接'; n.style.display = ''; }
+    else if (val === 'transfer') { n.textContent = '✔ 已標記為內部轉案，請記得完成轉銜流程'; n.style.display = ''; }
+    else n.style.display = 'none';
+  }
+}
+
+// ── 切換評估類型（4-6）──────────────────────────────────────────────────────
+function _switchEvalType() {
+  _closureEvalType = _closureEvalType === 'closure' ? 'semester' : 'closure';
+  const isClosure = _closureEvalType === 'closure';
+  document.getElementById('closure-section-title').textContent = isClosure ? '質性描述與結案資訊' : '質性描述';
+  document.getElementById('btn-print-eval').textContent = isClosure ? '列印結案評估' : '列印學期評估';
+  const confirmBtn = document.getElementById('btn-confirm-closure');
+  if (confirmBtn) { confirmBtn.textContent = isClosure ? '確認結案' : '儲存學期評估'; confirmBtn.className = isClosure ? 'btn btn-danger' : 'btn btn-primary'; }
+  document.getElementById('cl-qualitative-closure').style.display = isClosure ? '' : 'none';
+  document.getElementById('cl-qualitative-semester').style.display = isClosure ? 'none' : '';
+  const dateSec = document.getElementById('cl-closure-date-section');
+  if (dateSec) dateSec.style.display = isClosure ? '' : 'none';
+}
+
+// ── 既有評估參考卡（4-18）────────────────────────────────────────────────────
+function _buildRefEvalHtml(evals) {
+  const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const lightMap = { '紅燈':'light-red','橙燈':'light-orange','黃燈':'light-yellow','綠燈':'light-green' };
+  const id = 'closure-ref-eval-body';
+  const items = evals.map(ev => {
+    const typeLabel = (ev.type||'closure') === 'closure' ? '結案評估' : '學期評估';
+    return `<div style="padding:6px 0;border-bottom:1px solid #f0f4f8;font-size:.84rem;">
+      <span style="background:#ebf8ff;color:#2b6cb0;border-radius:3px;padding:1px 5px;font-size:.72rem;">${typeLabel}</span>
+      <span style="margin-left:6px;color:#4a5568;">${esc(ev.evaluatorName||'—')}</span>
+      <span style="margin-left:6px;color:#a0aec0;">${(ev.evaluatedAt||'').slice(0,10)}</span>
+      ${ev.light ? `<span class="badge ${lightMap[ev.light]||'badge-gray'}" style="margin-left:6px;font-size:.74rem;">${esc(ev.light)}</span>` : ''}
+      ${ev.closureReason ? `<div style="color:#718096;margin-top:2px;">結案原因：${esc(ev.closureReason)}</div>` : ''}
+    </div>`;
+  }).join('');
+  return `<div style="border:1px solid #bee3f8;border-radius:6px;background:#ebf8ff;">
+    <div style="padding:8px 12px;cursor:pointer;font-weight:600;font-size:.86rem;display:flex;justify-content:space-between;" onclick="const b=document.getElementById('${id}');b.style.display=b.style.display===''?'none':'';this.querySelector('span').textContent=b.style.display===''?'▲':'▶'">
+      📋 參考既有評估（${evals.length} 份）<span>▶</span>
+    </div>
+    <div id="${id}" style="display:none;padding:8px 12px;">${items}</div>
+  </div>`;
+}
+
 function cancelClosureEval() {
   _closureEvalDraft = {
     caseId: _closureCaseId,
@@ -8002,6 +8261,9 @@ function cancelClosureEval() {
     assessment: document.getElementById('cl-assessment')?.value || '',
     treatmentProvided: document.getElementById('cl-treatment')?.value || '',
     reason: _clReasonGet(),
+    lightDescription: _clLightDescGet(),
+    closureDate: _clDateGet(),
+    followup: _clFollowupGet(),
   };
   try { localStorage.setItem('scc_closure_draft_' + _closureCaseId, JSON.stringify(_closureEvalDraft)); } catch {}
   if (_closureCaseId) showCaseDetail(_closureCaseId);
@@ -8062,13 +8324,15 @@ function _buildEvalPrintHtml(c, ev, formTitle) {
   </div>
   <div class="section">
     <table>
-      <tr><th style="width:50%;">狀態燈號</th><th style="width:50%;">結案原因</th></tr>
+      <tr><th style="width:25%;">狀態燈號</th><th style="width:35%;">狀態說明</th><th style="width:40%;">結案原因</th></tr>
       <tr>
         <td style="padding:8px;font-weight:700;font-size:12pt;color:${lightColor[ev.statusLight]||'#333'};">${esc(ev.statusLight||'—')}</td>
+        <td style="padding:8px;">${esc(ev.lightDescription||'—')}</td>
         <td style="padding:8px;">${esc(ev.closureReason||'—')}</td>
       </tr>
     </table>
   </div>
+  ${ev.closureDate ? `<div class="section"><table><tr><th style="width:50%;">結案日期</th><th style="width:50%;">填表日期</th></tr><tr><td style="padding:8px;">${esc(ev.closureDate)}</td><td style="padding:8px;">${rocDate(ev.evaluatedAt)}</td></tr></table></div>` : ''}
   ${qualSection}
   <div style="margin-top:30px;display:flex;justify-content:flex-end;gap:60px;font-size:10.5pt;">
     <span>填表人：${esc(ev.evaluatorName||ev.evaluatorEmail||'—')}</span>
@@ -8119,8 +8383,10 @@ async function saveClosureEval() {
     setAlert('closure-alert', 'error', msg);
     document.getElementById('closure-alert').scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
-  if (!light)  { _closAlert('請選擇狀態評估燈號。'); return; }
-  if (!reason) { _closAlert('請選擇至少一個結案原因。'); return; }
+  const lightDescription = _clLightDescGet();
+  if (!light)            { _closAlert('請選擇狀態評估燈號。'); return; }
+  if (!lightDescription) { _closAlert('請選擇狀態說明。'); return; }
+  if (!reason)           { _closAlert('請選擇至少一個結案原因。'); return; }
 
   let evalPayload;
   if (isClosure) {
@@ -8130,12 +8396,15 @@ async function saveClosureEval() {
     if (!chiefComplaint)    { _closAlert('請填寫個案主訴問題。'); return; }
     if (!assessment)        { _closAlert('請填寫評估內容。'); return; }
     if (!treatmentProvided) { _closAlert('請填寫已提供之輔導處遇。'); return; }
-    evalPayload = { chiefComplaint, assessment, treatmentProvided };
+    const closureDate = _clDateGet();
+    if (!closureDate) { _closAlert('請選擇結案日期。'); return; }
+    evalPayload = { chiefComplaint, assessment, treatmentProvided, closureDate };
   } else {
     const description = (document.getElementById('cl-description')?.value || '').trim();
     if (!description) { _closAlert('請填寫質性描述。'); return; }
     evalPayload = { description };
   }
+  const followup = _clFollowupGet();
 
   const dimensions = CLOSURE_DIMS.map((dim, i) => ({
     label: dim,
@@ -8150,7 +8419,8 @@ async function saveClosureEval() {
   const caseName = casesData[idx].name;
 
   const evalData = {
-    dimensions, statusLight: light, light, closureReason: reason, ...evalPayload,
+    dimensions, statusLight: light, light, lightDescription,
+    closureReason: reason, followup, ...evalPayload,
     evaluatorEmail: currentUser.email,
     evaluatorName: configData?.users?.[currentUser.email]?.name || currentUser.name,
     evaluatedAt: new Date().toISOString(),
@@ -8196,6 +8466,19 @@ async function saveClosureEval() {
   try { localStorage.removeItem('scc_closure_draft_' + caseId); } catch {}
   renderCases();
   showCaseDetail(caseId);
+
+  // 4-9: 紅橘燈結案通知主任
+  if (isClosure && (light === '紅燈' || light === '橙燈')) {
+    const directors = Object.entries(configData?.users || {})
+      .filter(([, u]) => u.role === '主任').map(([email]) => email);
+    let notified = false;
+    directors.forEach(email => {
+      const sent = addNotificationToUser(email, 'closure_high_risk', caseId, caseName,
+        `個案「${caseName}（${caseId}）」結案評估為${light}，請注意後續關懷`);
+      if (sent) notified = true;
+    });
+    if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  }
 
   // 背景儲存
   const jobId = bgJobAdd(isClosure ? '儲存結案評估' : '儲存學期評估', caseName);
@@ -13006,6 +13289,37 @@ function _migrateLocalStorageDrafts() {
 }
 
 // ── 把 casesData 中遺失對應 todo 的 pending 記錄補回待辦事項 ──
+
+// ── 4-10: 學期結束後未結案持續提醒主任 ──────────────────────────────────────
+function _checkPastSemUnclosedForDirectors() {
+  const me = configData?.users?.[currentUser?.email];
+  if (!me || me.role !== '主任') return;
+  const curSem = currentSemesterPrefix();
+  const unclosedSems = new Set();
+  for (const c of casesData) {
+    if (c.deleted || c.archived) continue;
+    const sems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)].filter(Boolean);
+    for (const sem of sems) {
+      if (sem >= curSem) continue; // 只看過去學期
+      const semStatus = (c.semesterStatus || {})[sem];
+      if (semStatus !== 'closed') unclosedSems.add(sem);
+    }
+  }
+  if (!unclosedSems.size) return;
+  const semList = [...unclosedSems].sort().map(s => semesterLabel(s)).join('、');
+  const notifKey = `past_sem_unclosed_${[...unclosedSems].sort().join('_')}`;
+  if (!me.notifications) me.notifications = [];
+  // 避免重複：同內容 key 已存在且未讀則不再新增
+  if (me.notifications.find(n => n.id === notifKey && !n.read)) return;
+  me.notifications = me.notifications.filter(n => n.id !== notifKey);
+  me.notifications.unshift({
+    id: notifKey, type: 'past_sem_unclosed', caseId: '', caseName: '',
+    message: `提醒：${semList} 學期仍有個案尚未完成結案評估，請確認是否需要處理。`,
+    createdAt: new Date().toISOString(), read: false,
+  });
+  renderNotifBell();
+  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+}
 
 function _syncPendingRecordsToTodos() {
   let changed = false;
