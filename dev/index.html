@@ -13786,9 +13786,10 @@ async function _onTodosUserFilterChange() {
 function _renderAssignmentTodos() {
   const section = document.getElementById('todos-assignment-section');
   if (!section) return;
-  // 顯示所有未完成的待派案 todo（包含已讀，不分區）
   const items = todosData.filter(t => t.type === 'case_assignment' && !t.done);
   if (!items.length) { section.innerHTML = ''; return; }
+  const unread = items.filter(t => !t.notifRead);
+  const read   = items.filter(t => t.notifRead);
   const counselorOpts = Object.entries(configData?.users || {})
     .filter(([, u]) => !u.disabled)
     .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}</option>`).join('');
@@ -13800,11 +13801,10 @@ function _renderAssignmentTodos() {
     const badge = hasAssigned
       ? `<span class="badge badge-green" style="font-size:.72rem;">已選主責</span>`
       : `<span class="badge badge-orange" style="font-size:.72rem;">待選主責</span>`;
-    const readBadge = t.notifRead ? `<span class="badge" style="background:#e2e8f0;color:#4a5568;font-size:.72rem;">已讀</span>` : '';
     return `<div style="background:${bgCol};border:1px solid ${borderCol};border-radius:8px;padding:12px 14px;margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
         <span style="font-weight:600;font-size:.9rem;">待派案：${escHtml(t.caseLabel||t.label||'')}</span>
-        ${badge}${readBadge}
+        ${badge}
       </div>
       ${t.filledByName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">初談者：${escHtml(t.filledByName)}</div>` : ''}
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -13818,7 +13818,16 @@ function _renderAssignmentTodos() {
     </div>`;
   };
 
-  const html = `<div style="font-weight:600;font-size:.88rem;color:#9c4221;margin-bottom:6px;">🔔 待派案（${items.length} 件）</div>` + items.map(t => renderCard(t)).join('');
+  let html = '';
+  if (unread.length) {
+    html += `<div style="font-weight:600;font-size:.88rem;color:#9c4221;margin-bottom:6px;">🔔 待派案（${unread.length} 件）</div>` + unread.map(renderCard).join('');
+  }
+  if (read.length) {
+    html += `<details style="margin-top:${unread.length?'10px':'0'};">
+      <summary style="font-weight:600;font-size:.85rem;color:#718096;cursor:pointer;padding:4px 0;">已讀派案（${read.length} 件）</summary>
+      <div style="margin-top:6px;">${read.map(renderCard).join('')}</div>
+    </details>`;
+  }
   section.innerHTML = `<div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;padding:12px 16px;margin-bottom:14px;">${html}</div>`;
 
   // 還原已選值
@@ -13848,7 +13857,7 @@ async function _confirmCaseAssignment(todoId) {
     casesData[cidx].basicInfoSnapshots[latestSem].counselorName  = counselorName;
   }
   // 標記 todo 完成
-  t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail;
+  t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
   _syncTodoBadge();
   // 背景儲存
   const jobId = bgJobAdd('確認派案', casesData[cidx].name);
@@ -13979,7 +13988,7 @@ function renderTodosPage() {
     return;
   }
 
-  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動' };
+  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案' };
 
   body.innerHTML = filtered.map(t => {
     const tLabel = typeLabels[t.type] || t.type;
@@ -14012,6 +14021,7 @@ function renderTodosPage() {
           ${ownerBadge}
         </div>
         ${t.caseLabel ? `<div style="font-size:.82rem;color:#718096;margin-bottom:4px;">個案：${escHtml(t.caseLabel)}</div>` : ''}
+        ${t.done && t.type === 'case_assignment' && t.assignedCounselorName ? `<div style="font-size:.82rem;color:#276749;margin-bottom:4px;">已派案給：${escHtml(t.assignedCounselorName)}</div>` : ''}
         <div style="font-size:.78rem;color:#a0aec0;">${createdAt}${t.done && doneAt ? `　完成：${doneAt}` : ''}</div>
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;align-items:center;">
@@ -15754,35 +15764,40 @@ async function renderAuditLog() {
   const persons = [...new Set(logs.map(l => l.name || l.email))].sort();
 
   const filterBar = `
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
-      <select id="af-page" class="field-select" style="max-width:160px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()">
-        <option value="">全部頁面</option>
-        <optgroup label="個案">
-          <option value="個案列表">個案列表</option>
-          <option value="個案詳細資料">個案詳細資料</option>
-          <option value="晤談紀錄">晤談紀錄</option>
-          <option value="初次晤談">初次晤談</option>
-        </optgroup>
-        <option value="空間預約">空間預約</option>
-        <option value="使用者管理">使用者管理</option>
-        <option value="轉銜管理">轉銜管理</option>
-        <option value="精神科評估">精神科評估</option>
-        <option value="系統管理">系統管理</option>
-      </select>
-      <select id="af-action" class="field-select" style="max-width:160px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()">
-        <option value="">全部動作</option>
-        ${actions.map(a => `<option value="${escHtml(a)}">${escHtml(a)}</option>`).join('')}
-      </select>
-      <select id="af-person" class="field-select" style="max-width:160px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()">
-        <option value="">全部人員</option>
-        ${persons.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('')}
-      </select>
-      <input type="date" id="af-date-from" class="field-input" style="max-width:150px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()" />
-      <span style="font-size:.85rem;color:#718096;">至</span>
-      <input type="date" id="af-date-to" class="field-input" style="max-width:150px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()" />
-      <input type="text" id="af-case" class="field-input" style="max-width:180px;padding:5px 8px;font-size:.85rem;" placeholder="個案（姓名/案號/學號）" oninput="filterAuditLog()" />
-      <button class="btn btn-secondary btn-sm" onclick="renderAuditLog()">🔄 重新整理</button>
-      <span id="af-count" style="font-size:.82rem;color:#718096;margin-left:auto;">${logs.length} 筆</span>
+    <div style="margin-bottom:12px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="this.closest('div').nextElementSibling.style.display=this.closest('div').nextElementSibling.style.display==='none'?'':'none';this.textContent=this.closest('div').nextElementSibling.style.display===''?'▲ 收起篩選':'▼ 展開篩選'">▲ 收起篩選</button>
+        <button class="btn btn-secondary btn-sm" onclick="renderAuditLog()">🔄 重新整理</button>
+        <span id="af-count" style="font-size:.82rem;color:#718096;margin-left:auto;">${logs.length} 筆</span>
+      </div>
+      <div id="af-filter-body" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <select id="af-page" class="field-select" style="max-width:150px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()">
+          <option value="">全部頁面</option>
+          <optgroup label="個案">
+            <option value="個案列表">個案列表</option>
+            <option value="個案詳細資料">個案詳細資料</option>
+            <option value="晤談紀錄">晤談紀錄</option>
+            <option value="初次晤談">初次晤談</option>
+          </optgroup>
+          <option value="空間預約">空間預約</option>
+          <option value="使用者管理">使用者管理</option>
+          <option value="轉銜管理">轉銜管理</option>
+          <option value="精神科評估">精神科評估</option>
+          <option value="系統管理">系統管理</option>
+        </select>
+        <select id="af-action" class="field-select" style="max-width:150px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()">
+          <option value="">全部動作</option>
+          ${actions.map(a => `<option value="${escHtml(a)}">${escHtml(a)}</option>`).join('')}
+        </select>
+        <select id="af-person" class="field-select" style="max-width:150px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()">
+          <option value="">全部人員</option>
+          ${persons.map(p => `<option value="${escHtml(p)}">${escHtml(p)}</option>`).join('')}
+        </select>
+        <input type="text" id="af-case" class="field-input" style="max-width:160px;padding:5px 8px;font-size:.85rem;" placeholder="個案（姓名/案號/學號）" oninput="filterAuditLog()" />
+        <input type="date" id="af-date-from" class="field-input" style="max-width:140px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()" />
+        <span style="font-size:.85rem;color:#718096;">至</span>
+        <input type="date" id="af-date-to" class="field-input" style="max-width:140px;padding:5px 8px;font-size:.85rem;" onchange="filterAuditLog()" />
+      </div>
     </div>`;
 
   // 把 logs 存到全域讓 filterAuditLog 使用
