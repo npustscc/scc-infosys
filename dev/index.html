@@ -438,7 +438,7 @@
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 10px;
-      align-items: start;
+      align-items: end;
       padding: 12px 0;
       border-bottom: 1px solid #f0f4f8;
     }
@@ -1611,7 +1611,7 @@
 
       <div class="form-section">
         <div class="form-section-title" style="display:flex;align-items:center;gap:8px;">八向度風險評估
-          <span data-tip="1-2=低風險；3-4=中風險；5=高風險；無=此向度無明顯影響；不清楚=資訊不足無法評估" style="cursor:help;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#e2e8f0;color:#4a5568;font-size:.72rem;font-weight:700;flex-shrink:0;">？</span>
+          <span data-tip="評分原則：依個案在此向度的實際狀況評估。1-2＝低風險（症狀輕微，功能大致正常）；3-4＝中風險（症狀明顯，部分功能受影響）；5＝高風險（症狀嚴重，功能嚴重受損）。「無」＝此向度對個案無明顯影響；「不清楚」＝目前資訊不足，無法評估此向度。各向度請依個案狀況獨立評分。" style="cursor:help;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#e2e8f0;color:#4a5568;font-size:.72rem;font-weight:700;flex-shrink:0;">？</span>
         </div>
         <div id="closure-dims"></div>
       </div>
@@ -6415,6 +6415,13 @@ function showCaseDetail(caseId) {
       ${field('學號', _cd('studentId'))}
       ${field('生日', adToRocDisplay(_cd('birthday')))}
       ${field('身分證字號／居留證號', _cd('idNumber'))}
+    </div>
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid #e2e8f0;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <label style="font-weight:600;font-size:.88rem;">主責輔導人員：</label>
+      <select id="detail-counselor-sel" class="field-select" style="max-width:240px;">
+        ${buildCounselorOptgroups()}
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="_detailChangeCounselor('${escHtml(caseId)}')">儲存變更</button>
     </div>`) +
     mkSection('bg', '背景資料', `<div class="form-grid">
       ${_cd('abType') ? field('案別', _cd('abType')) : ''}
@@ -6469,6 +6476,8 @@ function showCaseDetail(caseId) {
     (_detailSemFilter !== 'all' && iiCardHtml ? `<div style="margin-bottom:20px;">${iiCardHtml}</div>` : '') +
     (_detailSemFilter !== 'all' ? psyHtml : '') +
     recordsHtml;
+  const _detSel = document.getElementById('detail-counselor-sel');
+  if (_detSel) _detSel.value = c.counselorEmail || '';
   } // end psychtest mode else
 
   const _testResults = c.psychTestResults || [];
@@ -6533,6 +6542,29 @@ function showCaseDetail(caseId) {
   } catch (_) {}
 
   showPage('page-case-detail', null);
+}
+
+function _detailChangeCounselor(caseId) {
+  const sel = document.getElementById('detail-counselor-sel');
+  const newEmail = sel?.value || '';
+  if (!newEmail) { alert('請先選擇主責輔導人員。'); return; }
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  if (newEmail === (c.counselorEmail || '')) { showToast('主責未變更。', 'info'); return; }
+  const newName = configData?.users?.[newEmail]?.name || newEmail;
+  _putTodoItem({
+    id: _genTodoId(), type: 'internal_transfer',
+    label: `內部轉案派案：${c.name}（${caseId}）`,
+    caseId, caseLabel: `${c.name}（${caseId}）`,
+    assignedCounselor: newEmail,
+    assignedCounselorName: newName,
+    fromCounselor: currentUser.email,
+    fromCounselorName: configData?.users?.[currentUser.email]?.name || currentUser.name,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    done: false, notifRead: false,
+  });
+  saveUserTodos().catch(() => {});
+  showToast('已建立轉案待辦，請至待辦頁確認後執行。', 'success');
 }
 
 function renderCaseManagersBody(c) {
@@ -7969,7 +8001,7 @@ function openClosureEvalPage(caseId, evalType, editingEvalId) {
   document.getElementById('cl-qualitative-semester').style.display = isClosure ? 'none' : '';
 
   document.getElementById('closure-case-info').textContent =
-    `個案：${c.name}（${c.id}）　主責：${c.counselorName || c.counselorEmail}`;
+    `個案：${c.name}（${c.id}）　學期：${semesterLabel(_closureEvalSem)}　主責：${c.counselorName || c.counselorEmail}`;
 
   const evalSem = _closureEvalSem;
 
@@ -8064,8 +8096,8 @@ function openClosureEvalPage(caseId, evalType, editingEvalId) {
       <div class="dim-label"><strong>${i+1}.</strong> ${escHtml(dim)}</div>
       <div style="display:inline-grid;grid-template-columns:repeat(7,auto);gap:1px 6px;align-items:center;margin-top:3px;">
         <div></div>
-        <div style="grid-column:span 2;text-align:center;color:#276749;font-weight:600;font-size:.71rem;">低</div>
-        <div style="grid-column:span 2;text-align:center;color:#dd6b20;font-weight:600;font-size:.71rem;">中</div>
+        <div style="grid-column:span 2;text-align:center;color:#276749;font-weight:600;font-size:.71rem;border-top:2px solid #276749;border-left:2px solid #276749;border-right:2px solid #276749;border-radius:4px 4px 0 0;padding:1px 6px;">低</div>
+        <div style="grid-column:span 2;text-align:center;color:#dd6b20;font-weight:600;font-size:.71rem;border-top:2px solid #dd6b20;border-left:2px solid #dd6b20;border-right:2px solid #dd6b20;border-radius:4px 4px 0 0;padding:1px 6px;">中</div>
         <div style="text-align:center;color:#c53030;font-weight:600;font-size:.71rem;">高</div>
         <div></div>
         <label data-tip="此向度對個案無明顯影響"><input type="radio" name="dim-${i}" value="無" ${ck('無')}/> 無</label>
@@ -8640,6 +8672,7 @@ async function saveClosureEval() {
       assignedCounselorName: transferName,
       fromCounselor: currentUser.email,
       fromCounselorName: configData?.users?.[currentUser.email]?.name || currentUser.name,
+      semester: _closureEvalSem,
       evalType,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       done: false, notifRead: false,
@@ -13992,7 +14025,7 @@ function _renderAssignmentTodos() {
       ? `<span class="badge" style="background:#fde8e8;color:#c0392b;font-size:.72rem;">內部轉案</span>`
       : `<span class="badge" style="background:#e9d8fd;color:#553c9a;font-size:.72rem;">初談派案</span>`;
     const subInfo = isTransfer
-      ? (t.fromCounselorName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">原主責：${escHtml(t.fromCounselorName)}</div>` : '')
+      ? `${t.semester ? `<div style="font-size:.82rem;color:#718096;margin-bottom:4px;">學期：${escHtml(semesterLabel(t.semester))}</div>` : ''}${t.fromCounselorName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">原主責：${escHtml(t.fromCounselorName)}</div>` : ''}`
       : (t.filledByName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">初談者：${escHtml(t.filledByName)}</div>` : '');
     const confirmFn = isTransfer ? '_confirmInternalTransfer' : '_confirmCaseAssignment';
     return `<div style="background:${bgCol};border:1px solid ${borderCol};border-radius:8px;padding:12px 14px;margin-bottom:8px;">
