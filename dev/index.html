@@ -9704,14 +9704,12 @@ function renderCaseNums(resetPage) {
             <option value="">全部人員</option>
             ${[...counselorMap.entries()].map(([k,v])=>`<option value="${escHtml(k)}"${k===_cnCounselor?' selected':''}>${escHtml(v)}</option>`).join('')}
           </select>` : ''}
-          <div style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
-            <label style="font-size:.85rem;color:#718096;white-space:nowrap;">每頁
-              <select id="cn-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;margin-left:4px;"
-                onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select> 筆
-            </label>
-            <button id="cn-clear-btn" class="btn btn-secondary btn-sm" onclick="_cnClearFilters()"
-              ${(_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor)?'disabled':''}>清除篩選</button>
-          </div>
+          <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;">每頁
+            <select id="cn-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;"
+              onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select>筆
+          </label>
+          <button id="cn-clear-btn" class="btn btn-secondary btn-sm" onclick="_cnClearFilters()" style="flex-shrink:0;"
+            ${(_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor)?'disabled':''}>清除篩選</button>
         </div>
       </div>
       <div id="cn-batch-bar" style="display:none;padding:8px 16px;background:#ebf8ff;border-bottom:1px solid #bee3f8;display:flex;align-items:center;gap:10px;">
@@ -9727,6 +9725,10 @@ function renderCaseNums(resetPage) {
       <div id="cn-pagination-top">${paginationHtml}</div>
       <div style="overflow-x:auto;">
         <table>
+          <colgroup>
+            <col style="width:36px;">
+            <col id="cn-col-1"><col id="cn-col-2"><col id="cn-col-3"><col id="cn-col-4"><col id="cn-col-5">
+          </colgroup>
           <thead>
             <tr>
               <th style="width:36px;text-align:center;">
@@ -9734,7 +9736,7 @@ function renderCaseNums(resetPage) {
                   ${allChecked ? 'checked' : ''}
                   onchange="_cnSelectAll(this.checked)">
               </th>
-              <th>案號</th><th>姓名</th><th>學號</th><th>開案學期歷史</th><th>操作</th>
+              <th data-col="1">案號</th><th data-col="2">姓名</th><th data-col="3">學號</th><th data-col="4">開案學期歷史</th><th data-col="5">操作</th>
             </tr>
           </thead>
           <tbody id="cn-tbody">${rows || emptyRow}</tbody>
@@ -9744,6 +9746,62 @@ function renderCaseNums(resetPage) {
     </div>`;
   document.getElementById('cn-select-all').indeterminate = !allChecked && someChecked;
   _syncCnBatchBar();
+  _makeCnTableResizable();
+}
+
+function _makeCnTableResizable() {
+  const table = document.querySelector('#cn-tbody')?.closest('table');
+  if (!table) return;
+  const savedWidths = _userPref_('cnColWidths', {});
+  if (Object.keys(savedWidths).length) {
+    table.style.tableLayout = 'fixed';
+    [1,2,3,4,5].forEach(n => {
+      const col = document.getElementById('cn-col-' + n);
+      if (col && savedWidths[n]) col.style.width = savedWidths[n] + 'px';
+    });
+  }
+  table.querySelectorAll('thead th[data-col]').forEach(th => {
+    const n = parseInt(th.dataset.col);
+    if (!n || th.querySelector('.cn-resize-handle')) return;
+    th.style.position = 'relative';
+    const handle = document.createElement('div');
+    handle.className = 'cn-resize-handle';
+    handle.title = '拖曳調整欄寬';
+    handle.style.cssText = 'position:absolute;right:0;top:0;bottom:0;width:5px;cursor:col-resize;z-index:2;background:transparent;';
+    let startX, startW, startTableW;
+    handle.addEventListener('mousedown', e => {
+      const col = document.getElementById('cn-col-' + n);
+      startX = e.pageX;
+      table.style.tableLayout = 'fixed';
+      table.querySelectorAll('thead th[data-col]').forEach(hd => {
+        const i = parseInt(hd.dataset.col);
+        const c = document.getElementById('cn-col-' + i);
+        if (c && !c.style.width) c.style.width = hd.offsetWidth + 'px';
+      });
+      startTableW = table.offsetWidth;
+      startW = (col && parseInt(col.style.width)) || th.offsetWidth;
+      const onMove = ev => {
+        const delta = ev.pageX - startX;
+        const w = Math.max(30, startW + delta);
+        if (col) col.style.width = w + 'px';
+        table.style.width = Math.max(startTableW, startTableW + delta) + 'px';
+      };
+      const onUp = () => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        const widths = {};
+        [1,2,3,4,5].forEach(i => {
+          const c = document.getElementById('cn-col-' + i);
+          if (c && c.style.width) widths[i] = parseInt(c.style.width);
+        });
+        syncUserPref_({ cnColWidths: widths });
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      e.preventDefault(); e.stopPropagation();
+    });
+    th.appendChild(handle);
+  });
 }
 
 function _cnChkChange(el) {
