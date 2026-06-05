@@ -2418,6 +2418,7 @@
         </div>
         <div id="rec-summary" class="field-input rt-editor" contenteditable="true"
              style="resize:vertical;min-height:180px;overflow:auto;white-space:pre-wrap;line-height:1.6;"></div>
+        <div id="attachPicker_recimg" class="attach-picker-wrap" style="margin-top:8px;"></div>
       </div>
 
       <!-- 問題評估 -->
@@ -2494,18 +2495,6 @@
           data-placeholder="（選填）其他補充說明…"
           style="resize:vertical;min-height:70px;overflow:auto;line-height:1.6;"></div>
         <div id="attachPicker_rec" class="attach-picker-wrap"></div>
-        <!-- 圖片（選填） -->
-        <div style="margin-top:10px;">
-          <div style="font-size:.78rem;color:#718096;margin-bottom:4px;">附圖（選填，例如：繪圖、圖表）</div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <label class="btn btn-secondary btn-sm" style="cursor:pointer;">
-              選擇圖片
-              <input type="file" accept="image/*" style="display:none;" onchange="recLoadImage(this)">
-            </label>
-            <button type="button" class="btn btn-secondary btn-sm" id="rec-image-clear-btn" style="display:none;" onclick="recClearImage()">移除圖片</button>
-          </div>
-          <div id="rec-image-preview" style="margin-top:8px;"></div>
-        </div>
       </div>
 
       <!-- 預約下次諮商時間 -->
@@ -4961,6 +4950,7 @@ function toggleRecordExpand(rid) {
   const expanded = card.classList.toggle('rec-expanded');
   const btn = card.querySelector('.rec-toggle-btn');
   if (btn) btn.textContent = expanded ? '收合 ▲' : '展開 ▼';
+  if (expanded) _loadRecordImages(rid);
 }
 
 function toggleSortLock() {
@@ -6074,7 +6064,7 @@ function showCaseDetail(caseId) {
       ${svcBadges}
       ${r.nextPlan ? `<div class="rec-section-label">後續處遇計畫</div><div class="record-summary">${renderMaybeHtml(r.nextPlan)}</div>` : ''}
       ${r.notes ? `<div class="rec-section-label">備註</div><div class="record-summary">${renderMaybeHtml(r.notes)}</div>` : ''}
-      ${r.image ? `<div style="margin-top:8px;"><img src="${escHtml(r.image)}" style="max-width:100%;max-height:220px;border-radius:6px;border:1px solid #e2e8f0;" /></div>` : ''}
+      ${(r.summaryImages?.length || r.image) ? `<div id="rec-img-view-${r.id}" style="margin-top:8px;display:none;gap:8px;flex-wrap:wrap;align-items:flex-start;"></div>` : ''}
       ${renderAttachChips(r.attachments)}
     </div>`;
 
@@ -7011,11 +7001,7 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
     setRichTextValue('rec-next-plan',  existingRec.nextPlan   || '');
     setRichTextValue('rec-notes',      existingRec.notes      || '');
     attachInit('rec', existingRec.attachments || []);
-    _recImage = existingRec.image || null;
-    const _recPrev = document.getElementById('rec-image-preview');
-    if (_recPrev) _recPrev.innerHTML = _recImage ? `<img src="${escHtml(_recImage)}" style="max-width:100%;max-height:220px;border-radius:6px;border:1px solid #e2e8f0;" />` : '';
-    const _recClr = document.getElementById('rec-image-clear-btn');
-    if (_recClr) _recClr.style.display = _recImage ? '' : 'none';
+    attachInit('recimg', existingRec.summaryImages || [], { imagesOnly: true, imgMaxPx: 1024, imgQuality: 0.7 });
     _restoreTopics(existingRec.topics || []);
     _restoreServiceItems(existingRec.serviceItems || []);
     document.getElementById('rec-intervention-mode').value = existingRec.interventionMode || '';
@@ -7033,7 +7019,7 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
     setRichTextValue('rec-next-plan',  '');
     setRichTextValue('rec-notes',      '');
     attachInit('rec', []);
-    _recImage = null; recClearImage();
+    attachInit('recimg', [], { imagesOnly: true, imgMaxPx: 1024, imgQuality: 0.7 });
     document.getElementById('rec-intervention-mode').value = '';
     document.querySelectorAll('input[name="rec-interviewee"]').forEach(cb => cb.checked = false);
     const _rinNew = document.getElementById('rec-interviewee-note'); if (_rinNew) _rinNew.value = '';
@@ -7256,6 +7242,7 @@ function snapshotRecordDraft() {
 function restoreRecordDraft(d) {
   if (!d) return;
   if (Array.isArray(d.attachments) && d.attachments.length) attachInit('rec', d.attachments);
+  attachInit('recimg', Array.isArray(d.summaryImages) ? d.summaryImages : [], { imagesOnly: true, imgMaxPx: 1024, imgQuality: 0.7 });
   if (d.date != null) document.getElementById('rec-date').value = d.date;
   if (d.time != null) {
     document.getElementById('rec-time').value = d.time;
@@ -7934,6 +7921,10 @@ async function saveRecord() {
   try { _recAttachments = await attachFlush('rec'); }
   catch(e) { _recAlert('附件上傳失敗：' + e.message); return; }
 
+  let _recSummaryImages;
+  try { _recSummaryImages = await attachFlush('recimg'); }
+  catch(e) { _recAlert('附圖上傳失敗：' + e.message); return; }
+
   if (_editingRecordId) {
     // ── 編輯現有紀錄 ──
     const ridx = casesData[cidx].records.findIndex(r => r.id === _editingRecordId);
@@ -7963,7 +7954,7 @@ async function saveRecord() {
       date, time, topics, serviceItems, summary, assessment, nextPlan, notes,
       counselorName, counselors: counselorList, interventionMode, interviewees, intervieweeNote,
       nextBkId: _editNextBkId, attachments: _recAttachments,
-      image: _recImage || undefined,
+      summaryImages: _recSummaryImages.length ? _recSummaryImages : undefined,
       updatedAt: new Date().toISOString(), updatedBy: currentUser.email,
     });
     delete casesData[cidx].records[ridx].status;
@@ -8021,7 +8012,7 @@ async function saveRecord() {
       topics, serviceItems, summary, assessment, nextPlan, notes,
       recordKind: _recordKind,
       nextBkId: _newBkId, attachments: _recAttachments,
-      image: _recImage || undefined,
+      summaryImages: _recSummaryImages.length ? _recSummaryImages : undefined,
       createdAt: new Date().toISOString(),
     };
     casesData[cidx].records.push(newRecord);
@@ -11750,26 +11741,6 @@ const II_SUP_SKILLS = ['自我探索','家庭議題','家庭會談','親職教�
 // ── 初次晤談 chip 系統 ────────────────────────────────────────────────────
 let _iiChipData = {};
 let _iiFamilyImage = null;
-let _recImage = null;
-function recLoadImage(input) {
-  const file = input.files[0]; if (!file) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    _recImage = e.target.result;
-    const prev = document.getElementById('rec-image-preview');
-    if (prev) prev.innerHTML = `<img src="${escHtml(_recImage)}" style="max-width:100%;max-height:220px;border-radius:6px;border:1px solid #e2e8f0;" />`;
-    const clr = document.getElementById('rec-image-clear-btn');
-    if (clr) clr.style.display = '';
-  };
-  reader.readAsDataURL(file);
-}
-function recClearImage() {
-  _recImage = null;
-  const prev = document.getElementById('rec-image-preview');
-  if (prev) prev.innerHTML = '';
-  const clr = document.getElementById('rec-image-clear-btn');
-  if (clr) clr.style.display = 'none';
-}
 
 function _iiChipFreqKey(gk) { return 'scc_ii_cf_' + (currentUser?.email || '') + '_' + gk; }
 function _iiGetFreq(gk) { try { return JSON.parse(localStorage.getItem(_iiChipFreqKey(gk)) || '{}'); } catch { return {}; } }
@@ -14050,7 +14021,7 @@ function _snapshotRecordFormPartial() {
   const interventionMode = document.getElementById('rec-intervention-mode')?.value || '';
   const counselors = [..._recCounselors];
   const counselorName = counselors.map(c => c.label).join('、');
-  return { date, time, summary, assessment, nextPlan, notes, topics, serviceItems, interviewees, intervieweeNote, interventionMode, counselors, counselorName, recordKind: _recordKind, attachments: (_attachState.get('rec')?.existing || []) };
+  return { date, time, summary, assessment, nextPlan, notes, topics, serviceItems, interviewees, intervieweeNote, interventionMode, counselors, counselorName, recordKind: _recordKind, attachments: (_attachState.get('rec')?.existing || []), summaryImages: (_attachState.get('recimg')?.existing || []) || undefined };
 }
 
 function draftRecord() {
@@ -22301,9 +22272,10 @@ function printPsychiatristRecord(caseId, recordId) {
 // ══════════════════════════════════════════════
 //  附件功能（Attachment Feature）
 // ══════════════════════════════════════════════
-const _attachState = new Map(); // pickerId → { existing, pending, deletedFileIds }
+const _attachState = new Map(); // pickerId → { existing, pending, deletedFileIds, imagesOnly?, imgMaxPx?, imgQuality? }
 const _attachUploadPromises = new Map(); // pickerId → Set<Promise>
 let _attachFolderCache = null;
+const _recImgCache = new Map(); // fileId → dataUrl（圖片下載快取）
 
 async function _ensureAttachFolder() {
   if (_attachFolderCache) return _attachFolderCache;
@@ -22317,8 +22289,9 @@ async function _ensureAttachFolder() {
   return _attachFolderCache;
 }
 
-function attachInit(pid, existing) {
-  _attachState.set(pid, { existing: existing ? [...existing] : [], pending: [], deletedFileIds: [] });
+function attachInit(pid, existing, opts = {}) {
+  _attachState.set(pid, { existing: existing ? [...existing] : [], pending: [], deletedFileIds: [],
+    imagesOnly: !!opts.imagesOnly, imgMaxPx: opts.imgMaxPx || 1280, imgQuality: opts.imgQuality || 0.85 });
   _attachUploadPromises.set(pid, new Set());
   attachRender(pid);
 }
@@ -22345,6 +22318,7 @@ function attachRender(pid) {
   if (!wrap) return;
   const s = _attachState.get(pid);
   if (!s) return;
+  if (s.imagesOnly) { _attachRenderImages(pid, s); return; }
   const max = 3, total = _attachTotal(pid);
 
   const exHtml = s.existing.map((a, i) => `
@@ -22402,6 +22376,18 @@ function attachRemovePending(pid, idx) {
 }
 
 async function attachHandleInput(pid, input) {
+  const _s0 = _attachState.get(pid);
+  if (_s0?.imagesOnly) {
+    const files = [...(input.files || [])]; input.value = '';
+    for (const file of files) {
+      if (!_attachState.get(pid) || _attachTotal(pid) >= 3) break;
+      const ext = (file.name.split('.').pop() || '').toLowerCase();
+      if (file.type.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp'].includes(ext)) {
+        await _attachAddRecImg(pid, file);
+      } else { showToast('附圖僅支援圖片格式', 'warning'); }
+    }
+    return;
+  }
   const files = [...(input.files || [])];
   input.value = '';
   for (const file of files) {
@@ -22454,6 +22440,133 @@ async function _attachAddImage(pid, file) {
     };
     reader.readAsDataURL(file);
   });
+}
+
+async function _attachAddRecImg(pid, file) {
+  const s = _attachState.get(pid);
+  const MAX = s?.imgMaxPx || 1024;
+  const QUALITY = s?.imgQuality || 0.7;
+  return new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        if (w > MAX || h > MAX) {
+          if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+          else { w = Math.round(w * MAX / h); h = MAX; }
+        }
+        const cv = document.createElement('canvas');
+        cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(img, 0, 0, w, h);
+        const dataUrl = cv.toDataURL('image/jpeg', QUALITY);
+        const b64 = dataUrl.split(',')[1];
+        const bArr = atob(b64); const arr = new Uint8Array(bArr.length);
+        for (let i = 0; i < bArr.length; i++) arr[i] = bArr.charCodeAt(i);
+        const blob = new Blob([arr], { type: 'image/jpeg' });
+        const s2 = _attachState.get(pid);
+        if (s2) {
+          const item = { type:'image', fileName: file.name.replace(/\.[^.]+$/, '') + '.jpg', mimeType:'image/jpeg', blob, dataUrl, uploadStatus:'uploading' };
+          s2.pending.push(item);
+          attachRender(pid);
+          _startUpload(pid, item);
+        }
+        resolve();
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function _attachRenderImages(pid, s) {
+  const wrap = document.getElementById('attachPicker_' + pid);
+  if (!wrap) return;
+  const max = 3, total = _attachTotal(pid);
+
+  const exHtml = s.existing.map((a, i) => `
+    <div class="attach-item existing">
+      <span style="color:#276749;flex-shrink:0;font-size:.85rem;">✓</span>
+      <span>🖼️</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.82rem;" title="${escHtml(a.fileName||'')}">${escHtml(a.fileName||'圖片')}</span>
+      <button type="button" class="attach-del-btn" onclick="attachRemoveExisting('${escHtml(pid)}',${i})">×</button>
+    </div>`).join('');
+
+  const penHtml = s.pending.map((a, i) => {
+    if (a.uploadStatus === 'error') {
+      return `<div class="attach-item upload-error">
+        <span style="color:#c53030;flex-shrink:0;font-size:.85rem;">✗</span>
+        ${a.dataUrl ? `<img src="${a.dataUrl}" style="width:32px;height:32px;object-fit:cover;border-radius:3px;flex-shrink:0;">` : '<span>🖼️</span>'}
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(a.fileName||'')}</span>
+        <span style="font-size:.72rem;color:#c53030;flex-shrink:0;">上傳失敗</span>
+        <button type="button" class="attach-del-btn" onclick="attachRemovePending('${escHtml(pid)}',${i})">×</button>
+      </div>`;
+    }
+    return `<div class="attach-item uploading">
+      <span class="attach-spinner"></span>
+      ${a.dataUrl ? `<img src="${a.dataUrl}" style="width:32px;height:32px;object-fit:cover;border-radius:3px;flex-shrink:0;">` : '<span>🖼️</span>'}
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(a.fileName||'')}</span>
+      <span style="font-size:.72rem;color:#2b6cb0;flex-shrink:0;">上傳中…</span>
+      <button type="button" class="attach-del-btn" onclick="attachRemovePending('${escHtml(pid)}',${i})">×</button>
+    </div>`;
+  }).join('');
+
+  const addBtn = total < max
+    ? `<button type="button" class="attach-add-btn" onclick="document.getElementById('attachInput_${pid}').click()">＋ 新增附圖</button>` : '';
+
+  wrap.innerHTML = `
+    <div style="font-size:.82rem;color:#4a5568;margin-bottom:5px;font-weight:500;">
+      附圖 <span style="font-weight:400;color:#718096;">（最多3張，壓縮後上傳至 Drive）</span>
+    </div>
+    ${exHtml}${penHtml}${addBtn}
+    <input type="file" id="attachInput_${pid}" style="display:none" accept="image/*" multiple
+      onchange="attachHandleInput('${escHtml(pid)}',this)">`;
+}
+
+async function _downloadRecImg(fileId) {
+  if (_recImgCache.has(fileId)) return _recImgCache.get(fileId);
+  const r = await proxyCall('downloadFileBase64', { fileId }, true);
+  const dataUrl = `data:${r.mimeType};base64,${r.base64}`;
+  _recImgCache.set(fileId, dataUrl);
+  return dataUrl;
+}
+
+async function _loadRecordImages(rid) {
+  const rec = casesData.flatMap(c => c.records || []).find(r => r.id === rid);
+  if (!rec) return;
+  const container = document.getElementById('rec-img-view-' + rid);
+  if (!container) return;
+
+  const items = [];
+  if (rec.image) items.push({ kind: 'base64', data: rec.image, name: '附圖' });
+  for (const img of (rec.summaryImages || [])) items.push({ kind: 'drive', ...img });
+  if (!items.length) { container.style.display = 'none'; return; }
+
+  container.style.display = 'flex';
+  container.innerHTML = items.map((item, i) =>
+    item.kind === 'base64'
+      ? `<img src="${escHtml(item.data)}" style="max-height:180px;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer;" onclick="_recImgFullview('${escHtml(item.data)}','附圖')" />`
+      : `<div id="rec-img-slot-${rid}-${i}" style="width:100px;height:75px;border-radius:6px;border:1px solid #e2e8f0;background:#f7fafc;display:flex;align-items:center;justify-content:center;"><span style="font-size:.72rem;color:#a0aec0;">載入中…</span></div>`
+  ).join('');
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.kind !== 'drive') continue;
+    const slot = document.getElementById(`rec-img-slot-${rid}-${i}`);
+    if (!slot) continue;
+    try {
+      const dataUrl = await _downloadRecImg(item.fileId);
+      const safe = escHtml(dataUrl); const safeName = escHtml(item.fileName || '附圖');
+      slot.outerHTML = `<img src="${safe}" style="max-height:180px;border-radius:6px;border:1px solid #e2e8f0;cursor:pointer;" onclick="_recImgFullview('${safe}','${safeName}')" />`;
+    } catch(e) {
+      const slot2 = document.getElementById(`rec-img-slot-${rid}-${i}`);
+      if (slot2) slot2.innerHTML = `<span style="font-size:.72rem;color:#c53030;">圖片載入失敗</span>`;
+    }
+  }
+}
+
+function _recImgFullview(dataUrl, fileName) {
+  _attachShowImageModal(dataUrl, fileName || '附圖');
 }
 
 async function _attachAddPdf(pid, file) {
