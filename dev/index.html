@@ -9697,6 +9697,7 @@ function renderCaseNums(resetPage) {
           </label>
           <button id="cn-clear-btn" class="btn btn-secondary btn-sm" onclick="_cnClearFilters()" style="flex-shrink:0;"
             ${(_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor)?'disabled':''}>清除篩選</button>
+          <button class="btn btn-secondary btn-sm" onclick="_resetCnColWidths()" style="flex-shrink:0;" data-tip="清除已儲存的欄寬設定，恢復預設比例">重設欄寬</button>
         </div>
       </div>
       <div id="cn-batch-bar" style="display:none;padding:8px 16px;background:#ebf8ff;border-bottom:1px solid #bee3f8;display:flex;align-items:center;gap:10px;">
@@ -9736,52 +9737,55 @@ function renderCaseNums(resetPage) {
   _makeCnTableResizable();
 }
 
-function _makeCnTableResizable() {
-  const table = document.querySelector('#cn-tbody')?.closest('table');
+// ── 共用：可拖曳欄寬 helper（含邊界限制）────────────────────────────────
+function _makeTableResizable({ table, colPrefix, colNums, prefKey, skipCols = new Set() }) {
   if (!table) return;
-  const savedWidths = _userPref_('cnColWidths', {});
+  const savedWidths = _userPref_(prefKey, {});
   if (Object.keys(savedWidths).length) {
     table.style.tableLayout = 'fixed';
-    [1,2,3,4,5].forEach(n => {
-      const col = document.getElementById('cn-col-' + n);
+    colNums.forEach(n => {
+      const col = document.getElementById(colPrefix + n);
       if (col && savedWidths[n]) col.style.width = savedWidths[n] + 'px';
     });
   }
   table.querySelectorAll('thead th[data-col]').forEach(th => {
     const n = parseInt(th.dataset.col);
-    if (!n || th.querySelector('.cn-resize-handle')) return;
+    if (!n || skipCols.has(n) || th.querySelector('.col-resize-handle')) return;
     th.style.position = 'relative';
     const handle = document.createElement('div');
-    handle.className = 'cn-resize-handle';
+    handle.className = 'col-resize-handle';
     handle.title = '拖曳調整欄寬';
     handle.style.cssText = 'position:absolute;right:0;top:0;bottom:0;width:5px;cursor:col-resize;z-index:2;background:transparent;';
     let startX, startW, startTableW;
     handle.addEventListener('mousedown', e => {
-      const col = document.getElementById('cn-col-' + n);
+      const col = document.getElementById(colPrefix + n);
       startX = e.pageX;
       table.style.tableLayout = 'fixed';
       table.querySelectorAll('thead th[data-col]').forEach(hd => {
         const i = parseInt(hd.dataset.col);
-        const c = document.getElementById('cn-col-' + i);
+        if (skipCols.has(i)) return;
+        const c = document.getElementById(colPrefix + i);
         if (c && !c.style.width) c.style.width = hd.offsetWidth + 'px';
       });
       startTableW = table.offsetWidth;
       startW = (col && parseInt(col.style.width)) || th.offsetWidth;
       const onMove = ev => {
         const delta = ev.pageX - startX;
-        const w = Math.max(30, startW + delta);
+        const maxW = table.parentElement?.clientWidth || Infinity;
+        const newTableW = Math.min(maxW, Math.max(startTableW, startTableW + delta));
+        const w = Math.max(30, startW + (newTableW - startTableW));
         if (col) col.style.width = w + 'px';
-        table.style.width = Math.max(startTableW, startTableW + delta) + 'px';
+        table.style.width = newTableW + 'px';
       };
       const onUp = () => {
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
         const widths = {};
-        [1,2,3,4,5].forEach(i => {
-          const c = document.getElementById('cn-col-' + i);
+        colNums.forEach(i => {
+          const c = document.getElementById(colPrefix + i);
           if (c && c.style.width) widths[i] = parseInt(c.style.width);
         });
-        syncUserPref_({ cnColWidths: widths });
+        syncUserPref_({ [prefKey]: widths });
       };
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
@@ -9789,6 +9793,23 @@ function _makeCnTableResizable() {
     });
     th.appendChild(handle);
   });
+}
+function _resetTableColWidths({ table, colPrefix, colNums, prefKey }) {
+  syncUserPref_({ [prefKey]: {} });
+  if (!table) return;
+  table.style.tableLayout = '';
+  table.style.width = '';
+  colNums.forEach(n => {
+    const col = document.getElementById(colPrefix + n);
+    if (col) col.style.width = '';
+  });
+}
+// ── 案號查詢 ──────────────────────────────────────────────────────────────
+function _makeCnTableResizable() {
+  _makeTableResizable({ table: document.querySelector('#cn-tbody')?.closest('table'), colPrefix: 'cn-col-', colNums: [1,2,3,4,5], prefKey: 'cnColWidths' });
+}
+function _resetCnColWidths() {
+  _resetTableColWidths({ table: document.querySelector('#cn-tbody')?.closest('table'), colPrefix: 'cn-col-', colNums: [1,2,3,4,5], prefKey: 'cnColWidths' });
 }
 
 function _cnChkChange(el) {
@@ -16245,62 +16266,10 @@ function _initAuditDetailToggles() {
 }
 
 function _makeAuditTableResizable() {
-  const table = document.querySelector('#audit-table-wrap table');
-  if (!table) return;
-  const savedWidths = _userPref_('auditColWidths', {});
-  const colHid = window._auditColsHidden || new Set();
-  // Apply saved widths
-  if (Object.keys(savedWidths).length) {
-    table.style.tableLayout = 'fixed';
-    [1,2,3,4,5].forEach(n => {
-      const col = document.getElementById('audit-col-' + n);
-      if (col && savedWidths[n]) col.style.width = savedWidths[n] + 'px';
-    });
-  }
-  // Add resize handles to visible th elements
-  table.querySelectorAll('thead th[data-col]').forEach(th => {
-    const n = parseInt(th.dataset.col);
-    if (!n || colHid.has(n)) return;
-    th.style.position = 'relative';
-    const handle = document.createElement('div');
-    handle.title = '拖曳調整欄寬';
-    handle.style.cssText = 'position:absolute;right:0;top:0;bottom:0;width:5px;cursor:col-resize;z-index:2;background:transparent;';
-    let startX, startW, startTableW;
-    handle.addEventListener('mousedown', e => {
-      const col = document.getElementById('audit-col-' + n);
-      startX = e.pageX;
-      // Lock all visible columns to current pixel widths before drag
-      table.style.tableLayout = 'fixed';
-      table.querySelectorAll('thead th[data-col]').forEach(hd => {
-        const i = parseInt(hd.dataset.col);
-        const c = document.getElementById('audit-col-' + i);
-        if (c && !c.style.width) c.style.width = hd.offsetWidth + 'px';
-      });
-      startTableW = table.offsetWidth;
-      startW = (col && parseInt(col.style.width)) || th.offsetWidth;
-      const onMove = ev => {
-        const delta = ev.pageX - startX;
-        const w = Math.max(30, startW + delta);
-        if (col) col.style.width = w + 'px';
-        // Grow the table instead of squeezing other columns
-        table.style.width = Math.max(startTableW, startTableW + delta) + 'px';
-      };
-      const onUp = () => {
-        document.removeEventListener('mousemove', onMove);
-        document.removeEventListener('mouseup', onUp);
-        const widths = {};
-        [1,2,3,4,5].forEach(i => {
-          const c = document.getElementById('audit-col-' + i);
-          if (c && c.style.width) widths[i] = parseInt(c.style.width);
-        });
-        syncUserPref_({ auditColWidths: widths });
-      };
-      document.addEventListener('mousemove', onMove);
-      document.addEventListener('mouseup', onUp);
-      e.preventDefault(); e.stopPropagation();
-    });
-    th.appendChild(handle);
-  });
+  _makeTableResizable({ table: document.querySelector('#audit-table-wrap table'), colPrefix: 'audit-col-', colNums: [1,2,3,4,5], prefKey: 'auditColWidths', skipCols: window._auditColsHidden || new Set() });
+}
+function _resetAuditColWidths() {
+  _resetTableColWidths({ table: document.querySelector('#audit-table-wrap table'), colPrefix: 'audit-col-', colNums: [1,2,3,4,5], prefKey: 'auditColWidths' });
 }
 
 function _mkAuditTable(entries) {
@@ -16392,6 +16361,7 @@ async function renderAuditLog() {
         <button type="button" id="af-more-btn" class="btn btn-secondary btn-sm"
           onclick="const r=document.getElementById('af-row2');const open=r.style.display!=='none';r.style.display=open?'none':'flex';this.textContent=open?'▼ 更多篩選':'▲ 收起';">▲ 收起</button>
         <button class="btn btn-secondary btn-sm" onclick="renderAuditLog()">🔄 重新整理</button>
+        <button class="btn btn-secondary btn-sm" onclick="_resetAuditColWidths()" data-tip="清除已儲存的欄寬設定，恢復預設比例">重設欄寬</button>
         <span id="af-count" style="font-size:.82rem;color:#718096;margin-left:auto;">${logs.length} 筆</span>
       </div>
       <div id="af-row2" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
