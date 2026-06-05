@@ -4222,12 +4222,8 @@ function renderCases() {
       const latestCounselor = _getLatestCounselorEmail(c);
       if (!latestCounselor) return true; // 未派案，所有人可見
       if (latestCounselor === currentUser.email) return true;
-      if (c.caseManagerEmail === currentUser.email) return true;
-      // 向後相容：個案管理員 extraRole 的 allowedCases
-      if (extraRole === '個案管理員') {
-        const allowed = configData?.users?.[currentUser.email]?.allowedCases || [];
-        if (allowed.includes(c.id)) return true;
-      }
+      const allowed = configData?.users?.[currentUser.email]?.allowedCases || [];
+      if (allowed.includes(c.id)) return true;
       return false;
     });
   }
@@ -5858,6 +5854,8 @@ function showCaseDetail(caseId) {
   auditLog('查閱個案', caseId);
 
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
+  const _canEditMgrs = isAdminUser || c.counselorEmail === currentUser?.email
+    || _hasManagerAccess(currentUser?.email, c.id, _activeSem);
   const isActive = ((c.semesterStatus || {})[_activeSem] || 'active') !== 'closed';
   const caseIsDeleted = !!c.deleted;
   const cid = escHtml(c.id);
@@ -5918,8 +5916,10 @@ function showCaseDetail(caseId) {
   if (semActEl) semActEl.innerHTML = _caseDetailMode === 'semester' ? semActHtml : '';
 
   const mgrsEl = document.getElementById('detail-managers');
-  if (isAdminUser) {
-    mgrsEl.innerHTML = `<div style="font-size:.95rem;font-weight:700;color:#2d3748;margin-bottom:4px;">個案管理員</div><div style="font-size:.78rem;color:#718096;margin-bottom:10px;">可閱讀此個案紀錄的輔導人員（主責以外）</div>${renderCaseManagersBody(c)}`;
+  const _mgrEmailsTop = _getManagersForCase(c.id);
+  if (_mgrEmailsTop.length) {
+    const _mgrNamesTop = _mgrEmailsTop.map(e => escHtml(formatCounselorLabel(e) || configData?.users?.[e]?.name || e)).join('、');
+    mgrsEl.innerHTML = `<div style="font-size:.82rem;color:#718096;margin-top:2px;">個案管理員：${_mgrNamesTop}</div>`;
     mgrsEl.style.display = '';
   } else {
     mgrsEl.style.display = 'none';
@@ -6426,6 +6426,42 @@ function showCaseDetail(caseId) {
   if (_caseDetailMode === 'psychtest') {
     document.getElementById('detail-body').innerHTML = _renderPsychTestReport(c, _caseDetailPsychIdx);
   } else {
+  // ── 個案管理員區段 HTML ──
+  const _mgrEmails = _getManagersForCase(c.id);
+  const _mgrNonSet = new Set(
+    Object.entries(configData?.users || {})
+      .filter(([email, info]) => !_mgrEmails.includes(email) && email !== c.counselorEmail && info.role && info.role !== '系統管理者')
+      .map(([email]) => email)
+  );
+  const _mgrChips = _mgrEmails.length
+    ? _mgrEmails.map(email => `<span style="display:inline-flex;align-items:center;gap:4px;background:#ebf5fb;border:1px solid #aed6f1;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;">
+        ${escHtml(formatCounselorLabel(email))}
+        ${_canEditMgrs ? `<button onclick="removeCaseManager('${escHtml(c.id)}','${escHtml(email)}')" style="border:none;background:none;cursor:pointer;color:#718096;font-size:.9rem;padding:0 0 0 4px;line-height:1;">✕</button>` : ''}
+      </span>`).join('')
+    : `<span style="color:#718096;font-size:.85rem;">尚未指定</span>`;
+  const _mgrAddOpts = buildCounselorOptgroups(([email]) => _mgrNonSet.has(email), '— 選擇輔導人員 —');
+  const _mgrHasMulSems = _csems && _csems.length > 1;
+  const _mgrSemOpts = _mgrHasMulSems
+    ? `<select id="cm-sem-scope" class="field-select" style="max-width:160px;" data-tip="選擇此管理員可閱覽的學期範圍。「所有學期」表示不限制。">
+        <option value="all">所有學期</option>
+        ${[...(_csems||[])].map(s => `<option value="${escHtml(s)}"${s===_activeSem?' selected':''}>${escHtml(semesterLabel(s))}</option>`).join('')}
+      </select>` : '';
+  const _mgrEditSection = _canEditMgrs
+    ? `<div style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0;">
+        <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">個案管理員
+          <span style="font-size:.75rem;font-weight:400;color:#718096;">（可閱讀此個案紀錄的輔導人員，主責以外）</span>
+        </div>
+        <div style="margin-bottom:8px;">${_mgrChips}</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <select id="cm-add-select" class="field-select" style="max-width:200px;">${_mgrAddOpts}</select>
+          ${_mgrSemOpts}
+          <button class="btn btn-secondary btn-sm" onclick="addCaseManagerInDetail('${escHtml(caseId)}')">新增</button>
+        </div>
+      </div>`
+    : (_mgrEmails.length
+        ? `<div style="margin-top:10px;font-size:.82rem;color:#718096;">個案管理員：${_mgrEmails.map(e=>escHtml(formatCounselorLabel(e)||configData?.users?.[e]?.name||e)).join('、')}</div>`
+        : '');
+
   document.getElementById('detail-body').innerHTML =
     mkSection('basic', '個案基本資料', `<div class="form-grid">
       ${field('開案日期', adToRocDisplay(_cd('openDate')))}
@@ -6441,7 +6477,8 @@ function showCaseDetail(caseId) {
         ${buildCounselorOptgroups()}
       </select>
       <button class="btn btn-primary btn-sm" onclick="_detailChangeCounselor('${escHtml(caseId)}')" data-tip="點選後將建立轉案待辦，需至待辦頁確認後才會正式變更主責。">儲存變更</button>
-    </div>`) +
+    </div>
+    ${_mgrEditSection}`) +
     mkSection('bg', '背景資料', `<div class="form-grid">
       ${_cd('abType') ? field('案別', _cd('abType')) : ''}
       ${field('對象類別', _cd('caseType'))}
@@ -6529,14 +6566,26 @@ function showCaseDetail(caseId) {
           ${_csems.map(s => {
             const isAct = _caseDetailMode === 'semester' && s === _activeSem;
             const _ls = _semLightStyle(c, s);
-            return `<button onclick="_switchCaseSem('${escHtml(s)}','${escHtml(c.id)}')"
-              style="padding:4px 14px;border-radius:16px;
-                     border:${isAct?`2.5px solid ${_ls.border}`:`1px solid ${_ls.border}`};
-                     background:${_ls.bg};color:${_ls.color};
-                     font-size:.82rem;font-weight:${isAct?'700':'500'};cursor:pointer;white-space:nowrap;
-                     ${isAct?`filter:brightness(0.88);box-shadow:0 0 0 1px ${_ls.border};`:''}">
-              ${escHtml(semesterLabel(s))}
-            </button>`;
+            // 學期存取限制：僅限管理員（非主任/主責）且有學期限制者
+            const _myEmail = currentUser?.email;
+            const _isMgrOnly = !isAdminUser && c.counselorEmail !== _myEmail;
+            const _semLocked = _isMgrOnly && _hasManagerAccess(_myEmail, c.id)
+              && !_hasManagerAccess(_myEmail, c.id, s);
+            return _semLocked
+              ? `<button disabled data-tip="您沒有 ${escHtml(semesterLabel(s))} 學期的閱覽權限。"
+                  style="padding:4px 14px;border-radius:16px;border:1px solid #cbd5e0;
+                         background:#f7fafc;color:#a0aec0;font-size:.82rem;
+                         cursor:not-allowed;white-space:nowrap;opacity:.6;">
+                  🔒 ${escHtml(semesterLabel(s))}
+                </button>`
+              : `<button onclick="_switchCaseSem('${escHtml(s)}','${escHtml(c.id)}')"
+                  style="padding:4px 14px;border-radius:16px;
+                         border:${isAct?`2.5px solid ${_ls.border}`:`1px solid ${_ls.border}`};
+                         background:${_ls.bg};color:${_ls.color};
+                         font-size:.82rem;font-weight:${isAct?'700':'500'};cursor:pointer;white-space:nowrap;
+                         ${isAct?`filter:brightness(0.88);box-shadow:0 0 0 1px ${_ls.border};`:''}">
+                  ${escHtml(semesterLabel(s))}
+                </button>`;
           }).join('')}
           </div>
         </div>
@@ -6645,6 +6694,10 @@ async function removeCaseManager(caseId, email) {
   if (!entry) return;
   entry.allowedCases = (entry.allowedCases || []).filter(id => id !== caseId);
   if (!entry.allowedCases.length) { delete entry.allowedCases; delete entry.extraRole; }
+  if (entry.allowedCasesSems) {
+    delete entry.allowedCasesSems[caseId];
+    if (!Object.keys(entry.allowedCasesSems).length) delete entry.allowedCasesSems;
+  }
   const removedCaseName = casesData.find(c => c.id === caseId)?.name || caseId;
   addNotificationToUser(email, 'removed_manager', caseId, removedCaseName);
   showLoading('移除個案管理員…');
@@ -6656,6 +6709,57 @@ async function removeCaseManager(caseId, email) {
   } catch (err) {
     hideLoading();
     alert('移除失敗：' + err.message);
+  }
+}
+
+// ══════════════════════════════════════════════
+//  個案管理員輔助函數
+// ══════════════════════════════════════════════
+
+function _hasManagerAccess(email, caseId, semPrefix) {
+  const info = configData?.users?.[email];
+  if (!info) return false;
+  if (!(info.allowedCases || []).includes(caseId)) return false;
+  const sems = info.allowedCasesSems?.[caseId];
+  if (!sems || !semPrefix) return true;
+  return sems.includes(semPrefix);
+}
+
+function _getManagersForCase(caseId) {
+  return Object.entries(configData?.users || {})
+    .filter(([email]) => _hasManagerAccess(email, caseId))
+    .map(([email]) => email);
+}
+
+async function addCaseManagerInDetail(caseId) {
+  const email = document.getElementById('cm-add-select')?.value;
+  if (!email) { alert('請先選擇要新增的輔導人員。'); return; }
+  const semScope = document.getElementById('cm-sem-scope')?.value || 'all';
+  const entry = configData.users[email] || (configData.users[email] = {});
+  entry.allowedCases = entry.allowedCases || [];
+  if (!entry.allowedCases.includes(caseId)) {
+    entry.allowedCases.push(caseId);
+    if (!entry.extraRole) entry.extraRole = '個案管理員';
+  }
+  if (semScope !== 'all') {
+    if (!entry.allowedCasesSems) entry.allowedCasesSems = {};
+    entry.allowedCasesSems[caseId] = [...new Set([...(entry.allowedCasesSems[caseId] || []), semScope])];
+  } else if (entry.allowedCasesSems?.[caseId]) {
+    delete entry.allowedCasesSems[caseId];
+    if (!Object.keys(entry.allowedCasesSems).length) delete entry.allowedCasesSems;
+  }
+  const caseName = casesData.find(c => c.id === caseId)?.name || caseId;
+  addNotificationToUser(email, 'assigned_manager', caseId, caseName);
+  showLoading('儲存個案管理員…');
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    renderNotifBell();
+    auditLog(`新增個案管理員 ${email}`, caseId);
+    hideLoading();
+    showCaseDetail(caseId);
+  } catch (err) {
+    hideLoading();
+    alert('儲存失敗：' + err.message);
   }
 }
 
@@ -8804,16 +8908,23 @@ async function _autoOpenNextSemCase(sourceCase, evalSem) {
     return;
   }
   const newId = _generateCaseIdForSem(nextSem);
-  const COPY_FIELDS = ['name','studentId','legalGender','genderIdentity','birthday','idNumber','nationality','foreignCountry','ethnicity','ethnicityNote','department','grade','program','classNo','disability','phone','email','residence','address','emergencyName','emergencyPhone','emergencyRelation','source','topics','caseManagerEmail'];
+  const COPY_FIELDS = ['name','studentId','legalGender','genderIdentity','birthday','idNumber','nationality','foreignCountry','ethnicity','ethnicityNote','department','grade','program','classNo','disability','phone','email','residence','address','emergencyName','emergencyPhone','emergencyRelation','source','topics'];
   const newCase = { id: newId, openDate, status: 'active', semesters: [nextSem],
     counselorEmail: sourceCase.counselorEmail, counselorName: sourceCase.counselorName, counselorText: sourceCase.counselorText,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   COPY_FIELDS.forEach(f => { if (sourceCase[f] !== undefined) newCase[f] = sourceCase[f]; });
   casesData.push(newCase);
+  // 個案管理員繼承：將舊案管理員加入新案
+  Object.entries(configData?.users || {}).forEach(([, info]) => {
+    if (!(info.allowedCases || []).includes(sourceCase.id)) return;
+    info.allowedCases = info.allowedCases || [];
+    if (!info.allowedCases.includes(newId)) info.allowedCases.push(newId);
+  });
   renderCases();
   const jobId2 = bgJobAdd('自動開下學期案', `${sourceCase.name}（${newId}）`);
   try {
     await saveCasesChunks(newId);
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
     auditLog('自動開下學期案', newId, null, `來源：${sourceCase.id}，${semesterLabel(nextSem)}學期`);
     bgJobDone(jobId2, `已自動建立 ${semesterLabel(nextSem)} 學期新案 ${newId}`);
   } catch (err) {
@@ -8873,12 +8984,20 @@ async function addCaseSemester(caseId) {
     if (sortedSnaps) c.basicInfoSnapshots[sem] = { ...c.basicInfoSnapshots[sortedSnaps] };
   }
   c.updatedAt = new Date().toISOString();
+  // 個案管理員繼承：若管理員有學期限制，自動將新學期加入可閱覽範圍
+  Object.values(configData?.users || {}).forEach(info => {
+    if (!(info.allowedCases || []).includes(caseId)) return;
+    const sems = info.allowedCasesSems?.[caseId];
+    if (sems && !sems.includes(sem)) sems.push(sem);
+  });
   showLoading(`新學期開案中（${semesterLabel(sem)}）…`);
   const jobId = bgJobAdd('新學期開案', c.name);
   (async () => {
     try {
-      bgJobProgress(jobId, 50);
+      bgJobProgress(jobId, 40);
       await saveCasesChunks(caseId);
+      bgJobProgress(jobId, 80);
+      await driveUpdateJsonFile(CONFIG_FILE, configData);
       auditLog('新學期開案', caseId, null, semesterLabel(sem) + '學期');
       bgJobDone(jobId);
       _caseDetailActiveSem = sem;
@@ -9324,11 +9443,11 @@ function renderCaseNums(resetPage) {
   let visible;
   if (isAdminUser) {
     visible = casesData;
-  } else if (extraRole === '個案管理員' && configData?.users?.[currentUser.email]) {
-    const allowed = configData.users[currentUser.email].allowedCases || [];
-    visible = casesData.filter(c => allowed.includes(c.id) && !c.deleted);
   } else {
-    visible = casesData.filter(c => c.counselorEmail === currentUser?.email && !c.deleted);
+    const allowed = configData?.users?.[currentUser.email]?.allowedCases || [];
+    visible = casesData.filter(c => !c.deleted && (
+      c.counselorEmail === currentUser?.email || allowed.includes(c.id)
+    ));
   }
 
   // 完全無個案（篩選前）→ 直接顯示空狀態
@@ -12144,8 +12263,16 @@ async function saveInitialInterview() {
     casesData[cidx].initialInterview = snap;
   }
   casesData[cidx].updatedAt = snap.updatedAt;
-  // 初談者成為個管（若尚未設定）
-  if (!casesData[cidx].caseManagerEmail) casesData[cidx].caseManagerEmail = snap.filledBy;
+  // 初談者自動加入 allowedCases（若尚未設定）
+  if (snap.interviewerEmail && configData?.users?.[snap.interviewerEmail]) {
+    const _iiMgrEntry = configData.users[snap.interviewerEmail];
+    _iiMgrEntry.allowedCases = _iiMgrEntry.allowedCases || [];
+    if (!_iiMgrEntry.allowedCases.includes(_initialInterviewCaseId)) {
+      _iiMgrEntry.allowedCases.push(_initialInterviewCaseId);
+      if (!_iiMgrEntry.extraRole) _iiMgrEntry.extraRole = '個案管理員';
+      driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    }
+  }
   // mark corresponding todo as done
   const _iiTodo = todosData.find(t => t.caseId === _initialInterviewCaseId && t.type === 'initial_interview' && !t.done);
   if (_iiTodo) { _iiTodo.done = true; _iiTodo.doneAt = new Date().toISOString(); saveUserTodos().catch(()=>{}); _syncTodoBadge(); }
