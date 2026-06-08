@@ -21467,15 +21467,37 @@ function _checkTransferClosureReminders() {
 }
 
 async function _markTransferClosureDone(todoId, transferRecId) {
+  const today = new Date().toISOString().slice(0, 10);
+  const date = await new Promise(resolve => {
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:800;display:flex;align-items:center;justify-content:center;';
+    ov.innerHTML = `<div style="background:#fff;border-radius:12px;padding:28px 32px;width:340px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+      <h3 style="font-size:1rem;margin-bottom:4px;">確認結案會議完成</h3>
+      <p style="font-size:.82rem;color:#718096;margin-bottom:16px;">請填入結案會議日期，完成後提醒將關閉。</p>
+      <label style="font-size:.85rem;font-weight:600;display:block;margin-bottom:6px;">結案會議日期</label>
+      <input type="date" id="_closure-date-inp" value="${today}" style="width:100%;padding:8px;border:1px solid #e2e8f0;border-radius:6px;font-size:.9rem;box-sizing:border-box;">
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px;">
+        <button id="_closure-cancel" class="btn btn-secondary">取消</button>
+        <button id="_closure-confirm" class="btn btn-primary">確認完成</button>
+      </div>
+    </div>`;
+    document.body.appendChild(ov);
+    ov.querySelector('#_closure-confirm').onclick = () => {
+      const d = ov.querySelector('#_closure-date-inp').value;
+      document.body.removeChild(ov); resolve(d || today);
+    };
+    ov.querySelector('#_closure-cancel').onclick = () => { document.body.removeChild(ov); resolve(null); };
+  });
+  if (date === null) return;
   const rec = (transferData || []).find(r => r.id === transferRecId);
-  if (rec) { rec.closureMeetingDone = true; rec.closureMeetingDoneAt = new Date().toISOString(); }
+  if (rec) { rec.closureMeetingDone = true; rec.closureMeetingDate = date; rec.closureMeetingDoneAt = new Date().toISOString(); }
   const t = todosData.find(x => x.id === todoId);
   if (t) { t.done = true; t.doneAt = new Date().toISOString(); t.isLocked = false; }
   _syncTodoBadge();
   renderTodosPage();
   if (rec) {
     const jobId = bgJobAdd('儲存轉銜結案會議完成狀態');
-    (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('完成轉銜結案會議', rec.caseId); } catch(e) { bgJobFail(jobId, e.message); } })();
+    (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('完成轉銜結案會議', rec.caseId, null, date); } catch(e) { bgJobFail(jobId, e.message); } })();
   }
 }
 
@@ -21738,6 +21760,21 @@ function _renderGradTransferTab() {
   const decLabelMap = { pending:'待決議', noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校' };
   const decColorMap = { pending:'#718096', noTransfer_self:'#1d6a3a', transfer_school:'#c0392b', noTransfer_school:'#1d6a3a', stay:'#553c9a' };
   const decBgMap = { pending:'#f0f4f8', noTransfer_self:'#d5f5e3', transfer_school:'#fde8e8', noTransfer_school:'#d5f5e3', stay:'#e9d8fd' };
+  const today = new Date().toISOString().slice(0, 10);
+  const batchBar = `<div style="background:#f0f8ff;border:1px solid #bee3f8;border-radius:8px;padding:9px 14px;margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+    <input type="checkbox" id="grad-select-all" onchange="_gradToggleAll(this.checked)" title="全選/取消全選" style="flex-shrink:0;">
+    <span style="font-size:.82rem;color:#2b6cb0;font-weight:600;">批次套用：</span>
+    <select id="grad-batch-status" style="padding:4px 8px;font-size:.82rem;border:1px solid #bee3f8;border-radius:4px;background:#fff;">
+      <option value="">選擇決議</option>
+      <option value="noTransfer_self">依主責評估不需轉銜</option>
+      <option value="transfer_school">校級建議轉銜</option>
+      <option value="noTransfer_school">校級建議不需轉銜</option>
+      <option value="stay">本學期不離校</option>
+    </select>
+    <input type="date" id="grad-batch-date" value="${today}" title="校級評估會議日期" style="padding:4px 8px;font-size:.82rem;border:1px solid #bee3f8;border-radius:4px;">
+    <button class="btn btn-primary btn-sm" onclick="_applyGradBatch('${curSem}')">套用至已勾選</button>
+    <span id="grad-batch-info" style="font-size:.82rem;color:#2b6cb0;"></span>
+  </div>`;
   const rows = gradCases.map(({ c, gs }) => {
     const hasTE = _hasCaseTransferEval(c.id, curSem);
     const dec = _getGradTransferDecision(c.id, curSem);
@@ -21749,14 +21786,17 @@ function _renderGradTransferTab() {
       ? `<span style="font-size:.73rem;background:#d5f5e3;color:#1d6a3a;border-radius:8px;padding:1px 7px;border:1px solid #9ae6b4;">已填評估</span>`
       : `<span style="font-size:.73rem;background:#fde8e8;color:#c0392b;border-radius:8px;padding:1px 7px;border:1px solid #fc8181;">未填評估</span>`;
     const decStyle = `font-size:.73rem;padding:2px 8px;border-radius:10px;background:${decBgMap[decStatus]};color:${decColorMap[decStatus]};border:1px solid ${decColorMap[decStatus]};`;
+    const schoolDateDisplay = dec?.schoolMeetingDate ? `<span style="font-size:.75rem;color:#718096;">校級會議：${escHtml(dec.schoolMeetingDate)}</span>` : '';
     return `<div class="record-card" style="margin-bottom:8px;${decStatus!=='pending'?'border-left:3px solid '+decColorMap[decStatus]+';':''}">
       <div class="record-card-header" style="flex-wrap:wrap;gap:6px;">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <input type="checkbox" class="grad-cb" data-cid="${escHtml(c.id)}" onchange="_gradCbChange()" style="margin-top:3px;flex-shrink:0;">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex:1;">
           <strong>${escHtml(c.name||'—')}</strong>
           <span style="color:#718096;font-size:.82rem;">${escHtml(c.studentId||'—')}</span>
           ${gradBadge}${teBadge}
           <span style="${decStyle}">${decLabelMap[decStatus]||'—'}</span>
           <span style="font-size:.78rem;color:#718096;">主責：${escHtml(c.counselorName||c.counselorEmail||'—')}</span>
+          ${schoolDateDisplay}
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
           <button class="btn btn-secondary btn-sm" onclick="showCaseDetail('${escHtml(c.id)}')">查看個案</button>
@@ -21768,11 +21808,12 @@ function _renderGradTransferTab() {
             <option value="noTransfer_school"${decStatus==='noTransfer_school'?' selected':''}>校級建議不需轉銜</option>
             <option value="stay"${decStatus==='stay'?' selected':''}>本學期不離校</option>
           </select>
+          <input type="date" value="${escHtml(dec?.schoolMeetingDate||'')}" title="校級評估會議日期" style="padding:4px;font-size:.8rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="setGradTransferMeetingDate('${escHtml(c.id)}','${curSem}',this.value)">
         </div>
       </div>
     </div>`;
   }).join('');
-  return statsBar + actionBar + rows;
+  return statsBar + actionBar + batchBar + rows;
 }
 
 function setGradTransferDecision(caseId, sem, status) {
@@ -21786,6 +21827,54 @@ function setGradTransferDecision(caseId, sem, status) {
   if (window._transferTab === 'graduation') { document.getElementById('transfer-body').innerHTML = _renderGradTransferTab(); }
   const jobId = bgJobAdd('儲存校級轉銜決議');
   (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('設定校級轉銜決議', caseId, null, status); } catch (e) { bgJobFail(jobId, e.message); } })();
+}
+
+function setGradTransferMeetingDate(caseId, sem, date) {
+  const now = new Date().toISOString();
+  const ex = _getGradTransferDecision(caseId, sem);
+  if (!ex) return;
+  ex.schoolMeetingDate = date; ex.updatedAt = now; ex.updatedBy = currentUser?.email;
+  const jobId = bgJobAdd('儲存校級評估會議日期');
+  (async () => { try { await saveTransfer(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); } })();
+}
+
+function _gradCbChange() {
+  const cbs = document.querySelectorAll('.grad-cb');
+  const checked = document.querySelectorAll('.grad-cb:checked').length;
+  const allCb = document.getElementById('grad-select-all');
+  if (allCb) { allCb.checked = checked === cbs.length && cbs.length > 0; allCb.indeterminate = checked > 0 && checked < cbs.length; }
+  const info = document.getElementById('grad-batch-info');
+  if (info) info.textContent = checked > 0 ? `已選 ${checked} 位` : '';
+}
+
+function _gradToggleAll(checked) {
+  document.querySelectorAll('.grad-cb').forEach(cb => { cb.checked = checked; });
+  _gradCbChange();
+}
+
+function _applyGradBatch(sem) {
+  const status = document.getElementById('grad-batch-status')?.value;
+  const date   = document.getElementById('grad-batch-date')?.value;
+  if (!status && !date) { alert('請選擇決議或填入校級評估會議日期'); return; }
+  const checkedCids = [...document.querySelectorAll('.grad-cb:checked')].map(cb => cb.dataset.cid);
+  if (!checkedCids.length) { alert('請先勾選要套用的學生'); return; }
+  const now = new Date().toISOString();
+  checkedCids.forEach(cid => {
+    const ex = _getGradTransferDecision(cid, sem);
+    if (ex) {
+      if (status) ex.status = status;
+      if (date) ex.schoolMeetingDate = date;
+      ex.updatedAt = now; ex.updatedBy = currentUser?.email;
+    } else if (status) {
+      transferData.push({ id:`gr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+        type:'graduation', caseId:cid, semester:sem, status,
+        schoolMeetingDate: date||'', createdAt:now, createdBy:currentUser?.email });
+    }
+  });
+  _checkTransferGradTodos();
+  document.getElementById('transfer-body').innerHTML = _renderGradTransferTab();
+  const jobId = bgJobAdd(`批次套用轉銜決議（${checkedCids.length}筆）`);
+  (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('批次設定校級轉銜決議', null, null, `${checkedCids.length}筆`); } catch(e) { bgJobFail(jobId, e.message); } })();
 }
 
 async function handleImportGradTransferCSV(input) {
@@ -21844,18 +21933,25 @@ async function showGradTransferImportPreview(rows, curSem) {
   const headers = rows[0].map(h => h.trim());
   const nameIdx    = headers.findIndex(h => /姓名/.test(h));
   const sidIdx     = headers.findIndex(h => /學號/.test(h));
-  const meetIdx    = headers.findIndex(h => /評估會議/.test(h));
-  const resIdx     = headers.findIndex(h => /結果|校級/.test(h));
-  const closureIdx = headers.findIndex(h => /結案會議/.test(h));
+  // 新格式：校級評估會議日期 / 校級會議轉銜評估結果 / 結案會議日期 / 結案會議評估結果
+  // 向後相容舊格式：評估會議（文字） / 結果|校級 / 結案會議（無日期/結果後綴）
+  let schoolMeetingDateIdx = headers.findIndex(h => /校級.*日期/.test(h));
+  if (schoolMeetingDateIdx < 0) schoolMeetingDateIdx = headers.findIndex(h => /^評估會議$/.test(h));
+  let resIdx = headers.findIndex(h => /校級.*結果|校級會議轉銜/.test(h));
+  if (resIdx < 0) resIdx = headers.findIndex(h => /結果|校級/.test(h));
+  let closureMeetingDateIdx = headers.findIndex(h => /結案.*日期/.test(h));
+  let closureResIdx = headers.findIndex(h => /結案.*結果/.test(h));
+  if (closureResIdx < 0) closureResIdx = headers.findIndex(h => /結案會議/.test(h) && !/日期/.test(h));
   if (nameIdx < 0 && sidIdx < 0) { alert('找不到「姓名」或「學號」欄位，請確認 CSV 格式。'); renderTransferPage(); return; }
   const decLblMap = { pending:'未決議', noTransfer_school:'校級不轉銜', transfer_school:'校級建議轉銜' };
   const closureLblMap = { pending_closure:'未決議', notClose:'不結案', close:'結案' };
   const entries = rows.slice(1).filter(r => r.some(v => v)).map((r, i) => {
-    const name      = nameIdx    >= 0 ? (r[nameIdx]   ||'') : '';
-    const sid       = sidIdx     >= 0 ? (r[sidIdx]    ||'') : '';
-    const meeting   = meetIdx    >= 0 ? (r[meetIdx]   ||'') : '';
-    const result    = resIdx     >= 0 ? (r[resIdx]    ||'') : '';
-    const closureRaw = closureIdx >= 0 ? (r[closureIdx]||'') : '';
+    const name              = nameIdx              >= 0 ? (r[nameIdx]             ||'') : '';
+    const sid               = sidIdx               >= 0 ? (r[sidIdx]              ||'') : '';
+    const schoolMeetingDate = schoolMeetingDateIdx >= 0 ? (r[schoolMeetingDateIdx]||'') : '';
+    const result            = resIdx               >= 0 ? (r[resIdx]              ||'') : '';
+    const closureMeetingDate = closureMeetingDateIdx >= 0 ? (r[closureMeetingDateIdx]||'') : '';
+    const closureRaw        = closureResIdx        >= 0 ? (r[closureResIdx]       ||'') : '';
     let mc = null, matchType = 'none';
     if (sid && name) {
       mc = casesData.find(c => !c.deleted && c.studentId===sid && c.name===name);
@@ -21869,12 +21965,12 @@ async function showGradTransferImportPreview(rows, curSem) {
     } else if (sid) { mc = casesData.find(c => !c.deleted && c.studentId===sid); matchType = mc?'sid_only':'none'; }
     else if (name) { mc = casesData.find(c => !c.deleted && c.name===name); matchType = mc?'name_only':'none'; }
     let decision = 'pending';
-    if (meeting && !result) decision = 'pending';
+    if (schoolMeetingDate && !result) decision = 'pending';
     else if (result) decision = result.includes('不') ? 'noTransfer_school' : 'transfer_school';
     let closureDecision = '';
     if (closureRaw) closureDecision = closureRaw.includes('不') ? 'notClose' : 'close';
     const isDuplicate = !!(mc && _getGradTransferDecision(mc.id, curSem));
-    return { i, name, sid, meeting, result, closureRaw, closureDecision, mc, matchType, decision, isDuplicate,
+    return { i, name, sid, schoolMeetingDate, result, closureMeetingDate, closureRaw, closureDecision, mc, matchType, decision, isDuplicate,
              _sel: matchType === 'full' && !isDuplicate };
   });
   if (!entries.length) { alert('未找到有效資料列。'); renderTransferPage(); return; }
@@ -21915,7 +22011,8 @@ async function showGradTransferImportPreview(rows, curSem) {
         <td style="text-align:center;"><input type="checkbox" ${sel.has(i)?'checked':''} onchange="window._gtSel(${i},this.checked)"></td>
         <td contenteditable="${warn?'true':'false'}" style="min-width:60px;" oninput="window._gtRow[${i}].name=this.textContent.trim()">${escHtml(e.name)}</td>
         <td contenteditable="${warn?'true':'false'}" style="min-width:80px;" oninput="window._gtRow[${i}].sid=this.textContent.trim()">${escHtml(e.sid)}</td>
-        <td style="font-size:.8rem;">${escHtml(e.meeting||'—')}</td>
+        <td style="font-size:.8rem;">${escHtml(e.schoolMeetingDate||'—')}</td>
+        <td style="font-size:.8rem;">${escHtml(e.closureMeetingDate||'—')}</td>
         <td>${decSel}</td>
         <td>${closureSel}</td>
         <td style="font-size:.78rem;color:${warn?'#d97706':'#718096'};min-width:80px;">${dupBadge}${warnMsg ? (dupBadge?'<br>':'') + warnMsg : ''}</td>
@@ -21925,7 +22022,7 @@ async function showGradTransferImportPreview(rows, curSem) {
     if (el) el.innerHTML = `<table class="grad-import-table" style="width:100%;border-collapse:collapse;font-size:.85rem;">
       <thead><tr style="background:#f7fafc;font-size:.8rem;position:sticky;top:0;">
         <th style="width:30px;"><input type="checkbox" title="全選/取消全選" onchange="window._gtSelAll(this.checked)"></th>
-        <th>姓名</th><th>學號</th><th>評估會議</th><th>校級評估結果</th><th>結案會議評估結果</th><th>狀態</th>
+        <th>姓名</th><th>學號</th><th>校級會議日期</th><th>結案會議日期</th><th>校級評估結果</th><th>結案會議評估結果</th><th>狀態</th>
       </tr></thead><tbody>${tbody}</tbody></table>`;
     const btn = document.getElementById('gt-confirm-btn');
     if (btn) btn.textContent = `匯入 / 更新 ${sel.size} 筆`;
@@ -21964,12 +22061,14 @@ async function showGradTransferImportPreview(rows, curSem) {
       if (!mc) return;
       const ex = _getGradTransferDecision(mc.id, curSem);
       if (ex) {
-        ex.status = e.decision; ex.meeting = e.meeting; ex.updatedAt = now;
+        ex.status = e.decision; ex.schoolMeetingDate = e.schoolMeetingDate||''; ex.updatedAt = now;
         if (e.closureDecision) ex.closureDecision = e.closureDecision;
+        if (e.closureMeetingDate) ex.closureMeetingDate = e.closureMeetingDate;
       } else {
         transferData.push({ id:`gr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
           type:'graduation', caseId:mc.id, semester:curSem,
-          status:e.decision, meeting:e.meeting, closureDecision:e.closureDecision||'',
+          status:e.decision, schoolMeetingDate:e.schoolMeetingDate||'',
+          closureDecision:e.closureDecision||'', closureMeetingDate:e.closureMeetingDate||'',
           createdAt:now, createdBy:currentUser?.email });
       }
       count++;
@@ -21985,10 +22084,10 @@ async function showGradTransferImportPreview(rows, curSem) {
 function downloadGradTransferCSVTemplate() {
   const bom = '﻿';
   const lines = [
-    '"姓名","學號","評估會議","校級會議轉銜評估結果","結案會議評估結果"',
-    '"王小明","B11202001","113-2學年度校級轉銜評估會議","建議轉銜","建議結案"',
-    '"李大華","M11230002","","不建議轉銜",""',
-    '"陳小花","B11002003","113-2學年度校級轉銜評估會議","","不建議結案"',
+    '"姓名","學號","校級評估會議日期","校級會議轉銜評估結果","結案會議日期","結案會議評估結果"',
+    '"王小明","B11202001","2025-03-15","建議轉銜","2025-09-10","建議結案"',
+    '"李大華","M11230002","2025-03-15","不建議轉銜","",""',
+    '"陳小花","B11002003","2025-03-15","","2025-09-10","不建議結案"',
   ];
   const blob = new Blob([bom + lines.join('\n')], { type:'text/csv;charset=utf-8;' });
   const a = document.createElement('a');
