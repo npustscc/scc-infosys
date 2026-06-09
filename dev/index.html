@@ -4768,6 +4768,12 @@ async function notifClick(notifId, caseId) {
     markIssuesSeen();
     showPage('page-issues', navEl);
     renderIssuesPage();
+  } else if (notif?.type === 'admin_verify_new_user') {
+    const navEl = document.querySelector('[data-nav-id="page-admin"]');
+    showPage('page-admin', navEl);
+    if (notif.caseId) window._adminHighlightUser = notif.caseId;
+    renderAdminUsers();
+    renderAdminDegreeMapping();
   } else {
     showCaseDetail(caseId);
   }
@@ -5093,6 +5099,8 @@ function renderAdminUsers() {
       ${(fStatus!=='all'||fRole) ? `<button type="button" onclick="_auFilter('status','all');_auFilter('role','')" style="padding:4px 10px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;font-size:.82rem;color:#718096;cursor:pointer;">× 清除篩選</button>` : ''}
     </div>`;
 
+  const _hlKey = window._adminHighlightUser || null;
+  if (_hlKey) window._adminHighlightUser = null;
   const rows = filtered.map(([key, info]) => {
     const isAdminUser = info.isAdmin === true || info.extraRole === '管理者';
     const tcBadge = info.isTransferContact ? `<span class="badge badge-teal" style="margin-left:4px;">轉銜窗口</span>` : '';
@@ -5108,9 +5116,10 @@ function renderAdminUsers() {
       : escHtml(key);
     const disabledBadge = info.disabled ? `<span class="badge" style="background:#fed7d7;color:#c53030;margin-left:4px;">已停用</span>` : '';
     const disableBtn = isSelf ? '' : `<label title="${info.disabled?'啟用帳號':'停用帳號'}" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:.78rem;color:${info.disabled?'#c53030':'#718096'};margin-left:6px;"><input type="checkbox" ${info.disabled?'checked':''} onchange="toggleUserDisabled('${escHtml(key)}',this.checked)" style="cursor:pointer;"> 停用</label>`;
+    const isHighlighted = key === _hlKey;
     return `
-      <tr style="opacity:${info.disabled?'.55':'1'};">
-        <td>${displayKey}${isSelf ? ' <span class="badge badge-blue">本帳號</span>' : ''}${disabledBadge}</td>
+      <tr style="opacity:${info.disabled?'.55':'1'};${isHighlighted?'background:#fffbeb;outline:2px solid #f6ad55;':''}">
+        <td>${displayKey}${isSelf ? ' <span class="badge badge-blue">本帳號</span>' : ''}${disabledBadge}${isHighlighted ? ' <span class="badge badge-orange" style="font-size:.72rem;">新建立</span>' : ''}</td>
         <td>${escHtml(info.name || '—')}</td>
         <td>${escHtml(info.role || '—')}</td>
         <td>${adminBadge}</td>
@@ -9522,15 +9531,7 @@ let _casesSelected = new Set();
 function renderCaseNums(resetPage) {
   if (resetPage) _cnPage = 1;
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
-  let visible;
-  if (isAdminUser) {
-    visible = casesData;
-  } else {
-    const allowed = configData?.users?.[currentUser.email]?.allowedCases || [];
-    visible = casesData.filter(c => !c.deleted && (
-      c.counselorEmail === currentUser?.email || allowed.includes(c.id)
-    ));
-  }
+  let visible = casesData; // 所有使用者可檢視全部個案
 
   // 完全無個案（篩選前）→ 直接顯示空狀態
   const body = document.getElementById('casenums-body');
@@ -9546,20 +9547,18 @@ function renderCaseNums(resetPage) {
   else if (_cnClosureStatus === 'active') visible = visible.filter(c => c.status !== 'closed' || _hasPastUnclosed(c));
 
   const counselorMap = new Map();
-  if (isAdminUser) {
-    visible.forEach(c => {
-      const key = c.counselorEmail || c.counselorName || c.counselorText || '';
-      if (!key) return;
-      const label = c.counselorEmail
-        ? (formatCounselorLabel(c.counselorEmail) || c.counselorName || c.counselorEmail)
-        : (c.counselorText || c.counselorName || key);
-      if (!counselorMap.has(key)) counselorMap.set(key, label);
-    });
-    if (_cnCounselor) visible = visible.filter(c => {
-      const key = c.counselorEmail || c.counselorName || c.counselorText || '';
-      return key === _cnCounselor;
-    });
-  }
+  visible.forEach(c => {
+    const key = c.counselorEmail || c.counselorName || c.counselorText || '';
+    if (!key) return;
+    const label = c.counselorEmail
+      ? (formatCounselorLabel(c.counselorEmail) || c.counselorName || c.counselorEmail)
+      : (c.counselorText || c.counselorName || key);
+    if (!counselorMap.has(key)) counselorMap.set(key, label);
+  });
+  if (_cnCounselor) visible = visible.filter(c => {
+    const key = c.counselorEmail || c.counselorName || c.counselorText || '';
+    return key === _cnCounselor;
+  });
 
   // 篩選後為空 → 繼續渲染 filter bar，表格顯示「無符合結果」（讓使用者能清除篩選）
 
@@ -9675,7 +9674,7 @@ function renderCaseNums(resetPage) {
     const clearBtn = document.getElementById('cn-clear-btn');
     if (clearBtn) clearBtn.disabled = (_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor&&!(document.getElementById('cn-search')?.value?.trim()));
     const cnslSel = document.getElementById('cn-counselor');
-    if (cnslSel && isAdminUser) {
+    if (cnslSel) {
       const prev = cnslSel.value;
       cnslSel.innerHTML = '<option value="">全部人員</option>' +
         [...counselorMap.entries()].map(([k,v]) => `<option value="${escHtml(k)}"${k===_cnCounselor?' selected':''}>${escHtml(v)}</option>`).join('');
@@ -9710,11 +9709,11 @@ function renderCaseNums(resetPage) {
             <option value="active" ${_cnClosureStatus==='active'?'selected':''}>未結案</option>
             <option value="closed" ${_cnClosureStatus==='closed'?'selected':''}>已結案</option>
           </select>
-          ${isAdminUser ? `<select id="cn-counselor" class="field-input" style="padding:4px 6px;font-size:.85rem;"
+          <select id="cn-counselor" class="field-input" style="padding:4px 6px;font-size:.85rem;"
             onchange="_cnCounselor=this.value;_cnPage=1;renderCaseNums()">
             <option value="">全部人員</option>
             ${[...counselorMap.entries()].map(([k,v])=>`<option value="${escHtml(k)}"${k===_cnCounselor?' selected':''}>${escHtml(v)}</option>`).join('')}
-          </select>` : ''}
+          </select>
           <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;">每頁
             <select id="cn-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;"
               onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select>筆
@@ -14640,7 +14639,7 @@ function renderTodosPage() {
     return;
   }
 
-  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（協調員）', transfer_closure_reminder: '轉銜結案追蹤' };
+  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（協調員）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）' };
 
   body.innerHTML = filtered.map(t => {
     const tLabel = typeLabels[t.type] || t.type;
@@ -14655,7 +14654,9 @@ function renderTodosPage() {
       ? `<div style="width:16px;flex-shrink:0;"></div>`
       : `<input type="checkbox" class="todo-select-cb" data-id="${t.id}" onchange="_updateTodoBatchBtn()" style="margin-top:3px;flex-shrink:0;">`;
     const _isTransferTodo = ['transfer_grad_counselor','transfer_grad_coord','transfer_closure_reminder'].includes(t.type);
-    const continueBtn = !readOnly && !t.done ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">${_isTransferTodo ? '前往轉銜管理' : '繼續編輯'}</button>` : '';
+    const _isAdminUserTodo = t.type === 'admin_verify_new_user';
+    const _continueBtnLabel = _isTransferTodo ? '前往轉銜管理' : (_isAdminUserTodo ? '前往設定' : '繼續編輯');
+    const continueBtn = !readOnly && !t.done ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">${_continueBtnLabel}</button>` : '';
     const doneBtn = !readOnly
       ? (!t.done
         ? (t.type === 'transfer_closure_reminder'
@@ -14794,6 +14795,12 @@ function _continueTodo(id) {
     const navEl = document.querySelector('[data-nav-id="page-transfer"]');
     showPage('page-transfer', navEl);
     renderTransferPage();
+  } else if (t.type === 'admin_verify_new_user') {
+    const navEl = document.querySelector('[data-nav-id="page-admin"]');
+    showPage('page-admin', navEl);
+    if (t.newUserKey) window._adminHighlightUser = t.newUserKey;
+    renderAdminUsers();
+    renderAdminDegreeMapping();
   } else if (t.draftData) {
     // generic autosave with draftData — best-effort restore
     if (t.caseId) openNewRecordPage(t.caseId);
@@ -22574,6 +22581,18 @@ function _linkUnassignedRecord(recId) {
   const _decLabelMap = { pending:'待決議', noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）', untraceable:'年久不可考' };
   const decOptions = Object.entries(_decLabelMap).map(([v,l]) =>
     `<option value="${v}"${rec.status===v?' selected':''}>${escHtml(l)}</option>`).join('');
+  const _buildAllCounselorOpts = () => {
+    const _us = Object.entries(configData?.users || {});
+    const _ro = r => COUNSELOR_ROLE_ORDER[r] ?? 99;
+    const _en = _us.filter(([, i]) => !i.disabled && BK_COUNSELING_ROLES.has(i.role))
+      .sort(([, a], [, b]) => (_ro(a.role) - _ro(b.role)) || (a.name||'').localeCompare(b.name||'', 'zh-TW'));
+    const _di = _us.filter(([, i]) => i.disabled)
+      .sort(([, a], [, b]) => (_ro(a.role) - _ro(b.role)) || (a.name||'').localeCompare(b.name||'', 'zh-TW'));
+    let _h = `<option value="">— 請選擇主責輔導人員 —</option><option value="custom_new" style="color:#2b6cb0;font-style:italic;">[ ＋ 自填新增輔導人員 ]</option>`;
+    if (_en.length) { _h += `<optgroup label="啟用中人員">${_en.map(([e, i]) => `<option value="${escHtml(e)}">${escHtml(i.name||e)}${i.role ? ` — ${escHtml(i.role)}` : ''}</option>`).join('')}</optgroup>`; }
+    if (_di.length) { _h += `<optgroup label="已停用人員">${_di.map(([e, i]) => `<option value="${escHtml(e)}" style="color:#a0aec0;">(已停用) ${escHtml(i.name||e)}${i.role ? ` — ${escHtml(i.role)}` : ''}</option>`).join('')}</optgroup>`; }
+    return _h;
+  };
   const modalHtml = `
     <div id="link-case-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;">
       <div style="background:#fff;border-radius:12px;padding:24px;max-width:560px;width:95%;max-height:88vh;display:flex;flex-direction:column;gap:12px;box-shadow:0 20px 60px rgba(0,0,0,.3);">
@@ -22628,10 +22647,33 @@ function _linkUnassignedRecord(recId) {
           </div>
           <div>
             <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">主責輔導人員 <span style="color:#e53e3e;">*</span></label>
-            <select id="link-new-counselor"
+            <select id="link-new-counselor" onchange="_linkCounselorChange()"
               style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
-              ${buildCounselorOptgroups(null, '— 請選擇主責輔導人員 —')}
+              ${_buildAllCounselorOpts()}
             </select>
+          </div>
+          <div id="link-new-user-fields" style="display:none;flex-direction:column;gap:8px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:10px;">
+            <div style="font-size:.82rem;color:#1e40af;font-weight:600;">➕ 新增人員資料（儲存後自動建立帳號）</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <div>
+                <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">姓名 <span style="color:#e53e3e;">*</span></label>
+                <input id="link-new-user-name" type="text" placeholder="請輸入人員姓名"
+                  style="width:100%;padding:7px 10px;border:1px solid #bfdbfe;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+              </div>
+              <div>
+                <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">身分 <span style="color:#e53e3e;">*</span></label>
+                <select id="link-new-user-role" style="width:100%;padding:7px 10px;border:1px solid #bfdbfe;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+                  <option value="">— 選擇身分 —</option>
+                  <option value="專任諮商心理師">專任諮商心理師</option>
+                  <option value="專任臨床心理師">專任臨床心理師</option>
+                  <option value="專任社會工作師">專任社會工作師</option>
+                  <option value="兼任諮商心理師">兼任諮商心理師</option>
+                  <option value="兼任臨床心理師">兼任臨床心理師</option>
+                  <option value="實習諮商心理師">實習諮商心理師</option>
+                  <option value="義務輔導老師">義務輔導老師</option>
+                </select>
+              </div>
+            </div>
           </div>
           <div>
             <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">評估人員</label>
@@ -22712,6 +22754,12 @@ function _linkUnassignedRecord(recId) {
       btn.disabled = false; btn.textContent = '建立並連結';
     }
   };
+  window._linkCounselorChange = () => {
+    const sel = document.getElementById('link-new-counselor');
+    const fieldsEl = document.getElementById('link-new-user-fields');
+    if (!sel || !fieldsEl) return;
+    fieldsEl.style.display = sel.value === 'custom_new' ? 'flex' : 'none';
+  };
   window._linkFilter();
 }
 
@@ -22731,7 +22779,7 @@ async function _confirmLinkRecord(recId) {
   } else {
     const newId = (document.getElementById('link-new-cid')?.value || '').trim();
     const openDate = document.getElementById('link-new-open-date')?.value || now.slice(0,10);
-    const counselorEmail = document.getElementById('link-new-counselor')?.value || '';
+    let counselorEmail = document.getElementById('link-new-counselor')?.value || '';
     const assessorEmail = document.getElementById('link-new-assessor')?.value || '';
     const newDecision = document.getElementById('link-new-decision')?.value || '';
     const withdrawNote = (document.getElementById('link-new-withdraw-reason')?.value || '').trim();
@@ -22741,9 +22789,38 @@ async function _confirmLinkRecord(recId) {
     if (parseInt(newId.slice(4), 10) === 0) { showErr('案號序號不可為 000'); return; }
     if (casesData.find(c => c.id === newId)) { showErr('案號已被使用，請修改'); return; }
     if (!counselorEmail) { showErr('請選擇主責輔導人員'); return; }
+    // Handle custom_new: create a new user entry in configData
+    let counselorDisplayName = '';
+    let _newUserKey = null;
+    if (counselorEmail === 'custom_new') {
+      const newUserName = (document.getElementById('link-new-user-name')?.value || '').trim();
+      const newUserRole = document.getElementById('link-new-user-role')?.value || '';
+      if (!newUserName || !newUserRole) { showErr('使用者不存在，請填寫使用者姓名並選擇身分'); return; }
+      _newUserKey = `nomail_${Date.now()}_${Math.random().toString(36).slice(2,5)}`;
+      configData.users[_newUserKey] = { name: newUserName, role: newUserRole, disabled: false };
+      counselorEmail = _newUserKey;
+      counselorDisplayName = newUserName;
+      // 通知所有管理員確認新建使用者
+      Object.entries(configData.users).forEach(([email, info]) => {
+        if ((info.isAdmin || info.extraRole === '管理者' || info.role === '主任') && email !== currentUser?.email) {
+          addNotificationToUser(email, 'admin_verify_new_user', _newUserKey, newUserName,
+            `使用者管理：請確認／補齊新建立的使用者資料 — ${newUserName}（${newUserRole}）`);
+        }
+      });
+      // 若目前使用者本身是管理員，也加入自己的待辦事項
+      if (currentRole === '主任' || extraRole === '管理者') {
+        todosData.push({ id: `adm_nu_${Date.now()}_${Math.random().toString(36).slice(2,5)}`,
+          type: 'admin_verify_new_user',
+          label: `使用者管理：請確認／補齊新建立的使用者資料 — ${newUserName}`,
+          caseLabel: `${newUserName}（${newUserRole}）`, newUserKey: _newUserKey,
+          createdAt: now, updatedAt: now, done: false });
+      }
+    } else {
+      counselorDisplayName = formatCounselorLabel(counselorEmail) || counselorEmail;
+    }
     const newCase = {
       id: newId, openDate, name: rec.unassignedName||'', studentId: rec.unassignedStudentId||'',
-      counselorEmail, counselorName: formatCounselorLabel(counselorEmail)||counselorEmail,
+      counselorEmail, counselorName: counselorDisplayName,
       abType: 'a_case', status: 'active', caseType: 'university',
       birthday: '', idNumber: '', legalGender: '', genderIdentity: '',
       nationality: '本國籍', ethnicity: '', ethnicityNote: '', foreignCountry: '',
@@ -22767,13 +22844,15 @@ async function _confirmLinkRecord(recId) {
       try {
         await saveCasesChunks(newId);
         await saveTransfer();
+        if (_newUserKey) { await driveUpdateJsonFile(CONFIG_FILE, configData); renderNotifBell(); }
         bgJobDone(jobId);
-        auditLog('建立個案並連結轉銜紀錄', newId, null, `recId:${recId}`);
+        auditLog('建立個案並連結轉銜紀錄', newId, null, `recId:${recId}${_newUserKey?` (新建使用者${_newUserKey})`:''}` );
       } catch(e) {
         bgJobFail(jobId, e.message);
         const idx = casesData.findIndex(c => c.id === newId);
         if (idx >= 0) casesData.splice(idx, 1);
         rec.caseId = undefined; rec.linkedAt = undefined; rec.linkedBy = undefined;
+        if (_newUserKey) delete configData.users[_newUserKey];
       }
     })();
   }
