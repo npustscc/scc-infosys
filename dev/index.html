@@ -874,6 +874,8 @@
     .attach-item.upload-error { background:#fff5f5;border:1px solid #fed7d7; }
     @keyframes attach-spin { to { transform:rotate(360deg); } }
     .attach-spinner { display:inline-block;width:13px;height:13px;border:2px solid #bee3f8;border-top-color:#3182ce;border-radius:50%;animation:attach-spin .8s linear infinite;flex-shrink:0; }
+    @keyframes gt-shake { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-6px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(4px)} }
+    .gt-shake { animation: gt-shake 0.5s ease; }
 
     /* ── Hover 說明 tooltip（由 JS #_tip_el 實作，position:fixed 確保不被 stacking context 遮蔽） ── */
     /* ── 轉銜評估 ── */
@@ -21955,15 +21957,7 @@ async function showGradTransferImportPreview(rows, curSem) {
     alert('CSV 格式不符：第1欄應為「姓名」、第2欄應為「學號」，請使用下載的範本。');
     renderTransferPage(); return;
   }
-  const decLblMap = { pending:'未決議', noTransfer_school:'校級不轉銜', transfer_school:'校級建議轉銜' };
-  const closureLblMap = { pending_closure:'未決議', notClose:'不結案', close:'結案' };
-  const entries = rows.slice(1).filter(r => r.some(v => v)).map((r, i) => {
-    const name               = r[0] || '';
-    const sid                = r[1] || '';
-    const schoolMeetingDate  = parseTaiwanDate(r[2] || '');
-    const result             = r[3] || '';
-    const closureMeetingDate = parseTaiwanDate(r[4] || '');
-    const closureRaw         = r[5] || '';
+  function _gtMatch(name, sid) {
     let mc = null, matchType = 'none';
     if (sid && name) {
       mc = casesData.find(c => !c.deleted && c.studentId===sid && c.name===name);
@@ -21976,6 +21970,17 @@ async function showGradTransferImportPreview(rows, curSem) {
       }
     } else if (sid) { mc = casesData.find(c => !c.deleted && c.studentId===sid); matchType = mc?'sid_only':'none'; }
     else if (name) { mc = casesData.find(c => !c.deleted && c.name===name); matchType = mc?'name_only':'none'; }
+    return { mc, matchType };
+  }
+  const decLblMap = { pending:'未決議', noTransfer_school:'校級不轉銜', transfer_school:'校級建議轉銜' };
+  const entries = rows.slice(1).filter(r => r.some(v => v)).map((r, i) => {
+    const originalName       = r[0] || '';
+    const originalSid        = r[1] || '';
+    const schoolMeetingDate  = parseTaiwanDate(r[2] || '');
+    const result             = r[3] || '';
+    const closureMeetingDate = parseTaiwanDate(r[4] || '');
+    const closureRaw         = r[5] || '';
+    const { mc, matchType } = _gtMatch(originalName, originalSid);
     let decision = 'pending';
     if (result) {
       if (/直升碩士|直升博士|直升碩|直升博|直升/i.test(result)) decision = 'direct_admission';
@@ -21987,8 +21992,9 @@ async function showGradTransferImportPreview(rows, curSem) {
     let closureDecision = '';
     if (closureRaw) closureDecision = closureRaw.includes('不') ? 'notClose' : 'close';
     const isDuplicate = !!(mc && _getGradTransferDecision(mc.id, curSem));
-    return { i, name, sid, schoolMeetingDate, result, closureMeetingDate, closureRaw, closureDecision, mc, matchType, decision, isDuplicate,
-             _sel: matchType === 'full' && !isDuplicate };
+    return { i, name: originalName, sid: originalSid, originalName, originalSid,
+             schoolMeetingDate, result, closureMeetingDate, closureRaw, closureDecision,
+             mc, matchType, decision, isDuplicate, _sel: matchType === 'full' && !isDuplicate };
   });
   if (!entries.length) { alert('未找到有效資料列。'); renderTransferPage(); return; }
   let sel = new Set(entries.filter(e => e._sel).map((_, i) => i));
@@ -22002,17 +22008,59 @@ async function showGradTransferImportPreview(rows, curSem) {
     }
     _gtRender();
   };
+  window._gtRevalidate = (i) => {
+    const e = window._gtRow[i];
+    const { mc, matchType } = _gtMatch(e.name, e.sid);
+    const isDuplicate = !!(mc && _getGradTransferDecision(mc?.id, curSem));
+    e.mc = mc; e.matchType = matchType; e.isDuplicate = isDuplicate;
+    const tr = document.querySelector(`tr[data-row-idx="${i}"]`);
+    if (!tr) return;
+    const statusTd = tr.querySelector('[data-status-cell]');
+    const cb = document.getElementById(`gt-cb-${i}`);
+    const auditHtml = [
+      e.name !== e.originalName ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原姓名：${escHtml(e.originalName)})</div>` : '',
+      e.sid  !== e.originalSid  ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原學號：${escHtml(e.originalSid)})</div>`  : '',
+    ].join('');
+    if (matchType === 'full') {
+      tr.style.background = isDuplicate ? '#fff7ed' : '#ecfdf5';
+      const dupBadge = isDuplicate
+        ? `<span style="font-size:.72rem;background:#fed7aa;color:#9c4221;border-radius:4px;padding:1px 5px;border:1px solid #fb923c;">已有決議：${escHtml(decLblMap[_getGradTransferDecision(mc?.id,curSem)?.status]||'—')}</span>`
+        : `<span style="font-size:.78rem;color:#059669;">✅ 已手動修正對應</span>`;
+      if (statusTd) statusTd.innerHTML = dupBadge + auditHtml;
+      if (cb) { cb.disabled = false; if (!isDuplicate) { cb.checked = true; sel.add(i); } }
+    } else {
+      tr.style.background = '#fff1f2';
+      const warnMsg = matchType==='none' ? '❌ 找不到個案'
+        : matchType==='sid_only' ? `⚠ 學號符合姓名不符（系統：${escHtml(mc?.name||'—')}）`
+        : `⚠ 姓名符合學號不符（系統：${escHtml(mc?.studentId||'—')}）`;
+      if (statusTd) statusTd.innerHTML = `<span style="font-size:.78rem;color:#d97706;">${warnMsg}</span>` + auditHtml;
+      tr.classList.remove('gt-shake'); void tr.offsetWidth;
+      tr.classList.add('gt-shake'); setTimeout(() => tr.classList.remove('gt-shake'), 600);
+      sel.delete(i); if (cb) cb.checked = false;
+    }
+    const btn = document.getElementById('gt-confirm-btn');
+    if (btn) btn.textContent = `匯入 / 更新 ${sel.size} 筆`;
+  };
   const dupCount = entries.filter(e => e.isDuplicate).length;
   function _gtRender() {
     const tbody = entries.map((e, i) => {
       const warn = e.matchType !== 'full';
+      const manuallyFixed = (e.name !== e.originalName || e.sid !== e.originalSid) && e.matchType === 'full' && !e.isDuplicate;
       const warnMsg = e.matchType==='none' ? '❌ 找不到個案'
         : e.matchType==='sid_only' ? `⚠ 學號符合姓名不符（系統：${escHtml(e.mc?.name||'—')}）`
         : e.matchType==='name_only' ? `⚠ 姓名符合學號不符（系統：${escHtml(e.mc?.studentId||'—')}）` : '';
       const dupBadge = e.isDuplicate
         ? `<span style="font-size:.72rem;background:#fed7aa;color:#9c4221;border-radius:4px;padding:1px 5px;border:1px solid #fb923c;">已有決議：${escHtml(decLblMap[_getGradTransferDecision(e.mc?.id,curSem)?.status]||'—')}</span>`
         : '';
-      const rowBg = e.isDuplicate ? '#fff7ed' : (warn ? '#fff8e1' : (i%2===0?'#fff':'#f7fafc'));
+      let rowBg = e.isDuplicate ? '#fff7ed' : (warn ? '#fff8e1' : (i%2===0?'#fff':'#f7fafc'));
+      if (manuallyFixed) rowBg = '#ecfdf5';
+      const auditHtml = [
+        (e.name !== e.originalName) ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原姓名：${escHtml(e.originalName)})</div>` : '',
+        (e.sid  !== e.originalSid)  ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原學號：${escHtml(e.originalSid)})</div>`  : '',
+      ].join('');
+      const statusContent = manuallyFixed
+        ? `<span style="font-size:.78rem;color:#059669;">✅ 已手動修正對應</span>${auditHtml}`
+        : `${dupBadge}${warnMsg ? (dupBadge?'<br>':'') + warnMsg : ''}${auditHtml}`;
       const decSel = `<select style="font-size:.8rem;padding:2px 4px;" onchange="window._gtRow[${i}].decision=this.value">
         <option value="pending"${e.decision==='pending'?' selected':''}>未決議</option>
         <option value="noTransfer_school"${e.decision==='noTransfer_school'?' selected':''}>校級不轉銜</option>
@@ -22027,15 +22075,15 @@ async function showGradTransferImportPreview(rows, curSem) {
         <option value="notClose"${e.closureDecision==='notClose'?' selected':''}>不結案</option>
         <option value="close"${e.closureDecision==='close'?' selected':''}>結案</option>
       </select>`;
-      return `<tr style="background:${rowBg};">
-        <td style="text-align:center;"><input type="checkbox" ${sel.has(i)?'checked':''} onchange="window._gtSel(${i},this.checked)"></td>
-        <td contenteditable="${warn?'true':'false'}" style="min-width:60px;" oninput="window._gtRow[${i}].name=this.textContent.trim()">${escHtml(e.name)}</td>
-        <td contenteditable="${warn?'true':'false'}" style="min-width:80px;" oninput="window._gtRow[${i}].sid=this.textContent.trim()">${escHtml(e.sid)}</td>
+      return `<tr data-row-idx="${i}" style="background:${rowBg};transition:background 0.3s;">
+        <td style="text-align:center;"><input type="checkbox" id="gt-cb-${i}" ${sel.has(i)?'checked':''} onchange="window._gtSel(${i},this.checked)"></td>
+        <td style="min-width:60px;padding:4px 6px;"><div contenteditable="${warn?'true':'false'}" style="outline:none;" oninput="window._gtRow[${i}].name=this.textContent.trim()" onblur="window._gtRevalidate(${i})">${escHtml(e.name)}</div></td>
+        <td style="min-width:80px;padding:4px 6px;"><div contenteditable="${warn?'true':'false'}" style="outline:none;" oninput="window._gtRow[${i}].sid=this.textContent.trim()" onblur="window._gtRevalidate(${i})">${escHtml(e.sid)}</div></td>
         <td style="font-size:.8rem;">${escHtml(e.schoolMeetingDate||'—')}</td>
         <td style="font-size:.8rem;">${escHtml(e.closureMeetingDate||'—')}</td>
         <td>${decSel}</td>
         <td>${closureSel}</td>
-        <td style="font-size:.78rem;color:${warn?'#d97706':'#718096'};min-width:80px;">${dupBadge}${warnMsg ? (dupBadge?'<br>':'') + warnMsg : ''}</td>
+        <td data-status-cell="${i}" style="font-size:.78rem;color:${warn&&!manuallyFixed?'#d97706':'#718096'};min-width:80px;">${statusContent}</td>
       </tr>`;
     }).join('');
     const el = document.getElementById('gt-import-list');
@@ -22062,7 +22110,7 @@ async function showGradTransferImportPreview(rows, curSem) {
         <h3 style="font-size:1rem;">校級轉銜評估結果匯入（共 ${entries.length} 筆）</h3>
         <button onclick="renderTransferPage()" style="background:none;border:none;cursor:pointer;font-size:1.3rem;">&times;</button>
       </div>
-      <div style="font-size:.82rem;color:#718096;margin-bottom:8px;">⚠ 黃色列表示姓名或學號不完全符合，可直接點選格子修改後再匯入。</div>
+      <div style="font-size:.82rem;color:#718096;margin-bottom:8px;">⚠ 黃色列表示姓名或學號不完全符合，可直接點選格子修改，離開欄位後即時驗證比對。</div>
       ${dupNote}
       <div id="gt-import-list" style="max-height:55vh;overflow-y:auto;"></div>
       <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
