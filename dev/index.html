@@ -21739,21 +21739,71 @@ function restoreTransferEval(caseId, teId) {
 function _renderGradTransferTab() {
   const curSem = currentSemesterPrefix();
   const semLbl = semesterLabel(curSem);
-  const gradCases = casesData
+  if (!window._gradTransferFilters) {
+    window._gradTransferFilters = { counselor: 'all', decision: 'all', filled: 'all', gradStatus: 'all', showResolved: false };
+  }
+  const F = window._gradTransferFilters;
+  const allGradCases = casesData
     .filter(c => !c.deleted && !c.archived)
     .map(c => ({ c, gs: _computeGradStatus(c, curSem) }))
     .filter(({ gs }) => gs && gs.isRelevant)
     .sort((a, b) => (a.c.name || '').localeCompare(b.c.name || ''));
-  if (!gradCases.length) {
+  if (!allGradCases.length) {
     return `<div class="empty-state"><div class="icon">🎓</div><p>${semLbl} 學期無延畢生或預作畢業生紀錄</p><p style="font-size:.85rem;color:#a0aec0;">（系統依學號自動偵測：B/E/F/K=4年制、M/N=碩士2年、P=博士3年）</p></div>`;
   }
-  const total = gradCases.length;
-  const withTE = gradCases.filter(({ c }) => _hasCaseTransferEval(c.id, curSem)).length;
-  const withDec = gradCases.filter(({ c }) => { const d = _getGradTransferDecision(c.id, curSem); return d && d.status !== 'pending'; }).length;
-  const statsBar = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+  const total = allGradCases.length;
+  const withTE  = allGradCases.filter(({ c }) => _hasCaseTransferEval(c.id, curSem)).length;
+  const withDec = allGradCases.filter(({ c }) => { const d = _getGradTransferDecision(c.id, curSem); return d && d.status !== 'pending'; }).length;
+  // 套用篩選
+  let gradCases = allGradCases;
+  if (!F.showResolved) gradCases = gradCases.filter(({ c }) => { const d = _getGradTransferDecision(c.id, curSem); return !d || d.status === 'pending'; });
+  if (F.counselor !== 'all') gradCases = gradCases.filter(({ c }) => (c.counselorEmail||c.counselorName||'') === F.counselor);
+  if (F.decision  !== 'all') gradCases = gradCases.filter(({ c }) => (_getGradTransferDecision(c.id, curSem)?.status || 'pending') === F.decision);
+  if (F.filled    !== 'all') gradCases = gradCases.filter(({ c }) => F.filled === 'yes' ? _hasCaseTransferEval(c.id, curSem) : !_hasCaseTransferEval(c.id, curSem));
+  if (F.gradStatus !== 'all') gradCases = gradCases.filter(({ gs }) => F.gradStatus === 'overdue' ? gs.isOverdue : !gs.isOverdue);
+  // 主責下拉選項（去重）
+  const counselorOpts = [...new Map(allGradCases.map(({ c }) => [c.counselorEmail||c.counselorName||'', c.counselorName||c.counselorEmail||''])).entries()].filter(([k]) => k);
+  const decLabelMap = { pending:'待決議', noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）' };
+  const decColorMap = { pending:'#718096', noTransfer_self:'#1d6a3a', transfer_school:'#c0392b', noTransfer_school:'#1d6a3a', stay:'#553c9a', b_case:'#4a5568', one_time_consult:'#4a5568', direct_admission:'#2b6cb0' };
+  const decBgMap = { pending:'#f0f4f8', noTransfer_self:'#d5f5e3', transfer_school:'#fde8e8', noTransfer_school:'#d5f5e3', stay:'#e9d8fd', b_case:'#e2e8f0', one_time_consult:'#e2e8f0', direct_admission:'#e0f2fe' };
+  const today = new Date().toISOString().slice(0, 10);
+  const statsBar = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
     <span style="background:#f0f4f8;border-radius:8px;padding:6px 14px;font-size:.85rem;">共 <strong>${total}</strong> 位</span>
-    <span style="background:#f0fff4;border-radius:8px;padding:6px 14px;font-size:.85rem;">已填轉銜評估：<strong>${withTE}</strong></span>
-    <span style="background:#faf5ff;border-radius:8px;padding:6px 14px;font-size:.85rem;">已有校級決議：<strong>${withDec}</strong></span>
+    <span style="background:#f0fff4;border-radius:8px;padding:6px 14px;font-size:.85rem;">已填評估：<strong>${withTE}</strong></span>
+    <span style="background:#faf5ff;border-radius:8px;padding:6px 14px;font-size:.85rem;">已有決議：<strong>${withDec}</strong></span>
+    <span style="background:#ebf8ff;border-radius:8px;padding:6px 14px;font-size:.85rem;">篩選顯示：<strong>${gradCases.length}</strong></span>
+  </div>`;
+  const filterBar = `<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+    <span style="font-size:.82rem;color:#718096;font-weight:600;flex-shrink:0;">篩選：</span>
+    <select id="grad-filter-counselor" style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="_gradFilterChange()">
+      <option value="all">全部主責</option>
+      ${counselorOpts.map(([k, n]) => `<option value="${escHtml(k)}"${F.counselor===k?' selected':''}>${escHtml(n)}</option>`).join('')}
+    </select>
+    <select id="grad-filter-decision" style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="_gradFilterChange()">
+      <option value="all"${F.decision==='all'?' selected':''}>全部決議</option>
+      <option value="pending"${F.decision==='pending'?' selected':''}>待決議</option>
+      <option value="noTransfer_self"${F.decision==='noTransfer_self'?' selected':''}>主責不需轉銜</option>
+      <option value="transfer_school"${F.decision==='transfer_school'?' selected':''}>校級建議轉銜</option>
+      <option value="noTransfer_school"${F.decision==='noTransfer_school'?' selected':''}>校級不需轉銜</option>
+      <option value="stay"${F.decision==='stay'?' selected':''}>本學期不離校</option>
+      <option value="b_case"${F.decision==='b_case'?' selected':''}>B案</option>
+      <option value="one_time_consult"${F.decision==='one_time_consult'?' selected':''}>一次性諮詢</option>
+      <option value="direct_admission"${F.decision==='direct_admission'?' selected':''}>直升碩/博士</option>
+    </select>
+    <select id="grad-filter-filled" style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="_gradFilterChange()">
+      <option value="all"${F.filled==='all'?' selected':''}>全部評估表</option>
+      <option value="yes"${F.filled==='yes'?' selected':''}>已填寫</option>
+      <option value="no"${F.filled==='no'?' selected':''}>未填寫</option>
+    </select>
+    <select id="grad-filter-gradstatus" style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="_gradFilterChange()">
+      <option value="all"${F.gradStatus==='all'?' selected':''}>全部畢業狀態</option>
+      <option value="overdue"${F.gradStatus==='overdue'?' selected':''}>延畢生</option>
+      <option value="near"${F.gradStatus==='near'?' selected':''}>預作畢業生</option>
+    </select>
+    <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer;flex-shrink:0;white-space:nowrap;margin-left:4px;">
+      <input type="checkbox" id="grad-filter-showresolved" ${F.showResolved?'checked':''} onchange="_gradFilterChange()">
+      顯示已決議個案
+    </label>
   </div>`;
   const actionBar = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
     <label style="cursor:pointer;" data-tip="CSV 欄位：姓名、學號、評估會議、校級會議轉銜評估結果">
@@ -21765,10 +21815,6 @@ function _renderGradTransferTab() {
       <span class="btn btn-secondary btn-sm">📋 匯入歷史名單（已討論）</span>
     </label>
   </div>`;
-  const decLabelMap = { pending:'待決議', noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）' };
-  const decColorMap = { pending:'#718096', noTransfer_self:'#1d6a3a', transfer_school:'#c0392b', noTransfer_school:'#1d6a3a', stay:'#553c9a', b_case:'#4a5568', one_time_consult:'#4a5568', direct_admission:'#2b6cb0' };
-  const decBgMap = { pending:'#f0f4f8', noTransfer_self:'#d5f5e3', transfer_school:'#fde8e8', noTransfer_school:'#d5f5e3', stay:'#e9d8fd', b_case:'#e2e8f0', one_time_consult:'#e2e8f0', direct_admission:'#e0f2fe' };
-  const today = new Date().toISOString().slice(0, 10);
   const batchBar = `<div style="background:#f0f8ff;border:1px solid #bee3f8;border-radius:8px;padding:9px 14px;margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
     <input type="checkbox" id="grad-select-all" onchange="_gradToggleAll(this.checked)" title="全選/取消全選" style="flex-shrink:0;">
     <span style="font-size:.82rem;color:#2b6cb0;font-weight:600;">批次套用：</span>
@@ -21790,21 +21836,25 @@ function _renderGradTransferTab() {
     const hasTE = _hasCaseTransferEval(c.id, curSem);
     const dec = _getGradTransferDecision(c.id, curSem);
     const decStatus = dec?.status || 'pending';
+    const isResolved = decStatus !== 'pending';
     const gradBadge = gs.isOverdue
       ? `<span class="grad-badge grad-overdue" style="font-size:.7rem;">延畢 ${gs.yearsAttended}年</span>`
       : `<span class="grad-badge grad-near" style="font-size:.7rem;">預作畢業</span>`;
+    const resolvedBadge = isResolved
+      ? `<span style="font-size:.72rem;background:#d5f5e3;color:#1d6a3a;border-radius:8px;padding:1px 7px;border:1px solid #9ae6b4;font-weight:600;">已決議</span>`
+      : '';
     const teBadge = hasTE
       ? `<span style="font-size:.73rem;background:#d5f5e3;color:#1d6a3a;border-radius:8px;padding:1px 7px;border:1px solid #9ae6b4;">已填評估</span>`
       : `<span style="font-size:.73rem;background:#fde8e8;color:#c0392b;border-radius:8px;padding:1px 7px;border:1px solid #fc8181;">未填評估</span>`;
     const decStyle = `font-size:.73rem;padding:2px 8px;border-radius:10px;background:${decBgMap[decStatus]};color:${decColorMap[decStatus]};border:1px solid ${decColorMap[decStatus]};`;
     const schoolDateDisplay = dec?.schoolMeetingDate ? `<span style="font-size:.75rem;color:#718096;">校級會議：${escHtml(dec.schoolMeetingDate)}</span>` : '';
-    return `<div class="record-card" style="margin-bottom:8px;${decStatus!=='pending'?'border-left:3px solid '+decColorMap[decStatus]+';':''}">
+    return `<div class="record-card" style="margin-bottom:8px;${isResolved?'border-left:3px solid '+decColorMap[decStatus]+';opacity:.88;':''}">
       <div class="record-card-header" style="flex-wrap:wrap;gap:6px;">
         <input type="checkbox" class="grad-cb" data-cid="${escHtml(c.id)}" onchange="_gradCbChange()" style="margin-top:3px;flex-shrink:0;">
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex:1;">
           <strong>${escHtml(c.name||'—')}</strong>
           <span style="color:#718096;font-size:.82rem;">${escHtml(c.studentId||'—')}</span>
-          ${gradBadge}${teBadge}
+          ${gradBadge}${resolvedBadge}${teBadge}
           <span style="${decStyle}">${decLabelMap[decStatus]||'—'}</span>
           <span style="font-size:.78rem;color:#718096;">主責：${escHtml(c.counselorName||c.counselorEmail||'—')}</span>
           ${schoolDateDisplay}
@@ -21827,7 +21877,22 @@ function _renderGradTransferTab() {
       </div>
     </div>`;
   }).join('');
-  return statsBar + actionBar + batchBar + rows;
+  const emptyMsg = !gradCases.length
+    ? `<div style="text-align:center;padding:24px;color:#a0aec0;font-size:.9rem;">無符合條件的個案${!F.showResolved && withDec > 0 ? `（${withDec} 位已決議個案已隱藏，可勾選「顯示已決議個案」）` : ''}</div>`
+    : '';
+  return statsBar + filterBar + actionBar + batchBar + (rows || emptyMsg);
+}
+
+function _gradFilterChange() {
+  if (!window._gradTransferFilters) window._gradTransferFilters = {};
+  const F = window._gradTransferFilters;
+  const g = id => document.getElementById(id);
+  if (g('grad-filter-counselor'))  F.counselor  = g('grad-filter-counselor').value;
+  if (g('grad-filter-decision'))   F.decision   = g('grad-filter-decision').value;
+  if (g('grad-filter-filled'))     F.filled     = g('grad-filter-filled').value;
+  if (g('grad-filter-gradstatus')) F.gradStatus = g('grad-filter-gradstatus').value;
+  if (g('grad-filter-showresolved')) F.showResolved = g('grad-filter-showresolved').checked;
+  document.getElementById('transfer-body').innerHTML = _renderGradTransferTab();
 }
 
 function setGradTransferDecision(caseId, sem, status) {
