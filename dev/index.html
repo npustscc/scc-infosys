@@ -14640,7 +14640,8 @@ function renderTodosPage() {
     const checkBoxHtml = readOnly
       ? `<div style="width:16px;flex-shrink:0;"></div>`
       : `<input type="checkbox" class="todo-select-cb" data-id="${t.id}" onchange="_updateTodoBatchBtn()" style="margin-top:3px;flex-shrink:0;">`;
-    const continueBtn = !readOnly && !t.done ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">繼續編輯</button>` : '';
+    const _isTransferTodo = ['transfer_grad_counselor','transfer_grad_coord','transfer_closure_reminder'].includes(t.type);
+    const continueBtn = !readOnly && !t.done ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">${_isTransferTodo ? '前往轉銜管理' : '繼續編輯'}</button>` : '';
     const doneBtn = !readOnly
       ? (!t.done
         ? (t.type === 'transfer_closure_reminder'
@@ -14774,6 +14775,11 @@ function _continueTodo(id) {
     if (t.draftData?.caseId) {
       openEventRecordForm(t.draftData.caseId, { ...t.draftData, todoId: t.id });
     }
+  } else if (['transfer_grad_counselor','transfer_grad_coord','transfer_closure_reminder'].includes(t.type)) {
+    window._transferTab = 'graduation';
+    const navEl = document.querySelector('[data-nav-id="page-transfer"]');
+    showPage('page-transfer', navEl);
+    renderTransferPage();
   } else if (t.draftData) {
     // generic autosave with draftData — best-effort restore
     if (t.caseId) openNewRecordPage(t.caseId);
@@ -21997,6 +22003,11 @@ async function showGradTransferImportPreview(rows, curSem) {
              mc, matchType, decision, isDuplicate, _sel: matchType === 'full' && !isDuplicate };
   });
   if (!entries.length) { alert('未找到有效資料列。'); renderTransferPage(); return; }
+  // 預設置頂：找不到個案 > 姓名/學號不符 > 重複 > 正常
+  entries.sort((a, b) => {
+    const w = e => e.matchType==='none' ? 0 : (e.matchType!=='full' ? 1 : (e.isDuplicate ? 2 : 3));
+    return w(a) - w(b);
+  });
   let sel = new Set(entries.filter(e => e._sel).map((_, i) => i));
   window._gtRow = entries;
   window._gtSel = (i, c) => { c ? sel.add(i) : sel.delete(i); _gtRender(); };
@@ -22006,6 +22017,14 @@ async function showGradTransferImportPreview(rows, curSem) {
     } else {
       sel = c ? new Set(entries.map((_,i)=>i)) : new Set();
     }
+    _gtRender();
+  };
+  let sortKey = null, sortDir = 1;
+  window._gtSort = (key) => {
+    if (sortKey === key) sortDir = -sortDir; else { sortKey = key; sortDir = 1; }
+    const selEntries = new Set([...sel].map(i => entries[i]));
+    entries.sort((a, b) => (a[key]||'').localeCompare(b[key]||'', 'zh-TW') * sortDir);
+    sel = new Set(entries.map((e, i) => selEntries.has(e) ? i : -1).filter(i => i >= 0));
     _gtRender();
   };
   window._gtRevalidate = (i) => {
@@ -22087,10 +22106,14 @@ async function showGradTransferImportPreview(rows, curSem) {
       </tr>`;
     }).join('');
     const el = document.getElementById('gt-import-list');
+    const _sth = (label, key) => {
+      const arrow = sortKey === key ? (sortDir > 0 ? ' ▲' : ' ▼') : ' ⇅';
+      return `<th onclick="window._gtSort('${key}')" style="cursor:pointer;user-select:none;white-space:nowrap;">${label}<span style="font-size:.7rem;color:#a0aec0;">${arrow}</span></th>`;
+    };
     if (el) el.innerHTML = `<table class="grad-import-table" style="width:100%;border-collapse:collapse;font-size:.85rem;">
       <thead><tr style="background:#f7fafc;font-size:.8rem;position:sticky;top:0;">
         <th style="width:30px;"><input type="checkbox" title="全選/取消全選" onchange="window._gtSelAll(this.checked)"></th>
-        <th>姓名</th><th>學號</th><th>校級會議日期</th><th>結案會議日期</th><th>校級評估結果</th><th>結案會議評估結果</th><th>狀態</th>
+        ${_sth('姓名','name')}${_sth('學號','sid')}<th>校級會議日期</th><th>結案會議日期</th>${_sth('校級評估結果','decision')}${_sth('結案評估結果','closureDecision')}<th>狀態</th>
       </tr></thead><tbody>${tbody}</tbody></table>`;
     const btn = document.getElementById('gt-confirm-btn');
     if (btn) btn.textContent = `匯入 / 更新 ${sel.size} 筆`;
