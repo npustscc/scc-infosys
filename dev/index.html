@@ -21439,6 +21439,7 @@ function _checkTransferClosureReminders() {
   const now = new Date();
   (transferData || []).forEach(rec => {
     if (rec.type !== 'graduation' || rec.status !== 'transfer_school') return;
+    if (!rec.caseId) return; // 未歸屬紀錄不觸發提醒
     if (rec.closureMeetingDone) return;
     const c = casesData.find(x => x.id === rec.caseId && !x.deleted);
     if (!c) return;
@@ -22211,30 +22212,153 @@ async function showGradTransferImportPreview(rows, curSem) {
   window._gtConfirm = async () => {
     const toImport = entries.filter((_, i) => sel.has(i));
     if (!toImport.length) { alert('未選取任何列'); return; }
-    const now = new Date().toISOString(); let count = 0;
+    const now = new Date().toISOString(); let matched = 0, unassigned = 0;
     toImport.forEach(e => {
       const mc = e.mc || casesData.find(c => !c.deleted && (c.studentId===e.sid || c.name===e.name));
-      if (!mc) return;
-      const ex = _getGradTransferDecision(mc.id, curSem);
-      if (ex) {
-        ex.status = e.decision; ex.schoolMeetingDate = e.schoolMeetingDate||''; ex.updatedAt = now;
-        if (e.closureDecision) ex.closureDecision = e.closureDecision;
-        if (e.closureMeetingDate) ex.closureMeetingDate = e.closureMeetingDate;
+      if (mc) {
+        const ex = _getGradTransferDecision(mc.id, curSem);
+        if (ex) {
+          ex.status = e.decision; ex.schoolMeetingDate = e.schoolMeetingDate||''; ex.updatedAt = now;
+          if (e.closureDecision) ex.closureDecision = e.closureDecision;
+          if (e.closureMeetingDate) ex.closureMeetingDate = e.closureMeetingDate;
+        } else {
+          transferData.push({ id:`gr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+            type:'graduation', caseId:mc.id, semester:curSem,
+            status:e.decision, schoolMeetingDate:e.schoolMeetingDate||'',
+            closureDecision:e.closureDecision||'', closureMeetingDate:e.closureMeetingDate||'',
+            createdAt:now, createdBy:currentUser?.email });
+        }
+        matched++;
       } else {
+        // 找不到個案 → 建立未歸屬紀錄，供後續手動連結
         transferData.push({ id:`gr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
-          type:'graduation', caseId:mc.id, semester:curSem,
+          type:'graduation', caseId: null, semester:curSem,
+          unassignedName: e.name, unassignedStudentId: e.sid,
           status:e.decision, schoolMeetingDate:e.schoolMeetingDate||'',
           closureDecision:e.closureDecision||'', closureMeetingDate:e.closureMeetingDate||'',
           createdAt:now, createdBy:currentUser?.email });
+        unassigned++;
       }
-      count++;
     });
     renderTransferPage();
-    if (count > 0) {
-      const jobId = bgJobAdd(`匯入校級評估結果（${count}筆）`);
-      (async () => { try { await saveTransfer(); _checkTransferGradTodos(); bgJobDone(jobId); auditLog('匯入校級轉銜評估結果', null, null, `${count}筆`); } catch (e) { bgJobFail(jobId, e.message); } })();
+    const total = matched + unassigned;
+    if (total > 0) {
+      const jobId = bgJobAdd(`匯入校級評估結果（${total}筆）`);
+      (async () => { try { await saveTransfer(); _checkTransferGradTodos(); bgJobDone(jobId); auditLog('匯入校級轉銜評估結果', null, null, `${total}筆`); } catch (e) { bgJobFail(jobId, e.message); } })();
+    }
+    if (unassigned > 0) {
+      alert(`已匯入 ${matched} 筆，另有 ${unassigned} 筆因找不到對應個案而納入「未歸屬校級評估」，請至該頁籤手動連結。`);
     }
   };
+}
+
+function _renderUnassignedTab() {
+  const unassigned = transferData.filter(r => r.type === 'graduation' && !r.caseId);
+  if (!unassigned.length) {
+    return `<div class="empty-state"><div class="icon">✅</div><p>目前無未歸屬的校級評估資料</p></div>`;
+  }
+  const decLabelMap = { pending:'待決議', noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）' };
+  const rows = unassigned.map(r => {
+    const createdAt = r.createdAt ? new Date(r.createdAt).toLocaleDateString('zh-TW') : '—';
+    return `<div class="record-card" style="margin-bottom:8px;border-left:3px solid #f6ad55;">
+      <div class="record-card-header" style="flex-wrap:wrap;gap:6px;">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex:1;">
+          <strong>${escHtml(r.unassignedName||'—')}</strong>
+          <span style="color:#718096;font-size:.82rem;">${escHtml(r.unassignedStudentId||'—')}</span>
+          <span style="font-size:.73rem;background:#fef3c7;color:#92400e;border-radius:8px;padding:1px 7px;border:1px solid #fcd34d;">未歸屬</span>
+          <span style="font-size:.73rem;background:#f0f4f8;color:#718096;border-radius:8px;padding:1px 7px;">${escHtml(decLabelMap[r.status]||r.status||'待決議')}</span>
+          ${r.schoolMeetingDate ? `<span style="font-size:.75rem;color:#718096;">校級會議：${escHtml(r.schoolMeetingDate)}</span>` : ''}
+          ${r.closureMeetingDate ? `<span style="font-size:.75rem;color:#718096;">結案會議：${escHtml(r.closureMeetingDate)}</span>` : ''}
+          <span style="font-size:.75rem;color:#a0aec0;">匯入：${createdAt}</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+          <button class="btn btn-primary btn-sm" onclick="_linkUnassignedRecord('${escHtml(r.id)}')">連結個案</button>
+          <button class="btn btn-sm" style="background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_deleteUnassignedRecord('${escHtml(r.id)}')">刪除</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div style="margin-bottom:12px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:10px 14px;font-size:.85rem;color:#92400e;">
+    共 <strong>${unassigned.length}</strong> 筆 CSV 匯入資料未能對應到系統個案，請逐筆「連結個案」後即可納入轉銜流程。
+  </div>` + rows;
+}
+
+function _deleteUnassignedRecord(recId) {
+  if (!confirm('確定要刪除這筆未歸屬資料？此操作無法復原。')) return;
+  const idx = transferData.findIndex(r => r.id === recId);
+  if (idx >= 0) transferData.splice(idx, 1);
+  renderTransferPage();
+  const jobId = bgJobAdd('刪除未歸屬轉銜紀錄');
+  (async () => { try { await saveTransfer(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); } })();
+}
+
+function _linkUnassignedRecord(recId) {
+  const rec = transferData.find(r => r.id === recId);
+  if (!rec) return;
+  const sortedCases = [...casesData].filter(c => !c.deleted).sort((a, b) => (a.name||'').localeCompare(b.name||'', 'zh-TW'));
+  window._linkCases = sortedCases;
+  window._linkSelectedCaseId = null;
+  window._linkRecId = recId;
+  const modalHtml = `
+    <div id="link-case-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:12px;padding:24px;max-width:520px;width:95%;max-height:80vh;display:flex;flex-direction:column;gap:14px;box-shadow:0 20px 60px rgba(0,0,0,.3);">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h3 style="font-size:1rem;margin:0;">連結個案</h3>
+          <button onclick="document.getElementById('link-case-modal').remove()" style="background:none;border:none;cursor:pointer;font-size:1.3rem;color:#718096;">&times;</button>
+        </div>
+        <div style="font-size:.85rem;color:#4a5568;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;">
+          未歸屬資料：<strong>${escHtml(rec.unassignedName||'—')}</strong>（${escHtml(rec.unassignedStudentId||'—')}）
+        </div>
+        <input type="text" id="link-search" placeholder="搜尋姓名、學號或案號…" oninput="_linkFilter()" style="padding:8px 12px;border:1px solid #e2e8f0;border-radius:6px;font-size:.9rem;outline:none;">
+        <div id="link-case-list" style="overflow-y:auto;max-height:280px;border:1px solid #e2e8f0;border-radius:6px;"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button class="btn btn-secondary" onclick="document.getElementById('link-case-modal').remove()">取消</button>
+          <button id="link-confirm-btn" class="btn btn-primary" disabled onclick="_confirmLinkRecord('${escHtml(recId)}')">確認連結</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  window._linkFilter = () => {
+    const q = (document.getElementById('link-search')?.value || '').trim().toLowerCase();
+    const filtered = q
+      ? window._linkCases.filter(c => (c.name||'').toLowerCase().includes(q) || (c.studentId||'').toLowerCase().includes(q) || (c.caseNum||'').toLowerCase().includes(q))
+      : window._linkCases;
+    const list = document.getElementById('link-case-list');
+    if (!list) return;
+    if (!filtered.length) { list.innerHTML = `<div style="padding:12px;color:#a0aec0;font-size:.85rem;text-align:center;">無符合條件的個案</div>`; return; }
+    list.innerHTML = filtered.slice(0, 100).map(c => {
+      const isSel = c.id === window._linkSelectedCaseId;
+      return `<div onclick="_linkSelectCase('${escHtml(c.id)}')" style="padding:10px 14px;cursor:pointer;font-size:.85rem;background:${isSel?'#ebf8ff':'#fff'};border-bottom:1px solid #f0f4f8;display:flex;gap:8px;align-items:center;user-select:none;">
+        <span style="width:14px;color:#3182ce;flex-shrink:0;">${isSel?'✓':''}</span>
+        <span style="font-weight:${isSel?'700':'400'};">${escHtml(c.name||'—')}</span>
+        <span style="color:#718096;font-size:.8rem;">${escHtml(c.studentId||'—')}</span>
+        ${c.caseNum ? `<span style="color:#a0aec0;font-size:.78rem;">${escHtml(c.caseNum)}</span>` : ''}
+        <span style="color:#a0aec0;font-size:.75rem;margin-left:auto;">${escHtml(c.counselorName||c.counselorEmail||'')}</span>
+      </div>`;
+    }).join('');
+  };
+  window._linkSelectCase = (cid) => {
+    window._linkSelectedCaseId = cid;
+    const btn = document.getElementById('link-confirm-btn');
+    if (btn) btn.disabled = false;
+    window._linkFilter();
+  };
+  window._linkFilter();
+}
+
+function _confirmLinkRecord(recId) {
+  const cid = window._linkSelectedCaseId;
+  if (!cid) return;
+  const rec = transferData.find(r => r.id === recId);
+  if (!rec) return;
+  rec.caseId = cid;
+  rec.linkedAt = new Date().toISOString();
+  rec.linkedBy = currentUser?.email;
+  document.getElementById('link-case-modal')?.remove();
+  _checkTransferGradTodos();
+  renderTransferPage();
+  const jobId = bgJobAdd('連結未歸屬轉銜紀錄');
+  (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('連結未歸屬轉銜紀錄', cid, null, `recId:${recId}`); } catch(e) { bgJobFail(jobId, e.message); } })();
 }
 
 function downloadGradTransferCSVTemplate() {
@@ -22263,8 +22387,9 @@ function renderTransferPage() {
     const gs = _computeGradStatus(c, curSem);
     return gs && gs.isRelevant;
   }).length;
-  const tabBtn = (id, label, count) =>
-    `<button onclick="window._transferTab='${id}';window._transferStatusFilter='all';renderTransferPage()" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:${tab===id?'700':'400'};background:${tab===id?'#3498db':'#f0f4f8'};color:${tab===id?'#fff':'#4a5568'};">${label}（${count}）</button>`;
+  const unassignedCount = transferData.filter(r => r.type === 'graduation' && !r.caseId).length;
+  const tabBtn = (id, label, count, warn) =>
+    `<button onclick="window._transferTab='${id}';window._transferStatusFilter='all';renderTransferPage()" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:${tab===id?'700':'400'};background:${tab===id?'#3498db':(warn&&count>0?'#fff7ed':'#f0f4f8')};color:${tab===id?'#fff':(warn&&count>0?'#9c4221':'#4a5568')};${warn&&count>0?'border:1px solid #fb923c;':''}">${label}（${count}）</button>`;
   const importOutBtn = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'outgoing')"><span class="btn btn-secondary btn-sm">📥 匯入轉出名單</span></label>`;
   const importInBtn  = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'incoming')"><span class="btn btn-secondary btn-sm">📥 匯入轉入名單</span></label>`;
   const dlTemplateBtn = `<button class="btn btn-secondary btn-sm" onclick="downloadTransferImportTemplate()" data-tip="下載轉入名單 Excel 範例檔，填寫後即可批次匯入。">📄 下載範例</button>`;
@@ -22297,15 +22422,19 @@ function renderTransferPage() {
     ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importOutBtn}${dlGradCsvBtn}${addOutBtn}</div>`
     : `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importInBtn}${dlTemplateBtn}${addInBtn}</div>`;
   const gradContent = tab === 'graduation' ? _renderGradTransferTab() : '';
+  const unassignedContent = tab === 'unassigned' ? _renderUnassignedTab() : '';
   document.getElementById('transfer-body').innerHTML = `
     <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;">
       ${tabBtn('graduation','本學期畢業轉銜',gradCount)}
       ${tabBtn('outgoing','轉出學生',outgoing.length)}
       ${tabBtn('incoming','轉入學生',incoming.length)}
+      ${tabBtn('unassigned','未歸屬校級評估',unassignedCount,true)}
     </div>
     ${tab === 'graduation'
       ? gradContent
-      : actionBar + statusFilterBar + `<div>${listHtml}</div>`}`;
+      : tab === 'unassigned'
+        ? unassignedContent
+        : actionBar + statusFilterBar + `<div>${listHtml}</div>`}`;
 }
 
 function _renderTransferRow(r) {
