@@ -874,8 +874,19 @@
     .attach-item.upload-error { background:#fff5f5;border:1px solid #fed7d7; }
     @keyframes attach-spin { to { transform:rotate(360deg); } }
     .attach-spinner { display:inline-block;width:13px;height:13px;border:2px solid #bee3f8;border-top-color:#3182ce;border-radius:50%;animation:attach-spin .8s linear infinite;flex-shrink:0; }
+    @keyframes gt-shake { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-6px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(4px)} }
+    .gt-shake { animation: gt-shake 0.5s ease; }
 
     /* ── Hover 說明 tooltip（由 JS #_tip_el 實作，position:fixed 確保不被 stacking context 遮蔽） ── */
+    /* ── 轉銜評估 ── */
+    .grad-badge { display:inline-flex;align-items:center;gap:3px;padding:2px 9px;border-radius:10px;font-size:.75rem;font-weight:600; }
+    .grad-overdue { background:#fde8e8;color:#c0392b;border:1px solid #fc8181; }
+    .grad-near { background:#fef3c7;color:#92600a;border:1px solid #f6d860; }
+    .te-card { border:1px solid #c6f6d5;border-radius:8px;margin-bottom:8px;overflow:hidden; }
+    .te-card.te-deleted { opacity:.6;border-color:#e2e8f0; }
+    /* ── 轉銜管理：行內編輯匯入表格 ── */
+    .grad-import-table td { padding:5px 8px;font-size:.85rem; }
+    .grad-import-table td[contenteditable="true"] { background:#fffbeb;border:1px solid #f6ad55;border-radius:3px;outline:none;min-width:60px; }
   </style>
 </head>
 <body>
@@ -1051,28 +1062,21 @@
       <div class="nav-item" data-nav-id="page-psych-test-db" onclick="showPage('page-psych-test-db', this); renderPsychTestDBPage()">
         <span class="icon">🧪</span> 心理測驗資料庫 <span class="nav-drag-handle">⠿</span>
       </div>
+      <div class="nav-item" id="nav-transfer-item" data-nav-id="page-transfer" onclick="showPage('page-transfer', this); renderTransferPage()" style="display:none;">
+        <span class="icon">🔄</span> 轉銜管理 <span class="nav-drag-handle">⠿</span>
+      </div>
     </div>
 
     <div class="sidebar-section" id="nav-admin-section" style="display:none;">
       <h3>系統管理</h3>
-      <div class="nav-item" data-nav-id="page-admin" onclick="showPage('page-admin', this); renderAdminUsers()">
+      <div class="nav-item" data-nav-id="page-admin" onclick="showPage('page-admin', this); renderAdminUsers(); renderAdminDegreeMapping()">
         <span class="icon">⚙️</span> 使用者管理 <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" data-nav-id="page-recycle" onclick="showPage('page-recycle', this); renderRecycleBin()">
         <span class="icon">🗑️</span> 資源回收桶 <span class="nav-drag-handle">⠿</span>
       </div>
-      <div class="nav-item" data-nav-id="page-transfer" onclick="showPage('page-transfer', this); renderTransferPage()">
-        <span class="icon">🔄</span> 轉銜管理 <span class="nav-drag-handle">⠿</span>
-      </div>
       <div class="nav-item" data-nav-id="page-unassigned-records" onclick="showPage('page-unassigned-records', this); renderUnassignedRecordsPage()">
         <span class="icon">📂</span> 未歸屬記錄 <span class="nav-drag-handle">⠿</span>
-      </div>
-    </div>
-    <!-- 轉銜窗口（非管理員）專屬入口 -->
-    <div class="sidebar-section" id="nav-transfer-section" style="display:none;">
-      <h3>轉銜管理</h3>
-      <div class="nav-item" data-nav-id="page-transfer" onclick="showPage('page-transfer', this); renderTransferPage()">
-        <span class="icon">🔄</span> 轉銜管理 <span class="nav-drag-handle">⠿</span>
       </div>
     </div>
 
@@ -1287,6 +1291,14 @@
             <button class="btn btn-secondary" onclick="document.getElementById('case-delete-q').value='';searchCaseForDelete('')">清除</button>
           </div>
           <div id="case-delete-results"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:20px;">
+        <div class="card-header"><h3>學制學號前綴設定</h3></div>
+        <div style="padding:16px 20px;">
+          <p style="font-size:.88rem;color:#718096;margin-bottom:14px;">設定學號英文前綴與學制的對應關係。此設定影響畢業轉銜偵測（延畢生／預作畢業生判斷）及 Excel 匯入時的學制識別。設定儲存於 <code>config.json</code>。</p>
+          <div id="admin-degree-wrap"><p style="font-size:.85rem;color:#a0aec0;">讀取設定後顯示…</p></div>
         </div>
       </div>
     </div>
@@ -2928,6 +2940,9 @@
           <option value="autosave">自動備援</option>
           <option value="manual">手動待辦</option>
           <option value="case_assignment">待派案</option>
+          <option value="transfer_grad_counselor">轉銜：主責轉出學生</option>
+          <option value="transfer_grad_coord">轉銜管理（協調員）</option>
+          <option value="transfer_closure_reminder">轉銜結案追蹤</option>
         </select>
         <select class="field-select" id="todos-filter-status" onchange="renderTodosPage()" style="max-width:130px;">
           <option value="">全部</option>
@@ -3754,6 +3769,7 @@ async function afterLogin() {
       _syncPendingRecordsToTodos();
       _checkPastSemUnclosedForDirectors();
       _cleanupDeletedEvals();
+      _checkTransferGradTodos();
     }).catch(() => {}); // loadCases 內部已處理並顯示錯誤
   } catch (err) {
     hideLoading();
@@ -3813,11 +3829,11 @@ function resolveUserRole() {
   // 管理者才顯示使用者管理頁
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   document.getElementById('nav-admin-section').style.display = isAdmin ? '' : 'none';
-  // 轉銜窗口（非管理員）顯示轉銜管理入口
-  document.getElementById('nav-transfer-section').style.display = (!isAdmin && isTransferContact) ? '' : 'none';
+  // 轉銜管理顯示給管理者與轉銜窗口
+  document.getElementById('nav-transfer-item').style.display = (isAdmin || isTransferContact) ? '' : 'none';
 
   // 填充管理員頁使用者列表
-  if (isAdmin && configData && configData.users) renderAdminUsers();
+  if (isAdmin && configData && configData.users) { renderAdminUsers(); renderAdminDegreeMapping(); }
 }
 
 // ══════════════════════════════════════════════
@@ -4752,6 +4768,12 @@ async function notifClick(notifId, caseId) {
     markIssuesSeen();
     showPage('page-issues', navEl);
     renderIssuesPage();
+  } else if (notif?.type === 'admin_verify_new_user') {
+    const navEl = document.querySelector('[data-nav-id="page-admin"]');
+    showPage('page-admin', navEl);
+    if (notif.caseId) window._adminHighlightUser = notif.caseId;
+    renderAdminUsers();
+    renderAdminDegreeMapping();
   } else {
     showCaseDetail(caseId);
   }
@@ -5077,6 +5099,8 @@ function renderAdminUsers() {
       ${(fStatus!=='all'||fRole) ? `<button type="button" onclick="_auFilter('status','all');_auFilter('role','')" style="padding:4px 10px;border:1px solid #e2e8f0;border-radius:12px;background:#fff;font-size:.82rem;color:#718096;cursor:pointer;">× 清除篩選</button>` : ''}
     </div>`;
 
+  const _hlKey = window._adminHighlightUser || null;
+  if (_hlKey) window._adminHighlightUser = null;
   const rows = filtered.map(([key, info]) => {
     const isAdminUser = info.isAdmin === true || info.extraRole === '管理者';
     const tcBadge = info.isTransferContact ? `<span class="badge badge-teal" style="margin-left:4px;">轉銜窗口</span>` : '';
@@ -5092,9 +5116,10 @@ function renderAdminUsers() {
       : escHtml(key);
     const disabledBadge = info.disabled ? `<span class="badge" style="background:#fed7d7;color:#c53030;margin-left:4px;">已停用</span>` : '';
     const disableBtn = isSelf ? '' : `<label title="${info.disabled?'啟用帳號':'停用帳號'}" style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:.78rem;color:${info.disabled?'#c53030':'#718096'};margin-left:6px;"><input type="checkbox" ${info.disabled?'checked':''} onchange="toggleUserDisabled('${escHtml(key)}',this.checked)" style="cursor:pointer;"> 停用</label>`;
+    const isHighlighted = key === _hlKey;
     return `
-      <tr style="opacity:${info.disabled?'.55':'1'};">
-        <td>${displayKey}${isSelf ? ' <span class="badge badge-blue">本帳號</span>' : ''}${disabledBadge}</td>
+      <tr style="opacity:${info.disabled?'.55':'1'};${isHighlighted?'background:#fffbeb;outline:2px solid #f6ad55;':''}">
+        <td>${displayKey}${isSelf ? ' <span class="badge badge-blue">本帳號</span>' : ''}${disabledBadge}${isHighlighted ? ' <span class="badge badge-orange" style="font-size:.72rem;">新建立</span>' : ''}</td>
         <td>${escHtml(info.name || '—')}</td>
         <td>${escHtml(info.role || '—')}</td>
         <td>${adminBadge}</td>
@@ -6445,6 +6470,7 @@ function showCaseDetail(caseId) {
     return mkSection('eval', '結案 / 學期評估', addBtn + cards);
   })();
   const semEvalHtml = '';
+  const transferEvalHtml = _renderTransferEvalSection(c, cid, _activeSem);
 
   if (_caseDetailMode === 'psychtest') {
     document.getElementById('detail-body').innerHTML = _renderPsychTestReport(c, _caseDetailPsychIdx);
@@ -6556,6 +6582,7 @@ function showCaseDetail(caseId) {
       ${field('過去紀錄', pastLabel)}
       ${field('主訴問題', (_cd('topics') || []).join('、') || '—')}
     </div>`) +
+    transferEvalHtml +
     evalHtml +
     semEvalHtml +
     (_detailSemFilter !== 'all' && iiCardHtml ? `<div style="margin-bottom:20px;">${iiCardHtml}</div>` : '') +
@@ -8954,6 +8981,12 @@ function _semPrefixToApproxDate(prefix) {
   const adYear  = rocYear + 1911;
   return prefix.slice(-1) === '1' ? `${adYear}-09-01` : `${adYear + 1}-02-01`;
 }
+function _semPrefixToEndDate(prefix) {
+  if (!prefix || prefix.length < 4) return new Date().toISOString().slice(0, 10);
+  const rocYear = parseInt(prefix.slice(0, -1));
+  const adYear  = rocYear + 1911;
+  return prefix.slice(-1) === '1' ? `${adYear + 1}-01-31` : `${adYear + 1}-07-31`;
+}
 
 function _generateCaseIdForSem(semPrefix) {
   const prefix = semPrefix.slice(0, 4);
@@ -9498,15 +9531,7 @@ let _casesSelected = new Set();
 function renderCaseNums(resetPage) {
   if (resetPage) _cnPage = 1;
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
-  let visible;
-  if (isAdminUser) {
-    visible = casesData;
-  } else {
-    const allowed = configData?.users?.[currentUser.email]?.allowedCases || [];
-    visible = casesData.filter(c => !c.deleted && (
-      c.counselorEmail === currentUser?.email || allowed.includes(c.id)
-    ));
-  }
+  let visible = casesData; // 所有使用者可檢視全部個案
 
   // 完全無個案（篩選前）→ 直接顯示空狀態
   const body = document.getElementById('casenums-body');
@@ -9522,20 +9547,18 @@ function renderCaseNums(resetPage) {
   else if (_cnClosureStatus === 'active') visible = visible.filter(c => c.status !== 'closed' || _hasPastUnclosed(c));
 
   const counselorMap = new Map();
-  if (isAdminUser) {
-    visible.forEach(c => {
-      const key = c.counselorEmail || c.counselorName || c.counselorText || '';
-      if (!key) return;
-      const label = c.counselorEmail
-        ? (formatCounselorLabel(c.counselorEmail) || c.counselorName || c.counselorEmail)
-        : (c.counselorText || c.counselorName || key);
-      if (!counselorMap.has(key)) counselorMap.set(key, label);
-    });
-    if (_cnCounselor) visible = visible.filter(c => {
-      const key = c.counselorEmail || c.counselorName || c.counselorText || '';
-      return key === _cnCounselor;
-    });
-  }
+  visible.forEach(c => {
+    const key = c.counselorEmail || c.counselorName || c.counselorText || '';
+    if (!key) return;
+    const label = c.counselorEmail
+      ? (formatCounselorLabel(c.counselorEmail) || c.counselorName || c.counselorEmail)
+      : (c.counselorText || c.counselorName || key);
+    if (!counselorMap.has(key)) counselorMap.set(key, label);
+  });
+  if (_cnCounselor) visible = visible.filter(c => {
+    const key = c.counselorEmail || c.counselorName || c.counselorText || '';
+    return key === _cnCounselor;
+  });
 
   // 篩選後為空 → 繼續渲染 filter bar，表格顯示「無符合結果」（讓使用者能清除篩選）
 
@@ -9566,7 +9589,7 @@ function renderCaseNums(resetPage) {
 
   const q = document.getElementById('cn-search')?.value?.trim().toLowerCase() || '';
   const filtered = q
-    ? visible.filter(c => (c.id||'').includes(q) || (c.name||'').includes(q) || (c.studentId||'').includes(q))
+    ? visible.filter(c => (c.id||'').toLowerCase().includes(q) || (c.name||'').toLowerCase().includes(q) || (c.studentId||'').toLowerCase().includes(q))
     : visible;
 
   const total = filtered.length;
@@ -9651,7 +9674,7 @@ function renderCaseNums(resetPage) {
     const clearBtn = document.getElementById('cn-clear-btn');
     if (clearBtn) clearBtn.disabled = (_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor&&!(document.getElementById('cn-search')?.value?.trim()));
     const cnslSel = document.getElementById('cn-counselor');
-    if (cnslSel && isAdminUser) {
+    if (cnslSel) {
       const prev = cnslSel.value;
       cnslSel.innerHTML = '<option value="">全部人員</option>' +
         [...counselorMap.entries()].map(([k,v]) => `<option value="${escHtml(k)}"${k===_cnCounselor?' selected':''}>${escHtml(v)}</option>`).join('');
@@ -9686,11 +9709,11 @@ function renderCaseNums(resetPage) {
             <option value="active" ${_cnClosureStatus==='active'?'selected':''}>未結案</option>
             <option value="closed" ${_cnClosureStatus==='closed'?'selected':''}>已結案</option>
           </select>
-          ${isAdminUser ? `<select id="cn-counselor" class="field-input" style="padding:4px 6px;font-size:.85rem;"
+          <select id="cn-counselor" class="field-input" style="padding:4px 6px;font-size:.85rem;"
             onchange="_cnCounselor=this.value;_cnPage=1;renderCaseNums()">
             <option value="">全部人員</option>
             ${[...counselorMap.entries()].map(([k,v])=>`<option value="${escHtml(k)}"${k===_cnCounselor?' selected':''}>${escHtml(v)}</option>`).join('')}
-          </select>` : ''}
+          </select>
           <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;">每頁
             <select id="cn-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;"
               onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select>筆
@@ -13328,6 +13351,12 @@ async function saveCase() {
     return;
   }
 
+  // 學號前綴未知時攔截，讓使用者定義學制
+  if (studentId) {
+    const _prefixOk = await _ensureUnknownPrefixes([studentId]);
+    if (!_prefixOk) return;
+  }
+
   document.getElementById('btn-save-case').disabled = true;
   showLoading('儲存個案…');
 
@@ -14610,26 +14639,32 @@ function renderTodosPage() {
     return;
   }
 
-  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒' };
+  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（協調員）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）' };
 
   body.innerHTML = filtered.map(t => {
     const tLabel = typeLabels[t.type] || t.type;
     const createdAt = t.createdAt ? new Date(t.createdAt).toLocaleString('zh-TW', { dateStyle:'short', timeStyle:'short' }) : '';
     const doneAt = t.doneAt ? new Date(t.doneAt).toLocaleString('zh-TW', { dateStyle:'short', timeStyle:'short' }) : '';
-    const bgColor = t.done ? '#f7fafc' : (t.origin === 'autosave' ? '#fffaf0' : '#fff');
-    const borderColor = t.done ? '#e2e8f0' : (t.origin === 'autosave' ? '#fbd38d' : '#e2e8f0');
+    const bgColor = t.done ? '#f7fafc' : (t.isLocked ? '#fff5f5' : (t.origin === 'autosave' ? '#fffaf0' : '#fff'));
+    const borderColor = t.done ? '#e2e8f0' : (t.isLocked ? '#fc8181' : (t.origin === 'autosave' ? '#fbd38d' : '#e2e8f0'));
     const ownerBadge = t._ownerName ? `<span class="badge" style="background:#e9d8fd;color:#553c9a;font-size:.72rem;border:1px solid #d6bcfa;">${escHtml(t._ownerName)}</span>` : '';
 
+    const _isLocked = !readOnly && !!t.isLocked && !t.done;
     const checkBoxHtml = readOnly
       ? `<div style="width:16px;flex-shrink:0;"></div>`
       : `<input type="checkbox" class="todo-select-cb" data-id="${t.id}" onchange="_updateTodoBatchBtn()" style="margin-top:3px;flex-shrink:0;">`;
-    const continueBtn = !readOnly && !t.done ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">繼續編輯</button>` : '';
+    const _isTransferTodo = ['transfer_grad_counselor','transfer_grad_coord','transfer_closure_reminder'].includes(t.type);
+    const _isAdminUserTodo = t.type === 'admin_verify_new_user';
+    const _continueBtnLabel = _isTransferTodo ? '前往轉銜管理' : (_isAdminUserTodo ? '前往設定' : '繼續編輯');
+    const continueBtn = !readOnly && !t.done ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">${_continueBtnLabel}</button>` : '';
     const doneBtn = !readOnly
       ? (!t.done
-        ? `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoDone('${t.id}')">完成</button>`
+        ? (t.type === 'transfer_closure_reminder'
+          ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_markTransferClosureDone('${t.id}','${t.transferRecId||''}')">已完成結案會議</button>`
+          : `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoDone('${t.id}')">完成</button>`)
         : `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoUndone('${t.id}')">恢復</button>`)
       : '';
-    const deleteBtn = !readOnly ? `<button class="btn btn-sm" style="font-size:.78rem;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_deleteTodo('${t.id}')">刪除</button>` : '';
+    const deleteBtn = (!readOnly && !_isLocked) ? `<button class="btn btn-sm" style="font-size:.78rem;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_deleteTodo('${t.id}')">刪除</button>` : '';
 
     return `<div class="todo-item" data-id="${t.id}" style="background:${bgColor};border:1px solid ${borderColor};border-radius:8px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:flex-start;gap:10px;">
       ${checkBoxHtml}
@@ -14755,6 +14790,17 @@ function _continueTodo(id) {
     if (t.draftData?.caseId) {
       openEventRecordForm(t.draftData.caseId, { ...t.draftData, todoId: t.id });
     }
+  } else if (['transfer_grad_counselor','transfer_grad_coord','transfer_closure_reminder'].includes(t.type)) {
+    window._transferTab = 'graduation';
+    const navEl = document.querySelector('[data-nav-id="page-transfer"]');
+    showPage('page-transfer', navEl);
+    renderTransferPage();
+  } else if (t.type === 'admin_verify_new_user') {
+    const navEl = document.querySelector('[data-nav-id="page-admin"]');
+    showPage('page-admin', navEl);
+    if (t.newUserKey) window._adminHighlightUser = t.newUserKey;
+    renderAdminUsers();
+    renderAdminDegreeMapping();
   } else if (t.draftData) {
     // generic autosave with draftData — best-effort restore
     if (t.caseId) openNewRecordPage(t.caseId);
@@ -21322,17 +21368,1621 @@ function fillTransferFromCase(caseId) {
     </div>`;
 }
 
+// ══════════════════════════════════════════════════════════════════
+//  畢業轉銜管理模組（Graduate-Transition Module）
+// ══════════════════════════════════════════════════════════════════
+
+// ── 學制學號前綴動態設定 ────────────────────────────
+function _getDegreeMapping() {
+  const defaults = { bachelor: ['B','E','F','K'], master: ['M','N'], phd: ['P'] };
+  if (!configData || !configData.degreeMapping) return defaults;
+  return {
+    bachelor: configData.degreeMapping.bachelor || defaults.bachelor,
+    master:   configData.degreeMapping.master   || defaults.master,
+    phd:      configData.degreeMapping.phd      || defaults.phd,
+  };
+}
+
+function _buildDegreeMaps() {
+  const dm = _getDegreeMapping();
+  const progMap = {}, degreeMap = {};
+  (dm.bachelor || []).forEach(c => { progMap[c.toUpperCase()] = 4; degreeMap[c.toUpperCase()] = '學士'; });
+  (dm.master   || []).forEach(c => { progMap[c.toUpperCase()] = 2; degreeMap[c.toUpperCase()] = '碩士'; });
+  (dm.phd      || []).forEach(c => { progMap[c.toUpperCase()] = 3; degreeMap[c.toUpperCase()] = '博士'; });
+  return { progMap, degreeMap };
+}
+
+async function _ensureKnownPrefix(typeChar) {
+  const dm = _getDegreeMapping();
+  const allKnown = [...(dm.bachelor||[]), ...(dm.master||[]), ...(dm.phd||[])].map(c => c.toUpperCase());
+  if (allKnown.includes(typeChar.toUpperCase())) return true;
+  return new Promise(resolve => {
+    const prev = document.getElementById('unknown-prefix-modal');
+    if (prev) prev.remove();
+    const modal = document.createElement('div');
+    modal.id = 'unknown-prefix-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center;';
+    modal.innerHTML = `<div style="background:#fff;border-radius:12px;padding:28px 32px;max-width:440px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.3);">
+      <h3 style="margin:0 0 12px;font-size:1.05rem;">⚠️ 偵測到未定義的學號前綴</h3>
+      <p style="color:#4a5568;font-size:.9rem;margin-bottom:18px;">偵測到未定義的學號前綴「<strong>${escHtml(typeChar)}</strong>」。<br>請為其指定所屬學制以繼續操作：</p>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:22px;">
+        <label class="upm-opt" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 14px;border:2px solid #e2e8f0;border-radius:8px;">
+          <input type="radio" name="upm-degree" value="bachelor" style="accent-color:#3498db;"> <span><strong>學士班</strong>（4年制）</span>
+        </label>
+        <label class="upm-opt" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 14px;border:2px solid #e2e8f0;border-radius:8px;">
+          <input type="radio" name="upm-degree" value="master" style="accent-color:#3498db;"> <span><strong>碩士班</strong>（2年制）</span>
+        </label>
+        <label class="upm-opt" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 14px;border:2px solid #e2e8f0;border-radius:8px;">
+          <input type="radio" name="upm-degree" value="phd" style="accent-color:#3498db;"> <span><strong>博士班</strong>（3年制）</span>
+        </label>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button id="upm-cancel" class="btn btn-secondary">取消操作</button>
+        <button id="upm-confirm" class="btn btn-primary">確認並繼續</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+    modal.querySelectorAll('input[name="upm-degree"]').forEach(radio => {
+      radio.addEventListener('change', () => {
+        modal.querySelectorAll('.upm-opt').forEach(l => l.style.borderColor = '#e2e8f0');
+        radio.closest('.upm-opt').style.borderColor = '#3498db';
+      });
+    });
+    document.getElementById('upm-cancel').onclick = () => { modal.remove(); resolve(false); };
+    document.getElementById('upm-confirm').onclick = async () => {
+      const chosen = modal.querySelector('input[name="upm-degree"]:checked')?.value;
+      if (!chosen) { alert('請先選擇學制。'); return; }
+      const tc = typeChar.toUpperCase();
+      if (configData) {
+        if (!configData.degreeMapping) configData.degreeMapping = { bachelor: ['B','E','F','K'], master: ['M','N'], phd: ['P'] };
+        if (!configData.degreeMapping[chosen]) configData.degreeMapping[chosen] = [];
+        if (!configData.degreeMapping[chosen].includes(tc)) configData.degreeMapping[chosen].push(tc);
+        try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (_) {}
+        if (document.getElementById('admin-degree-wrap')) renderAdminDegreeMapping();
+      }
+      modal.remove(); resolve(true);
+    };
+  });
+}
+
+async function _ensureUnknownPrefixes(sids) {
+  const seen = new Set();
+  for (const sid of (sids || [])) {
+    if (!sid || sid.length < 2) continue;
+    const tc = sid[0].toUpperCase();
+    if (seen.has(tc) || !/^[A-Z]$/.test(tc)) continue;
+    seen.add(tc);
+    const ok = await _ensureKnownPrefix(tc);
+    if (!ok) return false;
+  }
+  return true;
+}
+
+function renderAdminDegreeMapping() {
+  const el = document.getElementById('admin-degree-wrap');
+  if (!el) return;
+  const dm = _getDegreeMapping();
+  const sections = [
+    { key: 'bachelor', label: '學士班', years: 4, color: '#2b6cb0' },
+    { key: 'master',   label: '碩士班', years: 2, color: '#6b46c1' },
+    { key: 'phd',      label: '博士班', years: 3, color: '#c05621' },
+  ];
+  el.innerHTML = sections.map(s => {
+    const chips = (dm[s.key] || []).map(c =>
+      `<span style="display:inline-flex;align-items:center;gap:2px;background:${s.color}18;color:${s.color};border:1px solid ${s.color}50;border-radius:12px;padding:2px 8px 2px 10px;font-size:.85rem;font-weight:700;">${escHtml(c)}<button onclick="_adminRemovePrefix('${escHtml(s.key)}','${escHtml(c)}')" title="移除" style="background:none;border:none;cursor:pointer;color:${s.color};font-size:1rem;line-height:1;padding:0 0 0 3px;margin:0;">×</button></span>`
+    ).join(' ');
+    return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 0;border-bottom:1px solid #f0f4f8;">
+      <span style="font-weight:600;font-size:.88rem;width:92px;color:${s.color};flex-shrink:0;">${escHtml(s.label)}（${s.years}年）</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;">
+        ${chips || '<span style="font-size:.82rem;color:#a0aec0;">（尚未設定）</span>'}
+      </div>
+      <div style="display:inline-flex;gap:4px;align-items:center;flex-shrink:0;">
+        <input type="text" id="dm-input-${s.key}" maxlength="1" placeholder="字母" style="width:44px;padding:4px 6px;border:1px solid #cbd5e0;border-radius:6px;font-size:.85rem;text-align:center;text-transform:uppercase;" oninput="this.value=this.value.toUpperCase()">
+        <button class="btn btn-secondary btn-sm" onclick="_adminAddPrefix('${escHtml(s.key)}')">新增</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function _adminAddPrefix(degreeKey) {
+  const input = document.getElementById(`dm-input-${degreeKey}`);
+  const c = (input?.value || '').trim().toUpperCase();
+  if (!c || !/^[A-Z]$/.test(c)) { alert('請輸入單一英文字母。'); return; }
+  const dm = _getDegreeMapping();
+  const allChars = [...(dm.bachelor||[]), ...(dm.master||[]), ...(dm.phd||[])].map(x => x.toUpperCase());
+  if (allChars.includes(c)) { alert(`字母「${c}」已存在於其他學制的對應中。`); return; }
+  if (!configData.degreeMapping) configData.degreeMapping = { bachelor: ['B','E','F','K'], master: ['M','N'], phd: ['P'] };
+  if (!configData.degreeMapping[degreeKey]) configData.degreeMapping[degreeKey] = [];
+  configData.degreeMapping[degreeKey].push(c);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); if (input) input.value = ''; renderAdminDegreeMapping(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+
+async function _adminRemovePrefix(degreeKey, char) {
+  if (!confirm(`確認移除學號前綴「${char}」？移除後以此字母開頭的學號將無法判斷學制。`)) return;
+  if (!configData?.degreeMapping) return;
+  if (configData.degreeMapping[degreeKey]) configData.degreeMapping[degreeKey] = configData.degreeMapping[degreeKey].filter(c => c !== char);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminDegreeMapping(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+
+function _computeGradStatus(c, curSemStr) {
+  const sid = (c.studentId || '').trim();
+  if (sid.length < 4) return null;
+  const typeChar = sid[0].toUpperCase();
+  const digits = sid.slice(1);
+  if (digits.length < 3 || !/^\d/.test(digits)) return null;
+  const { progMap, degreeMap } = _buildDegreeMaps();
+  const progYears = progMap[typeChar];
+  if (!progYears) return null;
+  const degreeName = degreeMap[typeChar] || '';
+  const admYear = parseInt(digits.slice(0, 3), 10);
+  if (isNaN(admYear) || admYear < 80 || admYear > 200) return null;
+  const sem = curSemStr || currentSemesterPrefix();
+  const curYear = parseInt(sem.slice(0, -1), 10);
+  const curSemType = sem.slice(-1);
+  if (isNaN(curYear)) return null;
+  const yearsAttended = curYear - admYear;
+  if (yearsAttended < 0) return null;
+  const isOverdue = yearsAttended > progYears;
+  const isAboutToGraduate = yearsAttended === progYears && curSemType === '2';
+  return { progYears, yearsAttended, admYear, typeChar, degreeName, curYear, curSemType,
+    isOverdue, isAboutToGraduate, isRelevant: isOverdue || isAboutToGraduate };
+}
+
+function _isTransferCoordinator() {
+  return currentRole === '主任' || extraRole === '管理者' || isTransferContact || extraRole === '轉銜管理員';
+}
+
+function _hasCaseTransferEval(caseId, sem) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return false;
+  return (c.transferEvaluations || []).some(e => e.semester === sem && !e.deletedAt);
+}
+
+function _getGradTransferDecision(caseId, sem) {
+  return (transferData || []).find(r => r.type === 'graduation' && r.caseId === caseId && r.semester === sem);
+}
+
+function _checkTransferGradTodos() {
+  const curSem = currentSemesterPrefix();
+  todosData = todosData.filter(t => t.type !== 'transfer_grad_counselor' && t.type !== 'transfer_grad_coord');
+  const myEmail = currentUser?.email;
+  if (!myEmail || !casesData.length) { _syncTodoBadge(); return; }
+  const myCasesNeedTE = casesData.filter(c => {
+    if (c.deleted || c.counselorEmail !== myEmail) return false;
+    const gs = _computeGradStatus(c, curSem);
+    if (!gs || !gs.isRelevant) return false;
+    const d = _getGradTransferDecision(c.id, curSem);
+    if (d && d.status !== 'pending') return false;
+    return !_hasCaseTransferEval(c.id, curSem);
+  });
+  if (myCasesNeedTE.length > 0) {
+    _putTodoItem({
+      id: `transfer_grad_counselor_${myEmail}_${curSem}`,
+      type: 'transfer_grad_counselor',
+      label: `轉銜：${myCasesNeedTE.length} 位主責學生尚未填寫轉銜評估`,
+      detail: myCasesNeedTE.slice(0,5).map(c => c.name).join('、') + (myCasesNeedTE.length > 5 ? `…等${myCasesNeedTE.length}人` : ''),
+      semester: curSem, caseIds: myCasesNeedTE.map(c => c.id),
+      done: false, notifRead: false, createdAt: new Date().toISOString(),
+    });
+  }
+  if (_isTransferCoordinator()) {
+    const noDecision = casesData.filter(c => {
+      if (c.deleted) return false;
+      const gs = _computeGradStatus(c, curSem);
+      if (!gs || !gs.isRelevant) return false;
+      const d = _getGradTransferDecision(c.id, curSem);
+      return !d || d.status === 'pending';
+    });
+    if (noDecision.length > 0) {
+      _putTodoItem({
+        id: `transfer_grad_coord_${curSem}`,
+        type: 'transfer_grad_coord',
+        label: `轉銜管理：本學期有 ${noDecision.length} 位學生尚未進行校級評估`,
+        semester: curSem, done: false, notifRead: false, createdAt: new Date().toISOString(),
+      });
+    }
+  }
+  _checkTransferClosureReminders();
+  _syncTodoBadge();
+}
+
+function _checkTransferClosureReminders() {
+  todosData = todosData.filter(t => t.type !== 'transfer_closure_reminder');
+  const myEmail = currentUser?.email;
+  const isCoord = _isTransferCoordinator();
+  const now = new Date();
+  (transferData || []).forEach(rec => {
+    if (rec.type !== 'graduation' || rec.status !== 'transfer_school') return;
+    if (!rec.caseId) return; // 未歸屬紀錄不觸發提醒
+    if (rec.closureMeetingDone) return;
+    const c = casesData.find(x => x.id === rec.caseId && !x.deleted);
+    if (!c) return;
+    const isMyCounselor = c.counselorEmail === myEmail;
+    if (!isMyCounselor && !isCoord) return;
+    const nextSem = nextSemesterPrefix(rec.semester);
+    const dueDate = _semPrefixToEndDate(nextSem);
+    const nextSemStartMs = new Date(_semPrefixToApproxDate(nextSem)).getTime();
+    if (now.getTime() < nextSemStartMs) return;
+    const daysDiff = Math.floor((new Date(dueDate).getTime() - now.getTime()) / 86400000);
+    let stage;
+    if (daysDiff > 30) stage = 1;
+    else if (daysDiff > 7) stage = 2;
+    else if (daysDiff > 0) stage = 3;
+    else stage = 4;
+    const isLocked = stage === 4;
+    const caseName = c.name || '未知個案';
+    const labels = [
+      '',
+      `轉銜追蹤：${caseName} 已校級決議轉銜，需於 ${dueDate} 前完成結案會議（尚餘 ${daysDiff} 天）`,
+      `轉銜追蹤：${caseName} 結案會議到期前 ${daysDiff} 天（${dueDate}），請盡快安排`,
+      `⚠ 轉銜追蹤：${caseName} 結案會議即將到期（${dueDate}），僅剩 ${daysDiff} 天`,
+      `🚨 轉銜追蹤：${caseName} 結案會議已逾期（${dueDate}）—— 請立即完成，提醒將鎖定直到完成`,
+    ];
+    _putTodoItem({
+      id: `transfer_closure_${rec.id}`,
+      type: 'transfer_closure_reminder',
+      label: labels[stage],
+      caseId: c.id, caseLabel: caseName,
+      transferRecId: rec.id, dueDate, stage, isLocked,
+      done: false, notifRead: false, createdAt: new Date().toISOString(),
+    });
+  });
+}
+
+async function _markTransferClosureDone(todoId, transferRecId) {
+  const today = new Date().toISOString().slice(0, 10);
+  const date = await new Promise(resolve => {
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:800;display:flex;align-items:center;justify-content:center;';
+    ov.innerHTML = `<div style="background:#fff;border-radius:12px;padding:28px 32px;width:340px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+      <h3 style="font-size:1rem;margin-bottom:4px;">確認結案會議完成</h3>
+      <p style="font-size:.82rem;color:#718096;margin-bottom:16px;">請填入結案會議日期，完成後提醒將關閉。</p>
+      <label style="font-size:.85rem;font-weight:600;display:block;margin-bottom:6px;">結案會議日期</label>
+      <input type="date" id="_closure-date-inp" value="${today}" style="width:100%;padding:8px;border:1px solid #e2e8f0;border-radius:6px;font-size:.9rem;box-sizing:border-box;">
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px;">
+        <button id="_closure-cancel" class="btn btn-secondary">取消</button>
+        <button id="_closure-confirm" class="btn btn-primary">確認完成</button>
+      </div>
+    </div>`;
+    document.body.appendChild(ov);
+    ov.querySelector('#_closure-confirm').onclick = () => {
+      const d = ov.querySelector('#_closure-date-inp').value;
+      document.body.removeChild(ov); resolve(d || today);
+    };
+    ov.querySelector('#_closure-cancel').onclick = () => { document.body.removeChild(ov); resolve(null); };
+  });
+  if (date === null) return;
+  const rec = (transferData || []).find(r => r.id === transferRecId);
+  if (rec) { rec.closureMeetingDone = true; rec.closureMeetingDate = date; rec.closureMeetingDoneAt = new Date().toISOString(); }
+  const t = todosData.find(x => x.id === todoId);
+  if (t) { t.done = true; t.doneAt = new Date().toISOString(); t.isLocked = false; }
+  _syncTodoBadge();
+  renderTodosPage();
+  if (rec) {
+    const jobId = bgJobAdd('儲存轉銜結案會議完成狀態');
+    (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('完成轉銜結案會議', rec.caseId, null, date); } catch(e) { bgJobFail(jobId, e.message); } })();
+  }
+}
+
+// ── 轉銜評估卡片（個案詳細頁） ──
+function _renderTransferEvalSection(c, cid, activeSem) {
+  const sem = activeSem || currentSemesterPrefix();
+  const allEvals = (c.transferEvaluations || []).filter(e => e.semester === sem);
+  const sortedEvals = [...allEvals].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  const gradStatus = _computeGradStatus(c, sem);
+  const gradDecision = _getGradTransferDecision(cid, sem);
+  let gradBadgeHtml = '';
+  if (gradStatus?.isOverdue) {
+    gradBadgeHtml = `<span class="grad-badge grad-overdue" data-tip="已就讀 ${gradStatus.yearsAttended} 年，預計 ${gradStatus.progYears} 年畢業（${gradStatus.typeChar} 類學制）。">${gradStatus.degreeName}${gradStatus.yearsAttended}年，延畢中</span>`;
+  } else if (gradStatus?.isAboutToGraduate) {
+    gradBadgeHtml = `<span class="grad-badge grad-near" data-tip="本學年（下學期）預計畢業，需評估轉銜需求。">預作畢業生</span>`;
+  }
+  const decisionLabelMap = { noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）', untraceable:'年久不可考' };
+  const decisionLabel = gradDecision ? (decisionLabelMap[gradDecision.status] || '') : '';
+  const decisionBadge = decisionLabel ? `<span style="font-size:.75rem;padding:2px 8px;border-radius:10px;background:#e9d8fd;color:#553c9a;border:1px solid #b794f4;">${decisionLabel}</span>` : '';
+  const recColors = { transfer:'#c0392b', discuss:'#7d6608', noTransfer:'#1d6a3a' };
+  const recBgs = { transfer:'#fde8e8', discuss:'#fef9e7', noTransfer:'#d5f5e3' };
+  const recLabels = { transfer:'建議評估會議轉銜', discuss:'建議評估會議討論後再決定', noTransfer:'建議不需轉銜' };
+  const cards = sortedEvals.map(ev => {
+    const isDeleted = !!ev.deletedAt;
+    const teId = ev.teId || '';
+    const safeTeId = teId.replace(/[^a-zA-Z0-9_]/g, '_');
+    const recLabel = recLabels[ev.recommendation] || '—';
+    const recColor = recColors[ev.recommendation] || '#718096';
+    const recBg = recBgs[ev.recommendation] || '#f0f4f8';
+    const dimHtml = (ev.dimensions || []).length
+      ? `<div style="margin-top:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:4px;">八向度（帶入自 ${escHtml(ev.sourceEvalDate || '—')}）</div>
+         <div style="display:flex;flex-wrap:wrap;gap:4px;">${(ev.dimensions||[]).map(d=>`<span class="badge" style="font-size:.7rem;">${escHtml(d.label)}：${escHtml(d.level)}</span>`).join('')}</div></div>` : '';
+    return `<div class="te-card${isDeleted ? ' te-deleted' : ''}">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:${isDeleted?'#f9fafb':'#f0fff4'};cursor:pointer;flex-wrap:wrap;" onclick="toggleTECard('${safeTeId}')">
+        <span style="font-size:.72rem;font-weight:600;background:#c6f6d5;color:#1a7341;border:1px solid #9ae6b4;border-radius:4px;padding:1px 6px;white-space:nowrap;flex-shrink:0;">轉銜評估</span>
+        <span style="flex:1;font-weight:600;font-size:.86rem;">${escHtml(ev.filledBy || '—')}</span>
+        <span style="font-size:.78rem;color:#718096;">${escHtml(ev.filledDate || '')}</span>
+        ${isDeleted
+          ? `<span style="font-size:.72rem;background:#fde8e8;color:#c53030;border-radius:4px;padding:1px 5px;">已刪除 ${ev.deletedAt?.slice(0,10)||''}</span>`
+          : `<span style="font-size:.75rem;padding:2px 8px;border-radius:10px;background:${recBg};color:${recColor};white-space:nowrap;">${recLabel}</span>`}
+        ${isDeleted && teId ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();restoreTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">還原</button>` : ''}
+        ${!isDeleted && teId ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();openTransferEvalForm('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">編輯</button>
+          <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();softDeleteTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;color:#c53030;border-color:#fc8181;">刪除</button>` : ''}
+        <span id="te-icon-${safeTeId}">▶</span>
+      </div>
+      <div id="te-body-${safeTeId}" style="display:none;padding:10px 14px;">
+        ${ev.mainIssue ? `<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">主訴問題</div><div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.mainIssue)}</div></div>` : ''}
+        ${ev.intervention ? `<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">介入處遇</div><div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.intervention)}</div></div>` : ''}
+        ${ev.transferAssessment ? `<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">轉銜評估</div><div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.transferAssessment)}</div></div>` : ''}
+        ${dimHtml}
+      </div>
+    </div>`;
+  }).join('');
+  const headerMeta = (gradBadgeHtml || decisionBadge)
+    ? `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">${gradBadgeHtml}${decisionBadge}</div>` : '';
+  const addBtn = `<div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+    <button class="btn btn-secondary btn-sm" onclick="openTransferEvalForm('${escHtml(cid)}',null)">＋ 轉銜評估</button>
+  </div>`;
+  return mkSection('transfer-eval', '轉銜評估', `${headerMeta}${addBtn}${cards}`, false);
+}
+
+function toggleTECard(safeTeId) {
+  const body = document.getElementById('te-body-' + safeTeId);
+  const icon = document.getElementById('te-icon-' + safeTeId);
+  if (!body) return;
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : '';
+  if (icon) icon.textContent = isOpen ? '▶' : '▲';
+}
+
+function openTransferEvalForm(caseId, teId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const activeSem = _caseDetailActiveSem || currentSemesterPrefix();
+  const existing = teId ? (c.transferEvaluations || []).find(e => e.teId === teId) : null;
+  const isNew = !existing;
+  let autoFillHtml = '', autoDims = [], autoIssue = '', autoLight = '';
+  if (isNew) {
+    const allEvals = [...(c.semesterEvaluations || [])].filter(e => !e.deletedAt && !e.replacedBy);
+    if (!allEvals.length && c.closureEvaluation) allEvals.push({ ...c.closureEvaluation });
+    allEvals.sort((a, b) => (b.evaluatedAt || '').localeCompare(a.evaluatedAt || ''));
+    const latest = allEvals[0];
+    if (latest) {
+      const srcDate = latest.evaluatedAt ? latest.evaluatedAt.slice(0,10) : '—';
+      autoDims = latest.dimensions || [];
+      autoLight = latest.light || latest.statusLight || '';
+      const parts = [latest.chiefComplaint, latest.treatmentProvided, latest.description].filter(Boolean);
+      autoIssue = parts.join('\n\n');
+      autoFillHtml = `<div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:.88rem;color:#276749;">
+        ✅ 已自動帶入 ${escHtml(srcDate)} 的${latest.type==='closure'?'結案':'學期'}評估資料（八向度指標、燈號與主訴問題合併帶入）
+      </div>`;
+    }
+  }
+  const dimSource = existing?.dimensions || autoDims;
+  const lightSource = existing?.light || autoLight;
+  const lightColors = {'紅燈':'#c53030','橙燈':'#dd6b20','黃燈':'#b7791f','綠燈':'#276749'};
+  // ── 八向度（可編輯 radio）── 用函式避免三層 template literal 嵌套
+  const dimsHtml = (function() {
+    const levels = ['無','1','2','3','4','5','不清楚'];
+    const rows = (CLOSURE_DIMS||[]).map(function(label, i) {
+      const cur = (dimSource||[]).find(function(d){ return d.label === label; });
+      const curVal = cur ? cur.level : '';
+      const opts = levels.map(function(v) {
+        return '<label style="display:inline-flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer;white-space:nowrap;">'
+          + '<input type="radio" name="te-dim-' + i + '" value="' + escHtml(v) + '"' + (curVal===v?' checked':'') + '> '
+          + escHtml(v) + '</label>';
+      }).join('');
+      return '<div style="margin-bottom:8px;padding:8px 12px;background:#f8fafc;border-radius:6px;">'
+        + '<div style="font-size:.8rem;font-weight:500;color:#4a5568;margin-bottom:5px;">' + (i+1) + '. ' + escHtml(label) + '</div>'
+        + '<div style="display:flex;flex-wrap:wrap;gap:8px;">' + opts + '</div>'
+        + '</div>';
+    }).join('');
+    return '<div style="margin-bottom:18px;">'
+      + '<div style="font-weight:600;font-size:.92rem;margin-bottom:10px;color:#2d3748;">八向度風險評估</div>'
+      + rows
+      + '</div>';
+  }());
+  // ── 燈號 ──
+  const lightHtml = `<div style="margin-bottom:18px;padding:12px 14px;background:#f8fafc;border-radius:8px;">
+    <div style="font-weight:600;font-size:.92rem;margin-bottom:8px;color:#2d3748;">燈號</div>
+    <div style="display:flex;flex-wrap:wrap;gap:16px;">
+      ${['紅燈','橙燈','黃燈','綠燈'].map(l =>
+        `<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;">
+          <input type="radio" name="te-light" value="${l}" ${lightSource===l?'checked':''}>
+          <span style="color:${lightColors[l]};font-weight:600;font-size:.9rem;">${l}</span>
+        </label>`
+      ).join('')}
+    </div>
+  </div>`;
+  // ── 富文字工具列（共用）──
+  const rtTb = () => `<div class="rt-toolbar" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:6px;border:1px solid #cbd5e0;border-radius:6px;background:#f7fafc;padding:4px 8px;"><span class="rt-toolbar-btns" style="gap:4px;flex-wrap:wrap;align-items:center;"><button type="button" class="rt-btn" data-cmd="bold" title="粗體" style="font-weight:bold;min-width:32px;">B</button><button type="button" class="rt-btn" data-cmd="italic" title="斜體" style="font-style:italic;min-width:32px;">I</button><button type="button" class="rt-btn" data-cmd="underline" title="底線" style="text-decoration:underline;min-width:32px;">U</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtCycleUL" title="項目符號" style="min-width:32px;">•</button><button type="button" class="rt-btn" data-cmd="rtCycleOL" title="編號列表" style="min-width:32px;">1.</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtIndent" title="縮排" style="min-width:32px;">⇥</button><button type="button" class="rt-btn" data-cmd="removeFormat" title="清除格式" style="min-width:32px;font-size:.78rem;">清</button></span></div>`;
+  const rO = (v, l) => `<label style="margin-right:12px;display:inline-flex;align-items:center;gap:4px;"><input type="radio" name="te-rec" value="${v}" ${(existing?.recommendation||'') === v ? 'checked' : ''}> ${l}</label>`;
+  const currentFilledByEmail = currentUser?.email || '';
+  const currentFilledByName = configData?.users?.[currentFilledByEmail]?.name || currentUser?.name || '';
+  const filledByOpts = buildCounselorOptgroups(null, '— 請選擇 —');
+  const counselorOpts = buildCounselorOptgroups(null, '— 請選擇 —');
+  document.body.insertAdjacentHTML('beforeend', `
+    <div id="te-form-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:700;overflow-y:auto;display:flex;align-items:flex-start;justify-content:center;padding:20px;">
+      <div style="background:#fff;border-radius:12px;padding:28px;width:95%;max-width:760px;margin:auto;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
+          <h3 style="font-size:1.1rem;">${isNew?'新增':'編輯'}轉銜評估 — ${escHtml(c.name)}（${semesterLabel(activeSem)}）</h3>
+          <button onclick="document.getElementById('te-form-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+        </div>
+        ${autoFillHtml}
+        ${dimsHtml}
+        ${lightHtml}
+        <div style="margin-bottom:14px;">
+          <label class="field-label">主訴問題 <span class="req">*</span></label>
+          ${rtTb()}
+          <div id="te-main-issue" class="rt-editor field-input" contenteditable="true" style="resize:vertical;min-height:120px;overflow:auto;line-height:1.6;"></div>
+        </div>
+        <div style="margin-bottom:14px;">
+          <label class="field-label">介入處遇 <span class="req">*</span></label>
+          ${rtTb()}
+          <div id="te-intervention" class="rt-editor field-input" contenteditable="true" style="resize:vertical;min-height:100px;overflow:auto;line-height:1.6;"></div>
+        </div>
+        <div style="margin-bottom:14px;">
+          <label class="field-label">轉銜評估 <span class="req">*</span></label>
+          ${rtTb()}
+          <div id="te-assessment" class="rt-editor field-input" contenteditable="true" style="resize:vertical;min-height:100px;overflow:auto;line-height:1.6;"></div>
+        </div>
+        <div style="padding:14px;background:#f8fafc;border-radius:8px;margin-bottom:16px;">
+          <div style="font-weight:600;margin-bottom:8px;">建議 <span class="req">*</span></div>
+          ${rO('transfer','建議評估會議轉銜')}${rO('discuss','建議經評估會議討論後再決定')}${rO('noTransfer','建議不需轉銜')}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
+          <div><label class="field-label">填表人</label><select class="field-input" id="te-filled-by">${filledByOpts}</select></div>
+          <div><label class="field-label">填表日期</label><input type="date" class="field-input" id="te-filled-date" value="${existing?.filledDate || new Date().toISOString().slice(0,10)}"></div>
+          <div><label class="field-label">主責輔導人員</label><select class="field-input" id="te-counselor">${counselorOpts}</select></div>
+        </div>
+        <div style="display:flex;gap:10px;">
+          <button class="btn btn-primary" onclick="saveTransferEval('${escHtml(caseId)}','${isNew?'__new__':escHtml(teId||'__new__')}')">儲存</button>
+          <button class="btn btn-secondary" onclick="document.getElementById('te-form-modal').remove()">取消</button>
+        </div>
+      </div>
+    </div>`);
+  setTimeout(() => {
+    setRichTextValue('te-main-issue',   existing?.mainIssue   || autoIssue);
+    setRichTextValue('te-intervention', existing?.intervention || '');
+    setRichTextValue('te-assessment',   existing?.transferAssessment || '');
+    const byEl = document.getElementById('te-filled-by');
+    if (byEl) {
+      const existingFilledBy = existing?.filledBy || '';
+      const opts = Array.from(byEl.options);
+      const m = opts.find(o => o.text.includes(existingFilledBy || currentFilledByName));
+      if (m) byEl.value = m.value;
+    }
+    const coEl = document.getElementById('te-counselor');
+    if (coEl) {
+      coEl.value = existing?.counselorEmail || c.counselorEmail || '';
+    }
+  }, 0);
+}
+
+async function saveTransferEval(caseId, teIdOrNew) {
+  const gV = id => (document.getElementById(id)?.value || '').trim();
+  const gR = n => document.querySelector(`[name="${n}"]:checked`)?.value || '';
+  const _stripRt = h => (h||'').replace(/<[^>]*>/g,'').trim();
+  const mainIssue    = getRichTextValue('te-main-issue');
+  const intervention = getRichTextValue('te-intervention');
+  const assessment   = getRichTextValue('te-assessment');
+  const rec          = gR('te-rec');
+  const light        = gR('te-light');
+  const filledDate   = gV('te-filled-date');
+  const counselorEmail = gV('te-counselor');
+  const filledByRaw  = gV('te-filled-by');
+  if (!_stripRt(mainIssue) || !_stripRt(intervention) || !_stripRt(assessment)) {
+    alert('主訴問題、介入處遇、轉銜評估皆為必填。'); return;
+  }
+  if (!rec) { alert('請選擇建議選項。'); return; }
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const activeSem = _caseDetailActiveSem || currentSemesterPrefix();
+  if (!c.transferEvaluations) c.transferEvaluations = [];
+  const now = new Date().toISOString();
+  // 從表單讀取八向度（已選的項目才存入）
+  const dimensions = (CLOSURE_DIMS||[]).map((label, i) => {
+    const level = document.querySelector(`[name="te-dim-${i}"]:checked`)?.value || '';
+    return { label, level };
+  }).filter(d => d.level);
+  // sourceEvalDate：新增時取自最新評估，編輯時沿用原值
+  let sourceEvalDate = '';
+  if (teIdOrNew === '__new__') {
+    const allEvals = [...(c.semesterEvaluations || [])].filter(e => !e.deletedAt && !e.replacedBy);
+    if (!allEvals.length && c.closureEvaluation) allEvals.push({ ...c.closureEvaluation });
+    allEvals.sort((a, b) => (b.evaluatedAt || '').localeCompare(a.evaluatedAt || ''));
+    if (allEvals[0]) sourceEvalDate = allEvals[0].evaluatedAt?.slice(0,10) || '';
+  } else {
+    const ex = c.transferEvaluations.find(e => e.teId === teIdOrNew);
+    if (ex) sourceEvalDate = ex.sourceEvalDate || '';
+  }
+  const counselorName = counselorEmail ? (configData?.users?.[counselorEmail]?.name || counselorEmail) : (c.counselorName || '');
+  const filledByName  = filledByRaw || configData?.users?.[currentUser?.email]?.name || currentUser?.name || '';
+  const evalData = { mainIssue, intervention, transferAssessment: assessment, recommendation: rec,
+    light, filledBy: filledByName, filledDate, counselorEmail, counselorName,
+    semester: activeSem, dimensions, sourceEvalDate, updatedAt: now };
+  if (teIdOrNew === '__new__') {
+    evalData.teId = `te_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
+    evalData.createdAt = now; evalData.createdBy = currentUser?.email;
+    c.transferEvaluations.push(evalData);
+  } else {
+    const idx = c.transferEvaluations.findIndex(e => e.teId === teIdOrNew);
+    if (idx >= 0) c.transferEvaluations[idx] = { ...c.transferEvaluations[idx], ...evalData };
+    else c.transferEvaluations.push({ ...evalData, teId: teIdOrNew, createdAt: now });
+  }
+  c.updatedAt = now;
+  document.getElementById('te-form-modal')?.remove();
+  showCaseDetail(caseId);
+  const jobId = bgJobAdd(`儲存轉銜評估：${c.name}`);
+  (async () => {
+    try { await saveCasesChunks(caseId); _checkTransferGradTodos(); auditLog('儲存轉銜評估', caseId); bgJobDone(jobId); }
+    catch (e) { bgJobFail(jobId, e.message); }
+  })();
+}
+
+function softDeleteTransferEval(caseId, teId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c || !teId || !confirm('確定刪除此轉銜評估？（30天內可還原）')) return;
+  const ev = (c.transferEvaluations || []).find(e => e.teId === teId);
+  if (!ev) return;
+  ev.deletedAt = new Date().toISOString();
+  c.updatedAt = new Date().toISOString();
+  showCaseDetail(caseId);
+  const jobId = bgJobAdd(`刪除轉銜評估：${c.name}`);
+  (async () => { try { await saveCasesChunks(caseId); bgJobDone(jobId); } catch (e) { bgJobFail(jobId, e.message); } })();
+}
+
+function restoreTransferEval(caseId, teId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c || !teId) return;
+  const ev = (c.transferEvaluations || []).find(e => e.teId === teId);
+  if (!ev) return;
+  delete ev.deletedAt;
+  c.updatedAt = new Date().toISOString();
+  showCaseDetail(caseId);
+  const jobId = bgJobAdd(`還原轉銜評估：${c.name}`);
+  (async () => { try { await saveCasesChunks(caseId); bgJobDone(jobId); } catch (e) { bgJobFail(jobId, e.message); } })();
+}
+
+// ── 畢業轉銜總覽分頁 ──
+function _renderGradTransferTab() {
+  const curSem = currentSemesterPrefix();
+  if (!window._gradTransferFilters) {
+    window._gradTransferFilters = { counselor: 'all', decision: 'all', filled: 'all', gradStatus: 'all', showResolved: false, semester: 'all' };
+  }
+  if (window._gradTransferFilters.semester === undefined) window._gradTransferFilters.semester = 'all';
+  const F = window._gradTransferFilters;
+  const semToUse = (F.semester && F.semester !== 'all') ? F.semester : curSem;
+  const semLbl = semesterLabel(semToUse);
+
+  // 學期選項（從 transferData 取不重複的畢業轉銜學期，由新到舊）
+  const semOpts = [...new Set(
+    (transferData || [])
+      .filter(r => r.type === 'graduation' && r.semester)
+      .map(r => r.semester)
+  )].sort().reverse();
+
+  // 基礎個案清單
+  let allGradCases;
+  if (F.semester && F.semester !== 'all') {
+    // 歷史學期模式：從 transferData 取有紀錄的 caseId，不限封存狀態
+    const semCaseIds = new Set(
+      (transferData || [])
+        .filter(r => r.type === 'graduation' && r.semester === F.semester)
+        .map(r => r.caseId)
+    );
+    allGradCases = casesData
+      .filter(c => !c.deleted && semCaseIds.has(c.id))
+      .map(c => {
+        const gs = _computeGradStatus(c, semToUse);
+        return { c, gs: gs || { isRelevant: true, isOverdue: false, isAboutToGraduate: false, yearsAttended: 0, progYears: 0, degreeName: '', typeChar: '', curYear: 0, curSemType: '1', admYear: 0 } };
+      })
+      .sort((a, b) => (a.c.name || '').localeCompare(b.c.name || ''));
+  } else {
+    // 當前學期模式：原有邏輯
+    allGradCases = casesData
+      .filter(c => !c.deleted && !c.archived)
+      .map(c => ({ c, gs: _computeGradStatus(c, curSem) }))
+      .filter(({ gs }) => gs && gs.isRelevant)
+      .sort((a, b) => (a.c.name || '').localeCompare(b.c.name || ''));
+  }
+
+  if (!allGradCases.length) {
+    const emptySemSelect = semOpts.length ? `<div style="margin-top:16px;"><select style="padding:5px 10px;font-size:.85rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="window._gradTransferFilters.semester=this.value;document.getElementById('transfer-body').innerHTML=_renderGradTransferTab()"><option value="all"${F.semester==='all'?' selected':''}>全部學期</option>${semOpts.map(s=>`<option value="${escHtml(s)}"${F.semester===s?' selected':''}>${escHtml(semesterLabel(s))}</option>`).join('')}</select></div>` : '';
+    return `<div class="empty-state"><div class="icon">🎓</div><p>${semLbl} 學期無畢業轉銜紀錄</p><p style="font-size:.85rem;color:#a0aec0;">（系統依學號自動偵測：B/E/F/K=4年制、M/N=碩士2年、P=博士3年）</p>${emptySemSelect}</div>`;
+  }
+  const total = allGradCases.length;
+  const withTE  = allGradCases.filter(({ c }) => _hasCaseTransferEval(c.id, semToUse)).length;
+  const withDec = allGradCases.filter(({ c }) => { const d = _getGradTransferDecision(c.id, semToUse); return d && d.status !== 'pending'; }).length;
+  // 套用篩選
+  let gradCases = allGradCases;
+  if (!F.showResolved) gradCases = gradCases.filter(({ c }) => { const d = _getGradTransferDecision(c.id, semToUse); return !d || d.status === 'pending'; });
+  if (F.counselor !== 'all') gradCases = gradCases.filter(({ c }) => (c.counselorEmail||c.counselorName||'') === F.counselor);
+  if (F.decision  !== 'all') gradCases = gradCases.filter(({ c }) => (_getGradTransferDecision(c.id, semToUse)?.status || 'pending') === F.decision);
+  if (F.filled    !== 'all') gradCases = gradCases.filter(({ c }) => F.filled === 'yes' ? _hasCaseTransferEval(c.id, semToUse) : !_hasCaseTransferEval(c.id, semToUse));
+  if (F.gradStatus !== 'all') gradCases = gradCases.filter(({ gs }) => F.gradStatus === 'overdue' ? gs.isOverdue : !gs.isOverdue);
+  // 主責下拉選項（去重）
+  const counselorOpts = [...new Map(allGradCases.map(({ c }) => [c.counselorEmail||c.counselorName||'', c.counselorName||c.counselorEmail||''])).entries()].filter(([k]) => k);
+  const decLabelMap = { pending:'待決議', noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）', untraceable:'年久不可考' };
+  const decColorMap = { pending:'#718096', noTransfer_self:'#1d6a3a', transfer_school:'#c0392b', noTransfer_school:'#1d6a3a', stay:'#553c9a', b_case:'#4a5568', one_time_consult:'#4a5568', direct_admission:'#2b6cb0', untraceable:'#6b7280' };
+  const decBgMap = { pending:'#f0f4f8', noTransfer_self:'#d5f5e3', transfer_school:'#fde8e8', noTransfer_school:'#d5f5e3', stay:'#e9d8fd', b_case:'#e2e8f0', one_time_consult:'#e2e8f0', direct_admission:'#e0f2fe', untraceable:'#f3f4f6' };
+  const today = new Date().toISOString().slice(0, 10);
+  const statsBar = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+    <span style="background:#f0f4f8;border-radius:8px;padding:6px 14px;font-size:.85rem;">共 <strong>${total}</strong> 位</span>
+    <span style="background:#f0fff4;border-radius:8px;padding:6px 14px;font-size:.85rem;">已填評估：<strong>${withTE}</strong></span>
+    <span style="background:#faf5ff;border-radius:8px;padding:6px 14px;font-size:.85rem;">已有決議：<strong>${withDec}</strong></span>
+    <span style="background:#ebf8ff;border-radius:8px;padding:6px 14px;font-size:.85rem;">篩選顯示：<strong>${gradCases.length}</strong></span>
+  </div>`;
+  const filterBar = `<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+    <span style="font-size:.82rem;color:#718096;font-weight:600;flex-shrink:0;">篩選：</span>
+    <select id="grad-filter-semester" style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="_gradFilterChange()">
+      <option value="all"${F.semester==='all'?' selected':''}>全部學期</option>
+      ${semOpts.map(s => `<option value="${escHtml(s)}"${F.semester===s?' selected':''}>${escHtml(semesterLabel(s))}</option>`).join('')}
+    </select>
+    <select id="grad-filter-counselor" style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="_gradFilterChange()">
+      <option value="all">全部主責</option>
+      ${counselorOpts.map(([k, n]) => `<option value="${escHtml(k)}"${F.counselor===k?' selected':''}>${escHtml(n)}</option>`).join('')}
+    </select>
+    <select id="grad-filter-decision" style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="_gradFilterChange()">
+      <option value="all"${F.decision==='all'?' selected':''}>全部決議</option>
+      <option value="pending"${F.decision==='pending'?' selected':''}>待決議</option>
+      <option value="noTransfer_self"${F.decision==='noTransfer_self'?' selected':''}>主責不需轉銜</option>
+      <option value="transfer_school"${F.decision==='transfer_school'?' selected':''}>校級建議轉銜</option>
+      <option value="noTransfer_school"${F.decision==='noTransfer_school'?' selected':''}>校級不需轉銜</option>
+      <option value="stay"${F.decision==='stay'?' selected':''}>本學期不離校</option>
+      <option value="b_case"${F.decision==='b_case'?' selected':''}>B案</option>
+      <option value="one_time_consult"${F.decision==='one_time_consult'?' selected':''}>一次性諮詢</option>
+      <option value="direct_admission"${F.decision==='direct_admission'?' selected':''}>直升碩/博士</option>
+      <option value="untraceable"${F.decision==='untraceable'?' selected':''}>年久不可考</option>
+    </select>
+    <select id="grad-filter-filled" style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="_gradFilterChange()">
+      <option value="all"${F.filled==='all'?' selected':''}>全部評估表</option>
+      <option value="yes"${F.filled==='yes'?' selected':''}>已填寫</option>
+      <option value="no"${F.filled==='no'?' selected':''}>未填寫</option>
+    </select>
+    <select id="grad-filter-gradstatus" style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="_gradFilterChange()">
+      <option value="all"${F.gradStatus==='all'?' selected':''}>全部畢業狀態</option>
+      <option value="overdue"${F.gradStatus==='overdue'?' selected':''}>延畢生</option>
+      <option value="near"${F.gradStatus==='near'?' selected':''}>預作畢業生</option>
+    </select>
+    <label style="display:flex;align-items:center;gap:5px;font-size:.82rem;cursor:pointer;flex-shrink:0;white-space:nowrap;margin-left:4px;">
+      <input type="checkbox" id="grad-filter-showresolved" ${F.showResolved?'checked':''} onchange="_gradFilterChange()">
+      顯示已決議個案
+    </label>
+  </div>`;
+  const actionBar = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
+    <label style="cursor:pointer;" data-tip="Excel 欄位（固定6欄）：姓名、學號、校級評估會議日期、校級會議轉銜評估結果、結案會議日期、結案會議評估結果">
+      <input type="file" accept=".xlsx,.xls" style="display:none" onchange="handleImportGradTransferExcel(this)">
+      <span class="btn btn-secondary btn-sm">📥 匯入校級評估結果 (Excel)</span>
+    </label>
+    <button class="btn btn-secondary btn-sm" onclick="downloadGradTransferExcelTemplate()" data-tip="下載校級評估結果 Excel 範本（6欄固定格式，填寫後直接匯入）">📄 下載畢業轉銜 Excel 範本</button>
+    <label style="cursor:pointer;" data-tip="匯入歷史已討論名單 CSV（標記為不需轉銜），匯入後不再出現在待討論清單">
+      <input type="file" accept=".csv" style="display:none" onchange="handleImportHistoryTransferCSV(this)">
+      <span class="btn btn-secondary btn-sm">📋 匯入歷史名單（已討論）</span>
+    </label>
+  </div>`;
+  const batchBar = `<div style="background:#f0f8ff;border:1px solid #bee3f8;border-radius:8px;padding:9px 14px;margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+    <input type="checkbox" id="grad-select-all" onchange="_gradToggleAll(this.checked)" title="全選/取消全選" style="flex-shrink:0;">
+    <span style="font-size:.82rem;color:#2b6cb0;font-weight:600;">批次套用：</span>
+    <select id="grad-batch-status" style="padding:4px 8px;font-size:.82rem;border:1px solid #bee3f8;border-radius:4px;background:#fff;">
+      <option value="">選擇決議</option>
+      <option value="noTransfer_self">依主責評估不需轉銜</option>
+      <option value="transfer_school">校級建議轉銜</option>
+      <option value="noTransfer_school">校級建議不需轉銜</option>
+      <option value="stay">本學期不離校</option>
+      <option value="b_case">B案（無須評估）</option>
+      <option value="one_time_consult">一次性諮詢不予討論</option>
+      <option value="direct_admission">直升碩/博士（免評估）</option>
+      <option value="untraceable">年久不可考</option>
+    </select>
+    <input type="date" id="grad-batch-date" value="${today}" title="校級評估會議日期" style="padding:4px 8px;font-size:.82rem;border:1px solid #bee3f8;border-radius:4px;">
+    <button class="btn btn-primary btn-sm" onclick="_applyGradBatch('${semToUse}')">套用至已勾選</button>
+    <span id="grad-batch-info" style="font-size:.82rem;color:#2b6cb0;"></span>
+  </div>`;
+  const _histLightStyles = { '紅燈':{ bg:'#fde8e8',border:'#fc8181',color:'#c0392b' }, '橙燈':{ bg:'#fdebd0',border:'#f6ad55',color:'#9c4a00' }, '黃燈':{ bg:'#fef9e7',border:'#ecc94b',color:'#7d6608' }, '綠燈':{ bg:'#d5f5e3',border:'#68d391',color:'#1d6a3a' } };
+  const rows = gradCases.map(({ c, gs }) => {
+    const hasTE = _hasCaseTransferEval(c.id, semToUse);
+    const dec = _getGradTransferDecision(c.id, semToUse);
+    const decStatus = dec?.status || 'pending';
+    const isResolved = decStatus !== 'pending';
+    const gradBadge = gs.isOverdue
+      ? `<span class="grad-badge grad-overdue" style="font-size:.7rem;">${gs.degreeName}${gs.yearsAttended}年，延畢中</span>`
+      : `<span class="grad-badge grad-near" style="font-size:.7rem;">預作畢業</span>`;
+    const resolvedBadge = isResolved
+      ? `<span style="font-size:.72rem;background:#d5f5e3;color:#1d6a3a;border-radius:8px;padding:1px 7px;border:1px solid #9ae6b4;font-weight:600;">已決議</span>`
+      : '';
+    const teBadge = hasTE
+      ? `<span style="font-size:.73rem;background:#d5f5e3;color:#1d6a3a;border-radius:8px;padding:1px 7px;border:1px solid #9ae6b4;">已填評估</span>`
+      : `<span style="font-size:.73rem;background:#fde8e8;color:#c0392b;border-radius:8px;padding:1px 7px;border:1px solid #fc8181;">未填評估</span>`;
+    const decStyle = `font-size:.73rem;padding:2px 8px;border-radius:10px;background:${decBgMap[decStatus]};color:${decColorMap[decStatus]};border:1px solid ${decColorMap[decStatus]};`;
+    const schoolDateDisplay = dec?.schoolMeetingDate ? `<span style="font-size:.75rem;color:#718096;">校級會議：${escHtml(dec.schoolMeetingDate)}</span>` : '';
+    // ── 開案學期歷史 badges ──
+    const isExpanded = window._gradCardExpanded?.has(c.id) || false;
+    const semMap = {};
+    casesData.forEach(cc => {
+      if (cc.deleted || cc.studentId !== c.studentId || !c.studentId) return;
+      const sems = (Array.isArray(cc.semesters) && cc.semesters.length ? cc.semesters : [openDateToSemPrefix(cc.openDate)]).filter(Boolean);
+      sems.forEach(sem => {
+        const evals = cc.semesterEvaluations || [];
+        const hasTypedClosures = evals.some(e => e.type === 'closure');
+        const ev = evals.find(e => e.type === 'closure' && e.semester === sem) || (!hasTypedClosures ? (cc.closureEvaluation || null) : null);
+        semMap[sem] = { caseId: cc.id, counselorName: configData?.users?.[cc.counselorEmail]?.name || cc.counselorName || '', light: ev?.light || ev?.statusLight || '', status: cc.semesterStatus?.[sem] || cc.status || 'active' };
+      });
+    });
+    const histSems = Object.keys(semMap).sort().reverse().map(sem => ({ sem, ...semMap[sem] }));
+    const makeHistChip = ({ sem, caseId, counselorName, light, status }) => {
+      const { bg, border, color } = _histLightStyles[light]
+        || (status !== 'closed'
+          ? (sem < curSem ? { bg:'#f3e8ff',border:'#a855f7',color:'#6b21a8' } : { bg:'#ebf8ff',border:'#63b3ed',color:'#2b6cb0' })
+          : { bg:'#f0f4f8',border:'#cbd5e0',color:'#718096' });
+      return `<span onclick="event.stopPropagation();showCaseDetailAtSem('${escHtml(caseId)}','${escHtml(sem)}')" style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:1px 8px;font-size:.78rem;white-space:nowrap;cursor:pointer;" data-tip="點選跳至 ${semesterLabel(sem)} 學期">${escHtml(semesterLabel(sem))}${counselorName ? `<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(counselorName)}</span>` : ''}</span>`;
+    };
+    const HIST_LIMIT = 2;
+    const visibleHist = histSems.slice(0, HIST_LIMIT);
+    const extraHist = histSems.slice(HIST_LIMIT);
+    const hasExtra = extraHist.length > 0;
+    const histBadgesHtml = histSems.length ? `
+      <div style="padding:3px 0 5px 30px;display:flex;align-items:center;flex-wrap:wrap;gap:3px;border-top:1px solid #f0f4f8;margin-top:4px;">
+        <span style="font-size:.74rem;color:#a0aec0;flex-shrink:0;margin-right:2px;">歷史：</span>
+        ${visibleHist.map(makeHistChip).join('')}
+        ${hasExtra ? `<span data-hist-extra="${escHtml(c.id)}" style="display:${isExpanded?'contents':'none'};">${extraHist.map(makeHistChip).join('')}</span><span data-hist-more="${escHtml(c.id)}" onclick="event.stopPropagation();_gradToggleHistory('${escHtml(c.id)}')" style="display:${isExpanded?'none':'inline-block'};font-size:.76rem;color:#3182ce;cursor:pointer;padding:1px 7px;border-radius:8px;background:#ebf8ff;border:1px solid #bee3f8;" data-tip="顯示全部 ${histSems.length} 個學期">...${extraHist.length} 筆</span>` : ''}
+      </div>` : '';
+    const chevBtn = hasExtra
+      ? `<button onclick="event.stopPropagation();_gradToggleHistory('${escHtml(c.id)}')" data-hist-chev="${escHtml(c.id)}" title="展開／收合歷史學期" style="background:none;border:1px solid #e2e8f0;border-radius:4px;cursor:pointer;padding:2px 7px;font-size:.8rem;color:#718096;line-height:1.2;flex-shrink:0;">${isExpanded?'▲':'▼'}</button>`
+      : '';
+    return `<div class="record-card" style="margin-bottom:8px;${isResolved?'border-left:3px solid '+decColorMap[decStatus]+';opacity:.88;':''}">
+      <div class="record-card-header" style="flex-wrap:wrap;gap:6px;">
+        <input type="checkbox" class="grad-cb" data-cid="${escHtml(c.id)}" onchange="_gradCbChange()" style="margin-top:3px;flex-shrink:0;">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex:1;">
+          <strong>${escHtml(c.name||'—')}</strong>
+          <span style="color:#718096;font-size:.82rem;">${escHtml(c.studentId||'—')}</span>
+          ${gradBadge}${resolvedBadge}${teBadge}
+          <span style="${decStyle}">${decLabelMap[decStatus]||'—'}</span>
+          <span style="font-size:.78rem;color:#718096;">主責：${escHtml(c.counselorName||c.counselorEmail||'—')}</span>
+          ${schoolDateDisplay}
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+          <button class="btn btn-secondary btn-sm" onclick="showCaseDetail('${escHtml(c.id)}')">查看個案</button>
+          ${!hasTE ? `<button class="btn btn-primary btn-sm" onclick="showCaseDetail('${escHtml(c.id)}');setTimeout(()=>openTransferEvalForm('${escHtml(c.id)}',null),500)">填寫評估</button>` : ''}
+          <select class="field-input" id="gd-sel-${escHtml(c.id)}" style="padding:4px 8px;font-size:.82rem;width:auto;max-width:170px;" onchange="setGradTransferDecision('${escHtml(c.id)}','${semToUse}',this.value)">
+            <option value="">設定校級決議▼</option>
+            <option value="noTransfer_self"${decStatus==='noTransfer_self'?' selected':''}>依主責評估不需轉銜</option>
+            <option value="transfer_school"${decStatus==='transfer_school'?' selected':''}>校級建議轉銜</option>
+            <option value="noTransfer_school"${decStatus==='noTransfer_school'?' selected':''}>校級建議不需轉銜</option>
+            <option value="stay"${decStatus==='stay'?' selected':''}>本學期不離校</option>
+            <option value="b_case"${decStatus==='b_case'?' selected':''}>B案（無須評估）</option>
+            <option value="one_time_consult"${decStatus==='one_time_consult'?' selected':''}>一次性諮詢不予討論</option>
+            <option value="direct_admission"${decStatus==='direct_admission'?' selected':''}>直升碩/博士（免評估）</option>
+            <option value="untraceable"${decStatus==='untraceable'?' selected':''}>年久不可考</option>
+          </select>
+          <input type="date" value="${escHtml(dec?.schoolMeetingDate||'')}" title="校級評估會議日期" style="padding:4px;font-size:.8rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="setGradTransferMeetingDate('${escHtml(c.id)}','${semToUse}',this.value)">
+          ${chevBtn}
+        </div>
+      </div>
+      ${histBadgesHtml}
+    </div>`;
+  }).join('');
+  const emptyMsg = !gradCases.length
+    ? `<div style="text-align:center;padding:24px;color:#a0aec0;font-size:.9rem;">無符合條件的個案${!F.showResolved && withDec > 0 ? `（${withDec} 位已決議個案已隱藏，可勾選「顯示已決議個案」）` : ''}</div>`
+    : '';
+  return statsBar + filterBar + actionBar + batchBar + (rows || emptyMsg);
+}
+
+function _gradFilterChange() {
+  if (!window._gradTransferFilters) window._gradTransferFilters = {};
+  const F = window._gradTransferFilters;
+  const g = id => document.getElementById(id);
+  if (g('grad-filter-semester'))   F.semester   = g('grad-filter-semester').value;
+  if (g('grad-filter-counselor'))  F.counselor  = g('grad-filter-counselor').value;
+  if (g('grad-filter-decision'))   F.decision   = g('grad-filter-decision').value;
+  if (g('grad-filter-filled'))     F.filled     = g('grad-filter-filled').value;
+  if (g('grad-filter-gradstatus')) F.gradStatus = g('grad-filter-gradstatus').value;
+  if (g('grad-filter-showresolved')) F.showResolved = g('grad-filter-showresolved').checked;
+  document.getElementById('transfer-body').innerHTML = _renderGradTransferTab();
+}
+
+function setGradTransferDecision(caseId, sem, status) {
+  if (!status) return;
+  const now = new Date().toISOString();
+  const ex = _getGradTransferDecision(caseId, sem);
+  if (ex) { ex.status = status; ex.updatedAt = now; ex.updatedBy = currentUser?.email; }
+  else { transferData.push({ id:`gr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, type:'graduation', caseId, semester:sem, status, createdAt:now, createdBy:currentUser?.email }); }
+  _checkTransferGradTodos();
+  // 重繪當前分頁
+  if (window._transferTab === 'graduation') { document.getElementById('transfer-body').innerHTML = _renderGradTransferTab(); }
+  const jobId = bgJobAdd('儲存校級轉銜決議');
+  (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('設定校級轉銜決議', caseId, null, status); } catch (e) { bgJobFail(jobId, e.message); } })();
+}
+
+function setGradTransferMeetingDate(caseId, sem, date) {
+  const now = new Date().toISOString();
+  const ex = _getGradTransferDecision(caseId, sem);
+  if (!ex) return;
+  ex.schoolMeetingDate = date; ex.updatedAt = now; ex.updatedBy = currentUser?.email;
+  const jobId = bgJobAdd('儲存校級評估會議日期');
+  (async () => { try { await saveTransfer(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); } })();
+}
+
+function _gradCbChange() {
+  const cbs = document.querySelectorAll('.grad-cb');
+  const checked = document.querySelectorAll('.grad-cb:checked').length;
+  const allCb = document.getElementById('grad-select-all');
+  if (allCb) { allCb.checked = checked === cbs.length && cbs.length > 0; allCb.indeterminate = checked > 0 && checked < cbs.length; }
+  const info = document.getElementById('grad-batch-info');
+  if (info) info.textContent = checked > 0 ? `已選 ${checked} 位` : '';
+}
+
+function _gradToggleAll(checked) {
+  document.querySelectorAll('.grad-cb').forEach(cb => { cb.checked = checked; });
+  _gradCbChange();
+}
+
+function _gradToggleHistory(caseId) {
+  if (!window._gradCardExpanded) window._gradCardExpanded = new Set();
+  const isExp = window._gradCardExpanded.has(caseId);
+  if (isExp) window._gradCardExpanded.delete(caseId); else window._gradCardExpanded.add(caseId);
+  const nowExp = !isExp;
+  const extraEl = document.querySelector(`[data-hist-extra="${CSS.escape(caseId)}"]`);
+  const moreEl  = document.querySelector(`[data-hist-more="${CSS.escape(caseId)}"]`);
+  const chevEl  = document.querySelector(`[data-hist-chev="${CSS.escape(caseId)}"]`);
+  if (extraEl) extraEl.style.display = nowExp ? 'contents' : 'none';
+  if (moreEl)  moreEl.style.display  = nowExp ? 'none' : 'inline-block';
+  if (chevEl)  chevEl.textContent     = nowExp ? '▲' : '▼';
+}
+
+function _applyGradBatch(sem) {
+  const status = document.getElementById('grad-batch-status')?.value;
+  const date   = document.getElementById('grad-batch-date')?.value;
+  if (!status && !date) { alert('請選擇決議或填入校級評估會議日期'); return; }
+  const checkedCids = [...document.querySelectorAll('.grad-cb:checked')].map(cb => cb.dataset.cid);
+  if (!checkedCids.length) { alert('請先勾選要套用的學生'); return; }
+  const now = new Date().toISOString();
+  checkedCids.forEach(cid => {
+    const ex = _getGradTransferDecision(cid, sem);
+    if (ex) {
+      if (status) ex.status = status;
+      if (date) ex.schoolMeetingDate = date;
+      ex.updatedAt = now; ex.updatedBy = currentUser?.email;
+    } else if (status) {
+      transferData.push({ id:`gr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+        type:'graduation', caseId:cid, semester:sem, status,
+        schoolMeetingDate: date||'', createdAt:now, createdBy:currentUser?.email });
+    }
+  });
+  _checkTransferGradTodos();
+  document.getElementById('transfer-body').innerHTML = _renderGradTransferTab();
+  const jobId = bgJobAdd(`批次套用轉銜決議（${checkedCids.length}筆）`);
+  (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('批次設定校級轉銜決議', null, null, `${checkedCids.length}筆`); } catch(e) { bgJobFail(jobId, e.message); } })();
+}
+
+function parseTaiwanDate(str) {
+  if (!str) return '';
+  const s = str.trim();
+  if (!s) return '';
+  if (s.includes('-') || s.includes('/')) {
+    // 已含分隔符號（可能是西元年或民國年帶斜線），直接保留
+    return s;
+  }
+  const match = s.replace(/\D/g, '').match(/^(\d{2,3})(\d{2})(\d{2})$/);
+  if (match) return `${parseInt(match[1], 10) + 1911}-${match[2]}-${match[3]}`;
+  return s; // 無法識別則原樣保留
+}
+
+async function handleImportGradTransferExcel(input) {
+  if (!input.files?.length) return;
+  const file = input.files[0]; input.value = '';
+  const curSem = currentSemesterPrefix();
+  document.getElementById('transfer-body').innerHTML = '<div style="padding:20px;color:#718096;">解析中…</div>';
+  try {
+    if (!window.XLSX) {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+        s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
+        document.head.appendChild(s);
+      });
+    }
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, dateNF: 'yyyy-mm-dd' });
+    const rows = raw.map(r => Array.isArray(r) ? r.map(c => (c == null ? '' : String(c).trim())) : []);
+    if (rows.length < 2) { alert('找不到資料列'); renderTransferPage(); return; }
+    const _sidList = rows.slice(1).map(r => r[1] || '').filter(Boolean);
+    const _prefixOk = await _ensureUnknownPrefixes(_sidList);
+    if (!_prefixOk) { renderTransferPage(); return; }
+    await showGradTransferImportPreview(rows, curSem);
+  } catch (e) { alert('解析失敗：' + e.message); renderTransferPage(); }
+}
+
+async function handleImportHistoryTransferCSV(input) {
+  if (!input.files?.length) return;
+  const file = input.files[0]; input.value = '';
+  document.getElementById('transfer-body').innerHTML = '<div style="padding:20px;color:#718096;">解析中…</div>';
+  try {
+    const text = await file.text();
+    const rows = text.split(/\r?\n/).map(r => r.split(',').map(c => c.replace(/^"|"$/g,'').trim()));
+    const headers = rows[0].map(h => h.trim());
+    const nameIdx = headers.findIndex(h => /姓名/.test(h));
+    const sidIdx = headers.findIndex(h => /學號/.test(h));
+    if (nameIdx < 0 && sidIdx < 0) { alert('找不到「姓名」或「學號」欄位'); renderTransferPage(); return; }
+    const curSem = currentSemesterPrefix();
+    const now = new Date().toISOString();
+    let count = 0;
+    rows.slice(1).filter(r => r.some(v => v)).forEach(r => {
+      const name = nameIdx >= 0 ? (r[nameIdx]||'') : '';
+      const sid  = sidIdx  >= 0 ? (r[sidIdx] ||'') : '';
+      const mc = casesData.find(x => !x.deleted && ((sid && x.studentId===sid)||(name && x.name===name)));
+      if (!mc || _getGradTransferDecision(mc.id, curSem)) return;
+      transferData.push({ id:`gr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+        type:'graduation', caseId:mc.id, semester:curSem, status:'noTransfer_self',
+        isHistorical:true, createdAt:now, createdBy:currentUser?.email }); count++;
+    });
+    renderTransferPage();
+    if (count > 0) {
+      const jobId = bgJobAdd(`匯入歷史轉銜名單（${count}筆）`);
+      (async () => { try { await saveTransfer(); _checkTransferGradTodos(); bgJobDone(jobId); auditLog('匯入歷史轉銜名單', null, null, `${count}筆`); } catch (e) { bgJobFail(jobId, e.message); } })();
+    } else { alert('未匯入任何記錄（已有決議或找不到對應個案）。'); }
+  } catch (e) { alert('解析失敗：' + e.message); renderTransferPage(); }
+}
+
+async function showGradTransferImportPreview(rows, curSem) {
+  const headers = rows[0].map(h => h.trim());
+  // 嚴格固定欄位：[0]姓名 [1]學號 [2]校級評估會議日期 [3]校級會議轉銜評估結果 [4]結案會議日期 [5]結案會議評估結果
+  if (!/姓名/.test(headers[0]) || !/學號/.test(headers[1])) {
+    alert('格式不符：第1欄應為「姓名」、第2欄應為「學號」，請使用下載的範本。');
+    renderTransferPage(); return;
+  }
+
+  // ── 比對個案 ──
+  function _gtMatch(name, sid) {
+    let mc = null, matchType = 'none';
+    if (sid && name) {
+      mc = casesData.find(c => !c.deleted && c.studentId===sid && c.name===name);
+      if (mc) matchType = 'full';
+      else {
+        const bySid = casesData.find(c => !c.deleted && c.studentId===sid);
+        const byNm  = casesData.find(c => !c.deleted && c.name===name);
+        if (bySid) { mc = bySid; matchType = 'sid_only'; }
+        else if (byNm) { mc = byNm; matchType = 'name_only'; }
+      }
+    } else if (sid) { mc = casesData.find(c => !c.deleted && c.studentId===sid); matchType = mc?'sid_only':'none'; }
+    else if (name) { mc = casesData.find(c => !c.deleted && c.name===name); matchType = mc?'name_only':'none'; }
+    return { mc, matchType };
+  }
+
+  const decLblMap = { pending:'未決議', noTransfer_school:'校級不轉銜', transfer_school:'校級建議轉銜' };
+  const entries = rows.slice(1).filter(r => r.some(v => v)).map((r, i) => {
+    const originalName       = r[0] || '';
+    const originalSid        = r[1] || '';
+    const schoolMeetingDate  = parseTaiwanDate(r[2] || '');
+    const result             = r[3] || '';
+    const closureMeetingDate = parseTaiwanDate(r[4] || '');
+    const closureRaw         = r[5] || '';
+    const { mc, matchType } = _gtMatch(originalName, originalSid);
+    let decision = 'pending';
+    if (result) {
+      if (/年久不可考|不可考|歷史久遠/i.test(result)) decision = 'untraceable';
+      else if (/直升碩士|直升博士|直升碩|直升博|直升/i.test(result)) decision = 'direct_admission';
+      else if (/B案|B類型/i.test(result)) decision = 'b_case';
+      else if (/一次性諮詢|一次性/i.test(result)) decision = 'one_time_consult';
+      else if (result.includes('不')) decision = 'noTransfer_school';
+      else decision = 'transfer_school';
+    } else if (schoolMeetingDate) decision = 'pending';
+    let closureDecision = '';
+    if (closureRaw) closureDecision = closureRaw.includes('不') ? 'notClose' : 'close';
+    const isDuplicate = !!(mc && _getGradTransferDecision(mc.id, curSem));
+    return { i, name: originalName, sid: originalSid, originalName, originalSid,
+             schoolMeetingDate, result, closureMeetingDate, closureRaw, closureDecision,
+             mc, matchType, decision, isDuplicate, _sel: matchType === 'full' && !isDuplicate };
+  });
+  if (!entries.length) { alert('未找到有效資料列。'); renderTransferPage(); return; }
+
+  // 初始勾選：正常資料（full match, 非重複）預設全選
+  let sel = new Set(entries.reduce((acc, e, i) => { if (e._sel) acc.push(i); return acc; }, []));
+  window._gtRow = entries;
+
+  // ── 頁籤定義：4 分流 ──
+  // 'normal'   : matchType==='full' && !isDuplicate
+  // 'dup'      : isDuplicate===true
+  // 'mismatch' : (sid_only | name_only) && !isDuplicate
+  // 'notfound' : matchType==='none' && !isDuplicate
+  let previewTab = 'normal';
+  function _gtGetTabEntries(tab) {
+    switch (tab) {
+      case 'normal':   return entries.filter(e => e.matchType === 'full' && !e.isDuplicate);
+      case 'dup':      return entries.filter(e => e.isDuplicate);
+      case 'mismatch': return entries.filter(e => (e.matchType === 'sid_only' || e.matchType === 'name_only') && !e.isDuplicate);
+      case 'notfound': return entries.filter(e => e.matchType === 'none' && !e.isDuplicate);
+      default: return [];
+    }
+  }
+  window._gtPreviewTab = (t) => { previewTab = t; _gtRender(); };
+
+  // ── 勾選操作 ──
+  window._gtSel = (i, c) => { c ? sel.add(i) : sel.delete(i); _gtRender(); };
+  // 全選/取消全選：依當前頁籤判斷是否全選，智慧切換
+  window._gtToggleAll = () => {
+    const tabEntries = _gtGetTabEntries(previewTab);
+    const tabIdxs = tabEntries.map(e => entries.indexOf(e));
+    const tabSelCount = tabIdxs.filter(i => sel.has(i)).length;
+    const doSelect = tabSelCount < tabEntries.length;
+    tabIdxs.forEach(i => doSelect ? sel.add(i) : sel.delete(i));
+    _gtRender();
+  };
+
+  // ── 欄位排序 ──
+  let sortKey = null, sortDir = 1;
+  window._gtSort = (key) => {
+    if (sortKey === key) sortDir = -sortDir; else { sortKey = key; sortDir = 1; }
+    const selEntries = new Set([...sel].map(i => entries[i]));
+    entries.sort((a, b) => (a[key]||'').localeCompare(b[key]||'', 'zh-TW') * sortDir);
+    sel = new Set(entries.map((e, i) => selEntries.has(e) ? i : -1).filter(i => i >= 0));
+    _gtRender();
+  };
+
+  // ── 行內編輯後重新驗證（blur 觸發）──
+  window._gtRevalidate = (i) => {
+    const e = window._gtRow[i];
+    const { mc, matchType } = _gtMatch(e.name, e.sid);
+    const isDuplicate = !!(mc && _getGradTransferDecision(mc?.id, curSem));
+    e.mc = mc; e.matchType = matchType; e.isDuplicate = isDuplicate;
+    // 修正成功 → 自動加入選取；仍有問題 → 移出選取
+    if (matchType === 'full' && !isDuplicate) sel.add(i); else sel.delete(i);
+    _gtRender();
+    // 若仍未匹配，對該列施加 shake 動畫（重繪後查找）
+    if (matchType !== 'full') {
+      const tr = document.querySelector(`tr[data-row-idx="${i}"]`);
+      if (tr) { tr.classList.remove('gt-shake'); void tr.offsetWidth; tr.classList.add('gt-shake'); setTimeout(() => tr.classList.remove('gt-shake'), 600); }
+    }
+  };
+
+  // ── 列渲染 ──
+  function _gtMakeRow(e, i) {
+    const isEditable = e.matchType !== 'full';
+    const manuallyFixed = (e.name !== e.originalName || e.sid !== e.originalSid) && e.matchType === 'full' && !e.isDuplicate;
+    const warnMsg = e.matchType==='none' ? '❌ 找不到個案'
+      : e.matchType==='sid_only' ? `⚠ 學號符合姓名不符（系統：${escHtml(e.mc?.name||'—')}）`
+      : e.matchType==='name_only' ? `⚠ 姓名符合學號不符（系統：${escHtml(e.mc?.studentId||'—')}）` : '';
+    const dupBadge = e.isDuplicate
+      ? `<span style="font-size:.72rem;background:#fed7aa;color:#9c4221;border-radius:4px;padding:1px 5px;border:1px solid #fb923c;">已有決議：${escHtml(decLblMap[_getGradTransferDecision(e.mc?.id,curSem)?.status]||'—')}</span>`
+      : '';
+    let rowBg = e.isDuplicate ? '#fff7ed' : (isEditable ? '#fff8e1' : (i%2===0?'#fff':'#f7fafc'));
+    if (manuallyFixed) rowBg = '#ecfdf5';
+    const auditHtml = [
+      (e.name !== e.originalName) ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原姓名：${escHtml(e.originalName)})</div>` : '',
+      (e.sid  !== e.originalSid)  ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原學號：${escHtml(e.originalSid)})</div>`  : '',
+    ].join('');
+    const statusContent = manuallyFixed
+      ? `<span style="font-size:.78rem;color:#059669;">✅ 已手動修正對應</span>${auditHtml}`
+      : `${dupBadge}${warnMsg ? (dupBadge?'<br>':'') + warnMsg : ''}${auditHtml}`;
+    const decSel = `<select style="font-size:.8rem;padding:2px 4px;" onchange="window._gtRow[${i}].decision=this.value">
+      <option value="pending"${e.decision==='pending'?' selected':''}>未決議</option>
+      <option value="noTransfer_school"${e.decision==='noTransfer_school'?' selected':''}>校級不轉銜</option>
+      <option value="transfer_school"${e.decision==='transfer_school'?' selected':''}>校級建議轉銜</option>
+      <option value="b_case"${e.decision==='b_case'?' selected':''}>B案（無須評估）</option>
+      <option value="one_time_consult"${e.decision==='one_time_consult'?' selected':''}>一次性諮詢不予討論</option>
+      <option value="direct_admission"${e.decision==='direct_admission'?' selected':''}>直升碩/博士（免評估）</option>
+      <option value="untraceable"${e.decision==='untraceable'?' selected':''}>年久不可考</option>
+    </select>`;
+    const closureSel = `<select style="font-size:.8rem;padding:2px 4px;" onchange="window._gtRow[${i}].closureDecision=this.value">
+      <option value=""${!e.closureDecision?' selected':''}>（無）</option>
+      <option value="pending_closure"${e.closureDecision==='pending_closure'?' selected':''}>未決議</option>
+      <option value="notClose"${e.closureDecision==='notClose'?' selected':''}>不結案</option>
+      <option value="close"${e.closureDecision==='close'?' selected':''}>結案</option>
+    </select>`;
+    return `<tr data-row-idx="${i}" style="background:${rowBg};transition:background 0.3s;">
+      <td style="text-align:center;"><input type="checkbox" id="gt-cb-${i}" ${sel.has(i)?'checked':''} onchange="window._gtSel(${i},this.checked)"></td>
+      <td style="min-width:60px;padding:4px 6px;"><div contenteditable="${isEditable}" style="outline:none;" oninput="window._gtRow[${i}].name=this.textContent.trim()" onblur="window._gtRevalidate(${i})">${escHtml(e.name)}</div></td>
+      <td style="min-width:80px;padding:4px 6px;"><div contenteditable="${isEditable}" style="outline:none;" oninput="window._gtRow[${i}].sid=this.textContent.trim()" onblur="window._gtRevalidate(${i})">${escHtml(e.sid)}</div></td>
+      <td style="font-size:.8rem;">${escHtml(e.schoolMeetingDate||'—')}</td>
+      <td style="font-size:.8rem;">${escHtml(e.closureMeetingDate||'—')}</td>
+      <td>${decSel}</td>
+      <td>${closureSel}</td>
+      <td data-status-cell="${i}" style="font-size:.78rem;color:${isEditable&&!manuallyFixed?'#d97706':'#718096'};min-width:80px;">${statusContent}</td>
+    </tr>`;
+  }
+
+  // ── 主渲染函式 ──
+  function _gtRender() {
+    const el = document.getElementById('gt-import-list');
+    if (!el) return;
+
+    const normalCount   = entries.filter(e => e.matchType === 'full' && !e.isDuplicate).length;
+    const dupCount      = entries.filter(e => e.isDuplicate).length;
+    const mismatchCount = entries.filter(e => (e.matchType === 'sid_only' || e.matchType === 'name_only') && !e.isDuplicate).length;
+    const notfoundCount = entries.filter(e => e.matchType === 'none' && !e.isDuplicate).length;
+
+    const _sth = (label, key) => {
+      const arrow = sortKey === key ? (sortDir > 0 ? ' ▲' : ' ▼') : ' ⇅';
+      return `<th onclick="window._gtSort('${key}')" style="cursor:pointer;user-select:none;white-space:nowrap;">${label}<span style="font-size:.7rem;color:#a0aec0;">${arrow}</span></th>`;
+    };
+    const _tabBtn = (id, label, count, color, warn) => {
+      const active = previewTab === id;
+      const badge = warn && count > 0 ? `<span style="font-size:.68rem;background:${color}25;color:${color};border-radius:8px;padding:0 5px;margin-left:3px;border:1px solid ${color}60;">!</span>` : '';
+      return `<button onclick="window._gtPreviewTab('${id}')" style="padding:6px 14px;border:none;cursor:pointer;font-size:.82rem;font-weight:${active?'700':'400'};background:none;border-bottom:${active?`2px solid ${color}`:'2px solid transparent'};color:${active?color:'#718096'};margin-bottom:-2px;white-space:nowrap;">${label}（${count}）${badge}</button>`;
+    };
+
+    const tabBtns = `<div class="gt-tabs-bar" style="position:sticky;top:0;z-index:20;background:#fff;display:flex;gap:2px;border-bottom:2px solid #e2e8f0;padding-bottom:2px;flex-wrap:wrap;padding-top:2px;">
+      ${_tabBtn('normal',   '正常資料',      normalCount,   '#2b6cb0', false)}
+      ${_tabBtn('dup',      '重複資料',      dupCount,      '#c05621', true)}
+      ${_tabBtn('mismatch', '姓名/學號不符', mismatchCount, '#d97706', true)}
+      ${_tabBtn('notfound', '找不到個案',    notfoundCount, '#e53e3e', true)}
+    </div>`;
+
+    const hintMap = {
+      normal:   `<div style="font-size:.82rem;color:#4a5568;margin-bottom:8px;">✅ 姓名與學號完全符合，預設全選。</div>`,
+      dup:      `<div style="font-size:.82rem;color:#9c4221;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;margin-bottom:8px;">🔁 系統中已有校級評估決議。勾選後匯入將覆蓋現有資料，請謹慎確認。</div>`,
+      mismatch: `<div style="font-size:.82rem;color:#d97706;background:#fffaf0;border:1px solid #f6ad55;border-radius:6px;padding:8px 12px;margin-bottom:8px;">⚠ 學號或姓名其中一項符合，另一項不符。可直接點選格子修改，離開欄位後即時重新比對。</div>`,
+      notfound: `<div style="font-size:.82rem;color:#e53e3e;background:#fff5f5;border:1px solid #fc8181;border-radius:6px;padding:8px 12px;margin-bottom:8px;">❌ 找不到對應個案。可嘗試修改姓名/學號後重新比對；勾選後匯入將納入「未歸屬校級評估」頁籤，供手動連結。</div>`,
+    };
+    const emptyMap = {
+      normal: '無正常資料', dup: '無重複資料', mismatch: '無姓名/學號不符資料', notfound: '無找不到個案的資料',
+    };
+
+    const tabEntries = _gtGetTabEntries(previewTab);
+    const tabIdxs = tabEntries.map(e => entries.indexOf(e));
+    const tabSelCount = tabIdxs.filter(i => sel.has(i)).length;
+    const tbody = tabEntries.map(e => _gtMakeRow(e, entries.indexOf(e))).join('');
+
+    const tableHtml = tabEntries.length
+      ? `<table class="grad-import-table" style="width:100%;border-collapse:collapse;font-size:.85rem;">
+          <thead><tr id="gt-thead-row" style="background:#f7fafc;font-size:.8rem;position:sticky;top:0;">
+            <th style="width:30px;"><input type="checkbox" id="gt-sel-all-cb" title="全選/取消全選" onclick="window._gtToggleAll()"></th>
+            ${_sth('姓名','name')}${_sth('學號','sid')}<th>校級會議日期</th><th>結案會議日期</th>${_sth('校級評估結果','decision')}${_sth('結案評估結果','closureDecision')}<th>狀態</th>
+          </tr></thead><tbody>${tbody}</tbody></table>`
+      : `<div style="padding:20px;text-align:center;color:#a0aec0;">${emptyMap[previewTab]}</div>`;
+
+    el.innerHTML = tabBtns + hintMap[previewTab] + tableHtml;
+
+    // 量測 sticky 頁籤列高度，設定 thead 的 top offset 使兩者無縫接合
+    const tabsBarEl = el.querySelector('.gt-tabs-bar');
+    const theadRowEl = document.getElementById('gt-thead-row');
+    if (tabsBarEl && theadRowEl) theadRowEl.style.top = tabsBarEl.offsetHeight + 'px';
+
+    // ── 重繪後用 JS 精確設定表頭 checkbox 狀態 ──
+    const headerCb = document.getElementById('gt-sel-all-cb');
+    if (headerCb && tabEntries.length > 0) {
+      if (tabSelCount === tabEntries.length) {
+        headerCb.checked = true;  headerCb.indeterminate = false;
+      } else if (tabSelCount > 0) {
+        headerCb.checked = false; headerCb.indeterminate = true;
+      } else {
+        headerCb.checked = false; headerCb.indeterminate = false;
+      }
+    }
+
+    // ── 更新底部按鈕文字 ──
+    const btn = document.getElementById('gt-confirm-btn');
+    if (btn) btn.textContent = `匯入 / 更新 ${sel.size} 筆`;
+    const selDupCount = [...sel].filter(i => entries[i]?.isDuplicate).length;
+    const info = document.getElementById('gt-sel-info');
+    if (info) info.textContent = selDupCount > 0 ? `（含 ${selDupCount} 筆將覆蓋現有決議）` : '';
+  }
+
+  document.getElementById('transfer-body').innerHTML = `
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3 style="font-size:1rem;">校級轉銜評估結果匯入（共 ${entries.length} 筆）</h3>
+        <button onclick="renderTransferPage()" style="background:none;border:none;cursor:pointer;font-size:1.3rem;">&times;</button>
+      </div>
+      <div id="gt-import-list" style="max-height:60vh;overflow-y:auto;"></div>
+      <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
+        <button id="gt-confirm-btn" class="btn btn-primary" onclick="window._gtConfirm()">匯入</button>
+        <button class="btn btn-secondary" onclick="renderTransferPage()">取消</button>
+        <span id="gt-sel-info" style="font-size:.82rem;color:#d97706;"></span>
+      </div>
+    </div>`;
+  _gtRender();
+
+  window._gtConfirm = async () => {
+    const toImport = entries.filter((_, i) => sel.has(i));
+    if (!toImport.length) { alert('未選取任何列'); return; }
+    const now = new Date().toISOString(); let matched = 0, unassigned = 0;
+    toImport.forEach(e => {
+      const mc = e.mc || casesData.find(c => !c.deleted && (c.studentId===e.sid || c.name===e.name));
+      if (mc) {
+        const ex = _getGradTransferDecision(mc.id, curSem);
+        if (ex) {
+          ex.status = e.decision; ex.schoolMeetingDate = e.schoolMeetingDate||''; ex.updatedAt = now;
+          if (e.closureDecision) ex.closureDecision = e.closureDecision;
+          if (e.closureMeetingDate) ex.closureMeetingDate = e.closureMeetingDate;
+        } else {
+          transferData.push({ id:`gr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+            type:'graduation', caseId:mc.id, semester:curSem,
+            status:e.decision, schoolMeetingDate:e.schoolMeetingDate||'',
+            closureDecision:e.closureDecision||'', closureMeetingDate:e.closureMeetingDate||'',
+            createdAt:now, createdBy:currentUser?.email });
+        }
+        matched++;
+      } else {
+        transferData.push({ id:`gr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+          type:'graduation', caseId: null, semester:curSem,
+          unassignedName: e.name, unassignedStudentId: e.sid,
+          status:e.decision, schoolMeetingDate:e.schoolMeetingDate||'',
+          closureDecision:e.closureDecision||'', closureMeetingDate:e.closureMeetingDate||'',
+          createdAt:now, createdBy:currentUser?.email });
+        unassigned++;
+      }
+    });
+    renderTransferPage();
+    const total = matched + unassigned;
+    if (total > 0) {
+      const jobId = bgJobAdd(`匯入校級評估結果（${total}筆）`);
+      (async () => { try { await saveTransfer(); _checkTransferGradTodos(); bgJobDone(jobId); auditLog('匯入校級轉銜評估結果', null, null, `${total}筆`); } catch (e) { bgJobFail(jobId, e.message); } })();
+    }
+    if (unassigned > 0) {
+      alert(`已匯入 ${matched} 筆，另有 ${unassigned} 筆因找不到對應個案而納入「未歸屬校級評估」，請至該頁籤手動連結。`);
+    }
+  };
+}
+
+function _renderUnassignedTab() {
+  const unassigned = transferData.filter(r => r.type === 'graduation' && !r.caseId);
+  if (!unassigned.length) {
+    return `<div class="empty-state"><div class="icon">✅</div><p>目前無未歸屬的校級評估資料</p></div>`;
+  }
+  const decLabelMap = { pending:'待決議', noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）', untraceable:'年久不可考' };
+  const rows = unassigned.map(r => {
+    const createdAt = r.createdAt ? new Date(r.createdAt).toLocaleDateString('zh-TW') : '—';
+    return `<div class="record-card" style="margin-bottom:8px;border-left:3px solid #f6ad55;">
+      <div class="record-card-header" style="flex-wrap:wrap;gap:6px;">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex:1;">
+          <strong>${escHtml(r.unassignedName||'—')}</strong>
+          <span style="color:#718096;font-size:.82rem;">${escHtml(r.unassignedStudentId||'—')}</span>
+          <span style="font-size:.73rem;background:#fef3c7;color:#92400e;border-radius:8px;padding:1px 7px;border:1px solid #fcd34d;">未歸屬</span>
+          <span style="font-size:.73rem;background:#f0f4f8;color:#718096;border-radius:8px;padding:1px 7px;">${escHtml(decLabelMap[r.status]||r.status||'待決議')}</span>
+          ${r.schoolMeetingDate ? `<span style="font-size:.75rem;color:#718096;">校級會議：${escHtml(r.schoolMeetingDate)}</span>` : ''}
+          ${r.closureMeetingDate ? `<span style="font-size:.75rem;color:#718096;">結案會議：${escHtml(r.closureMeetingDate)}</span>` : ''}
+          <span style="font-size:.75rem;color:#a0aec0;">匯入：${createdAt}</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+          <button class="btn btn-primary btn-sm" onclick="_linkUnassignedRecord('${escHtml(r.id)}')">連結個案</button>
+          <button class="btn btn-sm" style="background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_deleteUnassignedRecord('${escHtml(r.id)}')">刪除</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div style="margin-bottom:12px;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:10px 14px;font-size:.85rem;color:#92400e;">
+    共 <strong>${unassigned.length}</strong> 筆 CSV 匯入資料未能對應到系統個案，請逐筆「連結個案」後即可納入轉銜流程。
+  </div>` + rows;
+}
+
+function _deleteUnassignedRecord(recId) {
+  if (!confirm('確定要刪除這筆未歸屬資料？此操作無法復原。')) return;
+  const idx = transferData.findIndex(r => r.id === recId);
+  if (idx >= 0) transferData.splice(idx, 1);
+  renderTransferPage();
+  const jobId = bgJobAdd('刪除未歸屬轉銜紀錄');
+  (async () => { try { await saveTransfer(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); } })();
+}
+
+function _linkUnassignedRecord(recId) {
+  const rec = transferData.find(r => r.id === recId);
+  if (!rec) return;
+  window._linkRecId = recId;
+  window._linkMode = 'search';
+  window._linkSelectedCaseId = null;
+  window._linkCases = [...casesData].filter(c => !c.deleted)
+    .sort((a, b) => (a.name||'').localeCompare(b.name||'', 'zh-TW'));
+  const autoId = generateCaseId();
+  const _decLabelMap = { pending:'待決議', noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）', untraceable:'年久不可考' };
+  const decOptions = Object.entries(_decLabelMap).map(([v,l]) =>
+    `<option value="${v}"${rec.status===v?' selected':''}>${escHtml(l)}</option>`).join('');
+  const _buildAllCounselorOpts = () => {
+    const _us = Object.entries(configData?.users || {});
+    const _ro = r => COUNSELOR_ROLE_ORDER[r] ?? 99;
+    const _en = _us.filter(([, i]) => !i.disabled && BK_COUNSELING_ROLES.has(i.role))
+      .sort(([, a], [, b]) => (_ro(a.role) - _ro(b.role)) || (a.name||'').localeCompare(b.name||'', 'zh-TW'));
+    const _di = _us.filter(([, i]) => i.disabled)
+      .sort(([, a], [, b]) => (_ro(a.role) - _ro(b.role)) || (a.name||'').localeCompare(b.name||'', 'zh-TW'));
+    let _h = `<option value="">— 請選擇主責輔導人員 —</option><option value="custom_new" style="color:#2b6cb0;font-style:italic;">[ ＋ 自填新增輔導人員 ]</option>`;
+    if (_en.length) { _h += `<optgroup label="啟用中人員">${_en.map(([e, i]) => `<option value="${escHtml(e)}">${escHtml(i.name||e)}${i.role ? ` — ${escHtml(i.role)}` : ''}</option>`).join('')}</optgroup>`; }
+    if (_di.length) { _h += `<optgroup label="已停用人員">${_di.map(([e, i]) => `<option value="${escHtml(e)}" style="color:#a0aec0;">(已停用) ${escHtml(i.name||e)}${i.role ? ` — ${escHtml(i.role)}` : ''}</option>`).join('')}</optgroup>`; }
+    return _h;
+  };
+  const modalHtml = `
+    <div id="link-case-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:12px;padding:24px;max-width:560px;width:95%;max-height:88vh;display:flex;flex-direction:column;gap:12px;box-shadow:0 20px 60px rgba(0,0,0,.3);">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h3 style="font-size:1rem;margin:0;font-weight:700;">連結個案</h3>
+          <button onclick="document.getElementById('link-case-modal').remove()" style="background:none;border:none;cursor:pointer;font-size:1.3rem;color:#718096;">&times;</button>
+        </div>
+        <div style="font-size:.85rem;color:#4a5568;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;">
+          未歸屬：<strong>${escHtml(rec.unassignedName||'—')}</strong>（${escHtml(rec.unassignedStudentId||'—')}）
+          ${rec.schoolMeetingDate ? `&ensp;<span style="color:#718096;">校級：${escHtml(rec.schoolMeetingDate)}</span>` : ''}
+          &ensp;<span style="color:#718096;">${escHtml(_decLabelMap[rec.status]||rec.status||'待決議')}</span>
+        </div>
+        <div style="display:flex;gap:0;border-bottom:2px solid #e2e8f0;">
+          <button id="link-tab-search" onclick="_linkSetMode('search')"
+            style="padding:6px 18px;border:none;border-bottom:2px solid #3498db;margin-bottom:-2px;cursor:pointer;font-size:.88rem;font-weight:700;background:transparent;color:#3498db;">
+            搜尋現有個案
+          </button>
+          <button id="link-tab-create" onclick="_linkSetMode('create')"
+            style="padding:6px 18px;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;cursor:pointer;font-size:.88rem;font-weight:400;background:transparent;color:#718096;">
+            建立新個案並連結
+          </button>
+        </div>
+        <div id="link-panel-search" style="display:flex;flex-direction:column;gap:10px;overflow:hidden;">
+          <input type="text" id="link-search" placeholder="搜尋姓名、學號或案號…" oninput="_linkFilter()"
+            style="padding:8px 12px;border:1px solid #e2e8f0;border-radius:6px;font-size:.9rem;outline:none;flex-shrink:0;">
+          <div id="link-case-list" style="overflow-y:auto;max-height:240px;border:1px solid #e2e8f0;border-radius:6px;flex-shrink:0;"></div>
+        </div>
+        <div id="link-panel-create" style="display:none;flex-direction:column;gap:10px;overflow-y:auto;max-height:340px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div>
+              <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">案號 <span style="color:#e53e3e;">*</span></label>
+              <input id="link-new-cid" type="text" value="${escHtml(autoId)}" maxlength="7"
+                style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+            </div>
+            <div>
+              <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">開案日期 <span style="color:#e53e3e;">*</span></label>
+              <input id="link-new-open-date" type="date" value="${new Date().toISOString().slice(0,10)}"
+                style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div>
+              <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">姓名</label>
+              <input type="text" value="${escHtml(rec.unassignedName||'')}" readonly
+                style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;background:#f8fafc;box-sizing:border-box;">
+            </div>
+            <div>
+              <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">學號</label>
+              <input type="text" value="${escHtml(rec.unassignedStudentId||'')}" readonly
+                style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;background:#f8fafc;box-sizing:border-box;">
+            </div>
+          </div>
+          <div>
+            <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">主責輔導人員 <span style="color:#e53e3e;">*</span></label>
+            <select id="link-new-counselor" onchange="_linkCounselorChange()"
+              style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+              ${_buildAllCounselorOpts()}
+            </select>
+          </div>
+          <div id="link-new-user-fields" style="display:none;flex-direction:column;gap:8px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:10px;">
+            <div style="font-size:.82rem;color:#1e40af;font-weight:600;">➕ 新增人員資料（儲存後自動建立帳號）</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+              <div>
+                <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">姓名 <span style="color:#e53e3e;">*</span></label>
+                <input id="link-new-user-name" type="text" placeholder="請輸入人員姓名"
+                  style="width:100%;padding:7px 10px;border:1px solid #bfdbfe;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+              </div>
+              <div>
+                <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">身分 <span style="color:#e53e3e;">*</span></label>
+                <select id="link-new-user-role" style="width:100%;padding:7px 10px;border:1px solid #bfdbfe;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+                  <option value="">— 選擇身分 —</option>
+                  <option value="專任諮商心理師">專任諮商心理師</option>
+                  <option value="專任臨床心理師">專任臨床心理師</option>
+                  <option value="專任社會工作師">專任社會工作師</option>
+                  <option value="兼任諮商心理師">兼任諮商心理師</option>
+                  <option value="兼任臨床心理師">兼任臨床心理師</option>
+                  <option value="實習諮商心理師">實習諮商心理師</option>
+                  <option value="義務輔導老師">義務輔導老師</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">評估人員</label>
+            <select id="link-new-assessor"
+              style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+              ${buildCounselorOptgroups(null, '— 請選擇評估人員（選填）—')}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">校級評估結果</label>
+            <select id="link-new-decision"
+              style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+              <option value="">— 沿用匯入結果 —</option>
+              ${decOptions}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">退學／離校原因備註</label>
+            <input id="link-new-withdraw-reason" type="text" placeholder="（選填）"
+              style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+          </div>
+          <div id="link-create-alert" style="display:none;font-size:.83rem;color:#c53030;background:#fff5f5;border:1px solid #fc8181;border-radius:6px;padding:7px 12px;"></div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;border-top:1px solid #f0f4f8;padding-top:12px;flex-shrink:0;">
+          <button class="btn btn-secondary" onclick="document.getElementById('link-case-modal').remove()">取消</button>
+          <button id="link-confirm-btn" class="btn btn-primary" disabled onclick="_confirmLinkRecord('${escHtml(recId)}')">確認連結</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  window._linkFilter = () => {
+    const q = (document.getElementById('link-search')?.value || '').trim().toLowerCase();
+    const filtered = q
+      ? window._linkCases.filter(c =>
+          (c.name||'').toLowerCase().includes(q) ||
+          (c.studentId||'').toLowerCase().includes(q) ||
+          (c.id||'').toLowerCase().includes(q))
+      : window._linkCases;
+    const list = document.getElementById('link-case-list');
+    if (!list) return;
+    if (!filtered.length) { list.innerHTML = `<div style="padding:12px;color:#a0aec0;font-size:.85rem;text-align:center;">無符合條件的個案</div>`; return; }
+    list.innerHTML = filtered.slice(0, 100).map(c => {
+      const isSel = c.id === window._linkSelectedCaseId;
+      const closedBadge = c.status === 'closed' ? `<span style="font-size:.72rem;background:#f0f4f8;color:#718096;border-radius:4px;padding:1px 5px;flex-shrink:0;">已結案</span>` : '';
+      return `<div onclick="_linkSelectCase('${escHtml(c.id)}')" style="padding:10px 14px;cursor:pointer;font-size:.85rem;background:${isSel?'#ebf8ff':'#fff'};border-bottom:1px solid #f0f4f8;display:flex;gap:8px;align-items:center;user-select:none;">
+        <span style="width:14px;color:#3182ce;flex-shrink:0;">${isSel?'✓':''}</span>
+        <span style="font-weight:${isSel?'700':'400'};">${escHtml(c.name||'—')}</span>
+        <span style="color:#718096;font-size:.8rem;">${escHtml(c.studentId||'—')}</span>
+        <span style="color:#a0aec0;font-size:.78rem;">${escHtml(c.id||'')}</span>
+        ${closedBadge}
+        <span style="color:#a0aec0;font-size:.75rem;margin-left:auto;">${escHtml(c.counselorName||c.counselorEmail||'')}</span>
+      </div>`;
+    }).join('');
+  };
+  window._linkSelectCase = (cid) => {
+    window._linkSelectedCaseId = cid;
+    const btn = document.getElementById('link-confirm-btn');
+    if (btn) btn.disabled = false;
+    window._linkFilter();
+  };
+  window._linkSetMode = (mode) => {
+    window._linkMode = mode;
+    const tabSearch = document.getElementById('link-tab-search');
+    const tabCreate = document.getElementById('link-tab-create');
+    const panelSearch = document.getElementById('link-panel-search');
+    const panelCreate = document.getElementById('link-panel-create');
+    const btn = document.getElementById('link-confirm-btn');
+    if (!tabSearch) return;
+    if (mode === 'search') {
+      tabSearch.style.borderBottomColor = '#3498db'; tabSearch.style.color = '#3498db'; tabSearch.style.fontWeight = '700';
+      tabCreate.style.borderBottomColor = 'transparent'; tabCreate.style.color = '#718096'; tabCreate.style.fontWeight = '400';
+      panelSearch.style.display = 'flex'; panelCreate.style.display = 'none';
+      btn.disabled = !window._linkSelectedCaseId; btn.textContent = '確認連結';
+    } else {
+      tabCreate.style.borderBottomColor = '#3498db'; tabCreate.style.color = '#3498db'; tabCreate.style.fontWeight = '700';
+      tabSearch.style.borderBottomColor = 'transparent'; tabSearch.style.color = '#718096'; tabSearch.style.fontWeight = '400';
+      panelSearch.style.display = 'none'; panelCreate.style.display = 'flex';
+      btn.disabled = false; btn.textContent = '建立並連結';
+    }
+  };
+  window._linkCounselorChange = () => {
+    const sel = document.getElementById('link-new-counselor');
+    const fieldsEl = document.getElementById('link-new-user-fields');
+    if (!sel || !fieldsEl) return;
+    fieldsEl.style.display = sel.value === 'custom_new' ? 'flex' : 'none';
+  };
+  window._linkFilter();
+}
+
+async function _confirmLinkRecord(recId) {
+  const mode = window._linkMode || 'search';
+  const rec = transferData.find(r => r.id === recId);
+  if (!rec) return;
+  const now = new Date().toISOString();
+  if (mode === 'search') {
+    const cid = window._linkSelectedCaseId;
+    if (!cid) return;
+    rec.caseId = cid; rec.linkedAt = now; rec.linkedBy = currentUser?.email;
+    document.getElementById('link-case-modal')?.remove();
+    _checkTransferGradTodos(); renderTransferPage();
+    const jobId = bgJobAdd('連結未歸屬轉銜紀錄');
+    (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('連結未歸屬轉銜紀錄', cid, null, `recId:${recId}`); } catch(e) { bgJobFail(jobId, e.message); } })();
+  } else {
+    const newId = (document.getElementById('link-new-cid')?.value || '').trim();
+    const openDate = document.getElementById('link-new-open-date')?.value || now.slice(0,10);
+    let counselorEmail = document.getElementById('link-new-counselor')?.value || '';
+    const assessorEmail = document.getElementById('link-new-assessor')?.value || '';
+    const newDecision = document.getElementById('link-new-decision')?.value || '';
+    const withdrawNote = (document.getElementById('link-new-withdraw-reason')?.value || '').trim();
+    const alertEl = document.getElementById('link-create-alert');
+    const showErr = (msg) => { if (alertEl) { alertEl.textContent = msg; alertEl.style.display = 'block'; } };
+    if (!newId || newId.length !== 7) { showErr('案號須為 7 碼'); return; }
+    if (parseInt(newId.slice(4), 10) === 0) { showErr('案號序號不可為 000'); return; }
+    if (casesData.find(c => c.id === newId)) { showErr('案號已被使用，請修改'); return; }
+    if (!counselorEmail) { showErr('請選擇主責輔導人員'); return; }
+    // Handle custom_new: create a new user entry in configData
+    let counselorDisplayName = '';
+    let _newUserKey = null;
+    if (counselorEmail === 'custom_new') {
+      const newUserName = (document.getElementById('link-new-user-name')?.value || '').trim();
+      const newUserRole = document.getElementById('link-new-user-role')?.value || '';
+      if (!newUserName || !newUserRole) { showErr('使用者不存在，請填寫使用者姓名並選擇身分'); return; }
+      _newUserKey = `nomail_${Date.now()}_${Math.random().toString(36).slice(2,5)}`;
+      configData.users[_newUserKey] = { name: newUserName, role: newUserRole, disabled: false };
+      counselorEmail = _newUserKey;
+      counselorDisplayName = newUserName;
+      // 通知所有管理員確認新建使用者
+      Object.entries(configData.users).forEach(([email, info]) => {
+        if ((info.isAdmin || info.extraRole === '管理者' || info.role === '主任') && email !== currentUser?.email) {
+          addNotificationToUser(email, 'admin_verify_new_user', _newUserKey, newUserName,
+            `使用者管理：請確認／補齊新建立的使用者資料 — ${newUserName}（${newUserRole}）`);
+        }
+      });
+      // 若目前使用者本身是管理員，也加入自己的待辦事項
+      if (currentRole === '主任' || extraRole === '管理者') {
+        todosData.push({ id: `adm_nu_${Date.now()}_${Math.random().toString(36).slice(2,5)}`,
+          type: 'admin_verify_new_user',
+          label: `使用者管理：請確認／補齊新建立的使用者資料 — ${newUserName}`,
+          caseLabel: `${newUserName}（${newUserRole}）`, newUserKey: _newUserKey,
+          createdAt: now, updatedAt: now, done: false });
+      }
+    } else {
+      counselorDisplayName = formatCounselorLabel(counselorEmail) || counselorEmail;
+    }
+    const newCase = {
+      id: newId, openDate, name: rec.unassignedName||'', studentId: rec.unassignedStudentId||'',
+      counselorEmail, counselorName: counselorDisplayName,
+      abType: 'a_case', status: 'active', caseType: 'university',
+      birthday: '', idNumber: '', legalGender: '', genderIdentity: '',
+      nationality: '本國籍', ethnicity: '', ethnicityNote: '', foreignCountry: '',
+      program: '', disability: '', department: '', grade: '', classNo: '',
+      phone: '', email: '', residence: '', address: '',
+      emergencyName: '', emergencyPhone: '', emergencyRelation: '',
+      source: 'transfer_import', pastRecords: [], topics: [],
+      counselorText: '', bsrs: [], bsrs6: null, bsrsTotal: null,
+      isTransferCase: true, withdrawalNote: withdrawNote,
+      createdAt: now, updatedAt: now,
+    };
+    rec.caseId = newId; rec.linkedAt = now; rec.linkedBy = currentUser?.email;
+    if (assessorEmail) rec.assessorEmail = assessorEmail;
+    if (newDecision) rec.status = newDecision;
+    if (withdrawNote) rec.withdrawalNote = withdrawNote;
+    document.getElementById('link-case-modal')?.remove();
+    casesData.push(newCase);
+    _checkTransferGradTodos(); renderTransferPage();
+    const jobId = bgJobAdd('建立新個案並連結轉銜紀錄');
+    (async () => {
+      try {
+        await saveCasesChunks(newId);
+        await saveTransfer();
+        if (_newUserKey) { await driveUpdateJsonFile(CONFIG_FILE, configData); renderNotifBell(); }
+        bgJobDone(jobId);
+        auditLog('建立個案並連結轉銜紀錄', newId, null, `recId:${recId}${_newUserKey?` (新建使用者${_newUserKey})`:''}` );
+      } catch(e) {
+        bgJobFail(jobId, e.message);
+        const idx = casesData.findIndex(c => c.id === newId);
+        if (idx >= 0) casesData.splice(idx, 1);
+        rec.caseId = undefined; rec.linkedAt = undefined; rec.linkedBy = undefined;
+        if (_newUserKey) delete configData.users[_newUserKey];
+      }
+    })();
+  }
+}
+
+async function downloadGradTransferExcelTemplate() {
+  if (!window.XLSX) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+      s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
+      document.head.appendChild(s);
+    });
+  }
+  const headers = ['姓名', '學號', '校級評估會議日期', '校級會議轉銜評估結果', '結案會議日期', '結案會議評估結果'];
+  const examples = [
+    ['王小明', 'B11202001', '2025-03-15', '建議轉銜', '2025-09-10', '建議結案'],
+    ['李大華', 'M11230002', '2025-03-15', '不建議轉銜', '', ''],
+    ['陳小花', 'B11002003', '2025-03-15', '', '2025-09-10', '不建議結案'],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...examples]);
+  ws['!cols'] = [10, 12, 18, 22, 14, 20].map(wch => ({ wch }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '校級評估結果');
+  XLSX.writeFile(wb, '校級轉銜評估結果匯入範本.xlsx');
+}
+
+// ══════════════════════════════════════════════
 function renderTransferPage() {
-  const tab = window._transferTab || 'outgoing';
+  if (window._transferTab === 'outgoing') window._transferTab = 'incoming';
+  const tab = window._transferTab || 'graduation';
   const tsf = window._transferStatusFilter || 'all';
-  const outgoing = transferData.filter(r => r.type === 'outgoing');
   const incoming = transferData.filter(r => r.type === 'incoming');
-  const tabBtn = (id, label, count) =>
-    `<button onclick="window._transferTab='${id}';window._transferStatusFilter='all';renderTransferPage()" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:${tab===id?'700':'400'};background:${tab===id?'#3498db':'#f0f4f8'};color:${tab===id?'#fff':'#4a5568'};">${label}（${count}）</button>`;
-  const importOutBtn = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'outgoing')"><span class="btn btn-secondary btn-sm">📥 匯入轉出名單</span></label>`;
+  const curSem = currentSemesterPrefix();
+  const gradCount = casesData.filter(c => {
+    if (c.deleted || c.archived) return false;
+    const gs = _computeGradStatus(c, curSem);
+    return gs && gs.isRelevant;
+  }).length;
+  const unassignedCount = transferData.filter(r => r.type === 'graduation' && !r.caseId).length;
+  const tabBtn = (id, label, count, warn) =>
+    `<button onclick="window._transferTab='${id}';window._transferStatusFilter='all';renderTransferPage()" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:${tab===id?'700':'400'};background:${tab===id?'#3498db':(warn&&count>0?'#fff7ed':'#f0f4f8')};color:${tab===id?'#fff':(warn&&count>0?'#9c4221':'#4a5568')};${warn&&count>0?'border:1px solid #fb923c;':''}">${label}（${count}）</button>`;
   const importInBtn  = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'incoming')"><span class="btn btn-secondary btn-sm">📥 匯入轉入名單</span></label>`;
   const dlTemplateBtn = `<button class="btn btn-secondary btn-sm" onclick="downloadTransferImportTemplate()" data-tip="下載轉入名單 Excel 範例檔，填寫後即可批次匯入。">📄 下載範例</button>`;
-  const addOutBtn = `<button class="btn btn-primary btn-sm" onclick="openTransferAssessmentModal(null,'outgoing')">＋ 手動新增</button>`;
   const addInBtn  = `<button class="btn btn-primary btn-sm" onclick="openTransferAssessmentModal(null,'incoming')">＋ 手動新增</button>`;
 
   // ── 轉入個案的開案狀態篩選 ──
@@ -21342,8 +22992,8 @@ function renderTransferPage() {
     ? `<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;">${sfBtn('all','全部')}${sfBtn('active','開案中')}${sfBtn('closed','已結案')}</div>`
     : '';
 
-  let list = (tab === 'outgoing' ? outgoing : incoming);
-  if (tab === 'incoming' && tsf !== 'all') {
+  let list = incoming;
+  if (tsf !== 'all') {
     list = list.filter(r => {
       const lc = r.caseId ? casesData.find(c => c.id === r.caseId) : null;
       if (!lc) return tsf === 'active';
@@ -21354,19 +23004,22 @@ function renderTransferPage() {
   }
 
   const listHtml = list.length === 0
-    ? `<div class="empty-state"><div class="icon">🔄</div><p>尚無${tab==='outgoing'?'轉出':'轉入'}學生</p></div>`
+    ? `<div class="empty-state"><div class="icon">🔄</div><p>尚無轉入學生</p></div>`
     : list.map(_renderTransferRow).join('');
-  const actionBar = tab === 'outgoing'
-    ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importOutBtn}${addOutBtn}</div>`
-    : `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importInBtn}${dlTemplateBtn}${addInBtn}</div>`;
+  const actionBar = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importInBtn}${dlTemplateBtn}${addInBtn}</div>`;
+  const gradContent = tab === 'graduation' ? _renderGradTransferTab() : '';
+  const unassignedContent = tab === 'unassigned' ? _renderUnassignedTab() : '';
   document.getElementById('transfer-body').innerHTML = `
     <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;">
-      ${tabBtn('outgoing','轉出學生',outgoing.length)}
+      ${tabBtn('graduation','本學期畢業轉銜',gradCount)}
       ${tabBtn('incoming','轉入學生',incoming.length)}
+      ${tabBtn('unassigned','未歸屬校級評估',unassignedCount,true)}
     </div>
-    ${actionBar}
-    ${statusFilterBar}
-    <div>${listHtml}</div>`;
+    ${tab === 'graduation'
+      ? gradContent
+      : tab === 'unassigned'
+        ? unassignedContent
+        : actionBar + statusFilterBar + `<div>${listHtml}</div>`}`;
 }
 
 function _renderTransferRow(r) {
@@ -22021,6 +23674,7 @@ function openPsychiatristModal(caseId, recordId) {
     otherNotes:'', doctorSignature:'',
   };
   const dO = (n,v,l,cur) => `<label style="margin-right:12px;"><input type="radio" name="${n}" value="${v}" ${cur===v?'checked':''}> ${l}</label>`;
+  const _prRt = '<div class="rt-toolbar" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:6px;border:1px solid #cbd5e0;border-radius:6px;background:#f7fafc;padding:4px 8px;"><button type="button" class="rt-btn rt-toolbar-toggle" onclick="toggleRtToolbar(this)" title="格式工具列" style="min-width:28px;font-size:.8rem;">A</button><span class="rt-toolbar-btns" style="display:none;gap:4px;flex-wrap:wrap;align-items:center;"><button type="button" class="rt-btn" data-cmd="bold" title="粗體" style="font-weight:bold;min-width:32px;">B</button><button type="button" class="rt-btn" data-cmd="italic" title="斜體" style="font-style:italic;min-width:32px;">I</button><button type="button" class="rt-btn" data-cmd="underline" title="底線" style="text-decoration:underline;min-width:32px;">U</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="justifyLeft" title="靠左" style="min-width:32px;letter-spacing:-.5px;">≡◁</button><button type="button" class="rt-btn" data-cmd="justifyCenter" title="置中" style="min-width:32px;">≡=</button><button type="button" class="rt-btn" data-cmd="justifyRight" title="靠右" style="min-width:32px;letter-spacing:-.5px;">▷≡</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtCycleUL" title="項目符號" style="min-width:32px;">•</button><button type="button" class="rt-btn" data-cmd="rtCycleOL" title="編號列表" style="min-width:32px;">1.</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtIndent" title="縮排" style="min-width:32px;">⇥</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="removeFormat" title="清除格式" style="min-width:32px;font-size:.78rem;">清</button></span></div>';
   document.body.insertAdjacentHTML('beforeend', `
     <div id="psychiatrist-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:600;overflow-y:auto;display:flex;align-items:flex-start;justify-content:center;padding:20px;">
       <div style="background:#fff;border-radius:12px;padding:28px;width:95%;max-width:700px;margin:auto;">
@@ -22051,11 +23705,10 @@ function openPsychiatristModal(caseId, recordId) {
           <div style="flex:1;"><label class="field-label">開始時間</label><input type="text" class="field-input" id="pr-start" maxlength="5" placeholder="HH:MM" value="${escHtml(pr.timeStart)}" onblur="_bkTimeBlur(this)"></div>
           <div style="flex:1;"><label class="field-label">結束時間</label><input type="text" class="field-input" id="pr-end" maxlength="5" placeholder="HH:MM" value="${escHtml(pr.timeEnd)}" onblur="_bkTimeBlur(this)"></div>
         </div>
-        ${(()=>{const _rt=`<div class="rt-toolbar" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:6px;border:1px solid #cbd5e0;border-radius:6px;background:#f7fafc;padding:4px 8px;"><button type="button" class="rt-btn rt-toolbar-toggle" onclick="toggleRtToolbar(this)" title="格式工具列" style="min-width:28px;font-size:.8rem;">A</button><span class="rt-toolbar-btns" style="display:none;gap:4px;flex-wrap:wrap;align-items:center;"><button type="button" class="rt-btn" data-cmd="bold" title="粗體" style="font-weight:bold;min-width:32px;">B</button><button type="button" class="rt-btn" data-cmd="italic" title="斜體" style="font-style:italic;min-width:32px;">I</button><button type="button" class="rt-btn" data-cmd="underline" title="底線" style="text-decoration:underline;min-width:32px;">U</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="justifyLeft" title="靠左" style="min-width:32px;letter-spacing:-.5px;">≡◁</button><button type="button" class="rt-btn" data-cmd="justifyCenter" title="置中" style="min-width:32px;">≡=</button><button type="button" class="rt-btn" data-cmd="justifyRight" title="靠右" style="min-width:32px;letter-spacing:-.5px;">▷≡</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtCycleUL" title="項目符號（重複點擊循環切換類型）" style="min-width:32px;">•</button><button type="button" class="rt-btn" data-cmd="rtCycleOL" title="編號列表（重複點擊循環切換類型）" style="min-width:32px;">1.</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtIndent" title="縮排（最多5段，第6次重置）" style="min-width:32px;">⇥</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="removeFormat" title="清除格式" style="min-width:32px;font-size:.78rem;">清</button></span></div>`;
-        return `<div style="margin-bottom:12px;"><label class="field-label">主述與會談資料<span class="req">*</span></label>${_rt}<div class="field-input rt-editor" id="pr-main" contenteditable="true" style="min-height:120px;overflow:auto;line-height:1.6;">${renderMaybeHtml(pr.mainIssue)}</div></div>
-        <div style="margin-bottom:12px;"><label class="field-label">核心問題之評估與判斷<span class="req">*</span></label>${_rt}<div class="field-input rt-editor" id="pr-core" contenteditable="true" style="min-height:120px;overflow:auto;line-height:1.6;">${renderMaybeHtml(pr.coreAssessment)}</div></div>
-        <div style="margin-bottom:12px;"><label class="field-label">介入處遇<span class="req">*</span></label>${_rt}<div class="field-input rt-editor" id="pr-interv" contenteditable="true" style="min-height:90px;overflow:auto;line-height:1.6;">${renderMaybeHtml(pr.intervention)}</div></div>
-        <div style="margin-bottom:16px;"><label class="field-label">給學生諮商中心的建議<span class="req">*</span></label>${_rt}<div class="field-input rt-editor" id="pr-rec" contenteditable="true" style="min-height:90px;overflow:auto;line-height:1.6;">${renderMaybeHtml(pr.recommendations)}</div></div>`;})()}
+        <div style="margin-bottom:12px;"><label class="field-label">主述與會談資料<span class="req">*</span></label>${_prRt}<div class="field-input rt-editor" id="pr-main" contenteditable="true" style="min-height:120px;overflow:auto;line-height:1.6;"></div></div>
+        <div style="margin-bottom:12px;"><label class="field-label">核心問題之評估與判斷<span class="req">*</span></label>${_prRt}<div class="field-input rt-editor" id="pr-core" contenteditable="true" style="min-height:120px;overflow:auto;line-height:1.6;"></div></div>
+        <div style="margin-bottom:12px;"><label class="field-label">介入處遇<span class="req">*</span></label>${_prRt}<div class="field-input rt-editor" id="pr-interv" contenteditable="true" style="min-height:90px;overflow:auto;line-height:1.6;"></div></div>
+        <div style="margin-bottom:16px;"><label class="field-label">給學生諮商中心的建議<span class="req">*</span></label>${_prRt}<div class="field-input rt-editor" id="pr-rec" contenteditable="true" style="min-height:90px;overflow:auto;line-height:1.6;"></div></div>
         <div style="padding:14px;background:#f8fafc;border-radius:8px;margin-bottom:16px;">
           <div style="margin-bottom:10px;">
             <div style="font-weight:600;margin-bottom:6px;">是否符合精神疾患診斷標準？</div>
@@ -22076,7 +23729,7 @@ function openPsychiatristModal(caseId, recordId) {
             ${dO('pr_hosp','yes','是，建議住院療養',pr.hospitalizationAdvice)}
           </div>
         </div>
-        <div style="margin-bottom:12px;"><label class="field-label">其他注意事項</label><div class="rt-toolbar" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:6px;border:1px solid #cbd5e0;border-radius:6px;background:#f7fafc;padding:4px 8px;"><button type="button" class="rt-btn rt-toolbar-toggle" onclick="toggleRtToolbar(this)" title="格式工具列" style="min-width:28px;font-size:.8rem;">A</button><span class="rt-toolbar-btns" style="display:none;gap:4px;flex-wrap:wrap;align-items:center;"><button type="button" class="rt-btn" data-cmd="bold" title="粗體" style="font-weight:bold;min-width:32px;">B</button><button type="button" class="rt-btn" data-cmd="italic" title="斜體" style="font-style:italic;min-width:32px;">I</button><button type="button" class="rt-btn" data-cmd="underline" title="底線" style="text-decoration:underline;min-width:32px;">U</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="justifyLeft" title="靠左" style="min-width:32px;letter-spacing:-.5px;">≡◁</button><button type="button" class="rt-btn" data-cmd="justifyCenter" title="置中" style="min-width:32px;">≡=</button><button type="button" class="rt-btn" data-cmd="justifyRight" title="靠右" style="min-width:32px;letter-spacing:-.5px;">▷≡</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtCycleUL" title="項目符號（重複點擊循環切換類型）" style="min-width:32px;">•</button><button type="button" class="rt-btn" data-cmd="rtCycleOL" title="編號列表（重複點擊循環切換類型）" style="min-width:32px;">1.</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtIndent" title="縮排（最多5段，第6次重置）" style="min-width:32px;">⇥</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="removeFormat" title="清除格式" style="min-width:32px;font-size:.78rem;">清</button></span></div><div class="field-input rt-editor" id="pr-notes" contenteditable="true" style="min-height:70px;overflow:auto;line-height:1.6;">${renderMaybeHtml(pr.otherNotes)}</div></div>
+        <div style="margin-bottom:12px;"><label class="field-label">其他注意事項</label><div class="rt-toolbar" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:6px;border:1px solid #cbd5e0;border-radius:6px;background:#f7fafc;padding:4px 8px;"><button type="button" class="rt-btn rt-toolbar-toggle" onclick="toggleRtToolbar(this)" title="格式工具列" style="min-width:28px;font-size:.8rem;">A</button><span class="rt-toolbar-btns" style="display:none;gap:4px;flex-wrap:wrap;align-items:center;"><button type="button" class="rt-btn" data-cmd="bold" title="粗體" style="font-weight:bold;min-width:32px;">B</button><button type="button" class="rt-btn" data-cmd="italic" title="斜體" style="font-style:italic;min-width:32px;">I</button><button type="button" class="rt-btn" data-cmd="underline" title="底線" style="text-decoration:underline;min-width:32px;">U</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="justifyLeft" title="靠左" style="min-width:32px;letter-spacing:-.5px;">≡◁</button><button type="button" class="rt-btn" data-cmd="justifyCenter" title="置中" style="min-width:32px;">≡=</button><button type="button" class="rt-btn" data-cmd="justifyRight" title="靠右" style="min-width:32px;letter-spacing:-.5px;">▷≡</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtCycleUL" title="項目符號（重複點擊循環切換類型）" style="min-width:32px;">•</button><button type="button" class="rt-btn" data-cmd="rtCycleOL" title="編號列表（重複點擊循環切換類型）" style="min-width:32px;">1.</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtIndent" title="縮排（最多5段，第6次重置）" style="min-width:32px;">⇥</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="removeFormat" title="清除格式" style="min-width:32px;font-size:.78rem;">清</button></span></div><div class="field-input rt-editor" id="pr-notes" contenteditable="true" style="min-height:70px;overflow:auto;line-height:1.6;"></div></div>
         <div id="attachPicker_psy" class="attach-picker-wrap" style="margin-bottom:12px;"></div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;">
           <button class="btn btn-primary" onclick="savePsychiatristRecord('${escHtml(caseId)}','${existing?escHtml(recordId):'__new__'}')">儲存紀錄</button>
@@ -22089,7 +23742,14 @@ function openPsychiatristModal(caseId, recordId) {
   document.querySelectorAll('[name="pr_diag"]').forEach(el => el.addEventListener('change', () => {
     document.getElementById('pr-diag-row').style.display = el.value==='specific' ? '' : 'none';
   }));
-
+  // 富文字欄位在 DOM 插入後設值（避免反引號截斷 template literal）
+  setTimeout(() => {
+    setRichTextValue('pr-main',  pr.mainIssue      || '');
+    setRichTextValue('pr-core',  pr.coreAssessment || '');
+    setRichTextValue('pr-interv',pr.intervention   || '');
+    setRichTextValue('pr-rec',   pr.recommendations|| '');
+    setRichTextValue('pr-notes', pr.otherNotes     || '');
+  }, 0);
   attachInit('psy', existing?.attachments || []);
   stopPsyDraftAutosave();
   if (!existing) {
