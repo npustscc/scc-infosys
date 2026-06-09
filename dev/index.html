@@ -6470,7 +6470,7 @@ function showCaseDetail(caseId) {
     return mkSection('eval', '結案 / 學期評估', addBtn + cards);
   })();
   const semEvalHtml = '';
-  const transferEvalHtml = _renderTransferEvalSection(c, cid, _activeSem);
+  const transferEvalHtml = '';
 
   if (_caseDetailMode === 'psychtest') {
     document.getElementById('detail-body').innerHTML = _renderPsychTestReport(c, _caseDetailPsychIdx);
@@ -6534,6 +6534,7 @@ function showCaseDetail(caseId) {
       <button class="btn btn-primary btn-sm" onclick="_detailChangeCounselor('${escHtml(caseId)}')" data-tip="點選後將建立轉案待辦，需至待辦頁確認後才會正式變更主責。">儲存變更</button>
     </div>
     ${_mgrEditSection}`) +
+    _buildCaseTransferEvalCard(c, cid) +
     mkSection('bg', '背景資料', `<div class="form-grid">
       ${_cd('abType') ? field('案別', _cd('abType')) : ''}
       ${field('對象類別', _cd('caseType'))}
@@ -21730,6 +21731,176 @@ function toggleTECard(safeTeId) {
   if (icon) icon.textContent = isOpen ? '▶' : '▲';
 }
 
+function toggleTEHCard(safeId) {
+  const body = document.getElementById('teh-body-' + safeId);
+  const icon = document.getElementById('teh-icon-' + safeId);
+  if (!body) return;
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : '';
+  if (icon) icon.textContent = isOpen ? '▶' : '▲';
+}
+
+function printTransferEval(caseId, teId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c || !teId) return;
+  const ev = (c.transferEvaluations || []).find(e => e.teId === teId);
+  if (!ev) return;
+  const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const recLabels = { transfer: '建議評估會議轉銜', discuss: '建議評估會議討論後再決定', noTransfer: '建議不需轉銜' };
+  const _pDimColor = lvl => ['1','2'].includes(lvl) ? '#276749' : ['3','4'].includes(lvl) ? '#dd6b20' : lvl === '5' ? '#c53030' : '#718096';
+  const _dimLevelLabel = v => ({ '1':'1 (低)','2':'2 (低)','3':'3 (中)','4':'4 (中)','5':'5 (高)','無':'無','不清楚':'不清楚' }[v] || v || '—');
+  const dimRows = (ev.dimensions || []).map((d, i) =>
+    `<tr><td style="padding:5px 8px;font-size:11pt;">${i + 1}. ${esc(d.label)}</td>
+     <td style="padding:5px 8px;text-align:center;font-size:11pt;font-weight:700;color:${_pDimColor(d.level)};">${esc(_dimLevelLabel(d.level))}</td></tr>`
+  ).join('');
+  const stripHtml = s => (s || '').replace(/<[^>]*>/g, '').trim();
+  const htmlBody = `<!DOCTYPE html><html lang="zh-TW"><head><meta charset="UTF-8">
+  <title>轉銜評估 - ${esc(c.name)}</title>
+  <style>
+    body { font-family:'微軟正黑體','Microsoft JhengHei',sans-serif; font-size:11pt; margin:20mm 18mm; color:#1a1a1a; }
+    h2 { text-align:center; font-size:15pt; margin-bottom:4px; }
+    .meta { text-align:center; font-size:10pt; color:#555; margin-bottom:18px; }
+    table { width:100%; border-collapse:collapse; margin-bottom:14px; }
+    th { background:#f0f4f8; padding:6px 8px; font-size:10.5pt; text-align:left; border:1px solid #ccc; }
+    td { border:1px solid #ccc; vertical-align:top; }
+    .label { font-size:9.5pt; color:#666; margin-bottom:2px; }
+    .section { margin-bottom:14px; }
+    .desc { white-space:pre-wrap; font-size:10.5pt; border:1px solid #ccc; padding:8px; min-height:50px; }
+    @media print { body { margin:15mm 14mm; } }
+  </style></head><body>
+  <h2>國立屏東科技大學學生諮商中心 轉銜評估</h2>
+  <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)} &ensp;|&ensp; 主責：${esc(ev.counselorName || c.counselorName || '—')} &ensp;|&ensp; 填表人：${esc(ev.filledBy || '—')} &ensp;|&ensp; 填表日期：${esc(ev.filledDate || '—')}</div>
+  ${dimRows ? `<div class="section"><table><thead><tr><th style="width:80%;">向度</th><th style="width:20%;text-align:center;">風險等級</th></tr></thead><tbody>${dimRows}</tbody></table></div>` : ''}
+  <div class="section"><table><tr><th>建議</th></tr><tr><td style="padding:8px;font-weight:700;">${esc(recLabels[ev.recommendation] || ev.recommendation || '—')}</td></tr></table></div>
+  ${stripHtml(ev.mainIssue) ? `<div class="section"><div class="label" style="font-weight:700;margin-bottom:6px;">主訴問題</div><div class="desc">${stripHtml(ev.mainIssue)}</div></div>` : ''}
+  ${stripHtml(ev.intervention) ? `<div class="section"><div class="label" style="font-weight:700;margin-bottom:6px;">介入處遇</div><div class="desc">${stripHtml(ev.intervention)}</div></div>` : ''}
+  ${stripHtml(ev.transferAssessment) ? `<div class="section"><div class="label" style="font-weight:700;margin-bottom:6px;">轉銜評估</div><div class="desc">${stripHtml(ev.transferAssessment)}</div></div>` : ''}
+  <script>window.onload = () => { window.print(); }<\/script>
+  </body></html>`;
+  const win = window.open('', '_blank');
+  if (!win) { alert('請允許彈出視窗以列印。'); return; }
+  win.document.write(htmlBody);
+  win.document.close();
+}
+
+function _buildCaseTransferEvalCard(c, cid) {
+  const allEvals = (c.transferEvaluations || []);
+  const activeSem = _caseDetailActiveSem || currentSemesterPrefix();
+  const activeCount = allEvals.filter(e => !e.deletedAt && !e.replacedBy).length;
+  const historyCount = allEvals.length - activeCount;
+
+  const gradStatus = _computeGradStatus(c, activeSem);
+  const gradDecision = _getGradTransferDecision(cid, activeSem);
+  let gradBadgeHtml = '';
+  if (gradStatus?.isOverdue) {
+    gradBadgeHtml = `<span class="grad-badge grad-overdue" data-tip="已就讀 ${gradStatus.yearsAttended} 年，預計 ${gradStatus.progYears} 年畢業（${gradStatus.typeChar} 類學制）。">${gradStatus.degreeName}${gradStatus.yearsAttended}年，延畢中</span>`;
+  } else if (gradStatus?.isAboutToGraduate) {
+    gradBadgeHtml = `<span class="grad-badge grad-near" data-tip="本學年（下學期）預計畢業，需評估轉銜需求。">預作畢業生</span>`;
+  }
+  const decisionLabelMap = { noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）', untraceable:'年久不可考' };
+  const decisionLabel = gradDecision ? (decisionLabelMap[gradDecision.status] || '') : '';
+  const decisionBadge = decisionLabel ? `<span style="font-size:.75rem;padding:2px 8px;border-radius:10px;background:#e9d8fd;color:#553c9a;border:1px solid #b794f4;">${decisionLabel}</span>` : '';
+
+  const recColors = { transfer:'#c0392b', discuss:'#7d6608', noTransfer:'#1d6a3a' };
+  const recBgs   = { transfer:'#fde8e8', discuss:'#fef9e7', noTransfer:'#d5f5e3' };
+  const recLabels = { transfer:'建議轉銜', discuss:'建議討論', noTransfer:'建議不需轉銜' };
+  const _dvBadge = lvl => ['1','2'].includes(lvl) ? 'badge-green' : ['3','4'].includes(lvl) ? 'badge-orange' : '';
+  const _dvStyle = lvl => lvl === '5' ? 'background:#fde8e8;color:#c0392b;border-color:#fc8181;' : (lvl === '無' || lvl === '不清楚') ? 'background:#f0f4f8;color:#718096;border-color:#cbd5e0;' : '';
+
+  const sortedEvals = [...allEvals].sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  let firstActive = true;
+  const cards = sortedEvals.map(ev => {
+    const teId = ev.teId || '';
+    const safeId = 'teh_' + teId.replace(/[^a-zA-Z0-9_]/g, '_');
+    const isDeleted  = !!ev.deletedAt;
+    const isReplaced = !!ev.replacedBy;
+    const isActive   = !isDeleted && !isReplaced;
+    const isOpen     = isActive && firstActive;
+    if (isActive) firstActive = false;
+
+    const semBadge = ev.semester
+      ? `<span style="font-size:.72rem;background:#ebf8ff;color:#2b6cb0;border:1px solid #bee3f8;border-radius:4px;padding:1px 5px;white-space:nowrap;">${escHtml(semesterLabel(ev.semester))}</span>`
+      : '';
+
+    let statusTag;
+    if (isDeleted) {
+      statusTag = `<span style="font-size:.72rem;background:#fde8e8;color:#c53030;border-radius:4px;padding:1px 5px;white-space:nowrap;">已刪除 ${(ev.deletedAt || '').slice(0, 10)}</span>`;
+    } else if (isReplaced) {
+      statusTag = `<span style="font-size:.72rem;background:#e2e8f0;color:#718096;border-radius:4px;padding:1px 5px;white-space:nowrap;">已取代</span>`;
+    } else {
+      const rc = ev.recommendation;
+      statusTag = `<span style="font-size:.75rem;padding:2px 8px;border-radius:10px;background:${recBgs[rc]||'#f0f4f8'};color:${recColors[rc]||'#718096'};white-space:nowrap;">${recLabels[rc] || '—'}</span>`;
+    }
+
+    let actionBtns = '';
+    if (isDeleted && teId) {
+      actionBtns = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();restoreTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">還原</button>`;
+    } else if (isActive && teId) {
+      actionBtns = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">列印</button>
+<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();openTransferEvalForm('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">編輯</button>
+<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();softDeleteTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;color:#c53030;border-color:#fc8181;">刪除</button>`;
+    }
+
+    const dimRows = (ev.dimensions || []).map(d =>
+      `<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f0f4f8;font-size:.84rem;">
+        <span style="color:#4a5568;">${escHtml(d.label)}</span>
+        <span class="badge ${_dvBadge(d.level)}" style="${_dvStyle(d.level)}">${escHtml(d.level)}</span>
+      </div>`).join('');
+
+    const metaRow = (ev.filledDate || ev.sourceEvalDate || ev.counselorName)
+      ? `<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:.82rem;color:#718096;">
+          ${ev.filledDate ? `<span>填表日期：${escHtml(ev.filledDate)}</span>` : ''}
+          ${ev.sourceEvalDate ? `<span>來源評估日期：${escHtml(ev.sourceEvalDate)}</span>` : ''}
+          ${ev.counselorName ? `<span>主責：${escHtml(ev.counselorName)}</span>` : ''}
+        </div>` : '';
+
+    const body = `
+      ${dimRows ? `<div style="margin-bottom:10px;">${dimRows}</div>` : ''}
+      ${ev.mainIssue ? `<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">主訴問題</div><div style="font-size:.88rem;">${renderMaybeHtml(ev.mainIssue)}</div></div>` : ''}
+      ${ev.intervention ? `<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">介入處遇</div><div style="font-size:.88rem;">${renderMaybeHtml(ev.intervention)}</div></div>` : ''}
+      ${ev.transferAssessment ? `<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">轉銜評估</div><div style="font-size:.88rem;">${renderMaybeHtml(ev.transferAssessment)}</div></div>` : ''}
+      ${metaRow}`;
+
+    const opacity      = isActive ? '' : 'opacity:.65;';
+    const borderColor  = isActive ? '#9ae6b4' : '#e2e8f0';
+    const bannerBg     = isActive ? '#f0fff4' : '#f9fafb';
+
+    return `<div style="border:1px solid ${borderColor};border-radius:8px;margin-bottom:8px;overflow:hidden;${opacity}">
+      <div style="display:flex;align-items:center;gap:6px;padding:8px 12px;background:${bannerBg};cursor:pointer;flex-wrap:wrap;" onclick="toggleTEHCard('${safeId}')">
+        <span style="font-size:.72rem;font-weight:600;background:#c6f6d5;color:#1a7341;border:1px solid #9ae6b4;border-radius:4px;padding:1px 6px;white-space:nowrap;flex-shrink:0;">轉銜評估</span>
+        ${semBadge}
+        <span style="font-weight:600;font-size:.86rem;flex:1;min-width:0;">${escHtml(ev.filledBy || '—')}</span>
+        <span style="font-size:.78rem;color:#718096;white-space:nowrap;">${escHtml(ev.filledDate || '')}</span>
+        ${statusTag}
+        ${actionBtns}
+        <span id="teh-icon-${safeId}">${isOpen ? '▲' : '▶'}</span>
+      </div>
+      <div id="teh-body-${safeId}" style="${isOpen ? '' : 'display:none;'}padding:10px 14px;">${body}</div>
+    </div>`;
+  }).join('');
+
+  const countLabel = historyCount > 0
+    ? `轉銜評估（${activeCount} 筆，含 ${historyCount} 筆歷史）`
+    : `轉銜評估（${activeCount} 筆）`;
+  const badges = (gradBadgeHtml || decisionBadge)
+    ? `<span style="display:inline-flex;gap:6px;align-items:center;margin-left:8px;">${gradBadgeHtml}${decisionBadge}</span>`
+    : '';
+  const emptyMsg = allEvals.length === 0
+    ? '<div style="color:#718096;font-size:.88rem;padding:4px 0;">尚無轉銜評估紀錄</div>'
+    : '';
+
+  return `<div class="form-section section-collapsible collapsed" id="cs-te-history">
+    <div class="form-section-title" style="margin-bottom:0;cursor:pointer;" onclick="toggleSection('cs-te-history')">
+      <span style="display:inline-flex;align-items:center;gap:6px;flex:1;min-width:0;">${escHtml(countLabel)}${badges}</span>
+      <span style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();openTransferEvalForm('${cid}',null)" style="font-size:.78rem;padding:3px 10px;white-space:nowrap;">＋ 新增轉銜評估</button>
+        <span class="toggle-icon">▲</span>
+      </span>
+    </div>
+    <div class="section-body" style="padding-top:12px;">${emptyMsg}${cards}</div>
+  </div>`;
+}
+
 function openTransferEvalForm(caseId, teId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
@@ -21892,9 +22063,16 @@ async function saveTransferEval(caseId, teIdOrNew) {
     evalData.createdAt = now; evalData.createdBy = currentUser?.email;
     c.transferEvaluations.push(evalData);
   } else {
+    const newTeId = `te_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
     const idx = c.transferEvaluations.findIndex(e => e.teId === teIdOrNew);
-    if (idx >= 0) c.transferEvaluations[idx] = { ...c.transferEvaluations[idx], ...evalData };
-    else c.transferEvaluations.push({ ...evalData, teId: teIdOrNew, createdAt: now });
+    if (idx >= 0) {
+      c.transferEvaluations[idx] = { ...c.transferEvaluations[idx], replacedBy: newTeId, replacedAt: now };
+      evalData.teId = newTeId;
+      evalData.createdAt = now; evalData.createdBy = currentUser?.email;
+      c.transferEvaluations.push(evalData);
+    } else {
+      c.transferEvaluations.push({ ...evalData, teId: teIdOrNew, createdAt: now });
+    }
   }
   c.updatedAt = now;
   document.getElementById('te-form-modal')?.remove();
