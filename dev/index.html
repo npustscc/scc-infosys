@@ -1069,7 +1069,7 @@
 
     <div class="sidebar-section" id="nav-admin-section" style="display:none;">
       <h3>系統管理</h3>
-      <div class="nav-item" data-nav-id="page-admin" onclick="showPage('page-admin', this); renderAdminUsers()">
+      <div class="nav-item" data-nav-id="page-admin" onclick="showPage('page-admin', this); renderAdminUsers(); renderAdminDegreeMapping()">
         <span class="icon">⚙️</span> 使用者管理 <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" data-nav-id="page-recycle" onclick="showPage('page-recycle', this); renderRecycleBin()">
@@ -1291,6 +1291,14 @@
             <button class="btn btn-secondary" onclick="document.getElementById('case-delete-q').value='';searchCaseForDelete('')">清除</button>
           </div>
           <div id="case-delete-results"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:20px;">
+        <div class="card-header"><h3>學制學號前綴設定</h3></div>
+        <div style="padding:16px 20px;">
+          <p style="font-size:.88rem;color:#718096;margin-bottom:14px;">設定學號英文前綴與學制的對應關係。此設定影響畢業轉銜偵測（延畢生／預作畢業生判斷）及 Excel 匯入時的學制識別。設定儲存於 <code>config.json</code>。</p>
+          <div id="admin-degree-wrap"><p style="font-size:.85rem;color:#a0aec0;">讀取設定後顯示…</p></div>
         </div>
       </div>
     </div>
@@ -3825,7 +3833,7 @@ function resolveUserRole() {
   document.getElementById('nav-transfer-item').style.display = (isAdmin || isTransferContact) ? '' : 'none';
 
   // 填充管理員頁使用者列表
-  if (isAdmin && configData && configData.users) renderAdminUsers();
+  if (isAdmin && configData && configData.users) { renderAdminUsers(); renderAdminDegreeMapping(); }
 }
 
 // ══════════════════════════════════════════════
@@ -13344,6 +13352,12 @@ async function saveCase() {
     return;
   }
 
+  // 學號前綴未知時攔截，讓使用者定義學制
+  if (studentId) {
+    const _prefixOk = await _ensureUnknownPrefixes([studentId]);
+    if (!_prefixOk) return;
+  }
+
   document.getElementById('btn-save-case').disabled = true;
   showLoading('儲存個案…');
 
@@ -21351,14 +21365,147 @@ function fillTransferFromCase(caseId) {
 //  畢業轉銜管理模組（Graduate-Transition Module）
 // ══════════════════════════════════════════════════════════════════
 
+// ── 學制學號前綴動態設定 ────────────────────────────
+function _getDegreeMapping() {
+  const defaults = { bachelor: ['B','E','F','K'], master: ['M','N'], phd: ['P'] };
+  if (!configData || !configData.degreeMapping) return defaults;
+  return {
+    bachelor: configData.degreeMapping.bachelor || defaults.bachelor,
+    master:   configData.degreeMapping.master   || defaults.master,
+    phd:      configData.degreeMapping.phd      || defaults.phd,
+  };
+}
+
+function _buildDegreeMaps() {
+  const dm = _getDegreeMapping();
+  const progMap = {}, degreeMap = {};
+  (dm.bachelor || []).forEach(c => { progMap[c.toUpperCase()] = 4; degreeMap[c.toUpperCase()] = '學士'; });
+  (dm.master   || []).forEach(c => { progMap[c.toUpperCase()] = 2; degreeMap[c.toUpperCase()] = '碩士'; });
+  (dm.phd      || []).forEach(c => { progMap[c.toUpperCase()] = 3; degreeMap[c.toUpperCase()] = '博士'; });
+  return { progMap, degreeMap };
+}
+
+async function _ensureKnownPrefix(typeChar) {
+  const dm = _getDegreeMapping();
+  const allKnown = [...(dm.bachelor||[]), ...(dm.master||[]), ...(dm.phd||[])].map(c => c.toUpperCase());
+  if (allKnown.includes(typeChar.toUpperCase())) return true;
+  return new Promise(resolve => {
+    const prev = document.getElementById('unknown-prefix-modal');
+    if (prev) prev.remove();
+    const modal = document.createElement('div');
+    modal.id = 'unknown-prefix-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center;';
+    modal.innerHTML = `<div style="background:#fff;border-radius:12px;padding:28px 32px;max-width:440px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.3);">
+      <h3 style="margin:0 0 12px;font-size:1.05rem;">⚠️ 偵測到未定義的學號前綴</h3>
+      <p style="color:#4a5568;font-size:.9rem;margin-bottom:18px;">偵測到未定義的學號前綴「<strong>${escHtml(typeChar)}</strong>」。<br>請為其指定所屬學制以繼續操作：</p>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:22px;">
+        <label class="upm-opt" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 14px;border:2px solid #e2e8f0;border-radius:8px;">
+          <input type="radio" name="upm-degree" value="bachelor" style="accent-color:#3498db;"> <span><strong>學士班</strong>（4年制）</span>
+        </label>
+        <label class="upm-opt" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 14px;border:2px solid #e2e8f0;border-radius:8px;">
+          <input type="radio" name="upm-degree" value="master" style="accent-color:#3498db;"> <span><strong>碩士班</strong>（2年制）</span>
+        </label>
+        <label class="upm-opt" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 14px;border:2px solid #e2e8f0;border-radius:8px;">
+          <input type="radio" name="upm-degree" value="phd" style="accent-color:#3498db;"> <span><strong>博士班</strong>（3年制）</span>
+        </label>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button id="upm-cancel" class="btn btn-secondary">取消操作</button>
+        <button id="upm-confirm" class="btn btn-primary">確認並繼續</button>
+      </div>
+    </div>`;
+    document.body.appendChild(modal);
+    modal.querySelectorAll('input[name="upm-degree"]').forEach(radio => {
+      radio.addEventListener('change', () => {
+        modal.querySelectorAll('.upm-opt').forEach(l => l.style.borderColor = '#e2e8f0');
+        radio.closest('.upm-opt').style.borderColor = '#3498db';
+      });
+    });
+    document.getElementById('upm-cancel').onclick = () => { modal.remove(); resolve(false); };
+    document.getElementById('upm-confirm').onclick = async () => {
+      const chosen = modal.querySelector('input[name="upm-degree"]:checked')?.value;
+      if (!chosen) { alert('請先選擇學制。'); return; }
+      const tc = typeChar.toUpperCase();
+      if (configData) {
+        if (!configData.degreeMapping) configData.degreeMapping = { bachelor: ['B','E','F','K'], master: ['M','N'], phd: ['P'] };
+        if (!configData.degreeMapping[chosen]) configData.degreeMapping[chosen] = [];
+        if (!configData.degreeMapping[chosen].includes(tc)) configData.degreeMapping[chosen].push(tc);
+        try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (_) {}
+        if (document.getElementById('admin-degree-wrap')) renderAdminDegreeMapping();
+      }
+      modal.remove(); resolve(true);
+    };
+  });
+}
+
+async function _ensureUnknownPrefixes(sids) {
+  const seen = new Set();
+  for (const sid of (sids || [])) {
+    if (!sid || sid.length < 2) continue;
+    const tc = sid[0].toUpperCase();
+    if (seen.has(tc) || !/^[A-Z]$/.test(tc)) continue;
+    seen.add(tc);
+    const ok = await _ensureKnownPrefix(tc);
+    if (!ok) return false;
+  }
+  return true;
+}
+
+function renderAdminDegreeMapping() {
+  const el = document.getElementById('admin-degree-wrap');
+  if (!el) return;
+  const dm = _getDegreeMapping();
+  const sections = [
+    { key: 'bachelor', label: '學士班', years: 4, color: '#2b6cb0' },
+    { key: 'master',   label: '碩士班', years: 2, color: '#6b46c1' },
+    { key: 'phd',      label: '博士班', years: 3, color: '#c05621' },
+  ];
+  el.innerHTML = sections.map(s => {
+    const chips = (dm[s.key] || []).map(c =>
+      `<span style="display:inline-flex;align-items:center;gap:2px;background:${s.color}18;color:${s.color};border:1px solid ${s.color}50;border-radius:12px;padding:2px 8px 2px 10px;font-size:.85rem;font-weight:700;">${escHtml(c)}<button onclick="_adminRemovePrefix('${escHtml(s.key)}','${escHtml(c)}')" title="移除" style="background:none;border:none;cursor:pointer;color:${s.color};font-size:1rem;line-height:1;padding:0 0 0 3px;margin:0;">×</button></span>`
+    ).join(' ');
+    return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 0;border-bottom:1px solid #f0f4f8;">
+      <span style="font-weight:600;font-size:.88rem;width:92px;color:${s.color};flex-shrink:0;">${escHtml(s.label)}（${s.years}年）</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;">
+        ${chips || '<span style="font-size:.82rem;color:#a0aec0;">（尚未設定）</span>'}
+      </div>
+      <div style="display:inline-flex;gap:4px;align-items:center;flex-shrink:0;">
+        <input type="text" id="dm-input-${s.key}" maxlength="1" placeholder="字母" style="width:44px;padding:4px 6px;border:1px solid #cbd5e0;border-radius:6px;font-size:.85rem;text-align:center;text-transform:uppercase;" oninput="this.value=this.value.toUpperCase()">
+        <button class="btn btn-secondary btn-sm" onclick="_adminAddPrefix('${escHtml(s.key)}')">新增</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function _adminAddPrefix(degreeKey) {
+  const input = document.getElementById(`dm-input-${degreeKey}`);
+  const c = (input?.value || '').trim().toUpperCase();
+  if (!c || !/^[A-Z]$/.test(c)) { alert('請輸入單一英文字母。'); return; }
+  const dm = _getDegreeMapping();
+  const allChars = [...(dm.bachelor||[]), ...(dm.master||[]), ...(dm.phd||[])].map(x => x.toUpperCase());
+  if (allChars.includes(c)) { alert(`字母「${c}」已存在於其他學制的對應中。`); return; }
+  if (!configData.degreeMapping) configData.degreeMapping = { bachelor: ['B','E','F','K'], master: ['M','N'], phd: ['P'] };
+  if (!configData.degreeMapping[degreeKey]) configData.degreeMapping[degreeKey] = [];
+  configData.degreeMapping[degreeKey].push(c);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); if (input) input.value = ''; renderAdminDegreeMapping(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+
+async function _adminRemovePrefix(degreeKey, char) {
+  if (!confirm(`確認移除學號前綴「${char}」？移除後以此字母開頭的學號將無法判斷學制。`)) return;
+  if (!configData?.degreeMapping) return;
+  if (configData.degreeMapping[degreeKey]) configData.degreeMapping[degreeKey] = configData.degreeMapping[degreeKey].filter(c => c !== char);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminDegreeMapping(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+
 function _computeGradStatus(c, curSemStr) {
   const sid = (c.studentId || '').trim();
   if (sid.length < 4) return null;
   const typeChar = sid[0].toUpperCase();
   const digits = sid.slice(1);
   if (digits.length < 3 || !/^\d/.test(digits)) return null;
-  const progMap = { B:4, E:4, F:4, K:4, M:2, N:2, P:3 };
-  const degreeMap = { B:'學士', E:'學士', F:'學士', K:'學士', M:'碩士', N:'碩士', P:'博士' };
+  const { progMap, degreeMap } = _buildDegreeMaps();
   const progYears = progMap[typeChar];
   if (!progYears) return null;
   const degreeName = degreeMap[typeChar] || '';
@@ -21993,6 +22140,9 @@ async function handleImportGradTransferExcel(input) {
     const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, dateNF: 'yyyy-mm-dd' });
     const rows = raw.map(r => Array.isArray(r) ? r.map(c => (c == null ? '' : String(c).trim())) : []);
     if (rows.length < 2) { alert('找不到資料列'); renderTransferPage(); return; }
+    const _sidList = rows.slice(1).map(r => r[1] || '').filter(Boolean);
+    const _prefixOk = await _ensureUnknownPrefixes(_sidList);
+    if (!_prefixOk) { renderTransferPage(); return; }
     await showGradTransferImportPreview(rows, curSem);
   } catch (e) { alert('解析失敗：' + e.message); renderTransferPage(); }
 }
