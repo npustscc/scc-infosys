@@ -21739,7 +21739,7 @@ function openTransferEvalForm(caseId, teId) {
   const activeSem = _caseDetailActiveSem || currentSemesterPrefix();
   const existing = teId ? (c.transferEvaluations || []).find(e => e.teId === teId) : null;
   const isNew = !existing;
-  let autoFillHtml = '', autoDims = [], autoIssue = '';
+  let autoFillHtml = '', autoDims = [], autoIssue = '', autoLight = '';
   if (isNew) {
     const allEvals = [...(c.semesterEvaluations || [])].filter(e => !e.deletedAt && !e.replacedBy);
     if (!allEvals.length && c.closureEvaluation) allEvals.push({ ...c.closureEvaluation });
@@ -21748,19 +21748,44 @@ function openTransferEvalForm(caseId, teId) {
     if (latest) {
       const srcDate = latest.evaluatedAt ? latest.evaluatedAt.slice(0,10) : '—';
       autoDims = latest.dimensions || [];
+      autoLight = latest.light || latest.statusLight || '';
       const parts = [latest.chiefComplaint, latest.treatmentProvided, latest.description].filter(Boolean);
       autoIssue = parts.join('\n\n');
       autoFillHtml = `<div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:.88rem;color:#276749;">
-        ✅ 已自動帶入 ${escHtml(srcDate)} 的${latest.type==='closure'?'結案':'學期'}評估資料（八向度指標 + 主訴問題合併帶入）
+        ✅ 已自動帶入 ${escHtml(srcDate)} 的${latest.type==='closure'?'結案':'學期'}評估資料（八向度指標、燈號與主訴問題合併帶入）
       </div>`;
     }
   }
   const dimSource = existing?.dimensions || autoDims;
-  const dimHtml = dimSource.length
-    ? `<div style="margin-bottom:14px;padding:10px 14px;background:#f8fafc;border-radius:8px;">
-        <div style="font-size:.78rem;color:#718096;margin-bottom:6px;">帶入之八向度指標（供參考，不可修改）：</div>
-        <div style="display:flex;flex-wrap:wrap;gap:4px;">${dimSource.map(d=>`<span class="badge" style="font-size:.75rem;">${escHtml(d.label)}：${escHtml(d.level)}</span>`).join('')}</div>
-      </div>` : '';
+  const lightSource = existing?.light || autoLight;
+  const lightColors = {'紅燈':'#c53030','橙燈':'#dd6b20','黃燈':'#b7791f','綠燈':'#276749'};
+  // ── 八向度（可編輯 radio）──
+  const dimsHtml = `<div style="margin-bottom:18px;">
+    <div style="font-weight:600;font-size:.92rem;margin-bottom:10px;color:#2d3748;">八向度風險評估</div>
+    ${(CLOSURE_DIMS||[]).map((label, i) => {
+      const cur = dimSource.find(d => d.label === label)?.level || '';
+      return `<div style="margin-bottom:8px;padding:8px 12px;background:#f8fafc;border-radius:6px;">
+        <div style="font-size:.8rem;font-weight:500;color:#4a5568;margin-bottom:5px;">${i+1}. ${escHtml(label)}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;">${['無','1','2','3','4','5','不清楚'].map(v =>
+          `<label style="display:inline-flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer;white-space:nowrap;"><input type="radio" name="te-dim-${i}" value="${escHtml(v)}" ${cur===v?'checked':''}> ${escHtml(v)}</label>`
+        ).join('')}</div>
+      </div>`;
+    }).join('')}
+  </div>`;
+  // ── 燈號 ──
+  const lightHtml = `<div style="margin-bottom:18px;padding:12px 14px;background:#f8fafc;border-radius:8px;">
+    <div style="font-weight:600;font-size:.92rem;margin-bottom:8px;color:#2d3748;">燈號</div>
+    <div style="display:flex;flex-wrap:wrap;gap:16px;">
+      ${['紅燈','橙燈','黃燈','綠燈'].map(l =>
+        `<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;">
+          <input type="radio" name="te-light" value="${l}" ${lightSource===l?'checked':''}>
+          <span style="color:${lightColors[l]};font-weight:600;font-size:.9rem;">${l}</span>
+        </label>`
+      ).join('')}
+    </div>
+  </div>`;
+  // ── 富文字工具列（共用）──
+  const rtTb = () => `<div class="rt-toolbar" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:6px;border:1px solid #cbd5e0;border-radius:6px;background:#f7fafc;padding:4px 8px;"><span class="rt-toolbar-btns" style="gap:4px;flex-wrap:wrap;align-items:center;"><button type="button" class="rt-btn" data-cmd="bold" title="粗體" style="font-weight:bold;min-width:32px;">B</button><button type="button" class="rt-btn" data-cmd="italic" title="斜體" style="font-style:italic;min-width:32px;">I</button><button type="button" class="rt-btn" data-cmd="underline" title="底線" style="text-decoration:underline;min-width:32px;">U</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtCycleUL" title="項目符號" style="min-width:32px;">•</button><button type="button" class="rt-btn" data-cmd="rtCycleOL" title="編號列表" style="min-width:32px;">1.</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtIndent" title="縮排" style="min-width:32px;">⇥</button><button type="button" class="rt-btn" data-cmd="removeFormat" title="清除格式" style="min-width:32px;font-size:.78rem;">清</button></span></div>`;
   const rO = (v, l) => `<label style="margin-right:12px;display:inline-flex;align-items:center;gap:4px;"><input type="radio" name="te-rec" value="${v}" ${(existing?.recommendation||'') === v ? 'checked' : ''}> ${l}</label>`;
   const currentFilledByEmail = currentUser?.email || '';
   const currentFilledByName = configData?.users?.[currentFilledByEmail]?.name || currentUser?.name || '';
@@ -21774,18 +21799,22 @@ function openTransferEvalForm(caseId, teId) {
           <button onclick="document.getElementById('te-form-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
         </div>
         ${autoFillHtml}
-        ${dimHtml}
+        ${dimsHtml}
+        ${lightHtml}
         <div style="margin-bottom:14px;">
           <label class="field-label">主訴問題 <span class="req">*</span></label>
-          <textarea class="field-input" id="te-main-issue" rows="5" style="resize:vertical;" placeholder="請描述個案主要求助問題（已合併帶入個案主訴問題與已提供之輔導處遇）…">${escHtml(existing?.mainIssue || autoIssue)}</textarea>
+          ${rtTb()}
+          <div id="te-main-issue" class="rt-editor field-input" contenteditable="true" style="resize:vertical;min-height:120px;overflow:auto;line-height:1.6;"></div>
         </div>
         <div style="margin-bottom:14px;">
           <label class="field-label">介入處遇 <span class="req">*</span></label>
-          <textarea class="field-input" id="te-intervention" rows="4" style="resize:vertical;" placeholder="請描述本次開案期間所提供的輔導方式與處遇…">${escHtml(existing?.intervention || '')}</textarea>
+          ${rtTb()}
+          <div id="te-intervention" class="rt-editor field-input" contenteditable="true" style="resize:vertical;min-height:100px;overflow:auto;line-height:1.6;"></div>
         </div>
         <div style="margin-bottom:14px;">
           <label class="field-label">轉銜評估 <span class="req">*</span></label>
-          <textarea class="field-input" id="te-assessment" rows="4" style="resize:vertical;" placeholder="請描述對個案轉銜需求的專業評估意見…">${escHtml(existing?.transferAssessment || '')}</textarea>
+          ${rtTb()}
+          <div id="te-assessment" class="rt-editor field-input" contenteditable="true" style="resize:vertical;min-height:100px;overflow:auto;line-height:1.6;"></div>
         </div>
         <div style="padding:14px;background:#f8fafc;border-radius:8px;margin-bottom:16px;">
           <div style="font-weight:600;margin-bottom:8px;">建議 <span class="req">*</span></div>
@@ -21803,6 +21832,9 @@ function openTransferEvalForm(caseId, teId) {
       </div>
     </div>`);
   setTimeout(() => {
+    setRichTextValue('te-main-issue',   existing?.mainIssue   || autoIssue);
+    setRichTextValue('te-intervention', existing?.intervention || '');
+    setRichTextValue('te-assessment',   existing?.transferAssessment || '');
     const byEl = document.getElementById('te-filled-by');
     if (byEl) {
       const existingFilledBy = existing?.filledBy || '';
@@ -21820,34 +21852,44 @@ function openTransferEvalForm(caseId, teId) {
 async function saveTransferEval(caseId, teIdOrNew) {
   const gV = id => (document.getElementById(id)?.value || '').trim();
   const gR = n => document.querySelector(`[name="${n}"]:checked`)?.value || '';
-  const mainIssue = gV('te-main-issue');
-  const intervention = gV('te-intervention');
-  const assessment = gV('te-assessment');
-  const rec = gR('te-rec');
-  const filledDate = gV('te-filled-date');
+  const _stripRt = h => (h||'').replace(/<[^>]*>/g,'').trim();
+  const mainIssue    = getRichTextValue('te-main-issue');
+  const intervention = getRichTextValue('te-intervention');
+  const assessment   = getRichTextValue('te-assessment');
+  const rec          = gR('te-rec');
+  const light        = gR('te-light');
+  const filledDate   = gV('te-filled-date');
   const counselorEmail = gV('te-counselor');
-  const filledByRaw = gV('te-filled-by');
-  if (!mainIssue || !intervention || !assessment) { alert('主訴問題、介入處遇、轉銜評估皆為必填。'); return; }
+  const filledByRaw  = gV('te-filled-by');
+  if (!_stripRt(mainIssue) || !_stripRt(intervention) || !_stripRt(assessment)) {
+    alert('主訴問題、介入處遇、轉銜評估皆為必填。'); return;
+  }
   if (!rec) { alert('請選擇建議選項。'); return; }
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
   const activeSem = _caseDetailActiveSem || currentSemesterPrefix();
   if (!c.transferEvaluations) c.transferEvaluations = [];
   const now = new Date().toISOString();
-  let dimensions = [], sourceEvalDate = '';
+  // 從表單讀取八向度（已選的項目才存入）
+  const dimensions = (CLOSURE_DIMS||[]).map((label, i) => {
+    const level = document.querySelector(`[name="te-dim-${i}"]:checked`)?.value || '';
+    return { label, level };
+  }).filter(d => d.level);
+  // sourceEvalDate：新增時取自最新評估，編輯時沿用原值
+  let sourceEvalDate = '';
   if (teIdOrNew === '__new__') {
     const allEvals = [...(c.semesterEvaluations || [])].filter(e => !e.deletedAt && !e.replacedBy);
     if (!allEvals.length && c.closureEvaluation) allEvals.push({ ...c.closureEvaluation });
     allEvals.sort((a, b) => (b.evaluatedAt || '').localeCompare(a.evaluatedAt || ''));
-    if (allEvals[0]) { dimensions = allEvals[0].dimensions || []; sourceEvalDate = allEvals[0].evaluatedAt?.slice(0,10) || ''; }
+    if (allEvals[0]) sourceEvalDate = allEvals[0].evaluatedAt?.slice(0,10) || '';
   } else {
     const ex = c.transferEvaluations.find(e => e.teId === teIdOrNew);
-    if (ex) { dimensions = ex.dimensions || []; sourceEvalDate = ex.sourceEvalDate || ''; }
+    if (ex) sourceEvalDate = ex.sourceEvalDate || '';
   }
   const counselorName = counselorEmail ? (configData?.users?.[counselorEmail]?.name || counselorEmail) : (c.counselorName || '');
-  const filledByName = filledByRaw || configData?.users?.[currentUser?.email]?.name || currentUser?.name || '';
+  const filledByName  = filledByRaw || configData?.users?.[currentUser?.email]?.name || currentUser?.name || '';
   const evalData = { mainIssue, intervention, transferAssessment: assessment, recommendation: rec,
-    filledBy: filledByName, filledDate, counselorEmail, counselorName,
+    light, filledBy: filledByName, filledDate, counselorEmail, counselorName,
     semester: activeSem, dimensions, sourceEvalDate, updatedAt: now };
   if (teIdOrNew === '__new__') {
     evalData.teId = `te_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
