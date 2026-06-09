@@ -21807,10 +21807,11 @@ function _renderGradTransferTab() {
     </label>
   </div>`;
   const actionBar = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
-    <label style="cursor:pointer;" data-tip="CSV 欄位：姓名、學號、評估會議、校級會議轉銜評估結果">
-      <input type="file" accept=".csv" style="display:none" onchange="handleImportGradTransferCSV(this)">
-      <span class="btn btn-secondary btn-sm">📥 匯入校級評估結果 (CSV)</span>
+    <label style="cursor:pointer;" data-tip="Excel 欄位（固定6欄）：姓名、學號、校級評估會議日期、校級會議轉銜評估結果、結案會議日期、結案會議評估結果">
+      <input type="file" accept=".xlsx,.xls" style="display:none" onchange="handleImportGradTransferExcel(this)">
+      <span class="btn btn-secondary btn-sm">📥 匯入校級評估結果 (Excel)</span>
     </label>
+    <button class="btn btn-secondary btn-sm" onclick="downloadGradTransferExcelTemplate()" data-tip="下載校級評估結果 Excel 範本（6欄固定格式，填寫後直接匯入）">📄 下載畢業轉銜 Excel 範本</button>
     <label style="cursor:pointer;" data-tip="匯入歷史已討論名單 CSV（標記為不需轉銜），匯入後不再出現在待討論清單">
       <input type="file" accept=".csv" style="display:none" onchange="handleImportHistoryTransferCSV(this)">
       <span class="btn btn-secondary btn-sm">📋 匯入歷史名單（已討論）</span>
@@ -21970,22 +21971,25 @@ function parseTaiwanDate(str) {
   return s; // 無法識別則原樣保留
 }
 
-async function handleImportGradTransferCSV(input) {
+async function handleImportGradTransferExcel(input) {
   if (!input.files?.length) return;
   const file = input.files[0]; input.value = '';
   const curSem = currentSemesterPrefix();
   document.getElementById('transfer-body').innerHTML = '<div style="padding:20px;color:#718096;">解析中…</div>';
   try {
-    const text = await file.text();
-    const rows = text.split(/\r?\n/).map(r => {
-      const cells = []; let inQ = false, cur = '';
-      for (const ch of r) {
-        if (ch === '"') { inQ = !inQ; }
-        else if (ch === ',' && !inQ) { cells.push(cur.trim()); cur = ''; }
-        else cur += ch;
-      }
-      cells.push(cur.trim()); return cells;
-    });
+    if (!window.XLSX) {
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+        s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
+        document.head.appendChild(s);
+      });
+    }
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, dateNF: 'yyyy-mm-dd' });
+    const rows = raw.map(r => Array.isArray(r) ? r.map(c => (c == null ? '' : String(c).trim())) : []);
     if (rows.length < 2) { alert('找不到資料列'); renderTransferPage(); return; }
     await showGradTransferImportPreview(rows, curSem);
   } catch (e) { alert('解析失敗：' + e.message); renderTransferPage(); }
@@ -22368,25 +22372,33 @@ function _confirmLinkRecord(recId) {
   (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('連結未歸屬轉銜紀錄', cid, null, `recId:${recId}`); } catch(e) { bgJobFail(jobId, e.message); } })();
 }
 
-function downloadGradTransferCSVTemplate() {
-  const bom = '﻿';
-  const lines = [
-    '"姓名","學號","校級評估會議日期","校級會議轉銜評估結果","結案會議日期","結案會議評估結果"',
-    '"王小明","B11202001","2025-03-15","建議轉銜","2025-09-10","建議結案"',
-    '"李大華","M11230002","2025-03-15","不建議轉銜","",""',
-    '"陳小花","B11002003","2025-03-15","","2025-09-10","不建議結案"',
+async function downloadGradTransferExcelTemplate() {
+  if (!window.XLSX) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+      s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
+      document.head.appendChild(s);
+    });
+  }
+  const headers = ['姓名', '學號', '校級評估會議日期', '校級會議轉銜評估結果', '結案會議日期', '結案會議評估結果'];
+  const examples = [
+    ['王小明', 'B11202001', '2025-03-15', '建議轉銜', '2025-09-10', '建議結案'],
+    ['李大華', 'M11230002', '2025-03-15', '不建議轉銜', '', ''],
+    ['陳小花', 'B11002003', '2025-03-15', '', '2025-09-10', '不建議結案'],
   ];
-  const blob = new Blob([bom + lines.join('\n')], { type:'text/csv;charset=utf-8;' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob); a.download = '校級轉銜評估結果匯入範本.csv'; a.click();
-  URL.revokeObjectURL(a.href);
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...examples]);
+  ws['!cols'] = [10, 12, 18, 22, 14, 20].map(wch => ({ wch }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '校級評估結果');
+  XLSX.writeFile(wb, '校級轉銜評估結果匯入範本.xlsx');
 }
 
 // ══════════════════════════════════════════════
 function renderTransferPage() {
+  if (window._transferTab === 'outgoing') window._transferTab = 'incoming';
   const tab = window._transferTab || 'graduation';
   const tsf = window._transferStatusFilter || 'all';
-  const outgoing = transferData.filter(r => r.type === 'outgoing');
   const incoming = transferData.filter(r => r.type === 'incoming');
   const curSem = currentSemesterPrefix();
   const gradCount = casesData.filter(c => {
@@ -22397,10 +22409,8 @@ function renderTransferPage() {
   const unassignedCount = transferData.filter(r => r.type === 'graduation' && !r.caseId).length;
   const tabBtn = (id, label, count, warn) =>
     `<button onclick="window._transferTab='${id}';window._transferStatusFilter='all';renderTransferPage()" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:${tab===id?'700':'400'};background:${tab===id?'#3498db':(warn&&count>0?'#fff7ed':'#f0f4f8')};color:${tab===id?'#fff':(warn&&count>0?'#9c4221':'#4a5568')};${warn&&count>0?'border:1px solid #fb923c;':''}">${label}（${count}）</button>`;
-  const importOutBtn = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'outgoing')"><span class="btn btn-secondary btn-sm">📥 匯入轉出名單</span></label>`;
   const importInBtn  = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'incoming')"><span class="btn btn-secondary btn-sm">📥 匯入轉入名單</span></label>`;
   const dlTemplateBtn = `<button class="btn btn-secondary btn-sm" onclick="downloadTransferImportTemplate()" data-tip="下載轉入名單 Excel 範例檔，填寫後即可批次匯入。">📄 下載範例</button>`;
-  const addOutBtn = `<button class="btn btn-primary btn-sm" onclick="openTransferAssessmentModal(null,'outgoing')">＋ 手動新增</button>`;
   const addInBtn  = `<button class="btn btn-primary btn-sm" onclick="openTransferAssessmentModal(null,'incoming')">＋ 手動新增</button>`;
 
   // ── 轉入個案的開案狀態篩選 ──
@@ -22410,8 +22420,8 @@ function renderTransferPage() {
     ? `<div style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;">${sfBtn('all','全部')}${sfBtn('active','開案中')}${sfBtn('closed','已結案')}</div>`
     : '';
 
-  let list = (tab === 'outgoing' ? outgoing : incoming);
-  if (tab === 'incoming' && tsf !== 'all') {
+  let list = incoming;
+  if (tsf !== 'all') {
     list = list.filter(r => {
       const lc = r.caseId ? casesData.find(c => c.id === r.caseId) : null;
       if (!lc) return tsf === 'active';
@@ -22422,18 +22432,14 @@ function renderTransferPage() {
   }
 
   const listHtml = list.length === 0
-    ? `<div class="empty-state"><div class="icon">🔄</div><p>尚無${tab==='outgoing'?'轉出':'轉入'}學生</p></div>`
+    ? `<div class="empty-state"><div class="icon">🔄</div><p>尚無轉入學生</p></div>`
     : list.map(_renderTransferRow).join('');
-  const dlGradCsvBtn = `<button class="btn btn-secondary btn-sm" onclick="downloadGradTransferCSVTemplate()" data-tip="下載校級評估結果 CSV 範本（供「本學期畢業轉銜」頁匯入用）">📄 下載畢業轉銜 CSV 範本</button>`;
-  const actionBar = tab === 'outgoing'
-    ? `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importOutBtn}${dlGradCsvBtn}${addOutBtn}</div>`
-    : `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importInBtn}${dlTemplateBtn}${addInBtn}</div>`;
+  const actionBar = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importInBtn}${dlTemplateBtn}${addInBtn}</div>`;
   const gradContent = tab === 'graduation' ? _renderGradTransferTab() : '';
   const unassignedContent = tab === 'unassigned' ? _renderUnassignedTab() : '';
   document.getElementById('transfer-body').innerHTML = `
     <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;">
       ${tabBtn('graduation','本學期畢業轉銜',gradCount)}
-      ${tabBtn('outgoing','轉出學生',outgoing.length)}
       ${tabBtn('incoming','轉入學生',incoming.length)}
       ${tabBtn('unassigned','未歸屬校級評估',unassignedCount,true)}
     </div>
