@@ -21735,7 +21735,7 @@ function openTransferEvalForm(caseId, teId) {
   const activeSem = _caseDetailActiveSem || currentSemesterPrefix();
   const existing = teId ? (c.transferEvaluations || []).find(e => e.teId === teId) : null;
   const isNew = !existing;
-  let autoFillHtml = '', autoDims = [], autoIssue = '', autoLight = '';
+  let autoFillHtml = '', autoDims = [], autoIssue = '';
   if (isNew) {
     const allEvals = [...(c.semesterEvaluations || [])].filter(e => !e.deletedAt && !e.replacedBy);
     if (!allEvals.length && c.closureEvaluation) allEvals.push({ ...c.closureEvaluation });
@@ -21744,50 +21744,40 @@ function openTransferEvalForm(caseId, teId) {
     if (latest) {
       const srcDate = latest.evaluatedAt ? latest.evaluatedAt.slice(0,10) : '—';
       autoDims = latest.dimensions || [];
-      autoLight = latest.light || latest.statusLight || '';
       const parts = [latest.chiefComplaint, latest.treatmentProvided, latest.description].filter(Boolean);
       autoIssue = parts.join('\n\n');
       autoFillHtml = `<div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:.88rem;color:#276749;">
-        ✅ 已自動帶入 ${escHtml(srcDate)} 的${latest.type==='closure'?'結案':'學期'}評估資料（八向度指標、燈號與主訴問題合併帶入）
+        ✅ 已自動帶入 ${escHtml(srcDate)} 的${latest.type==='closure'?'結案':'學期'}評估資料（八向度指標與主訴問題合併帶入）
       </div>`;
     }
   }
   const dimSource = existing?.dimensions || autoDims;
-  const lightSource = existing?.light || autoLight;
-  const lightColors = {'紅燈':'#c53030','橙燈':'#dd6b20','黃燈':'#b7791f','綠燈':'#276749'};
-  // ── 八向度（可編輯 radio）── 用函式避免三層 template literal 嵌套
+  // ── 八向度（仿結案評估樣式）──
   const dimsHtml = (function() {
-    const levels = ['無','1','2','3','4','5','不清楚'];
-    const rows = (CLOSURE_DIMS||[]).map(function(label, i) {
-      const cur = (dimSource||[]).find(function(d){ return d.label === label; });
-      const curVal = cur ? cur.level : '';
-      const opts = levels.map(function(v) {
-        return '<label style="display:inline-flex;align-items:center;gap:3px;font-size:.82rem;cursor:pointer;white-space:nowrap;">'
-          + '<input type="radio" name="te-dim-' + i + '" value="' + escHtml(v) + '"' + (curVal===v?' checked':'') + '> '
-          + escHtml(v) + '</label>';
-      }).join('');
-      return '<div style="margin-bottom:8px;padding:8px 12px;background:#f8fafc;border-radius:6px;">'
-        + '<div style="font-size:.8rem;font-weight:500;color:#4a5568;margin-bottom:5px;">' + (i+1) + '. ' + escHtml(label) + '</div>'
-        + '<div style="display:flex;flex-wrap:wrap;gap:8px;">' + opts + '</div>'
+    const rows = (CLOSURE_DIMS||[]).map(function(dim, i) {
+      const saved = (dimSource||[]).find(function(d){ return d.label === dim; });
+      const cur = saved ? saved.level : '';
+      const ck = function(v){ return cur === v ? ' checked' : ''; };
+      return '<div class="dim-row">'
+        + '<div class="dim-label"><strong>' + (i+1) + '.</strong> ' + escHtml(dim) + '</div>'
+        + '<div style="display:inline-grid;grid-template-columns:repeat(7,auto);gap:1px 6px;align-items:center;margin-top:3px;">'
+        + '<div></div>'
+        + '<div style="grid-column:span 2;text-align:center;color:#276749;font-weight:600;font-size:.71rem;border-top:2px solid #276749;border-left:2px solid #276749;border-right:2px solid #276749;border-radius:4px 4px 0 0;padding:1px 6px;">低</div>'
+        + '<div style="grid-column:span 2;text-align:center;color:#dd6b20;font-weight:600;font-size:.71rem;border-top:2px solid #dd6b20;border-left:2px solid #dd6b20;border-right:2px solid #dd6b20;border-radius:4px 4px 0 0;padding:1px 6px;">中</div>'
+        + '<div style="text-align:center;color:#c53030;font-weight:600;font-size:.71rem;">高</div>'
+        + '<div></div>'
+        + '<label data-tip="此向度對個案無明顯影響"><input type="radio" name="te-dim-' + i + '" value="無"' + ck('無') + '/> 無</label>'
+        + '<label data-tip="低風險：輕微症狀，功能正常"><input type="radio" name="te-dim-' + i + '" value="1"' + ck('1') + '/> <span class="badge badge-green">1</span></label>'
+        + '<label data-tip="低風險：有症狀，基本功能仍維持"><input type="radio" name="te-dim-' + i + '" value="2"' + ck('2') + '/> <span class="badge badge-green">2</span></label>'
+        + '<label data-tip="中風險：中等症狀，部分功能受影響"><input type="radio" name="te-dim-' + i + '" value="3"' + ck('3') + '/> <span class="badge badge-orange">3</span></label>'
+        + '<label data-tip="中風險：明顯症狀，功能受到相當影響"><input type="radio" name="te-dim-' + i + '" value="4"' + ck('4') + '/> <span class="badge badge-orange">4</span></label>'
+        + '<label data-tip="高風險：嚴重症狀，功能嚴重受影響"><input type="radio" name="te-dim-' + i + '" value="5"' + ck('5') + '/> <span class="badge" style="background:#fde8e8;color:#c0392b;">5</span></label>'
+        + '<label data-tip="目前資訊不足以評估此向度"><input type="radio" name="te-dim-' + i + '" value="不清楚"' + ck('不清楚') + '/> 不清楚</label>'
+        + '</div>'
         + '</div>';
     }).join('');
-    return '<div style="margin-bottom:18px;">'
-      + '<div style="font-weight:600;font-size:.92rem;margin-bottom:10px;color:#2d3748;">八向度風險評估</div>'
-      + rows
-      + '</div>';
+    return rows;
   }());
-  // ── 燈號 ──
-  const lightHtml = `<div style="margin-bottom:18px;padding:12px 14px;background:#f8fafc;border-radius:8px;">
-    <div style="font-weight:600;font-size:.92rem;margin-bottom:8px;color:#2d3748;">燈號</div>
-    <div style="display:flex;flex-wrap:wrap;gap:16px;">
-      ${['紅燈','橙燈','黃燈','綠燈'].map(l =>
-        `<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;">
-          <input type="radio" name="te-light" value="${l}" ${lightSource===l?'checked':''}>
-          <span style="color:${lightColors[l]};font-weight:600;font-size:.9rem;">${l}</span>
-        </label>`
-      ).join('')}
-    </div>
-  </div>`;
   // ── 富文字工具列（共用）──
   const rtTb = () => `<div class="rt-toolbar" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:6px;border:1px solid #cbd5e0;border-radius:6px;background:#f7fafc;padding:4px 8px;"><span class="rt-toolbar-btns" style="gap:4px;flex-wrap:wrap;align-items:center;"><button type="button" class="rt-btn" data-cmd="bold" title="粗體" style="font-weight:bold;min-width:32px;">B</button><button type="button" class="rt-btn" data-cmd="italic" title="斜體" style="font-style:italic;min-width:32px;">I</button><button type="button" class="rt-btn" data-cmd="underline" title="底線" style="text-decoration:underline;min-width:32px;">U</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtCycleUL" title="項目符號" style="min-width:32px;">•</button><button type="button" class="rt-btn" data-cmd="rtCycleOL" title="編號列表" style="min-width:32px;">1.</button><span style="border-left:1px solid #cbd5e0;margin:0 3px;"></span><button type="button" class="rt-btn" data-cmd="rtIndent" title="縮排" style="min-width:32px;">⇥</button><button type="button" class="rt-btn" data-cmd="removeFormat" title="清除格式" style="min-width:32px;font-size:.78rem;">清</button></span></div>`;
   const rO = (v, l) => `<label style="margin-right:12px;display:inline-flex;align-items:center;gap:4px;"><input type="radio" name="te-rec" value="${v}" ${(existing?.recommendation||'') === v ? 'checked' : ''}> ${l}</label>`;
@@ -21803,8 +21793,10 @@ function openTransferEvalForm(caseId, teId) {
           <button onclick="document.getElementById('te-form-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
         </div>
         ${autoFillHtml}
-        ${dimsHtml}
-        ${lightHtml}
+        <div style="margin-bottom:18px;padding:0 2px;">
+          <div style="font-weight:600;font-size:.92rem;margin-bottom:4px;color:#2d3748;">八向度風險評估</div>
+          ${dimsHtml}
+        </div>
         <div style="margin-bottom:14px;">
           <label class="field-label">主訴問題 <span class="req">*</span></label>
           ${rtTb()}
@@ -21861,7 +21853,6 @@ async function saveTransferEval(caseId, teIdOrNew) {
   const intervention = getRichTextValue('te-intervention');
   const assessment   = getRichTextValue('te-assessment');
   const rec          = gR('te-rec');
-  const light        = gR('te-light');
   const filledDate   = gV('te-filled-date');
   const counselorEmail = gV('te-counselor');
   const filledByRaw  = gV('te-filled-by');
@@ -21893,7 +21884,7 @@ async function saveTransferEval(caseId, teIdOrNew) {
   const counselorName = counselorEmail ? (configData?.users?.[counselorEmail]?.name || counselorEmail) : (c.counselorName || '');
   const filledByName  = filledByRaw || configData?.users?.[currentUser?.email]?.name || currentUser?.name || '';
   const evalData = { mainIssue, intervention, transferAssessment: assessment, recommendation: rec,
-    light, filledBy: filledByName, filledDate, counselorEmail, counselorName,
+    filledBy: filledByName, filledDate, counselorEmail, counselorName,
     semester: activeSem, dimensions, sourceEvalDate, updatedAt: now };
   if (teIdOrNew === '__new__') {
     evalData.teId = `te_${Date.now()}_${Math.random().toString(36).slice(2,7)}`;
