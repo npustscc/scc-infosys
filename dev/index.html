@@ -21985,6 +21985,7 @@ function _renderGradTransferTab() {
     <button class="btn btn-primary btn-sm" onclick="_applyGradBatch('${curSem}')">套用至已勾選</button>
     <span id="grad-batch-info" style="font-size:.82rem;color:#2b6cb0;"></span>
   </div>`;
+  const _histLightStyles = { '紅燈':{ bg:'#fde8e8',border:'#fc8181',color:'#c0392b' }, '橙燈':{ bg:'#fdebd0',border:'#f6ad55',color:'#9c4a00' }, '黃燈':{ bg:'#fef9e7',border:'#ecc94b',color:'#7d6608' }, '綠燈':{ bg:'#d5f5e3',border:'#68d391',color:'#1d6a3a' } };
   const rows = gradCases.map(({ c, gs }) => {
     const hasTE = _hasCaseTransferEval(c.id, curSem);
     const dec = _getGradTransferDecision(c.id, curSem);
@@ -22001,6 +22002,40 @@ function _renderGradTransferTab() {
       : `<span style="font-size:.73rem;background:#fde8e8;color:#c0392b;border-radius:8px;padding:1px 7px;border:1px solid #fc8181;">未填評估</span>`;
     const decStyle = `font-size:.73rem;padding:2px 8px;border-radius:10px;background:${decBgMap[decStatus]};color:${decColorMap[decStatus]};border:1px solid ${decColorMap[decStatus]};`;
     const schoolDateDisplay = dec?.schoolMeetingDate ? `<span style="font-size:.75rem;color:#718096;">校級會議：${escHtml(dec.schoolMeetingDate)}</span>` : '';
+    // ── 開案學期歷史 badges ──
+    const isExpanded = window._gradCardExpanded?.has(c.id) || false;
+    const semMap = {};
+    casesData.forEach(cc => {
+      if (cc.deleted || cc.studentId !== c.studentId || !c.studentId) return;
+      const sems = (Array.isArray(cc.semesters) && cc.semesters.length ? cc.semesters : [openDateToSemPrefix(cc.openDate)]).filter(Boolean);
+      sems.forEach(sem => {
+        const evals = cc.semesterEvaluations || [];
+        const hasTypedClosures = evals.some(e => e.type === 'closure');
+        const ev = evals.find(e => e.type === 'closure' && e.semester === sem) || (!hasTypedClosures ? (cc.closureEvaluation || null) : null);
+        semMap[sem] = { caseId: cc.id, counselorName: configData?.users?.[cc.counselorEmail]?.name || cc.counselorName || '', light: ev?.light || ev?.statusLight || '', status: cc.semesterStatus?.[sem] || cc.status || 'active' };
+      });
+    });
+    const histSems = Object.keys(semMap).sort().reverse().map(sem => ({ sem, ...semMap[sem] }));
+    const makeHistChip = ({ sem, caseId, counselorName, light, status }) => {
+      const { bg, border, color } = _histLightStyles[light]
+        || (status !== 'closed'
+          ? (sem < curSem ? { bg:'#f3e8ff',border:'#a855f7',color:'#6b21a8' } : { bg:'#ebf8ff',border:'#63b3ed',color:'#2b6cb0' })
+          : { bg:'#f0f4f8',border:'#cbd5e0',color:'#718096' });
+      return `<span onclick="event.stopPropagation();showCaseDetailAtSem('${escHtml(caseId)}','${escHtml(sem)}')" style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:1px 8px;font-size:.78rem;white-space:nowrap;cursor:pointer;" data-tip="點選跳至 ${semesterLabel(sem)} 學期">${escHtml(semesterLabel(sem))}${counselorName ? `<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(counselorName)}</span>` : ''}</span>`;
+    };
+    const HIST_LIMIT = 2;
+    const visibleHist = histSems.slice(0, HIST_LIMIT);
+    const extraHist = histSems.slice(HIST_LIMIT);
+    const hasExtra = extraHist.length > 0;
+    const histBadgesHtml = histSems.length ? `
+      <div style="padding:3px 0 5px 30px;display:flex;align-items:center;flex-wrap:wrap;gap:3px;border-top:1px solid #f0f4f8;margin-top:4px;">
+        <span style="font-size:.74rem;color:#a0aec0;flex-shrink:0;margin-right:2px;">歷史：</span>
+        ${visibleHist.map(makeHistChip).join('')}
+        ${hasExtra ? `<span data-hist-extra="${escHtml(c.id)}" style="display:${isExpanded?'contents':'none'};">${extraHist.map(makeHistChip).join('')}</span><span data-hist-more="${escHtml(c.id)}" onclick="event.stopPropagation();_gradToggleHistory('${escHtml(c.id)}')" style="display:${isExpanded?'none':'inline-block'};font-size:.76rem;color:#3182ce;cursor:pointer;padding:1px 7px;border-radius:8px;background:#ebf8ff;border:1px solid #bee3f8;" data-tip="顯示全部 ${histSems.length} 個學期">...${extraHist.length} 筆</span>` : ''}
+      </div>` : '';
+    const chevBtn = hasExtra
+      ? `<button onclick="event.stopPropagation();_gradToggleHistory('${escHtml(c.id)}')" data-hist-chev="${escHtml(c.id)}" title="展開／收合歷史學期" style="background:none;border:1px solid #e2e8f0;border-radius:4px;cursor:pointer;padding:2px 7px;font-size:.8rem;color:#718096;line-height:1.2;flex-shrink:0;">${isExpanded?'▲':'▼'}</button>`
+      : '';
     return `<div class="record-card" style="margin-bottom:8px;${isResolved?'border-left:3px solid '+decColorMap[decStatus]+';opacity:.88;':''}">
       <div class="record-card-header" style="flex-wrap:wrap;gap:6px;">
         <input type="checkbox" class="grad-cb" data-cid="${escHtml(c.id)}" onchange="_gradCbChange()" style="margin-top:3px;flex-shrink:0;">
@@ -22027,8 +22062,10 @@ function _renderGradTransferTab() {
             <option value="untraceable"${decStatus==='untraceable'?' selected':''}>年久不可考</option>
           </select>
           <input type="date" value="${escHtml(dec?.schoolMeetingDate||'')}" title="校級評估會議日期" style="padding:4px;font-size:.8rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="setGradTransferMeetingDate('${escHtml(c.id)}','${curSem}',this.value)">
+          ${chevBtn}
         </div>
       </div>
+      ${histBadgesHtml}
     </div>`;
   }).join('');
   const emptyMsg = !gradCases.length
@@ -22083,6 +22120,19 @@ function _gradCbChange() {
 function _gradToggleAll(checked) {
   document.querySelectorAll('.grad-cb').forEach(cb => { cb.checked = checked; });
   _gradCbChange();
+}
+
+function _gradToggleHistory(caseId) {
+  if (!window._gradCardExpanded) window._gradCardExpanded = new Set();
+  const isExp = window._gradCardExpanded.has(caseId);
+  if (isExp) window._gradCardExpanded.delete(caseId); else window._gradCardExpanded.add(caseId);
+  const nowExp = !isExp;
+  const extraEl = document.querySelector(`[data-hist-extra="${CSS.escape(caseId)}"]`);
+  const moreEl  = document.querySelector(`[data-hist-more="${CSS.escape(caseId)}"]`);
+  const chevEl  = document.querySelector(`[data-hist-chev="${CSS.escape(caseId)}"]`);
+  if (extraEl) extraEl.style.display = nowExp ? 'contents' : 'none';
+  if (moreEl)  moreEl.style.display  = nowExp ? 'none' : 'inline-block';
+  if (chevEl)  chevEl.textContent     = nowExp ? '▲' : '▼';
 }
 
 function _applyGradBatch(sem) {
