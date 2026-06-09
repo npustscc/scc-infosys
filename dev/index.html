@@ -22515,23 +22515,97 @@ function _deleteUnassignedRecord(recId) {
 function _linkUnassignedRecord(recId) {
   const rec = transferData.find(r => r.id === recId);
   if (!rec) return;
-  const sortedCases = [...casesData].filter(c => !c.deleted).sort((a, b) => (a.name||'').localeCompare(b.name||'', 'zh-TW'));
-  window._linkCases = sortedCases;
-  window._linkSelectedCaseId = null;
   window._linkRecId = recId;
+  window._linkMode = 'search';
+  window._linkSelectedCaseId = null;
+  window._linkCases = [...casesData].filter(c => !c.deleted)
+    .sort((a, b) => (a.name||'').localeCompare(b.name||'', 'zh-TW'));
+  const autoId = generateCaseId();
+  const _decLabelMap = { pending:'待決議', noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）', untraceable:'年久不可考' };
+  const decOptions = Object.entries(_decLabelMap).map(([v,l]) =>
+    `<option value="${v}"${rec.status===v?' selected':''}>${escHtml(l)}</option>`).join('');
   const modalHtml = `
     <div id="link-case-modal" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;">
-      <div style="background:#fff;border-radius:12px;padding:24px;max-width:520px;width:95%;max-height:80vh;display:flex;flex-direction:column;gap:14px;box-shadow:0 20px 60px rgba(0,0,0,.3);">
+      <div style="background:#fff;border-radius:12px;padding:24px;max-width:560px;width:95%;max-height:88vh;display:flex;flex-direction:column;gap:12px;box-shadow:0 20px 60px rgba(0,0,0,.3);">
         <div style="display:flex;justify-content:space-between;align-items:center;">
-          <h3 style="font-size:1rem;margin:0;">連結個案</h3>
+          <h3 style="font-size:1rem;margin:0;font-weight:700;">連結個案</h3>
           <button onclick="document.getElementById('link-case-modal').remove()" style="background:none;border:none;cursor:pointer;font-size:1.3rem;color:#718096;">&times;</button>
         </div>
         <div style="font-size:.85rem;color:#4a5568;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;">
-          未歸屬資料：<strong>${escHtml(rec.unassignedName||'—')}</strong>（${escHtml(rec.unassignedStudentId||'—')}）
+          未歸屬：<strong>${escHtml(rec.unassignedName||'—')}</strong>（${escHtml(rec.unassignedStudentId||'—')}）
+          ${rec.schoolMeetingDate ? `&ensp;<span style="color:#718096;">校級：${escHtml(rec.schoolMeetingDate)}</span>` : ''}
+          &ensp;<span style="color:#718096;">${escHtml(_decLabelMap[rec.status]||rec.status||'待決議')}</span>
         </div>
-        <input type="text" id="link-search" placeholder="搜尋姓名、學號或案號…" oninput="_linkFilter()" style="padding:8px 12px;border:1px solid #e2e8f0;border-radius:6px;font-size:.9rem;outline:none;">
-        <div id="link-case-list" style="overflow-y:auto;max-height:280px;border:1px solid #e2e8f0;border-radius:6px;"></div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;">
+        <div style="display:flex;gap:0;border-bottom:2px solid #e2e8f0;">
+          <button id="link-tab-search" onclick="_linkSetMode('search')"
+            style="padding:6px 18px;border:none;border-bottom:2px solid #3498db;margin-bottom:-2px;cursor:pointer;font-size:.88rem;font-weight:700;background:transparent;color:#3498db;">
+            搜尋現有個案
+          </button>
+          <button id="link-tab-create" onclick="_linkSetMode('create')"
+            style="padding:6px 18px;border:none;border-bottom:2px solid transparent;margin-bottom:-2px;cursor:pointer;font-size:.88rem;font-weight:400;background:transparent;color:#718096;">
+            建立新個案並連結
+          </button>
+        </div>
+        <div id="link-panel-search" style="display:flex;flex-direction:column;gap:10px;overflow:hidden;">
+          <input type="text" id="link-search" placeholder="搜尋姓名、學號或案號…" oninput="_linkFilter()"
+            style="padding:8px 12px;border:1px solid #e2e8f0;border-radius:6px;font-size:.9rem;outline:none;flex-shrink:0;">
+          <div id="link-case-list" style="overflow-y:auto;max-height:240px;border:1px solid #e2e8f0;border-radius:6px;flex-shrink:0;"></div>
+        </div>
+        <div id="link-panel-create" style="display:none;flex-direction:column;gap:10px;overflow-y:auto;max-height:340px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div>
+              <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">案號 <span style="color:#e53e3e;">*</span></label>
+              <input id="link-new-cid" type="text" value="${escHtml(autoId)}" maxlength="7"
+                style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+            </div>
+            <div>
+              <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">開案日期 <span style="color:#e53e3e;">*</span></label>
+              <input id="link-new-open-date" type="date" value="${new Date().toISOString().slice(0,10)}"
+                style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+            <div>
+              <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">姓名</label>
+              <input type="text" value="${escHtml(rec.unassignedName||'')}" readonly
+                style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;background:#f8fafc;box-sizing:border-box;">
+            </div>
+            <div>
+              <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">學號</label>
+              <input type="text" value="${escHtml(rec.unassignedStudentId||'')}" readonly
+                style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;background:#f8fafc;box-sizing:border-box;">
+            </div>
+          </div>
+          <div>
+            <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">主責輔導人員 <span style="color:#e53e3e;">*</span></label>
+            <select id="link-new-counselor"
+              style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+              ${buildCounselorOptgroups(null, '— 請選擇主責輔導人員 —')}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">評估人員</label>
+            <select id="link-new-assessor"
+              style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+              ${buildCounselorOptgroups(null, '— 請選擇評估人員（選填）—')}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">校級評估結果</label>
+            <select id="link-new-decision"
+              style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+              <option value="">— 沿用匯入結果 —</option>
+              ${decOptions}
+            </select>
+          </div>
+          <div>
+            <label style="font-size:.82rem;color:#4a5568;display:block;margin-bottom:3px;">退學／離校原因備註</label>
+            <input id="link-new-withdraw-reason" type="text" placeholder="（選填）"
+              style="width:100%;padding:7px 10px;border:1px solid #e2e8f0;border-radius:6px;font-size:.88rem;box-sizing:border-box;">
+          </div>
+          <div id="link-create-alert" style="display:none;font-size:.83rem;color:#c53030;background:#fff5f5;border:1px solid #fc8181;border-radius:6px;padding:7px 12px;"></div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;border-top:1px solid #f0f4f8;padding-top:12px;flex-shrink:0;">
           <button class="btn btn-secondary" onclick="document.getElementById('link-case-modal').remove()">取消</button>
           <button id="link-confirm-btn" class="btn btn-primary" disabled onclick="_confirmLinkRecord('${escHtml(recId)}')">確認連結</button>
         </div>
@@ -22541,18 +22615,23 @@ function _linkUnassignedRecord(recId) {
   window._linkFilter = () => {
     const q = (document.getElementById('link-search')?.value || '').trim().toLowerCase();
     const filtered = q
-      ? window._linkCases.filter(c => (c.name||'').toLowerCase().includes(q) || (c.studentId||'').toLowerCase().includes(q) || (c.caseNum||'').toLowerCase().includes(q))
+      ? window._linkCases.filter(c =>
+          (c.name||'').toLowerCase().includes(q) ||
+          (c.studentId||'').toLowerCase().includes(q) ||
+          (c.id||'').toLowerCase().includes(q))
       : window._linkCases;
     const list = document.getElementById('link-case-list');
     if (!list) return;
     if (!filtered.length) { list.innerHTML = `<div style="padding:12px;color:#a0aec0;font-size:.85rem;text-align:center;">無符合條件的個案</div>`; return; }
     list.innerHTML = filtered.slice(0, 100).map(c => {
       const isSel = c.id === window._linkSelectedCaseId;
+      const closedBadge = c.status === 'closed' ? `<span style="font-size:.72rem;background:#f0f4f8;color:#718096;border-radius:4px;padding:1px 5px;flex-shrink:0;">已結案</span>` : '';
       return `<div onclick="_linkSelectCase('${escHtml(c.id)}')" style="padding:10px 14px;cursor:pointer;font-size:.85rem;background:${isSel?'#ebf8ff':'#fff'};border-bottom:1px solid #f0f4f8;display:flex;gap:8px;align-items:center;user-select:none;">
         <span style="width:14px;color:#3182ce;flex-shrink:0;">${isSel?'✓':''}</span>
         <span style="font-weight:${isSel?'700':'400'};">${escHtml(c.name||'—')}</span>
         <span style="color:#718096;font-size:.8rem;">${escHtml(c.studentId||'—')}</span>
-        ${c.caseNum ? `<span style="color:#a0aec0;font-size:.78rem;">${escHtml(c.caseNum)}</span>` : ''}
+        <span style="color:#a0aec0;font-size:.78rem;">${escHtml(c.id||'')}</span>
+        ${closedBadge}
         <span style="color:#a0aec0;font-size:.75rem;margin-left:auto;">${escHtml(c.counselorName||c.counselorEmail||'')}</span>
       </div>`;
     }).join('');
@@ -22563,22 +22642,91 @@ function _linkUnassignedRecord(recId) {
     if (btn) btn.disabled = false;
     window._linkFilter();
   };
+  window._linkSetMode = (mode) => {
+    window._linkMode = mode;
+    const tabSearch = document.getElementById('link-tab-search');
+    const tabCreate = document.getElementById('link-tab-create');
+    const panelSearch = document.getElementById('link-panel-search');
+    const panelCreate = document.getElementById('link-panel-create');
+    const btn = document.getElementById('link-confirm-btn');
+    if (!tabSearch) return;
+    if (mode === 'search') {
+      tabSearch.style.borderBottomColor = '#3498db'; tabSearch.style.color = '#3498db'; tabSearch.style.fontWeight = '700';
+      tabCreate.style.borderBottomColor = 'transparent'; tabCreate.style.color = '#718096'; tabCreate.style.fontWeight = '400';
+      panelSearch.style.display = 'flex'; panelCreate.style.display = 'none';
+      btn.disabled = !window._linkSelectedCaseId; btn.textContent = '確認連結';
+    } else {
+      tabCreate.style.borderBottomColor = '#3498db'; tabCreate.style.color = '#3498db'; tabCreate.style.fontWeight = '700';
+      tabSearch.style.borderBottomColor = 'transparent'; tabSearch.style.color = '#718096'; tabSearch.style.fontWeight = '400';
+      panelSearch.style.display = 'none'; panelCreate.style.display = 'flex';
+      btn.disabled = false; btn.textContent = '建立並連結';
+    }
+  };
   window._linkFilter();
 }
 
-function _confirmLinkRecord(recId) {
-  const cid = window._linkSelectedCaseId;
-  if (!cid) return;
+async function _confirmLinkRecord(recId) {
+  const mode = window._linkMode || 'search';
   const rec = transferData.find(r => r.id === recId);
   if (!rec) return;
-  rec.caseId = cid;
-  rec.linkedAt = new Date().toISOString();
-  rec.linkedBy = currentUser?.email;
-  document.getElementById('link-case-modal')?.remove();
-  _checkTransferGradTodos();
-  renderTransferPage();
-  const jobId = bgJobAdd('連結未歸屬轉銜紀錄');
-  (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('連結未歸屬轉銜紀錄', cid, null, `recId:${recId}`); } catch(e) { bgJobFail(jobId, e.message); } })();
+  const now = new Date().toISOString();
+  if (mode === 'search') {
+    const cid = window._linkSelectedCaseId;
+    if (!cid) return;
+    rec.caseId = cid; rec.linkedAt = now; rec.linkedBy = currentUser?.email;
+    document.getElementById('link-case-modal')?.remove();
+    _checkTransferGradTodos(); renderTransferPage();
+    const jobId = bgJobAdd('連結未歸屬轉銜紀錄');
+    (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('連結未歸屬轉銜紀錄', cid, null, `recId:${recId}`); } catch(e) { bgJobFail(jobId, e.message); } })();
+  } else {
+    const newId = (document.getElementById('link-new-cid')?.value || '').trim();
+    const openDate = document.getElementById('link-new-open-date')?.value || now.slice(0,10);
+    const counselorEmail = document.getElementById('link-new-counselor')?.value || '';
+    const assessorEmail = document.getElementById('link-new-assessor')?.value || '';
+    const newDecision = document.getElementById('link-new-decision')?.value || '';
+    const withdrawNote = (document.getElementById('link-new-withdraw-reason')?.value || '').trim();
+    const alertEl = document.getElementById('link-create-alert');
+    const showErr = (msg) => { if (alertEl) { alertEl.textContent = msg; alertEl.style.display = 'block'; } };
+    if (!newId || newId.length !== 7) { showErr('案號須為 7 碼'); return; }
+    if (parseInt(newId.slice(4), 10) === 0) { showErr('案號序號不可為 000'); return; }
+    if (casesData.find(c => c.id === newId)) { showErr('案號已被使用，請修改'); return; }
+    if (!counselorEmail) { showErr('請選擇主責輔導人員'); return; }
+    const newCase = {
+      id: newId, openDate, name: rec.unassignedName||'', studentId: rec.unassignedStudentId||'',
+      counselorEmail, counselorName: formatCounselorLabel(counselorEmail)||counselorEmail,
+      abType: 'a_case', status: 'active', caseType: 'university',
+      birthday: '', idNumber: '', legalGender: '', genderIdentity: '',
+      nationality: '本國籍', ethnicity: '', ethnicityNote: '', foreignCountry: '',
+      program: '', disability: '', department: '', grade: '', classNo: '',
+      phone: '', email: '', residence: '', address: '',
+      emergencyName: '', emergencyPhone: '', emergencyRelation: '',
+      source: 'transfer_import', pastRecords: [], topics: [],
+      counselorText: '', bsrs: [], bsrs6: null, bsrsTotal: null,
+      isTransferCase: true, withdrawalNote: withdrawNote,
+      createdAt: now, updatedAt: now,
+    };
+    rec.caseId = newId; rec.linkedAt = now; rec.linkedBy = currentUser?.email;
+    if (assessorEmail) rec.assessorEmail = assessorEmail;
+    if (newDecision) rec.status = newDecision;
+    if (withdrawNote) rec.withdrawalNote = withdrawNote;
+    document.getElementById('link-case-modal')?.remove();
+    casesData.push(newCase);
+    _checkTransferGradTodos(); renderTransferPage();
+    const jobId = bgJobAdd('建立新個案並連結轉銜紀錄');
+    (async () => {
+      try {
+        await saveCasesChunks(newId);
+        await saveTransfer();
+        bgJobDone(jobId);
+        auditLog('建立個案並連結轉銜紀錄', newId, null, `recId:${recId}`);
+      } catch(e) {
+        bgJobFail(jobId, e.message);
+        const idx = casesData.findIndex(c => c.id === newId);
+        if (idx >= 0) casesData.splice(idx, 1);
+        rec.caseId = undefined; rec.linkedAt = undefined; rec.linkedBy = undefined;
+      }
+    })();
+  }
 }
 
 async function downloadGradTransferExcelTemplate() {
