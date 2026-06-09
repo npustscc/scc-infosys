@@ -22127,81 +22127,88 @@ async function showGradTransferImportPreview(rows, curSem) {
     if (btn) btn.textContent = `匯入 / 更新 ${sel.size} 筆`;
   };
   const dupCount = entries.filter(e => e.isDuplicate).length;
+  const newCount = entries.length - dupCount;
+  let previewTab = 'new'; // 'new' | 'dup'
+  window._gtPreviewTab = (t) => { previewTab = t; _gtRender(); };
+  function _gtMakeRow(e, i) {
+    const warn = e.matchType !== 'full';
+    const manuallyFixed = (e.name !== e.originalName || e.sid !== e.originalSid) && e.matchType === 'full' && !e.isDuplicate;
+    const warnMsg = e.matchType==='none' ? '❌ 找不到個案'
+      : e.matchType==='sid_only' ? `⚠ 學號符合姓名不符（系統：${escHtml(e.mc?.name||'—')}）`
+      : e.matchType==='name_only' ? `⚠ 姓名符合學號不符（系統：${escHtml(e.mc?.studentId||'—')}）` : '';
+    const dupBadge = e.isDuplicate
+      ? `<span style="font-size:.72rem;background:#fed7aa;color:#9c4221;border-radius:4px;padding:1px 5px;border:1px solid #fb923c;">已有決議：${escHtml(decLblMap[_getGradTransferDecision(e.mc?.id,curSem)?.status]||'—')}</span>`
+      : '';
+    let rowBg = e.isDuplicate ? '#fff7ed' : (warn ? '#fff8e1' : (i%2===0?'#fff':'#f7fafc'));
+    if (manuallyFixed) rowBg = '#ecfdf5';
+    const auditHtml = [
+      (e.name !== e.originalName) ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原姓名：${escHtml(e.originalName)})</div>` : '',
+      (e.sid  !== e.originalSid)  ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原學號：${escHtml(e.originalSid)})</div>`  : '',
+    ].join('');
+    const statusContent = manuallyFixed
+      ? `<span style="font-size:.78rem;color:#059669;">✅ 已手動修正對應</span>${auditHtml}`
+      : `${dupBadge}${warnMsg ? (dupBadge?'<br>':'') + warnMsg : ''}${auditHtml}`;
+    const decSel = `<select style="font-size:.8rem;padding:2px 4px;" onchange="window._gtRow[${i}].decision=this.value">
+      <option value="pending"${e.decision==='pending'?' selected':''}>未決議</option>
+      <option value="noTransfer_school"${e.decision==='noTransfer_school'?' selected':''}>校級不轉銜</option>
+      <option value="transfer_school"${e.decision==='transfer_school'?' selected':''}>校級建議轉銜</option>
+      <option value="b_case"${e.decision==='b_case'?' selected':''}>B案（無須評估）</option>
+      <option value="one_time_consult"${e.decision==='one_time_consult'?' selected':''}>一次性諮詢不予討論</option>
+      <option value="direct_admission"${e.decision==='direct_admission'?' selected':''}>直升碩/博士（免評估）</option>
+    </select>`;
+    const closureSel = `<select style="font-size:.8rem;padding:2px 4px;" onchange="window._gtRow[${i}].closureDecision=this.value">
+      <option value=""${!e.closureDecision?' selected':''}>（無）</option>
+      <option value="pending_closure"${e.closureDecision==='pending_closure'?' selected':''}>未決議</option>
+      <option value="notClose"${e.closureDecision==='notClose'?' selected':''}>不結案</option>
+      <option value="close"${e.closureDecision==='close'?' selected':''}>結案</option>
+    </select>`;
+    return `<tr data-row-idx="${i}" style="background:${rowBg};transition:background 0.3s;">
+      <td style="text-align:center;"><input type="checkbox" id="gt-cb-${i}" ${sel.has(i)?'checked':''} onchange="window._gtSel(${i},this.checked)"></td>
+      <td style="min-width:60px;padding:4px 6px;"><div contenteditable="${warn?'true':'false'}" style="outline:none;" oninput="window._gtRow[${i}].name=this.textContent.trim()" onblur="window._gtRevalidate(${i})">${escHtml(e.name)}</div></td>
+      <td style="min-width:80px;padding:4px 6px;"><div contenteditable="${warn?'true':'false'}" style="outline:none;" oninput="window._gtRow[${i}].sid=this.textContent.trim()" onblur="window._gtRevalidate(${i})">${escHtml(e.sid)}</div></td>
+      <td style="font-size:.8rem;">${escHtml(e.schoolMeetingDate||'—')}</td>
+      <td style="font-size:.8rem;">${escHtml(e.closureMeetingDate||'—')}</td>
+      <td>${decSel}</td>
+      <td>${closureSel}</td>
+      <td data-status-cell="${i}" style="font-size:.78rem;color:${warn&&!manuallyFixed?'#d97706':'#718096'};min-width:80px;">${statusContent}</td>
+    </tr>`;
+  }
   function _gtRender() {
-    const tbody = entries.map((e, i) => {
-      const warn = e.matchType !== 'full';
-      const manuallyFixed = (e.name !== e.originalName || e.sid !== e.originalSid) && e.matchType === 'full' && !e.isDuplicate;
-      const warnMsg = e.matchType==='none' ? '❌ 找不到個案'
-        : e.matchType==='sid_only' ? `⚠ 學號符合姓名不符（系統：${escHtml(e.mc?.name||'—')}）`
-        : e.matchType==='name_only' ? `⚠ 姓名符合學號不符（系統：${escHtml(e.mc?.studentId||'—')}）` : '';
-      const dupBadge = e.isDuplicate
-        ? `<span style="font-size:.72rem;background:#fed7aa;color:#9c4221;border-radius:4px;padding:1px 5px;border:1px solid #fb923c;">已有決議：${escHtml(decLblMap[_getGradTransferDecision(e.mc?.id,curSem)?.status]||'—')}</span>`
-        : '';
-      let rowBg = e.isDuplicate ? '#fff7ed' : (warn ? '#fff8e1' : (i%2===0?'#fff':'#f7fafc'));
-      if (manuallyFixed) rowBg = '#ecfdf5';
-      const auditHtml = [
-        (e.name !== e.originalName) ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原姓名：${escHtml(e.originalName)})</div>` : '',
-        (e.sid  !== e.originalSid)  ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原學號：${escHtml(e.originalSid)})</div>`  : '',
-      ].join('');
-      const statusContent = manuallyFixed
-        ? `<span style="font-size:.78rem;color:#059669;">✅ 已手動修正對應</span>${auditHtml}`
-        : `${dupBadge}${warnMsg ? (dupBadge?'<br>':'') + warnMsg : ''}${auditHtml}`;
-      const decSel = `<select style="font-size:.8rem;padding:2px 4px;" onchange="window._gtRow[${i}].decision=this.value">
-        <option value="pending"${e.decision==='pending'?' selected':''}>未決議</option>
-        <option value="noTransfer_school"${e.decision==='noTransfer_school'?' selected':''}>校級不轉銜</option>
-        <option value="transfer_school"${e.decision==='transfer_school'?' selected':''}>校級建議轉銜</option>
-        <option value="b_case"${e.decision==='b_case'?' selected':''}>B案（無須評估）</option>
-        <option value="one_time_consult"${e.decision==='one_time_consult'?' selected':''}>一次性諮詢不予討論</option>
-        <option value="direct_admission"${e.decision==='direct_admission'?' selected':''}>直升碩/博士（免評估）</option>
-      </select>`;
-      const closureSel = `<select style="font-size:.8rem;padding:2px 4px;" onchange="window._gtRow[${i}].closureDecision=this.value">
-        <option value=""${!e.closureDecision?' selected':''}>（無）</option>
-        <option value="pending_closure"${e.closureDecision==='pending_closure'?' selected':''}>未決議</option>
-        <option value="notClose"${e.closureDecision==='notClose'?' selected':''}>不結案</option>
-        <option value="close"${e.closureDecision==='close'?' selected':''}>結案</option>
-      </select>`;
-      return `<tr data-row-idx="${i}" style="background:${rowBg};transition:background 0.3s;">
-        <td style="text-align:center;"><input type="checkbox" id="gt-cb-${i}" ${sel.has(i)?'checked':''} onchange="window._gtSel(${i},this.checked)"></td>
-        <td style="min-width:60px;padding:4px 6px;"><div contenteditable="${warn?'true':'false'}" style="outline:none;" oninput="window._gtRow[${i}].name=this.textContent.trim()" onblur="window._gtRevalidate(${i})">${escHtml(e.name)}</div></td>
-        <td style="min-width:80px;padding:4px 6px;"><div contenteditable="${warn?'true':'false'}" style="outline:none;" oninput="window._gtRow[${i}].sid=this.textContent.trim()" onblur="window._gtRevalidate(${i})">${escHtml(e.sid)}</div></td>
-        <td style="font-size:.8rem;">${escHtml(e.schoolMeetingDate||'—')}</td>
-        <td style="font-size:.8rem;">${escHtml(e.closureMeetingDate||'—')}</td>
-        <td>${decSel}</td>
-        <td>${closureSel}</td>
-        <td data-status-cell="${i}" style="font-size:.78rem;color:${warn&&!manuallyFixed?'#d97706':'#718096'};min-width:80px;">${statusContent}</td>
-      </tr>`;
-    }).join('');
+    const isNew = previewTab === 'new';
+    const tabEntries = entries.filter(e => isNew ? !e.isDuplicate : e.isDuplicate);
+    const tbody = tabEntries.map((e, rowIdx) => _gtMakeRow(e, e.i !== undefined ? e.i : entries.indexOf(e))).join('');
     const el = document.getElementById('gt-import-list');
     const _sth = (label, key) => {
       const arrow = sortKey === key ? (sortDir > 0 ? ' ▲' : ' ▼') : ' ⇅';
       return `<th onclick="window._gtSort('${key}')" style="cursor:pointer;user-select:none;white-space:nowrap;">${label}<span style="font-size:.7rem;color:#a0aec0;">${arrow}</span></th>`;
     };
-    if (el) el.innerHTML = `<table class="grad-import-table" style="width:100%;border-collapse:collapse;font-size:.85rem;">
+    const selAll_onlyDup = isNew ? 'false' : 'true';
+    const hintText = isNew
+      ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">⚠ 黃色列表示姓名或學號不完全符合，可直接點選格子修改，離開欄位後即時驗證比對。</div>`
+      : `<div style="font-size:.82rem;color:#9c4221;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;margin-bottom:8px;">🔁 以下資料在系統中已有校級評估決議，勾選後確認匯入將覆蓋現有資料。</div>`;
+    const tabBtns = `<div style="display:flex;gap:4px;margin-bottom:12px;border-bottom:2px solid #e2e8f0;padding-bottom:4px;">
+      <button onclick="window._gtPreviewTab('new')" style="padding:6px 16px;border:none;cursor:pointer;font-size:.85rem;font-weight:${!isNew?'400':'700'};background:none;border-bottom:${isNew?'2px solid #3498db':'2px solid transparent'};color:${isNew?'#2b6cb0':'#718096'};margin-bottom:-6px;">新資料與衝突修正（${newCount}）</button>
+      <button onclick="window._gtPreviewTab('dup')" style="padding:6px 16px;border:none;cursor:pointer;font-size:.85rem;font-weight:${isNew?'400':'700'};background:none;border-bottom:${!isNew?'2px solid #f6ad55':'2px solid transparent'};color:${!isNew?'#9c4221':'#718096'};margin-bottom:-6px;">重複資料覆蓋（${dupCount}）${dupCount>0?'<span style="font-size:.7rem;background:#fed7aa;color:#9c4221;border-radius:8px;padding:0 5px;margin-left:4px;">!</span>':''}</button>
+    </div>`;
+    const emptyMsg = tabEntries.length === 0 ? `<div style="padding:20px;text-align:center;color:#a0aec0;">${isNew?'所有資料均已有決議':'無重複資料'}</div>` : '';
+    if (el) el.innerHTML = tabBtns + hintText + (tabEntries.length ? `<table class="grad-import-table" style="width:100%;border-collapse:collapse;font-size:.85rem;">
       <thead><tr style="background:#f7fafc;font-size:.8rem;position:sticky;top:0;">
-        <th style="width:30px;"><input type="checkbox" title="全選/取消全選" onchange="window._gtSelAll(this.checked)"></th>
+        <th style="width:30px;"><input type="checkbox" title="全選/取消全選" onchange="window._gtSelAll(this.checked,${selAll_onlyDup})"></th>
         ${_sth('姓名','name')}${_sth('學號','sid')}<th>校級會議日期</th><th>結案會議日期</th>${_sth('校級評估結果','decision')}${_sth('結案評估結果','closureDecision')}<th>狀態</th>
-      </tr></thead><tbody>${tbody}</tbody></table>`;
+      </tr></thead><tbody>${tbody}</tbody></table>` : emptyMsg);
     const btn = document.getElementById('gt-confirm-btn');
     if (btn) btn.textContent = `匯入 / 更新 ${sel.size} 筆`;
     const selDupCount = entries.filter((_,i)=>sel.has(i)&&entries[i].isDuplicate).length;
     const info = document.getElementById('gt-sel-info');
     if (info) info.textContent = selDupCount > 0 ? `（含 ${selDupCount} 筆將覆蓋現有決議）` : '';
   }
-  const dupNote = dupCount > 0
-    ? `<div style="background:#fff7ed;border:1px solid #fb923c;border-radius:6px;padding:8px 12px;font-size:.82rem;color:#9c4221;margin-bottom:10px;">
-        🔁 發現 <strong>${dupCount}</strong> 筆已有校級評估紀錄（橘色列），預設未勾選。
-        <button onclick="window._gtSelAll(true,true)" style="margin-left:8px;font-size:.78rem;padding:2px 8px;border:1px solid #fb923c;border-radius:4px;background:#fff;color:#9c4221;cursor:pointer;">全選重複項</button>
-        <button onclick="window._gtSelAll(false,true)" style="margin-left:4px;font-size:.78rem;padding:2px 8px;border:1px solid #fb923c;border-radius:4px;background:#fff;color:#9c4221;cursor:pointer;">取消全選重複項</button>
-      </div>` : '';
   document.getElementById('transfer-body').innerHTML = `
     <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
         <h3 style="font-size:1rem;">校級轉銜評估結果匯入（共 ${entries.length} 筆）</h3>
         <button onclick="renderTransferPage()" style="background:none;border:none;cursor:pointer;font-size:1.3rem;">&times;</button>
       </div>
-      <div style="font-size:.82rem;color:#718096;margin-bottom:8px;">⚠ 黃色列表示姓名或學號不完全符合，可直接點選格子修改，離開欄位後即時驗證比對。</div>
-      ${dupNote}
-      <div id="gt-import-list" style="max-height:55vh;overflow-y:auto;"></div>
+      <div id="gt-import-list" style="max-height:60vh;overflow-y:auto;"></div>
       <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
         <button id="gt-confirm-btn" class="btn btn-primary" onclick="window._gtConfirm()">匯入</button>
         <button class="btn btn-secondary" onclick="renderTransferPage()">取消</button>
