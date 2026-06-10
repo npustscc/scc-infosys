@@ -21837,7 +21837,7 @@ function _renderAllTransferEvalsCard(c, cid) {
   if (!allEvals.length) return '';
   const recColors = { transfer:'#c0392b', discuss:'#7d6608', noTransfer:'#1d6a3a' };
   const recBgs   = { transfer:'#fde8e8', discuss:'#fef9e7', noTransfer:'#d5f5e3' };
-  const recLabels = { transfer:'建議轉銜', discuss:'建議討論', noTransfer:'建議不需轉銜' };
+  const recLabels = { transfer:'建議評估會議轉銜', discuss:'建議評估會議討論後再決定', noTransfer:'建議不需轉銜' };
   // 統計各學期有效評估數（用於收合 chips）
   const semCounts = {};
   allEvals.filter(e => !e.replacedBy && !e.deletedAt).forEach(e => {
@@ -21863,16 +21863,21 @@ function _renderAllTransferEvalsCard(c, cid) {
     if (isDeleted)       statusBadge = `<span style="font-size:.72rem;background:#fde8e8;color:#c53030;border-radius:4px;padding:1px 5px;">已刪除 ${(ev.deletedAt||'').slice(0,10)}</span>`;
     else if (isReplaced) statusBadge = `<span style="font-size:.72rem;background:#f0f4f8;color:#718096;border-radius:4px;padding:1px 5px;border:1px solid #e2e8f0;">已修改（${(ev.replacedAt||'').slice(0,10)}）</span>`;
     else                 statusBadge = `<span style="font-size:.75rem;padding:2px 8px;border-radius:10px;background:${recBg};color:${recColor};white-space:nowrap;">${recLabel}</span>`;
-    const printBtn = teId && !isReplaced && !isDeleted
-      ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">列印</button>` : '';
     const bgColor = isDeleted ? '#f9fafb' : isReplaced ? '#fafafa' : '#f0fff4';
+    const actionBtns = isDeleted && teId
+      ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();restoreTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">還原</button>`
+      : (!isDeleted && !isReplaced && teId
+        ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();openTransferEvalForm('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">編輯</button>
+           <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();softDeleteTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;color:#c53030;border-color:#fc8181;">刪除</button>
+           <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">列印</button>`
+        : '');
     return `<div class="te-card${isDeleted?' te-deleted':''}">
       <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:${bgColor};cursor:pointer;flex-wrap:wrap;" onclick="toggleTECard('${safeId}')">
         <span style="font-size:.72rem;font-weight:600;background:#c6f6d5;color:#1a7341;border:1px solid #9ae6b4;border-radius:4px;padding:1px 6px;white-space:nowrap;flex-shrink:0;">轉銜評估</span>
         <span style="font-size:.73rem;background:#e9d8fd;color:#553c9a;border-radius:8px;padding:1px 7px;border:1px solid #b794f4;white-space:nowrap;flex-shrink:0;">${escHtml(semLbl)}</span>
         <span style="flex:1;font-weight:600;font-size:.86rem;">${escHtml(filledByDisp)}</span>
         <span style="font-size:.78rem;color:#718096;">${escHtml(ev.filledDate||'')}</span>
-        ${statusBadge}${printBtn}
+        ${statusBadge}${actionBtns}
         <span id="te-icon-${safeId}">▶</span>
       </div>
       <div id="te-body-${safeId}" style="display:none;padding:10px 14px;">
@@ -21970,11 +21975,12 @@ function printTransferEval(caseId, teId) {
   const _nameWithRole = email => {
     if (!email) return '—';
     const u = configData?.users?.[email];
-    if (u) return u.role ? `${u.name || email}（${u.role}）` : (u.name || email);
+    if (u) return u.role ? `${u.name || email} ${u.role}` : (u.name || email);
     return email;
   };
   const filledByDisplay   = _nameWithRole(ev.filledBy);
   const counselorDisplay  = ev.counselorEmail ? _nameWithRole(ev.counselorEmail) : _nameWithRole(ev.counselorName || c.counselorName || '');
+  const semLabel = semesterLabel(ev.semester || '');
   const recLabels = { transfer: '建議評估會議轉銜', discuss: '建議評估會議討論後再決定', noTransfer: '建議不需轉銜' };
   const _pDimColor = lvl => lvl === '1' ? '#276749' : ['2','3'].includes(lvl) ? '#dd6b20' : ['4','5'].includes(lvl) ? '#c53030' : '#718096';
   const _dimLevelLabel = v => ({ '1':'1 (低)','2':'2 (中)','3':'3 (中)','4':'4 (高)','5':'5 (高)','無':'無','不清楚':'不清楚' }[v] || v || '—');
@@ -21998,9 +22004,9 @@ function printTransferEval(caseId, teId) {
     .desc { white-space:pre-wrap; font-size:10.5pt; border:1px solid #ccc; padding:8px; min-height:50px; }
     @media print { body { margin:15mm 14mm; } }
   </style></head><body>
-  <h2>國立屏東科技大學學生諮商中心 轉銜評估</h2>
-  <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)}</div>
-  <div class="meta" style="margin-top:-10px;">主責：${esc(counselorDisplay)} &ensp;|&ensp; 評估人：${esc(filledByDisplay)} &ensp;|&ensp; 填表日期：${esc(ev.filledDate || '—')}</div>
+  <h2>國立屏東科技大學學生諮商中心 ${esc(semLabel)} 轉銜評估</h2>
+  <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)} &ensp;|&ensp; 填表日期：${esc(ev.filledDate || '—')}</div>
+  <div class="meta" style="margin-top:-10px;">主責：${esc(counselorDisplay)} &ensp;|&ensp; 評估人：${esc(filledByDisplay)}</div>
   ${dimRows ? `<div class="section"><table><thead><tr><th style="width:80%;">向度</th><th style="width:20%;text-align:center;">風險等級</th></tr></thead><tbody>${dimRows}</tbody></table></div>` : ''}
   ${stripHtml(ev.mainIssue) ? `<div class="section"><div class="label" style="font-weight:700;margin-bottom:6px;">主訴問題</div><div class="desc">${stripHtml(ev.mainIssue)}</div></div>` : ''}
   ${stripHtml(ev.intervention) ? `<div class="section"><div class="label" style="font-weight:700;margin-bottom:6px;">介入處遇</div><div class="desc">${stripHtml(ev.intervention)}</div></div>` : ''}
