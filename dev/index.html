@@ -3087,6 +3087,44 @@ function buildCounselorOptgroups(filterFn, placeholder) {
   });
   return html;
 }
+// 篩選用下拉選單（啟用者在前依類別分組，停用者在後依類別分組標灰）
+function buildCounselorFilterOpts(selectedValue, includeDisabled = true, allLabel = '全部主責') {
+  const allUsers = Object.entries(configData?.users || {});
+  let html = `<option value=""${!selectedValue ? ' selected' : ''}>${escHtml(allLabel)}</option>`;
+  COUNSELOR_ROLE_GROUPS.forEach(group => {
+    const entries = allUsers
+      .filter(([, info]) => group.roles.includes(info.role || '') && !info.disabled)
+      .sort(([, ia], [, ib]) => {
+        const oa = group.roles.indexOf(ia.role || ''), ob = group.roles.indexOf(ib.role || '');
+        if (oa !== ob) return oa - ob;
+        return (ia.name || '').localeCompare(ib.name || '', 'zh');
+      });
+    if (!entries.length) return;
+    html += `<optgroup label="${escHtml(group.label)}">`;
+    entries.forEach(([email]) => {
+      html += `<option value="${escHtml(email)}"${selectedValue === email ? ' selected' : ''}>${escHtml(formatCounselorLabel(email))}</option>`;
+    });
+    html += '</optgroup>';
+  });
+  if (includeDisabled) {
+    COUNSELOR_ROLE_GROUPS.forEach(group => {
+      const entries = allUsers
+        .filter(([, info]) => group.roles.includes(info.role || '') && info.disabled)
+        .sort(([, ia], [, ib]) => {
+          const oa = group.roles.indexOf(ia.role || ''), ob = group.roles.indexOf(ib.role || '');
+          if (oa !== ob) return oa - ob;
+          return (ia.name || '').localeCompare(ib.name || '', 'zh');
+        });
+      if (!entries.length) return;
+      html += `<optgroup label="${escHtml(group.label + '（已停用）')}">`;
+      entries.forEach(([email]) => {
+        html += `<option value="${escHtml(email)}"${selectedValue === email ? ' selected' : ''} style="color:gray">${escHtml(formatCounselorLabel(email))}（已停用）</option>`;
+      });
+      html += '</optgroup>';
+    });
+  }
+  return html;
+}
 // ── 偏好設定同步至 Drive（防抖，避免頻繁寫入）──────────────
 // 一次性修復已知資料損毀（role 字串含 U+FFFD、email key 錯誤）
 async function migrateConfigIfNeeded() {
@@ -4288,17 +4326,8 @@ function renderCases() {
   const cfCounselor     = document.getElementById('cf-counselor');
   if (cfCounselorWrap) cfCounselorWrap.style.display = isAdmin ? '' : 'none';
   if (isAdmin && cfCounselor) {
-    const seen = new Map();
-    visible.forEach(c => {
-      const key   = c.counselorEmail || c.counselorName || c.counselorText || '';
-      const label = c.counselorEmail
-        ? formatCounselorLabel(c.counselorEmail) || c.counselorName || c.counselorEmail
-        : (c.counselorText || c.counselorName || '');
-      if (key && !seen.has(key)) seen.set(key, label);
-    });
     const prev = cfCounselor.value;
-    cfCounselor.innerHTML = '<option value="">全部人員</option>' +
-      [...seen.entries()].map(([key, name]) => `<option value="${escHtml(key)}"${prev === key ? ' selected' : ''}>${escHtml(name)}</option>`).join('');
+    cfCounselor.innerHTML = buildCounselorFilterOpts(prev, true, '全部人員');
   }
 
   // ── 套用搜尋 / 篩選 ──
@@ -8331,7 +8360,8 @@ function openClosureEvalPage(caseId, evalType, editingEvalId) {
   const dateLabelEl = document.getElementById('cl-date-field-label');
   if (dateLabelEl) dateLabelEl.innerHTML = `${isClosure ? '結案日期' : '評估日期'}<span class="req">*</span>`;
   _clDateSet(prefill?.closureDate || '', evalSem, c.records || []);
-  _populateCounselorSelect(document.getElementById('cl-eval-counselor'), prefill?.evaluatorEmail || currentUser.email);
+  const _clEvalSel = document.getElementById('cl-eval-counselor');
+  if (_clEvalSel) { _clEvalSel.innerHTML = buildCounselorOptgroups(); _clEvalSel.value = prefill?.evaluatorEmail || currentUser.email || ''; }
 
   // 4-12/4-13: 後續安排
   _clFollowupSet(prefill?.followup || '');
@@ -8537,13 +8567,7 @@ function _clDateSet(val, evalSem, caseRecords) {
 }
 
 // ── 後續安排（4-12/4-13）────────────────────────────────────────────────────
-function _populateCounselorSelect(sel, selectedEmail) {
-  const opts = Object.entries(configData?.users || {})
-    .filter(([, u]) => !u.disabled)
-    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}</option>`).join('');
-  sel.innerHTML = `<option value="">—請選擇輔導人員—</option>` + opts;
-  if (selectedEmail) sel.value = selectedEmail;
-}
+
 
 function _clFollowupChange(type, checked) {
   const wrap = document.getElementById('cl-transfer-counselor-wrap');
@@ -8555,7 +8579,7 @@ function _clFollowupChange(type, checked) {
     } else {
       document.getElementById('cl-cb-followup-self').checked = false;
       if (wrap) wrap.style.display = '';
-      if (sel) _populateCounselorSelect(sel);
+      if (sel) sel.innerHTML = buildCounselorOptgroups();
     }
     const msg = type === 'self' ? '✔ 已標記為原主責續接' : '✔ 已標記為內部轉案，請選擇轉案輔導人員';
     const n = document.getElementById('cl-followup-notice');
@@ -8591,7 +8615,7 @@ function _clFollowupSet(val) {
   if (t) t.checked = isTransfer;
   if (wrap) wrap.style.display = isTransfer ? '' : 'none';
   if (isTransfer && sel) {
-    _populateCounselorSelect(sel, val?.startsWith('transfer:') ? val.slice(9) : '');
+    sel.innerHTML = buildCounselorOptgroups(); sel.value = val?.startsWith('transfer:') ? val.slice(9) : '';
   }
   if (n) {
     if (val === 'self') { n.textContent = '✔ 已標記為原主責續接'; n.style.display = ''; }
@@ -9675,10 +9699,7 @@ function renderCaseNums(resetPage) {
     if (clearBtn) clearBtn.disabled = (_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor&&!(document.getElementById('cn-search')?.value?.trim()));
     const cnslSel = document.getElementById('cn-counselor');
     if (cnslSel) {
-      const prev = cnslSel.value;
-      cnslSel.innerHTML = '<option value="">全部人員</option>' +
-        [...counselorMap.entries()].map(([k,v]) => `<option value="${escHtml(k)}"${k===_cnCounselor?' selected':''}>${escHtml(v)}</option>`).join('');
-      if (!cnslSel.querySelector(`option[value="${escHtml(prev)}"]`)) cnslSel.value = '';
+      cnslSel.innerHTML = buildCounselorFilterOpts(_cnCounselor, true, '全部人員');
     }
     const saEl = document.getElementById('cn-select-all');
     if (saEl) { saEl.checked = allChecked; saEl.indeterminate = !allChecked && someChecked; }
@@ -9711,8 +9732,7 @@ function renderCaseNums(resetPage) {
           </select>
           <select id="cn-counselor" class="field-input" style="padding:4px 6px;font-size:.85rem;"
             onchange="_cnCounselor=this.value;_cnPage=1;renderCaseNums()">
-            <option value="">全部人員</option>
-            ${[...counselorMap.entries()].map(([k,v])=>`<option value="${escHtml(k)}"${k===_cnCounselor?' selected':''}>${escHtml(v)}</option>`).join('')}
+            ${buildCounselorFilterOpts(_cnCounselor, true, '全部人員')}
           </select>
           <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;">每頁
             <select id="cn-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;"
@@ -15274,8 +15294,12 @@ function _evrPopulateCounselorSelect(idx) {
   if (!sel || !configData?.users) return;
   const existing = (_evrCounselors[idx] || []).map(u => u.email);
   const opts = Object.entries(configData.users)
-    .filter(([email, info]) => !existing.includes(email) && BK_COUNSELING_ROLES.has(info.role || ''))
-    .sort((a, b) => (a[1].name||'').localeCompare(b[1].name||''))
+    .filter(([email, info]) => !info.disabled && !existing.includes(email) && BK_COUNSELING_ROLES.has(info.role || ''))
+    .sort(([, a], [, b]) => {
+      const oa = COUNSELOR_ROLE_ORDER[a.role || ''] ?? 99, ob = COUNSELOR_ROLE_ORDER[b.role || ''] ?? 99;
+      if (oa !== ob) return oa - ob;
+      return (a.name || '').localeCompare(b.name || '', 'zh');
+    })
     .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}（${escHtml(u.role||'')}）</option>`)
     .join('');
   sel.innerHTML = '<option value="">— 新增晤談者 —</option>' + opts;
@@ -15373,10 +15397,7 @@ function _evrToggleTransfer(idx) {
 function _evrPopulateTransferSel(idx) {
   const sel = document.getElementById(`evr${idx}-sp-transfer-sel`);
   if (!sel || !configData?.users) return;
-  const opts = Object.entries(configData.users)
-    .sort((a, b) => (a[1].name||'').localeCompare(b[1].name||''))
-    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}</option>`).join('');
-  sel.innerHTML = '<option value="">— 請選擇輔導人員 —</option>' + opts;
+  sel.innerHTML = buildCounselorOptgroups();
 }
 
 function _evrAddCustomSvcOpt(idx, type) {
@@ -19217,10 +19238,7 @@ function renderBkListView(body) {
   const cnslSel = document.getElementById('bk-list-counselor');
   if (cnslSel) {
     const cur = cnslSel.value;
-    const names = [...new Set(bookingsData.map(b => b.counselorName || '').filter(Boolean))].sort();
-    cnslSel.innerHTML = '<option value="">全部主責</option>' +
-      names.map(n => `<option value="${escHtml(n)}">${escHtml(n)}</option>`).join('');
-    cnslSel.value = cur;
+    cnslSel.innerHTML = buildCounselorFilterOpts(cur, false, '全部主責');
   }
 
   // 篩選
@@ -19228,7 +19246,7 @@ function renderBkListView(body) {
     if (from && (b.date || '') < from) return false;
     if (to   && (b.date || '') > to)   return false;
     if (roomFilter && b.room !== roomFilter) return false;
-    if (cnslFilter && (b.counselorName || '') !== cnslFilter) return false;
+    if (cnslFilter && b.counselorEmail !== cnslFilter) return false;
     return true;
   });
 
@@ -22176,7 +22194,7 @@ function restoreTransferEval(caseId, teId) {
 function _renderGradTransferTab() {
   const curSem = currentSemesterPrefix();
   if (!window._gradTransferFilters) {
-    const _gtfDefault = () => ({ counselor: currentUser?.email || 'all', decision: 'pending', filled: 'all', gradStatus: 'all', showResolved: false, semester: 'all', search: '' });
+    const _gtfDefault = () => ({ counselor: currentUser?.email || '', decision: 'pending', filled: 'all', gradStatus: 'all', showResolved: false, semester: 'all', search: '' });
     try {
       const saved = localStorage.getItem('scc_gtf_' + DRIVE_FOLDER_ID);
       window._gradTransferFilters = saved ? { ..._gtfDefault(), ...JSON.parse(saved) } : _gtfDefault();
@@ -22230,7 +22248,7 @@ function _renderGradTransferTab() {
   // 套用篩選
   let gradCases = allGradCases;
   if (!F.showResolved) gradCases = gradCases.filter(({ c }) => { const d = _getGradTransferDecision(c.id, semToUse); return !d || d.status === 'pending'; });
-  if (F.counselor !== 'all') gradCases = gradCases.filter(({ c }) => (c.counselorEmail||c.counselorName||'') === F.counselor);
+  if (F.counselor) gradCases = gradCases.filter(({ c }) => (c.counselorEmail||c.counselorName||'') === F.counselor);
   if (F.decision  !== 'all') gradCases = gradCases.filter(({ c }) => (_getGradTransferDecision(c.id, semToUse)?.status || 'pending') === F.decision);
   if (F.filled    !== 'all') gradCases = gradCases.filter(({ c }) => F.filled === 'yes' ? _hasCaseTransferEval(c.id, semToUse) : !_hasCaseTransferEval(c.id, semToUse));
   if (F.gradStatus !== 'all') gradCases = gradCases.filter(({ gs }) => F.gradStatus === 'overdue' ? gs.isOverdue : !gs.isOverdue);
@@ -22404,35 +22422,7 @@ function _renderGradTransferTab() {
 }
 
 function _buildGradFilterCounselorOpts(selectedValue) {
-  const groups = [
-    { label: '專任', roles: ['專任社會工作師', '專任諮商心理師', '專任臨床心理師'] },
-    { label: '兼任', roles: ['兼任諮商心理師', '兼任臨床心理師', '駐校精神科醫師'] },
-    { label: '實習生', roles: ['實習諮商心理師'] },
-    { label: '義務輔導老師', roles: ['義務輔導老師'] },
-    { label: '主任', roles: ['主任'] },
-  ];
-  const profOrder = r => r.includes('社會工作師') ? 0 : r.includes('諮商心理師') ? 1 : r.includes('臨床心理師') ? 2 : 3;
-  const allUsers = Object.entries(configData?.users || {});
-  let html = `<option value="all"${selectedValue === 'all' ? ' selected' : ''}>全部主責</option>`;
-  groups.forEach(group => {
-    const entries = allUsers.filter(([, info]) => group.roles.includes(info.role || ''));
-    if (!entries.length) return;
-    entries.sort(([, ia], [, ib]) => {
-      const da = ia.disabled ? 1 : 0, db = ib.disabled ? 1 : 0;
-      if (da !== db) return da - db;
-      const pa = profOrder(ia.role || ''), pb = profOrder(ib.role || '');
-      if (pa !== pb) return pa - pb;
-      return (ia.name || '').localeCompare(ib.name || '', 'zh');
-    });
-    html += `<optgroup label="${escHtml(group.label)}">`;
-    entries.forEach(([email, info]) => {
-      const dis = !!info.disabled;
-      const lbl = (info.name || email) + (dis ? '（已停用）' : '');
-      html += `<option value="${escHtml(email)}"${selectedValue === email ? ' selected' : ''}${dis ? ' style="color:gray"' : ''}>${escHtml(lbl)}</option>`;
-    });
-    html += '</optgroup>';
-  });
-  return html;
+  return buildCounselorFilterOpts(selectedValue, true, '全部主責');
 }
 
 let _gradFilterSearchTimer = null;
@@ -22457,7 +22447,7 @@ function _gradFilterChange() {
 }
 
 function _gradFilterClear() {
-  window._gradTransferFilters = { counselor: currentUser?.email || 'all', decision: 'pending', filled: 'all', gradStatus: 'all', showResolved: false, semester: 'all', search: '' };
+  window._gradTransferFilters = { counselor: currentUser?.email || '', decision: 'pending', filled: 'all', gradStatus: 'all', showResolved: false, semester: 'all', search: '' };
   try { localStorage.removeItem('scc_gtf_' + DRIVE_FOLDER_ID); } catch(_) {}
   document.getElementById('transfer-body').innerHTML = _renderGradTransferTab();
 }
