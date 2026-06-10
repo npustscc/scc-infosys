@@ -12858,135 +12858,199 @@ ${sigGrid}
 // ══════════════════════════════════════════════
 //  主責人員重複偵測與整併
 // ══════════════════════════════════════════════
+// ── 主責人員整合工具輔助函式 ─────────────────────────────────────────
+
+// 收集所有個案中出現的主責人員身份（以 email 或文字為唯一 key，不依顯示名稱）
+function _collectCounselorIdentities() {
+  const map = new Map();
+  (casesData || []).forEach(c => {
+    let key, display, email = '', text = '';
+    if (c.counselorEmail) {
+      key = 'email:' + c.counselorEmail;
+      display = formatCounselorLabel(c.counselorEmail) || c.counselorEmail;
+      email = c.counselorEmail;
+    } else {
+      text = (c.counselorText || c.counselorName || '').trim();
+      if (!text) return;
+      key = 'text:' + text;
+      display = text;
+    }
+    if (!map.has(key)) map.set(key, { display, count: 0, isLinked: !!email, email, text });
+    map.get(key).count++;
+  });
+  return map;
+}
+
+function _getCaseIdentityKey(c) {
+  if (c.counselorEmail) return 'email:' + c.counselorEmail;
+  const t = (c.counselorText || c.counselorName || '').trim();
+  return t ? 'text:' + t : null;
+}
+
+// 將 sourceKey 的所有個案改為 targetKey，回傳更新筆數
+function _applyCounselorMerge(sourceKey, targetKey) {
+  const tEmail = targetKey.startsWith('email:') ? targetKey.slice(6) : '';
+  const tLabel = tEmail ? (formatCounselorLabel(tEmail) || tEmail) : targetKey.slice(5);
+  let touched = 0;
+  (casesData || []).forEach(c => {
+    if (_getCaseIdentityKey(c) !== sourceKey) return;
+    if (tEmail) { c.counselorEmail = tEmail; c.counselorName = tLabel; c.counselorText = ''; }
+    else { c.counselorEmail = ''; c.counselorName = tLabel; c.counselorText = tLabel; }
+    c.updatedAt = new Date().toISOString();
+    touched++;
+  });
+  return touched;
+}
+
+async function _saveCounselorMerge(label, touched) {
+  openCounselorMergeTool(); renderCases();
+  const jobId = bgJobAdd(label, `${touched} 筆個案`);
+  try {
+    casesManifest = { chunks: [] };
+    await migrateToChunks();
+    auditLog(label, '', `${touched} 筆`);
+    bgJobDone(jobId);
+    showToast(`✓ 已完成：${touched} 筆個案主責更新`, 'success');
+  } catch (err) {
+    bgJobFail(jobId, err.message);
+    showToast('儲存失敗：' + err.message, 'error', 6000);
+  }
+}
+
+// ── 主要工具函式 ──────────────────────────────────────────────────────
+
 function openCounselorMergeTool() {
   const out = document.getElementById('counselor-merge-result');
   if (!casesData?.length) { out.innerHTML = '<span style="color:#a0aec0;">尚無個案資料。</span>'; return; }
 
-  // 收集所有「顯示名稱」 + 案件數量 + 是否連結帳號
-  const displayMap = new Map(); // displayName -> { count, hasEmail, sample: caseId, sourceTexts: Set<string> }
-  const getDisplayInfo = (c) => {
-    if (c.counselorEmail) {
-      const label = formatCounselorLabel(c.counselorEmail) || c.counselorEmail;
-      return { display: label, linked: true, source: c.counselorEmail };
-    }
-    const display = c.counselorText || c.counselorName || c.counselorEmail || '';
-    return { display, linked: false, source: c.counselorText || c.counselorName || '' };
-  };
+  const identities = _collectCounselorIdentities();
 
-  casesData.forEach(c => {
-    const { display, linked, source } = getDisplayInfo(c);
-    if (!display) return;
-    if (!displayMap.has(display)) displayMap.set(display, { count: 0, linkedEmails: new Set(), unlinkedTexts: new Set(), sampleId: c.id });
-    const e = displayMap.get(display);
-    e.count++;
-    if (linked) e.linkedEmails.add(source);
-    else e.unlinkedTexts.add(source);
-  });
+  // 取人名「基底」：移除常見職稱後綴（改以 identity key 為單位，解決同名不同身份 collapse 的問題）
+  const stripSuffix = n => String(n || '')
+    .replace(/(諮商心理師|臨床心理師|心理師|社工師|社工|醫師|老師|主任|員|博士|教授|實習諮商心理師|實習生|實習心理師|義務輔導老師|兼任心理師|專任心理師|兼任|專任)$/g, '')
+    .trim();
 
-  // 取人名「基底」：移除常見職稱後綴
-  const stripSuffix = (n) => String(n || '').replace(/(諮商心理師|臨床心理師|心理師|社工師|社工|醫師|老師|主任|員|博士|教授|實習諮商心理師|實習生|實習心理師|義務輔導老師|兼任心理師|專任心理師|兼任|專任)$/g, '').trim();
   const baseMap = new Map();
-  for (const [name, info] of displayMap) {
-    const base = stripSuffix(name);
+  for (const [key, info] of identities) {
+    const base = stripSuffix(info.display);
     if (!base || base.length < 2) continue;
     if (!baseMap.has(base)) baseMap.set(base, []);
-    baseMap.get(base).push({ name, ...info });
+    baseMap.get(base).push({ key, ...info });
+  }
+  const dupGroups = [...baseMap.entries()].filter(([, arr]) => arr.length > 1);
+
+  // ── 自動偵測區塊 ──
+  let autoHtml;
+  if (!dupGroups.length) {
+    autoHtml = '<div style="color:#276749;font-size:.9rem;margin-bottom:4px;">✓ 未偵測到主責人員名稱可能重複的情況。</div>';
+  } else {
+    autoHtml = `
+      <div style="background:#fff8e6;border:1px solid #f0d490;padding:12px 14px;border-radius:6px;margin-bottom:12px;font-size:.88rem;color:#8a6d3b;">
+        ⚠ 偵測到下列主責人員顯示名稱可能屬於同一人。請選擇要保留的「主版本」，然後按整併。
+      </div>
+      ${dupGroups.map(([base, arr], gi) => {
+        const items = arr.sort((a, b) => b.count - a.count);
+        const rid = `cmrg-${gi}`;
+        return `
+          <div style="border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:10px;">
+            <div style="font-weight:700;color:#1a5276;margin-bottom:8px;">候選名稱基底：「${escHtml(base)}」</div>
+            ${items.map((it, idx) => `
+              <label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:.88rem;cursor:pointer;">
+                <input type="radio" name="${rid}" value="${escHtml(it.key)}" ${idx === 0 ? 'checked' : ''}>
+                <span style="flex:1;">
+                  <strong>${escHtml(it.display)}</strong>
+                  <span style="color:#718096;">（${it.count} 筆）</span>
+                  ${it.isLinked
+                    ? `<span style="color:#1a5276;font-size:.78rem;margin-left:6px;">帳號：${escHtml(it.email)}</span>`
+                    : '<span style="color:#a0aec0;font-size:.78rem;margin-left:6px;">未連結帳號</span>'}
+                </span>
+              </label>`).join('')}
+            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn btn-primary btn-sm" onclick="_mergeDetectedGroup('${rid}',${gi})">整併此組</button>
+              <button class="btn btn-secondary btn-sm" onclick="this.nextElementSibling.style.display='inline';this.style.display='none'">跳過</button>
+              <span style="display:none;color:#a0aec0;font-size:.85rem;">已跳過</span>
+            </div>
+          </div>`;
+      }).join('')}`;
   }
 
-  const groups = [...baseMap.entries()].filter(([_, arr]) => arr.length > 1);
-  if (!groups.length) {
-    out.innerHTML = '<div style="color:#276749;font-size:.9rem;">✓ 未偵測到主責人員顯示名稱重複的情況。</div>';
-    return;
-  }
+  // ── 手動指定合併區塊 ──
+  const allEntries = [...identities.entries()].sort((a, b) => b[1].count - a[1].count);
+  const makeOpts = selKey => allEntries.map(([k, info]) =>
+    `<option value="${escHtml(k)}"${selKey === k ? ' selected' : ''}>${escHtml(info.display)}（${info.count} 筆）${info.isLinked ? '' : ' ⚠未連結'}</option>`
+  ).join('');
 
-  // 顯示每組重複，並提供「整併」選項
-  out.innerHTML = `
-    <div style="background:#fff8e6;border:1px solid #f0d490;padding:12px 14px;border-radius:6px;margin-bottom:12px;font-size:.88rem;color:#8a6d3b;">
-      ⚠ 偵測到下列主責人員顯示名稱可能屬於同一個人。請選擇要保留的「主版本」，然後按整併。
-    </div>
-    ${groups.map(([base, arr], gi) => {
-      const items = arr.sort((a,b)=>b.count-a.count);
-      const id = `cmrg-${gi}`;
-      return `
-        <div style="border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:10px;">
-          <div style="font-weight:700;color:#1a5276;margin-bottom:8px;">候選名稱基底：「${escHtml(base)}」</div>
-          ${items.map((it, idx) => `
-            <label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:.88rem;">
-              <input type="radio" name="${id}" value="${escHtml(it.name)}" ${idx === 0 ? 'checked' : ''} />
-              <span style="flex:1;">
-                <strong>${escHtml(it.name)}</strong>
-                <span style="color:#718096;">（${it.count} 筆）</span>
-                ${it.linkedEmails.size ? `<span style="color:#1a5276;font-size:.78rem;margin-left:6px;">已連結：${[...it.linkedEmails].map(escHtml).join('、')}</span>` : '<span style="color:#a0aec0;font-size:.78rem;margin-left:6px;">未連結帳號</span>'}
-              </span>
-            </label>
-          `).join('')}
-          <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
-            <button class="btn btn-primary btn-sm" onclick="mergeCounselorGroup('${id}',${gi})">整併此組</button>
-            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('cmrg-skip-${gi}').style.display='inline';this.style.display='none'">跳過</button>
-            <span id="cmrg-skip-${gi}" style="display:none;color:#a0aec0;font-size:.85rem;">已跳過</span>
-          </div>
-        </div>`;
-    }).join('')}
-  `;
-  // 暫存組資訊以便整併使用
-  window._counselorMergeGroups = groups.map(([base, arr]) => ({ base, items: arr }));
+  const manualHtml = `
+    <div style="border:1px solid #bee3f8;background:#ebf8ff;border-radius:8px;padding:14px;margin-top:14px;">
+      <div style="font-weight:700;color:#1a5276;margin-bottom:10px;">手動指定合併</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+        <div>
+          <div style="font-size:.8rem;color:#4a5568;margin-bottom:4px;">來源（將被替換）</div>
+          <select id="manual-src" style="padding:5px 8px;font-size:.85rem;border:1px solid #bee3f8;border-radius:4px;min-width:190px;" onchange="_manualMergePreview()">
+            <option value="">— 請選擇 —</option>${makeOpts('')}
+          </select>
+        </div>
+        <div style="font-size:1.2rem;color:#718096;padding-bottom:2px;">→</div>
+        <div>
+          <div style="font-size:.8rem;color:#4a5568;margin-bottom:4px;">目標（保留）</div>
+          <select id="manual-tgt" style="padding:5px 8px;font-size:.85rem;border:1px solid #bee3f8;border-radius:4px;min-width:190px;" onchange="_manualMergePreview()">
+            <option value="">— 請選擇 —</option>${makeOpts('')}
+          </select>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;padding-bottom:2px;">
+          <span id="manual-preview-info" style="font-size:.83rem;color:#718096;"></span>
+          <button class="btn btn-primary btn-sm" onclick="_executeManualMerge()">執行合併</button>
+        </div>
+      </div>
+    </div>`;
+
+  out.innerHTML = autoHtml + manualHtml;
+  window._counselorDupGroups = dupGroups.map(([base, arr]) => ({ base, items: arr }));
 }
 
-async function mergeCounselorGroup(radioName, gi) {
-  const group = window._counselorMergeGroups?.[gi];
+function _manualMergePreview() {
+  const src = document.getElementById('manual-src')?.value;
+  const tgt = document.getElementById('manual-tgt')?.value;
+  const el  = document.getElementById('manual-preview-info');
+  if (!el) return;
+  if (!src || !tgt || src === tgt) { el.textContent = ''; return; }
+  const count = (casesData || []).filter(c => _getCaseIdentityKey(c) === src).length;
+  el.textContent = `將影響 ${count} 筆個案`;
+}
+
+async function _executeManualMerge() {
+  const src = document.getElementById('manual-src')?.value;
+  const tgt = document.getElementById('manual-tgt')?.value;
+  if (!src || !tgt) { alert('請選擇來源與目標。'); return; }
+  if (src === tgt) { alert('來源與目標不能相同。'); return; }
+  const ids = _collectCounselorIdentities();
+  const srcInfo = ids.get(src), tgtInfo = ids.get(tgt);
+  if (!srcInfo || !tgtInfo) { alert('找不到對應的人員資料。'); return; }
+  if (!confirm(`即將將「${srcInfo.display}」（${srcInfo.count} 筆）的主責替換為「${tgtInfo.display}」。\n\n確定繼續？`)) return;
+  const touched = _applyCounselorMerge(src, tgt);
+  if (!touched) { alert('沒有任何個案需要更新。'); return; }
+  await _saveCounselorMerge(`合併主責人員：${srcInfo.display} → ${tgtInfo.display}`, touched);
+}
+
+async function _mergeDetectedGroup(radioName, gi) {
+  const group = window._counselorDupGroups?.[gi];
   if (!group) return;
   const sel = document.querySelector(`input[name="${radioName}"]:checked`);
   if (!sel) { alert('請選擇主版本'); return; }
-  const keepName = sel.value;
-  const keepItem = group.items.find(x => x.name === keepName);
-  if (!keepItem) return;
-  // 決定整併後寫入的 counselorEmail / counselorText
-  const targetEmail = keepItem.linkedEmails && [...keepItem.linkedEmails][0] || '';
-  const targetLabel = targetEmail ? (formatCounselorLabel(targetEmail) || keepName) : keepName;
-
-  // 把同組內 name 不一致的全部 case 改為主版本
-  const otherNames = new Set(group.items.map(x => x.name).filter(n => n !== keepName));
-  if (!otherNames.size) { alert('此組沒有需要整併的名稱。'); return; }
-  if (!confirm(`即將將下列主責顯示名稱整併為「${keepName}」：\n\n${[...otherNames].join('\n')}\n\n確定繼續？`)) return;
-
-  let touched = 0;
-  casesData.forEach(c => {
-    const getDisplay = () => {
-      if (c.counselorEmail) return formatCounselorLabel(c.counselorEmail) || c.counselorEmail;
-      return c.counselorText || c.counselorName || '';
-    };
-    const display = getDisplay();
-    if (otherNames.has(display)) {
-      if (targetEmail) {
-        c.counselorEmail = targetEmail;
-        c.counselorName  = targetLabel;
-        c.counselorText  = '';
-      } else {
-        c.counselorEmail = '';
-        c.counselorName  = targetLabel;
-        c.counselorText  = targetLabel;
-      }
-      c.updatedAt = new Date().toISOString();
-      touched++;
-    }
-  });
-
-  if (!touched) { alert('沒有任何個案需要更新。'); return; }
-  openCounselorMergeTool(); renderCases(); // 立即更新 UI
-  const jobId = bgJobAdd(`整併主責人員：${keepName}`, `${touched} 筆個案`);
-  (async () => {
-    try {
-      casesManifest = { chunks: [] };
-      await migrateToChunks();
-      auditLog('整併主責人員', `${[...otherNames].join('、')} → ${keepName}`, `${touched} 筆`);
-      bgJobDone(jobId);
-      showToast(`✓ 已整併 ${touched} 筆個案的主責人員`, 'success');
-    } catch (err) {
-      bgJobFail(jobId, err.message);
-      showToast('整併失敗：' + err.message, 'error', 6000);
-    }
-  })();
+  const keepKey  = sel.value;
+  const keepInfo = group.items.find(x => x.key === keepKey);
+  if (!keepInfo) return;
+  const sources = group.items.filter(x => x.key !== keepKey);
+  if (!sources.length) { alert('此組沒有需要整併的名稱。'); return; }
+  if (!confirm(`即將將下列主責整併為「${keepInfo.display}」：\n\n${sources.map(x => x.display).join('\n')}\n\n確定繼續？`)) return;
+  let total = 0;
+  sources.forEach(src => { total += _applyCounselorMerge(src.key, keepKey); });
+  if (!total) { alert('沒有任何個案需要更新。'); return; }
+  await _saveCounselorMerge(`整併主責人員 → ${keepInfo.display}`, total);
 }
+
+// 向下相容舊呼叫（已改用 _mergeDetectedGroup）
+function mergeCounselorGroup(radioName, gi) { return _mergeDetectedGroup(radioName, gi); }
 
 function renderCounselorLinkTool() {
   const out = document.getElementById('counselor-link-result');
