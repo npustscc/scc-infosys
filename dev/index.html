@@ -21783,10 +21783,53 @@ async function _markTransferClosureDone(todoId, transferRecId) {
   }
 }
 
+// ── 共用：八向度詳細行（含說明） ──
+function _buildTEDimRows(ev) {
+  const dims = ev.dimensions || [];
+  if (!dims.length) return '';
+  const lvlLabel = v => ({'1':'1 低','2':'2 中','3':'3 中','4':'4 高','5':'5 高','無':'無','不清楚':'不清楚'}[v] || v || '—');
+  const lvlColor = v => v==='1'?'#276749':['2','3'].includes(v)?'#dd6b20':['4','5'].includes(v)?'#c53030':'#718096';
+  const rows = dims.map((d, i) => {
+    const expText = _getDimExp(i, d.level);
+    return `<div style="padding:5px 0;border-bottom:1px solid #f0f4f8;">
+      <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;">
+        <span style="font-size:.8rem;color:#4a5568;flex:1;">${i+1}. ${escHtml(d.label)}</span>
+        <span style="font-size:.78rem;font-weight:700;color:${lvlColor(d.level)};white-space:nowrap;flex-shrink:0;">${escHtml(lvlLabel(d.level))}</span>
+      </div>
+      ${expText ? `<div style="font-size:.75rem;color:#718096;font-style:italic;margin-top:2px;padding-left:16px;">${escHtml(expText)}</div>` : ''}
+    </div>`;
+  }).join('');
+  const sourceNote = ev.sourceEvalDate ? `（帶入自 ${escHtml(ev.sourceEvalDate)}）` : '';
+  return `<div style="margin-top:10px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:4px;">八向度${sourceNote}</div>${rows}</div>`;
+}
+
+// ── 共用：轉銜評估卡片展開內容 ──
+function _buildTECardBody(ev) {
+  const _resolveName = email => email ? (configData?.users?.[email]?.name || email) : '';
+  const filledByName  = _resolveName(ev.filledBy) || ev.filledBy || '';
+  const counselorDisp = ev.counselorEmail ? _resolveName(ev.counselorEmail) : (ev.counselorName || '');
+  const metaLine = (filledByName || counselorDisp)
+    ? `<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:.78rem;color:#718096;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #f0f4f8;">
+        ${counselorDisp ? `<span>主責：<strong style="color:#4a5568;">${escHtml(counselorDisp)}</strong></span>` : ''}
+        ${filledByName  ? `<span>評估人：<strong style="color:#4a5568;">${escHtml(filledByName)}</strong></span>` : ''}
+      </div>` : '';
+  const recLabels = { transfer:'建議評估會議轉銜', discuss:'建議評估會議討論後再決定', noTransfer:'建議不需轉銜' };
+  const recColors = { transfer:'#c0392b', discuss:'#7d6608', noTransfer:'#1d6a3a' };
+  const recBgs   = { transfer:'#fde8e8', discuss:'#fef9e7', noTransfer:'#d5f5e3' };
+  const recColor = recColors[ev.recommendation] || '#718096';
+  const recBg    = recBgs[ev.recommendation]   || '#f7fafc';
+  const recLabel = recLabels[ev.recommendation] || '';
+  return `${metaLine}
+    ${ev.mainIssue        ? `<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">主訴問題</div><div style="font-size:.88rem;">${ev.mainIssue}</div></div>` : ''}
+    ${ev.intervention     ? `<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">介入處遇</div><div style="font-size:.88rem;">${ev.intervention}</div></div>` : ''}
+    ${ev.transferAssessment?`<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">轉銜評估</div><div style="font-size:.88rem;">${ev.transferAssessment}</div></div>` : ''}
+    ${_buildTEDimRows(ev)}
+    ${recLabel ? `<div style="margin-top:10px;padding:6px 10px;background:${recBg};border-left:3px solid ${recColor};border-radius:0 4px 4px 0;font-size:.82rem;font-weight:600;color:${recColor};">轉銜評估建議：${escHtml(recLabel)}</div>` : ''}`;
+}
+
 // ── 所有學期轉銜評估卡片（個案詳細頁，不限學期） ──
 function _renderAllTransferEvalsCard(c, cid) {
   const allEvals = (c.transferEvaluations || [])
-    .filter(e => !e.replacedBy)
     .sort((a, b) => {
       const sc = (b.semester||'').localeCompare(a.semester||'');
       return sc !== 0 ? sc : (b.createdAt||'').localeCompare(a.createdAt||'');
@@ -21795,40 +21838,56 @@ function _renderAllTransferEvalsCard(c, cid) {
   const recColors = { transfer:'#c0392b', discuss:'#7d6608', noTransfer:'#1d6a3a' };
   const recBgs   = { transfer:'#fde8e8', discuss:'#fef9e7', noTransfer:'#d5f5e3' };
   const recLabels = { transfer:'建議轉銜', discuss:'建議討論', noTransfer:'建議不需轉銜' };
-  const _dvBadge = lvl => lvl==='1'?'badge-green':['2','3'].includes(lvl)?'badge-orange':'';
-  const _dvStyle = lvl => ['4','5'].includes(lvl)?'background:#fde8e8;color:#c0392b;border-color:#fc8181;':(lvl==='無'||lvl==='不清楚')?'background:#f0f4f8;color:#718096;border-color:#cbd5e0;':'';
+  // 統計各學期有效評估數（用於收合 chips）
+  const semCounts = {};
+  allEvals.filter(e => !e.replacedBy && !e.deletedAt).forEach(e => {
+    const s = e.semester || '—';
+    semCounts[s] = (semCounts[s] || 0) + 1;
+  });
+  const chips = Object.entries(semCounts)
+    .sort(([a],[b]) => b.localeCompare(a))
+    .map(([sem, n]) => `<span style="font-size:.72rem;background:#e9d8fd;color:#553c9a;border-radius:8px;padding:1px 7px;border:1px solid #b794f4;white-space:nowrap;">${escHtml(semesterLabel(sem))}：${n}</span>`)
+    .join('');
   const cards = allEvals.map(ev => {
-    const isDeleted = !!ev.deletedAt;
-    const teId = ev.teId || '';
+    const isDeleted  = !!ev.deletedAt;
+    const isReplaced = !!ev.replacedBy;
+    const teId  = ev.teId || '';
     const safeId = ('all_' + teId).replace(/[^a-zA-Z0-9_]/g, '_');
-    const recLabel = recLabels[ev.recommendation] || '—';
     const recColor = recColors[ev.recommendation] || '#718096';
-    const recBg = recBgs[ev.recommendation] || '#f0f4f8';
-    const semLbl = semesterLabel(ev.semester || '');
-    const dimHtml = (ev.dimensions||[]).length
-      ? `<div style="margin-top:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:4px;">八向度</div>
-         <div style="display:flex;flex-wrap:wrap;gap:4px;">${(ev.dimensions||[]).map(d=>`<span class="badge ${_dvBadge(d.level)}" style="font-size:.7rem;${_dvStyle(d.level)}">${escHtml(d.label)}：${escHtml(d.level)}</span>`).join('')}</div></div>` : '';
+    const recBg    = recBgs[ev.recommendation]    || '#f0f4f8';
+    const recLabel = recLabels[ev.recommendation] || '—';
+    const semLbl   = semesterLabel(ev.semester || '');
+    const _resolveName = email => email ? (configData?.users?.[email]?.name || email) : '—';
+    const filledByDisp = _resolveName(ev.filledBy) || ev.filledBy || '—';
+    let statusBadge;
+    if (isDeleted)       statusBadge = `<span style="font-size:.72rem;background:#fde8e8;color:#c53030;border-radius:4px;padding:1px 5px;">已刪除 ${(ev.deletedAt||'').slice(0,10)}</span>`;
+    else if (isReplaced) statusBadge = `<span style="font-size:.72rem;background:#f0f4f8;color:#718096;border-radius:4px;padding:1px 5px;border:1px solid #e2e8f0;">已修改（${(ev.replacedAt||'').slice(0,10)}）</span>`;
+    else                 statusBadge = `<span style="font-size:.75rem;padding:2px 8px;border-radius:10px;background:${recBg};color:${recColor};white-space:nowrap;">${recLabel}</span>`;
+    const printBtn = teId && !isReplaced && !isDeleted
+      ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">列印</button>` : '';
+    const bgColor = isDeleted ? '#f9fafb' : isReplaced ? '#fafafa' : '#f0fff4';
     return `<div class="te-card${isDeleted?' te-deleted':''}">
-      <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:${isDeleted?'#f9fafb':'#f0fff4'};cursor:pointer;flex-wrap:wrap;" onclick="toggleTECard('${safeId}')">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:${bgColor};cursor:pointer;flex-wrap:wrap;" onclick="toggleTECard('${safeId}')">
         <span style="font-size:.72rem;font-weight:600;background:#c6f6d5;color:#1a7341;border:1px solid #9ae6b4;border-radius:4px;padding:1px 6px;white-space:nowrap;flex-shrink:0;">轉銜評估</span>
         <span style="font-size:.73rem;background:#e9d8fd;color:#553c9a;border-radius:8px;padding:1px 7px;border:1px solid #b794f4;white-space:nowrap;flex-shrink:0;">${escHtml(semLbl)}</span>
-        <span style="flex:1;font-weight:600;font-size:.86rem;">${escHtml(ev.filledBy||'—')}</span>
+        <span style="flex:1;font-weight:600;font-size:.86rem;">${escHtml(filledByDisp)}</span>
         <span style="font-size:.78rem;color:#718096;">${escHtml(ev.filledDate||'')}</span>
-        ${isDeleted
-          ? `<span style="font-size:.72rem;background:#fde8e8;color:#c53030;border-radius:4px;padding:1px 5px;">已刪除 ${(ev.deletedAt||'').slice(0,10)}</span>`
-          : `<span style="font-size:.75rem;padding:2px 8px;border-radius:10px;background:${recBg};color:${recColor};white-space:nowrap;">${recLabel}</span>`}
-        ${teId ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">列印</button>` : ''}
+        ${statusBadge}${printBtn}
         <span id="te-icon-${safeId}">▶</span>
       </div>
       <div id="te-body-${safeId}" style="display:none;padding:10px 14px;">
-        ${ev.mainIssue?`<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">主訴問題</div><div style="font-size:.88rem;">${ev.mainIssue}</div></div>`:''}
-        ${ev.intervention?`<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">介入處遇</div><div style="font-size:.88rem;">${ev.intervention}</div></div>`:''}
-        ${ev.transferAssessment?`<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">轉銜評估</div><div style="font-size:.88rem;">${ev.transferAssessment}</div></div>`:''}
-        ${dimHtml}
+        ${_buildTECardBody(ev)}
       </div>
     </div>`;
   }).join('');
-  return mkSection('transfer-eval-all', '轉銜評估紀錄（所有學期）', cards, false);
+  return `<div class="form-section section-collapsible collapsed" id="cs-transfer-eval-all">
+    <div class="form-section-title" onclick="toggleSection('cs-transfer-eval-all')" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
+      <span>轉銜評估紀錄（所有學期）</span>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-right:auto;margin-left:10px;">${chips}</div>
+      <span class="toggle-icon">▲</span>
+    </div>
+    <div class="section-body">${cards}</div>
+  </div>`;
 }
 
 // ── 轉銜評估卡片（個案詳細頁） ──
@@ -21857,13 +21916,11 @@ function _renderTransferEvalSection(c, cid, activeSem) {
     const recLabel = recLabels[ev.recommendation] || '—';
     const recColor = recColors[ev.recommendation] || '#718096';
     const recBg = recBgs[ev.recommendation] || '#f0f4f8';
-    const dimHtml = (ev.dimensions || []).length
-      ? `<div style="margin-top:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:4px;">八向度（帶入自 ${escHtml(ev.sourceEvalDate || '—')}）</div>
-         <div style="display:flex;flex-wrap:wrap;gap:4px;">${(ev.dimensions||[]).map(d=>`<span class="badge" style="font-size:.7rem;">${escHtml(d.label)}：${escHtml(d.level)}</span>`).join('')}</div></div>` : '';
+    const filledByName = ev.filledBy ? (configData?.users?.[ev.filledBy]?.name || ev.filledBy) : '—';
     return `<div class="te-card${isDeleted ? ' te-deleted' : ''}">
       <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:${isDeleted?'#f9fafb':'#f0fff4'};cursor:pointer;flex-wrap:wrap;" onclick="toggleTECard('${safeTeId}')">
         <span style="font-size:.72rem;font-weight:600;background:#c6f6d5;color:#1a7341;border:1px solid #9ae6b4;border-radius:4px;padding:1px 6px;white-space:nowrap;flex-shrink:0;">轉銜評估</span>
-        <span style="flex:1;font-weight:600;font-size:.86rem;">${escHtml(ev.filledBy || '—')}</span>
+        <span style="flex:1;font-weight:600;font-size:.86rem;">${escHtml(filledByName)}</span>
         <span style="font-size:.78rem;color:#718096;">${escHtml(ev.filledDate || '')}</span>
         ${isDeleted
           ? `<span style="font-size:.72rem;background:#fde8e8;color:#c53030;border-radius:4px;padding:1px 5px;">已刪除 ${ev.deletedAt?.slice(0,10)||''}</span>`
@@ -21874,10 +21931,7 @@ function _renderTransferEvalSection(c, cid, activeSem) {
         <span id="te-icon-${safeTeId}">▶</span>
       </div>
       <div id="te-body-${safeTeId}" style="display:none;padding:10px 14px;">
-        ${ev.mainIssue ? `<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">主訴問題</div><div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.mainIssue)}</div></div>` : ''}
-        ${ev.intervention ? `<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">介入處遇</div><div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.intervention)}</div></div>` : ''}
-        ${ev.transferAssessment ? `<div style="margin-bottom:8px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:3px;">轉銜評估</div><div style="font-size:.88rem;white-space:pre-wrap;">${escHtml(ev.transferAssessment)}</div></div>` : ''}
-        ${dimHtml}
+        ${_buildTECardBody(ev)}
       </div>
     </div>`;
   }).join('');
@@ -21945,12 +21999,13 @@ function printTransferEval(caseId, teId) {
     @media print { body { margin:15mm 14mm; } }
   </style></head><body>
   <h2>國立屏東科技大學學生諮商中心 轉銜評估</h2>
-  <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)} &ensp;|&ensp; 主責：${esc(counselorDisplay)} &ensp;|&ensp; 填表人：${esc(filledByDisplay)} &ensp;|&ensp; 填表日期：${esc(ev.filledDate || '—')}</div>
+  <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)}</div>
+  <div class="meta" style="margin-top:-10px;">主責：${esc(counselorDisplay)} &ensp;|&ensp; 評估人：${esc(filledByDisplay)} &ensp;|&ensp; 填表日期：${esc(ev.filledDate || '—')}</div>
   ${dimRows ? `<div class="section"><table><thead><tr><th style="width:80%;">向度</th><th style="width:20%;text-align:center;">風險等級</th></tr></thead><tbody>${dimRows}</tbody></table></div>` : ''}
   ${stripHtml(ev.mainIssue) ? `<div class="section"><div class="label" style="font-weight:700;margin-bottom:6px;">主訴問題</div><div class="desc">${stripHtml(ev.mainIssue)}</div></div>` : ''}
   ${stripHtml(ev.intervention) ? `<div class="section"><div class="label" style="font-weight:700;margin-bottom:6px;">介入處遇</div><div class="desc">${stripHtml(ev.intervention)}</div></div>` : ''}
   ${stripHtml(ev.transferAssessment) ? `<div class="section"><div class="label" style="font-weight:700;margin-bottom:6px;">轉銜評估</div><div class="desc">${stripHtml(ev.transferAssessment)}</div></div>` : ''}
-  <div class="section"><table><tr><th>建議</th></tr><tr><td style="padding:8px;font-weight:700;">${esc(recLabels[ev.recommendation] || ev.recommendation || '—')}</td></tr></table></div>
+  <div class="section"><table><tr><th>轉銜評估建議</th></tr><tr><td style="padding:8px;font-weight:700;">${esc(recLabels[ev.recommendation] || ev.recommendation || '—')}</td></tr></table></div>
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
   const win = window.open('', '_blank');
