@@ -22112,9 +22112,14 @@ function restoreTransferEval(caseId, teId) {
 function _renderGradTransferTab() {
   const curSem = currentSemesterPrefix();
   if (!window._gradTransferFilters) {
-    window._gradTransferFilters = { counselor: 'all', decision: 'all', filled: 'all', gradStatus: 'all', showResolved: false, semester: 'all' };
+    const _gtfDefault = () => ({ counselor: currentUser?.email || 'all', decision: 'pending', filled: 'all', gradStatus: 'all', showResolved: false, semester: 'all', search: '' });
+    try {
+      const saved = localStorage.getItem('scc_gtf_' + DRIVE_FOLDER_ID);
+      window._gradTransferFilters = saved ? { ..._gtfDefault(), ...JSON.parse(saved) } : _gtfDefault();
+    } catch(_) { window._gradTransferFilters = _gtfDefault(); }
   }
   if (window._gradTransferFilters.semester === undefined) window._gradTransferFilters.semester = 'all';
+  if (window._gradTransferFilters.search === undefined) window._gradTransferFilters.search = '';
   const F = window._gradTransferFilters;
   const semToUse = (F.semester && F.semester !== 'all') ? F.semester : curSem;
   const semLbl = semesterLabel(semToUse);
@@ -22165,8 +22170,7 @@ function _renderGradTransferTab() {
   if (F.decision  !== 'all') gradCases = gradCases.filter(({ c }) => (_getGradTransferDecision(c.id, semToUse)?.status || 'pending') === F.decision);
   if (F.filled    !== 'all') gradCases = gradCases.filter(({ c }) => F.filled === 'yes' ? _hasCaseTransferEval(c.id, semToUse) : !_hasCaseTransferEval(c.id, semToUse));
   if (F.gradStatus !== 'all') gradCases = gradCases.filter(({ gs }) => F.gradStatus === 'overdue' ? gs.isOverdue : !gs.isOverdue);
-  // 主責下拉選項（去重）
-  const counselorOpts = [...new Map(allGradCases.map(({ c }) => [c.counselorEmail||c.counselorName||'', c.counselorName||c.counselorEmail||''])).entries()].filter(([k]) => k);
+  if (F.search) { const q = F.search.toLowerCase(); gradCases = gradCases.filter(({ c }) => (c.studentId||'').toLowerCase().includes(q) || (c.name||'').toLowerCase().includes(q) || (c.id||'').toLowerCase().includes(q)); }
   const decLabelMap = { pending:'待決議', noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）', untraceable:'年久不可考' };
   const decColorMap = { pending:'#718096', noTransfer_self:'#1d6a3a', transfer_school:'#c0392b', noTransfer_school:'#1d6a3a', stay:'#553c9a', b_case:'#4a5568', one_time_consult:'#4a5568', direct_admission:'#2b6cb0', untraceable:'#6b7280' };
   const decBgMap = { pending:'#f0f4f8', noTransfer_self:'#d5f5e3', transfer_school:'#fde8e8', noTransfer_school:'#d5f5e3', stay:'#e9d8fd', b_case:'#e2e8f0', one_time_consult:'#e2e8f0', direct_admission:'#e0f2fe', untraceable:'#f3f4f6' };
@@ -22184,8 +22188,7 @@ function _renderGradTransferTab() {
       ${semOpts.map(s => `<option value="${escHtml(s)}"${F.semester===s?' selected':''}>${escHtml(semesterLabel(s))}</option>`).join('')}
     </select>
     <select id="grad-filter-counselor" style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="_gradFilterChange()">
-      <option value="all">全部主責</option>
-      ${counselorOpts.map(([k, n]) => `<option value="${escHtml(k)}"${F.counselor===k?' selected':''}>${escHtml(n)}</option>`).join('')}
+      ${_buildGradFilterCounselorOpts(F.counselor)}
     </select>
     <select id="grad-filter-decision" style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="_gradFilterChange()">
       <option value="all"${F.decision==='all'?' selected':''}>全部決議</option>
@@ -22213,6 +22216,10 @@ function _renderGradTransferTab() {
       <input type="checkbox" id="grad-filter-showresolved" ${F.showResolved?'checked':''} onchange="_gradFilterChange()">
       顯示已決議個案
     </label>
+    <input id="grad-filter-search" type="text" placeholder="搜尋學號／姓名／案號…" value="${escHtml(F.search||'')}"
+      style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;min-width:160px;"
+      oninput="_gradFilterSearchDebounce()">
+    <button onclick="_gradFilterClear()" style="padding:4px 10px;font-size:.82rem;border:1px solid #cbd5e0;border-radius:4px;background:#fff;color:#4a5568;cursor:pointer;white-space:nowrap;flex-shrink:0;" title="恢復預設篩選條件">清除篩選</button>
   </div>`;
   const actionBar = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;">
     <label style="cursor:pointer;" data-tip="Excel 欄位（固定6欄）：姓名、學號、校級評估會議日期、校級會議轉銜評估結果、結案會議日期、結案會議評估結果">
@@ -22332,16 +22339,62 @@ function _renderGradTransferTab() {
   return statsBar + filterBar + actionBar + batchBar + (rows || emptyMsg);
 }
 
+function _buildGradFilterCounselorOpts(selectedValue) {
+  const groups = [
+    { label: '專任', roles: ['專任社會工作師', '專任諮商心理師', '專任臨床心理師'] },
+    { label: '兼任', roles: ['兼任諮商心理師', '兼任臨床心理師', '駐校精神科醫師'] },
+    { label: '實習生', roles: ['實習諮商心理師'] },
+    { label: '義務輔導老師', roles: ['義務輔導老師'] },
+    { label: '主任', roles: ['主任'] },
+  ];
+  const profOrder = r => r.includes('社會工作師') ? 0 : r.includes('諮商心理師') ? 1 : r.includes('臨床心理師') ? 2 : 3;
+  const allUsers = Object.entries(configData?.users || {});
+  let html = `<option value="all"${selectedValue === 'all' ? ' selected' : ''}>全部主責</option>`;
+  groups.forEach(group => {
+    const entries = allUsers.filter(([, info]) => group.roles.includes(info.role || ''));
+    if (!entries.length) return;
+    entries.sort(([, ia], [, ib]) => {
+      const da = ia.disabled ? 1 : 0, db = ib.disabled ? 1 : 0;
+      if (da !== db) return da - db;
+      const pa = profOrder(ia.role || ''), pb = profOrder(ib.role || '');
+      if (pa !== pb) return pa - pb;
+      return (ia.name || '').localeCompare(ib.name || '', 'zh');
+    });
+    html += `<optgroup label="${escHtml(group.label)}">`;
+    entries.forEach(([email, info]) => {
+      const dis = !!info.disabled;
+      const lbl = (info.name || email) + (dis ? '（已停用）' : '');
+      html += `<option value="${escHtml(email)}"${selectedValue === email ? ' selected' : ''}${dis ? ' style="color:gray"' : ''}>${escHtml(lbl)}</option>`;
+    });
+    html += '</optgroup>';
+  });
+  return html;
+}
+
+let _gradFilterSearchTimer = null;
+function _gradFilterSearchDebounce() {
+  clearTimeout(_gradFilterSearchTimer);
+  _gradFilterSearchTimer = setTimeout(_gradFilterChange, 220);
+}
+
 function _gradFilterChange() {
   if (!window._gradTransferFilters) window._gradTransferFilters = {};
   const F = window._gradTransferFilters;
   const g = id => document.getElementById(id);
-  if (g('grad-filter-semester'))   F.semester   = g('grad-filter-semester').value;
-  if (g('grad-filter-counselor'))  F.counselor  = g('grad-filter-counselor').value;
-  if (g('grad-filter-decision'))   F.decision   = g('grad-filter-decision').value;
-  if (g('grad-filter-filled'))     F.filled     = g('grad-filter-filled').value;
-  if (g('grad-filter-gradstatus')) F.gradStatus = g('grad-filter-gradstatus').value;
+  if (g('grad-filter-semester'))    F.semester    = g('grad-filter-semester').value;
+  if (g('grad-filter-counselor'))   F.counselor   = g('grad-filter-counselor').value;
+  if (g('grad-filter-decision'))    F.decision    = g('grad-filter-decision').value;
+  if (g('grad-filter-filled'))      F.filled      = g('grad-filter-filled').value;
+  if (g('grad-filter-gradstatus'))  F.gradStatus  = g('grad-filter-gradstatus').value;
   if (g('grad-filter-showresolved')) F.showResolved = g('grad-filter-showresolved').checked;
+  if (g('grad-filter-search'))      F.search      = g('grad-filter-search').value;
+  try { localStorage.setItem('scc_gtf_' + DRIVE_FOLDER_ID, JSON.stringify(F)); } catch(_) {}
+  document.getElementById('transfer-body').innerHTML = _renderGradTransferTab();
+}
+
+function _gradFilterClear() {
+  window._gradTransferFilters = { counselor: currentUser?.email || 'all', decision: 'pending', filled: 'all', gradStatus: 'all', showResolved: false, semester: 'all', search: '' };
+  try { localStorage.removeItem('scc_gtf_' + DRIVE_FOLDER_ID); } catch(_) {}
   document.getElementById('transfer-body').innerHTML = _renderGradTransferTab();
 }
 
