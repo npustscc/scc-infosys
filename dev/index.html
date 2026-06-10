@@ -22703,7 +22703,7 @@ async function showGradTransferImportPreview(rows, curSem) {
     const { mc, matchType } = _gtMatch(e.name, e.sid);
     const isDuplicate = !!(mc && _getGradTransferDecision(mc?.id, curSem));
     e.mc = mc; e.matchType = matchType; e.isDuplicate = isDuplicate;
-    e.forceAccept = false;
+    e.forceType = null; e._relinking = false;
     // 修正成功 → 自動加入選取；仍有問題 → 移出選取
     if (matchType === 'full' && !isDuplicate) sel.add(i); else sel.delete(i);
     _gtRender();
@@ -22714,11 +22714,23 @@ async function showGradTransferImportPreview(rows, curSem) {
     }
   };
 
-  window._gtForceAccept = (i) => { entries[i].forceAccept = true; sel.add(i); _gtRender(); };
+  window._gtForceAccept  = (i) => { entries[i].forceType = 'old_eval';  sel.add(i); _gtRender(); };
+  window._gtForceLink    = (i) => { entries[i].forceType = 'direct';    sel.add(i); _gtRender(); };
+  window._gtUpdateSid    = (i) => { entries[i].forceType = 'update_sid'; sel.add(i); _gtRender(); };
+  window._gtStartRelink  = (i) => { window._gtRow[i]._relinking = true; _gtRender(); };
+  window._gtRelinkPick   = (i, cid) => {
+    const mc = casesData.find(c => c.id === cid);
+    if (!mc) return;
+    const e = window._gtRow[i];
+    e.mc = mc; e.forceType = 'relink'; e._relinking = false;
+    sel.add(i); _gtRender();
+  };
+  window._gtCancelRelink = (i) => { window._gtRow[i]._relinking = false; _gtRender(); };
 
   // ── 列渲染 ──
   function _gtMakeRow(e, i) {
-    const isEditable = e.matchType !== 'full' && !e.forceAccept;
+    const forceAccepted = !!e.forceType;
+    const isEditable = e.matchType !== 'full' && !forceAccepted && !e._relinking;
     const manuallyFixed = (e.name !== e.originalName || e.sid !== e.originalSid) && e.matchType === 'full' && !e.isDuplicate;
     const warnMsg = e.matchType==='none' ? '❌ 找不到個案'
       : e.matchType==='sid_only' ? `⚠ 學號符合姓名不符（系統：${escHtml(e.mc?.name||'—')}）`
@@ -22726,20 +22738,46 @@ async function showGradTransferImportPreview(rows, curSem) {
     const dupBadge = e.isDuplicate
       ? `<span style="font-size:.72rem;background:#fed7aa;color:#9c4221;border-radius:4px;padding:1px 5px;border:1px solid #fb923c;">已有決議：${escHtml(decLblMap[_getGradTransferDecision(e.mc?.id,curSem)?.status]||'—')}</span>`
       : '';
-    let rowBg = e.isDuplicate ? '#fff7ed' : (e.forceAccept ? '#ecfdf5' : (isEditable ? '#fff8e1' : (i%2===0?'#fff':'#f7fafc')));
+    let rowBg = e.isDuplicate ? '#fff7ed' : (forceAccepted ? '#ecfdf5' : e._relinking ? '#f0fdf4' : (isEditable ? '#fff8e1' : (i%2===0?'#fff':'#f7fafc')));
     if (manuallyFixed) rowBg = '#ecfdf5';
     const auditHtml = [
       (e.name !== e.originalName) ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原姓名：${escHtml(e.originalName)})</div>` : '',
       (e.sid  !== e.originalSid)  ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原學號：${escHtml(e.originalSid)})</div>`  : '',
     ].join('');
-    const nameOnlyBtn = e.matchType === 'name_only' && !e.forceAccept
-      ? `<br><button onclick="window._gtForceAccept(${i})" style="margin-top:4px;font-size:.72rem;padding:2px 7px;border:1px solid #059669;background:#ecfdf5;color:#059669;border-radius:4px;cursor:pointer;white-space:nowrap;">納入此個案（舊評估）</button>`
+    const _btn = (onclick, label, color, bg) =>
+      `<button onclick="${onclick}" style="margin-top:3px;font-size:.72rem;padding:2px 7px;border:1px solid ${color};background:${bg};color:${color};border-radius:4px;cursor:pointer;white-space:nowrap;">${label}</button>`;
+    let actionBtns = '';
+    if (!forceAccepted && !e._relinking) {
+      if (e.matchType === 'name_only') {
+        actionBtns =
+          _btn(`window._gtForceAccept(${i})`, '納入（舊評估）', '#059669', '#ecfdf5') +
+          _btn(`window._gtUpdateSid(${i})`,   '更新學號',       '#2b6cb0', '#ebf8ff') +
+          _btn(`window._gtStartRelink(${i})`, '重新連結',       '#718096', '#f7fafc');
+      } else if (e.matchType === 'sid_only') {
+        actionBtns =
+          _btn(`window._gtForceLink(${i})`,   '直接連結',       '#059669', '#ecfdf5') +
+          _btn(`window._gtStartRelink(${i})`, '重新連結',       '#718096', '#f7fafc');
+      } else if (e.matchType === 'none') {
+        actionBtns = _btn(`window._gtStartRelink(${i})`, '手動連結個案', '#718096', '#f7fafc');
+      }
+    }
+    const relinkUI = e._relinking
+      ? `<div style="display:flex;flex-direction:column;gap:3px;margin-top:2px;">
+           <select onchange="if(this.value)window._gtRelinkPick(${i},this.value)" style="font-size:.75rem;padding:2px;max-width:160px;border:1px solid #a0aec0;border-radius:4px;">
+             <option value="">— 選擇個案 —</option>
+             ${casesData.filter(c=>!c.deleted).sort((a,b)=>(a.name||'').localeCompare(b.name||'','zh-TW')).map(c=>`<option value="${c.id}">${escHtml(c.name)}（${escHtml(c.studentId||'—')}）</option>`).join('')}
+           </select>
+           <button onclick="window._gtCancelRelink(${i})" style="font-size:.72rem;padding:1px 6px;border:1px solid #cbd5e0;background:#fff;color:#718096;border-radius:4px;cursor:pointer;width:fit-content;">取消</button>
+         </div>`
       : '';
-    const statusContent = e.forceAccept
-      ? `<span style="font-size:.78rem;color:#059669;">✅ 納入（舊評估）</span><div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">對應：${escHtml(e.mc?.name||'—')}（${escHtml(e.mc?.studentId||'—')}）</div>`
-      : manuallyFixed
-        ? `<span style="font-size:.78rem;color:#059669;">✅ 已手動修正對應</span>${auditHtml}`
-        : `${dupBadge}${warnMsg ? (dupBadge?'<br>':'') + warnMsg : ''}${nameOnlyBtn}${auditHtml}`;
+    const forceLabelMap = { old_eval:'納入（舊評估）', direct:'直接連結', update_sid:'更新學號並連結', relink:'重新連結至' };
+    const statusContent = e._relinking
+      ? relinkUI
+      : forceAccepted
+        ? `<span style="font-size:.78rem;color:#059669;">✅ ${forceLabelMap[e.forceType]||''}</span><div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">對應：${escHtml(e.mc?.name||'—')}（${escHtml(e.mc?.studentId||'—')}）</div>`
+        : manuallyFixed
+          ? `<span style="font-size:.78rem;color:#059669;">✅ 已手動修正對應</span>${auditHtml}`
+          : `${dupBadge}${warnMsg ? (dupBadge?'<br>':'') + warnMsg : ''}<div style="display:flex;flex-direction:column;">${actionBtns}</div>${auditHtml}`;
     const decSel = `<select style="font-size:.8rem;padding:2px 4px;" onchange="window._gtRow[${i}].decision=this.value">
       <option value="pending"${e.decision==='pending'?' selected':''}>未決議</option>
       <option value="noTransfer_school"${e.decision==='noTransfer_school'?' selected':''}>校級不轉銜</option>
@@ -22763,7 +22801,7 @@ async function showGradTransferImportPreview(rows, curSem) {
       <td style="font-size:.8rem;">${escHtml(e.closureMeetingDate||'—')}</td>
       <td>${decSel}</td>
       <td>${closureSel}</td>
-      <td data-status-cell="${i}" style="font-size:.78rem;color:${e.forceAccept?'#059669':(isEditable&&!manuallyFixed?'#d97706':'#718096')};min-width:80px;">${statusContent}</td>
+      <td data-status-cell="${i}" style="font-size:.78rem;color:${forceAccepted?'#059669':(isEditable&&!manuallyFixed?'#d97706':'#718096')};min-width:100px;">${statusContent}</td>
     </tr>`;
   }
 
@@ -22863,9 +22901,14 @@ async function showGradTransferImportPreview(rows, curSem) {
     const toImport = entries.filter((_, i) => sel.has(i));
     if (!toImport.length) { alert('未選取任何列'); return; }
     const now = new Date().toISOString(); let matched = 0, unassigned = 0;
+    const sidUpdateCaseIds = [];
     toImport.forEach(e => {
       const mc = e.mc || casesData.find(c => !c.deleted && (c.studentId===e.sid || c.name===e.name));
       if (mc) {
+        if (e.forceType === 'update_sid' && e.sid && e.sid !== mc.studentId) {
+          mc.studentId = e.sid;
+          sidUpdateCaseIds.push(mc.id);
+        }
         const ex = _getGradTransferDecision(mc.id, curSem);
         if (ex) {
           ex.status = e.decision; ex.schoolMeetingDate = e.schoolMeetingDate||''; ex.updatedAt = now;
@@ -22893,7 +22936,13 @@ async function showGradTransferImportPreview(rows, curSem) {
     const total = matched + unassigned;
     if (total > 0) {
       const jobId = bgJobAdd(`匯入校級評估結果（${total}筆）`);
-      (async () => { try { await saveTransfer(); _checkTransferGradTodos(); bgJobDone(jobId); auditLog('匯入校級轉銜評估結果', null, null, `${total}筆`); } catch (e) { bgJobFail(jobId, e.message); } })();
+      (async () => { try {
+        await saveTransfer();
+        if (sidUpdateCaseIds.length) await saveCasesChunks(...sidUpdateCaseIds);
+        _checkTransferGradTodos();
+        bgJobDone(jobId);
+        auditLog('匯入校級轉銜評估結果', null, null, `${total}筆${sidUpdateCaseIds.length?`（含 ${sidUpdateCaseIds.length} 筆學號更新）`:''}`);
+      } catch (e) { bgJobFail(jobId, e.message); } })();
     }
     if (unassigned > 0) {
       alert(`已匯入 ${matched} 筆，另有 ${unassigned} 筆因找不到對應個案而納入「未歸屬校級評估」，請至該頁籤手動連結。`);
