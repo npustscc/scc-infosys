@@ -22703,6 +22703,7 @@ async function showGradTransferImportPreview(rows, curSem) {
     const { mc, matchType } = _gtMatch(e.name, e.sid);
     const isDuplicate = !!(mc && _getGradTransferDecision(mc?.id, curSem));
     e.mc = mc; e.matchType = matchType; e.isDuplicate = isDuplicate;
+    e.forceAccept = false;
     // 修正成功 → 自動加入選取；仍有問題 → 移出選取
     if (matchType === 'full' && !isDuplicate) sel.add(i); else sel.delete(i);
     _gtRender();
@@ -22713,9 +22714,11 @@ async function showGradTransferImportPreview(rows, curSem) {
     }
   };
 
+  window._gtForceAccept = (i) => { entries[i].forceAccept = true; sel.add(i); _gtRender(); };
+
   // ── 列渲染 ──
   function _gtMakeRow(e, i) {
-    const isEditable = e.matchType !== 'full';
+    const isEditable = e.matchType !== 'full' && !e.forceAccept;
     const manuallyFixed = (e.name !== e.originalName || e.sid !== e.originalSid) && e.matchType === 'full' && !e.isDuplicate;
     const warnMsg = e.matchType==='none' ? '❌ 找不到個案'
       : e.matchType==='sid_only' ? `⚠ 學號符合姓名不符（系統：${escHtml(e.mc?.name||'—')}）`
@@ -22723,15 +22726,20 @@ async function showGradTransferImportPreview(rows, curSem) {
     const dupBadge = e.isDuplicate
       ? `<span style="font-size:.72rem;background:#fed7aa;color:#9c4221;border-radius:4px;padding:1px 5px;border:1px solid #fb923c;">已有決議：${escHtml(decLblMap[_getGradTransferDecision(e.mc?.id,curSem)?.status]||'—')}</span>`
       : '';
-    let rowBg = e.isDuplicate ? '#fff7ed' : (isEditable ? '#fff8e1' : (i%2===0?'#fff':'#f7fafc'));
+    let rowBg = e.isDuplicate ? '#fff7ed' : (e.forceAccept ? '#ecfdf5' : (isEditable ? '#fff8e1' : (i%2===0?'#fff':'#f7fafc')));
     if (manuallyFixed) rowBg = '#ecfdf5';
     const auditHtml = [
       (e.name !== e.originalName) ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原姓名：${escHtml(e.originalName)})</div>` : '',
       (e.sid  !== e.originalSid)  ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原學號：${escHtml(e.originalSid)})</div>`  : '',
     ].join('');
-    const statusContent = manuallyFixed
-      ? `<span style="font-size:.78rem;color:#059669;">✅ 已手動修正對應</span>${auditHtml}`
-      : `${dupBadge}${warnMsg ? (dupBadge?'<br>':'') + warnMsg : ''}${auditHtml}`;
+    const nameOnlyBtn = e.matchType === 'name_only' && !e.forceAccept
+      ? `<br><button onclick="window._gtForceAccept(${i})" style="margin-top:4px;font-size:.72rem;padding:2px 7px;border:1px solid #059669;background:#ecfdf5;color:#059669;border-radius:4px;cursor:pointer;white-space:nowrap;">納入此個案（舊評估）</button>`
+      : '';
+    const statusContent = e.forceAccept
+      ? `<span style="font-size:.78rem;color:#059669;">✅ 納入（舊評估）</span><div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">對應：${escHtml(e.mc?.name||'—')}（${escHtml(e.mc?.studentId||'—')}）</div>`
+      : manuallyFixed
+        ? `<span style="font-size:.78rem;color:#059669;">✅ 已手動修正對應</span>${auditHtml}`
+        : `${dupBadge}${warnMsg ? (dupBadge?'<br>':'') + warnMsg : ''}${nameOnlyBtn}${auditHtml}`;
     const decSel = `<select style="font-size:.8rem;padding:2px 4px;" onchange="window._gtRow[${i}].decision=this.value">
       <option value="pending"${e.decision==='pending'?' selected':''}>未決議</option>
       <option value="noTransfer_school"${e.decision==='noTransfer_school'?' selected':''}>校級不轉銜</option>
@@ -22755,7 +22763,7 @@ async function showGradTransferImportPreview(rows, curSem) {
       <td style="font-size:.8rem;">${escHtml(e.closureMeetingDate||'—')}</td>
       <td>${decSel}</td>
       <td>${closureSel}</td>
-      <td data-status-cell="${i}" style="font-size:.78rem;color:${isEditable&&!manuallyFixed?'#d97706':'#718096'};min-width:80px;">${statusContent}</td>
+      <td data-status-cell="${i}" style="font-size:.78rem;color:${e.forceAccept?'#059669':(isEditable&&!manuallyFixed?'#d97706':'#718096')};min-width:80px;">${statusContent}</td>
     </tr>`;
   }
 
