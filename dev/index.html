@@ -751,6 +751,7 @@
     }
     .section-collapsible.collapsed .toggle-icon { transform: rotate(180deg); }
     .section-collapsible.collapsed .section-body { display: none; }
+    .section-collapsible.collapsed { padding-top: 10px; padding-bottom: 10px; margin-bottom: 10px; }
 
     /* ── Service sub-panels ── */
     .service-item-row { display: flex; flex-direction: column; margin-bottom: 10px; }
@@ -875,6 +876,7 @@
     .attach-item.upload-error { background:#fff5f5;border:1px solid #fed7d7; }
     @keyframes attach-spin { to { transform:rotate(360deg); } }
     .attach-spinner { display:inline-block;width:13px;height:13px;border:2px solid #bee3f8;border-top-color:#3182ce;border-radius:50%;animation:attach-spin .8s linear infinite;flex-shrink:0; }
+    .attach-drag-over { outline:2px dashed #3182ce !important;background:#ebf8ff !important;border-radius:6px; }
     @keyframes gt-shake { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-6px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(4px)} }
     .gt-shake { animation: gt-shake 0.5s ease; }
 
@@ -4389,6 +4391,15 @@ function _getLatestCounselorEmail(c) {
   return c.counselorEmail || '';
 }
 
+function _isInitialInterviewerOfCase(c, email) {
+  if (!email) return false;
+  if (c.initialInterview?.interviewerEmail === email) return true;
+  if (c.initialInterviews) {
+    return Object.values(c.initialInterviews).some(ii => ii?.interviewerEmail === email);
+  }
+  return false;
+}
+
 function renderCases() {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
 
@@ -4402,6 +4413,7 @@ function renderCases() {
       if (latestCounselor === currentUser.email) return true;
       const allowed = configData?.users?.[currentUser.email]?.allowedCases || [];
       if (allowed.includes(c.id)) return true;
+      if (_isInitialInterviewerOfCase(c, currentUser.email)) return true;
       return false;
     });
   }
@@ -9930,7 +9942,8 @@ function _makeTableResizable({ table, colPrefix, colNums, prefKey, skipCols = ne
       const onMove = ev => {
         const delta = ev.pageX - startX;
         const maxW = document.documentElement.clientWidth;
-        const newTableW = Math.min(maxW, Math.max(startTableW, startTableW + delta));
+        const minTableW = colNums.length * 30;
+        const newTableW = Math.min(maxW, Math.max(minTableW, startTableW + delta));
         const w = Math.max(30, startW + (newTableW - startTableW));
         if (col) col.style.width = w + 'px';
         table.style.width = newTableW + 'px';
@@ -22013,19 +22026,25 @@ function printTransferEval(caseId, teId) {
     @media print { body { margin:15mm 14mm; } }
   </style></head><body>
   <h2>國立屏東科技大學學生諮商中心 ${esc(semLabel)} 轉銜評估</h2>
-  <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)} &ensp;|&ensp; 填表日期：${esc(ev.filledDate || '—')}</div>
+  <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)} &ensp;|&ensp; 評估日期：${esc(ev.evalDate || '—')} &ensp;|&ensp; 填表日期：${esc(ev.filledDate || '—')}</div>
   <div class="meta" style="margin-top:-10px;">主責：${esc(counselorDisplay)} &ensp;|&ensp; 評估人：${esc(filledByDisplay)}</div>
   ${dimRows ? `<div class="section"><table><thead><tr><th style="width:80%;">向度</th><th style="width:20%;text-align:center;">風險等級</th></tr></thead><tbody>${dimRows}</tbody></table></div>` : ''}
   ${stripHtml(ev.mainIssue) ? `<div class="section"><div class="label" style="font-weight:700;margin-bottom:6px;">主訴問題</div><div class="desc">${stripHtml(ev.mainIssue)}</div></div>` : ''}
   ${stripHtml(ev.intervention) ? `<div class="section"><div class="label" style="font-weight:700;margin-bottom:6px;">介入處遇</div><div class="desc">${stripHtml(ev.intervention)}</div></div>` : ''}
   ${stripHtml(ev.transferAssessment) ? `<div class="section"><div class="label" style="font-weight:700;margin-bottom:6px;">轉銜評估</div><div class="desc">${stripHtml(ev.transferAssessment)}</div></div>` : ''}
   <div class="section"><table><tr><th>轉銜評估建議</th></tr><tr><td style="padding:8px;font-weight:700;">${esc(recLabels[ev.recommendation] || ev.recommendation || '—')}</td></tr></table></div>
-  <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
-  const win = window.open('', '_blank');
-  if (!win) { alert('請允許彈出視窗以列印。'); return; }
-  win.document.write(htmlBody);
-  win.document.close();
+  let frame = document.getElementById('_te_print_frame');
+  if (frame) frame.remove();
+  frame = document.createElement('iframe');
+  frame.id = '_te_print_frame';
+  frame.style.cssText = 'position:fixed;left:-9999px;top:0;width:210mm;height:297mm;border:0;visibility:hidden;';
+  document.body.appendChild(frame);
+  frame.onload = () => {
+    frame.contentWindow.print();
+    setTimeout(() => { if (frame.parentNode) frame.remove(); }, 3000);
+  };
+  frame.srcdoc = htmlBody;
 }
 
 let _teFormCaseId = null;
@@ -24358,11 +24377,37 @@ function attachInit(pid, existing, opts = {}) {
     imagesOnly: !!opts.imagesOnly, imgMaxPx: opts.imgMaxPx || 1280, imgQuality: opts.imgQuality || 0.85 });
   _attachUploadPromises.set(pid, new Set());
   attachRender(pid);
+  const wrap = document.getElementById('attachPicker_' + pid);
+  if (wrap && !wrap._attachEventsAdded) {
+    wrap._attachEventsAdded = true;
+    wrap.setAttribute('tabindex', '0');
+    wrap.addEventListener('dragover', e => { e.preventDefault(); wrap.classList.add('attach-drag-over'); });
+    wrap.addEventListener('dragleave', e => { if (!wrap.contains(e.relatedTarget)) wrap.classList.remove('attach-drag-over'); });
+    wrap.addEventListener('drop', e => {
+      e.preventDefault(); wrap.classList.remove('attach-drag-over');
+      const files = [...(e.dataTransfer.files || [])];
+      if (files.length) attachHandleInput(pid, { files });
+    });
+    wrap.addEventListener('paste', e => {
+      const files = [...(e.clipboardData?.files || [])];
+      if (!files.length) return;
+      e.preventDefault();
+      attachHandleInput(pid, { files });
+    });
+  }
 }
 
 function _attachTotal(pid) {
   const s = _attachState.get(pid);
   return s ? s.existing.length + s.pending.length : 0;
+}
+
+function _attachSlots(pid) {
+  const s = _attachState.get(pid);
+  if (!s) return 0;
+  const cost = a => a.type === 'image' ? 1 : 5;
+  return s.existing.reduce((n, a) => n + cost(a), 0) +
+         s.pending.reduce((n, a) => n + cost(a), 0);
 }
 
 function _attachIcon(type) {
@@ -24383,7 +24428,7 @@ function attachRender(pid) {
   const s = _attachState.get(pid);
   if (!s) return;
   if (s.imagesOnly) { _attachRenderImages(pid, s); return; }
-  const max = 3, total = _attachTotal(pid);
+  const slots = _attachSlots(pid), canAdd = slots < 15;
 
   const exHtml = s.existing.map((a, i) => `
     <div class="attach-item existing">
@@ -24412,12 +24457,12 @@ function attachRender(pid) {
     </div>`;
   }).join('');
 
-  const addBtn = total < max
+  const addBtn = canAdd
     ? `<button type="button" class="attach-add-btn" onclick="document.getElementById('attachInput_${pid}').click()">＋ 新增附件</button>` : '';
 
   wrap.innerHTML = `
     <div style="font-size:.82rem;color:#4a5568;margin-bottom:5px;font-weight:500;">
-      附件 <span style="font-weight:400;color:#718096;">（最多3個，支援圖片・PDF・Word）</span>
+      附件 <span style="font-weight:400;color:#718096;cursor:help;" data-tip="最多15張圖片，或最多3個附件（PDF/Word）；兩者混合時，1個附件＝5張圖片的額度，合計上限15額度。支援拖曳或 Ctrl+V 貼上。已用 ${slots}/15 額度。">（已用 ${slots}/15 額度・支援拖曳/貼上 ⓘ）</span>
     </div>
     ${exHtml}${penHtml}${addBtn}
     <input type="file" id="attachInput_${pid}" style="display:none"
@@ -24444,7 +24489,7 @@ async function attachHandleInput(pid, input) {
   if (_s0?.imagesOnly) {
     const files = [...(input.files || [])]; input.value = '';
     for (const file of files) {
-      if (!_attachState.get(pid) || _attachTotal(pid) >= 3) break;
+      if (!_attachState.get(pid) || _attachTotal(pid) >= 15) break;
       const ext = (file.name.split('.').pop() || '').toLowerCase();
       if (file.type.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp'].includes(ext)) {
         await _attachAddRecImg(pid, file);
@@ -24456,13 +24501,22 @@ async function attachHandleInput(pid, input) {
   input.value = '';
   for (const file of files) {
     const s = _attachState.get(pid);
-    if (!s || _attachTotal(pid) >= 3) { if (files.length > 1) showToast('最多只能新增3個附件', 'warning'); return; }
+    if (!s) return;
     const ext = (file.name.split('.').pop() || '').toLowerCase();
-    if (file.type.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp'].includes(ext)) {
-      await _attachAddImage(pid, file);
-    } else if (file.type === 'application/pdf' || ext === 'pdf') {
-      await _attachAddPdf(pid, file);
-    } else if (['doc','docx','docm'].includes(ext) || (file.type||'').includes('wordprocessingml') || file.type === 'application/msword') {
+    const isImg = file.type.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp'].includes(ext);
+    const isPdf = file.type === 'application/pdf' || ext === 'pdf';
+    const isWord = ['doc','docx','docm'].includes(ext) || (file.type||'').includes('wordprocessingml') || file.type === 'application/msword';
+    const slotCost = isImg ? 1 : 5;
+    const usedSlots = _attachSlots(pid);
+    if (usedSlots + slotCost > 15) {
+      const rem = 15 - usedSlots;
+      if (isImg) showToast('圖片額度已用完（15張上限）', 'warning');
+      else showToast(`附件需佔 5 個額度，目前剩餘 ${rem} 個`, 'warning');
+      return;
+    }
+    if (isImg) { await _attachAddImage(pid, file); }
+    else if (isPdf) { await _attachAddPdf(pid, file); }
+    else if (isWord) {
       if (file.size > 5 * 1024 * 1024) { alert(`Word 檔案「${file.name}」超過 5MB 限制`); return; }
       _attachAddWord(pid, file);
     } else {
@@ -24546,7 +24600,7 @@ async function _attachAddRecImg(pid, file) {
 function _attachRenderImages(pid, s) {
   const wrap = document.getElementById('attachPicker_' + pid);
   if (!wrap) return;
-  const max = 3, total = _attachTotal(pid);
+  const total = _attachTotal(pid), canAdd = total < 15;
 
   const exHtml = s.existing.map((a, i) => `
     <div class="attach-item existing">
@@ -24575,12 +24629,12 @@ function _attachRenderImages(pid, s) {
     </div>`;
   }).join('');
 
-  const addBtn = total < max
+  const addBtn = canAdd
     ? `<button type="button" class="attach-add-btn" onclick="document.getElementById('attachInput_${pid}').click()">＋ 新增附圖</button>` : '';
 
   wrap.innerHTML = `
     <div style="font-size:.82rem;color:#4a5568;margin-bottom:5px;font-weight:500;">
-      附圖 <span style="font-weight:400;color:#718096;">（最多3張，壓縮後上傳至 Drive）</span>
+      附圖 <span style="font-weight:400;color:#718096;cursor:help;" data-tip="最多15張，壓縮後上傳至 Drive。支援拖曳或 Ctrl+V 貼上。">（${total}/15 張・支援拖曳/貼上 ⓘ）</span>
     </div>
     ${exHtml}${penHtml}${addBtn}
     <input type="file" id="attachInput_${pid}" style="display:none" accept="image/*" multiple
@@ -24654,7 +24708,7 @@ async function _attachAddPdf(pid, file) {
 
     const s = _attachState.get(pid);
     if (!s) return;
-    const availSlots = 3 - _attachTotal(pid);
+    const availSlots = Math.floor((15 - _attachSlots(pid)) / 5);
 
     if (numPages === 1) {
       showLoading('轉換第 1 頁…');
@@ -24678,7 +24732,7 @@ async function _attachAddPdf(pid, file) {
     for (let i = 0; i < selected.length; i += 5) {
       const chunk = selected.slice(i, i + 5);
       const s2 = _attachState.get(pid);
-      if (!s2 || _attachTotal(pid) >= 3) break;
+      if (!s2 || _attachSlots(pid) + 5 > 15) break;
       const pr1 = chunk[0].pageNum, pr2 = chunk[chunk.length - 1].pageNum;
       const item = {
         type: 'pdf_pages', fileName: file.name, mimeType: 'image/jpeg',
@@ -25429,15 +25483,20 @@ async function deleteIssueComment(issueId, commentId) {
   }
 }
 
-async function addIssueComment(issueId, content) {
-  content = (content || '').trim();
+async function addIssueComment(issueId) {
+  const textarea = document.getElementById('issue-comment-' + issueId);
+  const content = (textarea?.value || '').trim();
   if (!content) { alert('請填寫留言內容'); return; }
   const issue = issuesData.find(x => x.id === issueId);
   if (!issue) return;
   if (!issue.comments) issue.comments = [];
+  let attachments = [];
+  try { attachments = await attachFlush('ic_' + issueId); }
+  catch(e) { alert('附件上傳失敗：' + e.message); return; }
   const comment = {
     id: 'c_' + Date.now(),
     content,
+    attachments,
     authorEmail: currentUser?.email || '',
     authorName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
     createdAt: new Date().toISOString(),
@@ -25503,6 +25562,7 @@ function renderIssuesPage() {
               ${editedMark}${actBtns}
             </div>
             <div id="issue-comment-text-${sid}-${cid}" style="color:#2d3748;white-space:pre-wrap;">${escHtml(c.content)}</div>
+            ${renderAttachChips(c.attachments)}
           </div>`;
         }).join('')}
       </div>` : '';
@@ -25519,11 +25579,13 @@ function renderIssuesPage() {
       </div>` : '';
 
     const commentInput = `
-      <div style="margin-top:8px;display:flex;gap:6px;align-items:flex-start;">
+      <div style="margin-top:8px;">
         <textarea id="issue-comment-${sid}" rows="2" placeholder="新增留言…"
-          style="flex:1;padding:6px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;resize:vertical;"></textarea>
-        <button class="btn btn-primary btn-sm" style="white-space:nowrap;margin-top:1px;"
-          onclick="addIssueComment('${sid}',document.getElementById('issue-comment-${sid}').value)">送出</button>
+          style="width:100%;padding:6px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;resize:vertical;box-sizing:border-box;"></textarea>
+        <div id="attachPicker_ic_${sid}" class="attach-picker-wrap"></div>
+        <div style="display:flex;justify-content:flex-end;margin-top:4px;">
+          <button class="btn btn-primary btn-sm" onclick="addIssueComment('${sid}')">送出</button>
+        </div>
       </div>`;
 
     const dateStr = issue.submittedAt
@@ -25549,6 +25611,9 @@ function renderIssuesPage() {
       </div>`;
   }).join('');
   renderIssuesBadge();
+  setTimeout(() => {
+    sorted.forEach(issue => { attachInit('ic_' + issue.id, []); });
+  }, 0);
 }
 
 // ══════════════════════════════════════════════
