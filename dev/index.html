@@ -890,6 +890,24 @@
     /* ── 轉銜管理：行內編輯匯入表格 ── */
     .grad-import-table td { padding:5px 8px;font-size:.85rem; }
     .grad-import-table td[contenteditable="true"] { background:#fffbeb;border:1px solid #f6ad55;border-radius:3px;outline:none;min-width:60px; }
+    /* ── Genogram Editor ── */
+    #geno-overlay { position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow-y:auto; }
+    #geno-modal { background:#fff;border-radius:12px;width:min(98vw,940px);max-height:calc(100vh - 32px);display:flex;flex-direction:column;overflow:hidden;margin:auto; }
+    #geno-header { display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid #e2e8f0;flex-shrink:0; }
+    #geno-toolbox { display:flex;align-items:center;gap:5px;flex-wrap:wrap;padding:7px 12px;background:#f7fafc;border-bottom:1px solid #e2e8f0;flex-shrink:0; }
+    #geno-shape-palette { display:flex;align-items:center;gap:5px;flex-wrap:wrap;padding:6px 12px;background:#f0fff4;border-bottom:1px solid #c6f6d5;flex-shrink:0; }
+    .geno-tb-btn { padding:3px 9px;border:1px solid #cbd5e0;border-radius:4px;background:#fff;cursor:pointer;font-size:.82rem;color:#2d3748;transition:background .1s;white-space:nowrap; }
+    .geno-tb-btn:hover { background:#edf2f7; }
+    .geno-tb-btn.active { background:#bee3f8;border-color:#3182ce;color:#2b6cb0; }
+    .geno-tb-sep { border-left:1px solid #cbd5e0;margin:0 2px;height:20px;display:inline-block;flex-shrink:0; }
+    .geno-shape-btn { padding:3px 8px;border:1px solid #c6f6d5;border-radius:4px;background:#f0fff4;cursor:pointer;font-size:.79rem;color:#276749;transition:background .1s;white-space:nowrap; }
+    .geno-shape-btn:hover { background:#c6f6d5; }
+    .geno-shape-btn.active { background:#9ae6b4;border-color:#48bb78;color:#22543d;font-weight:600; }
+    #geno-canvas-wrap { overflow:hidden;cursor:crosshair;background:#f8fafc;position:relative;flex:1;min-height:200px; }
+    #geno-svg { width:100%;height:100%;display:block; }
+    #geno-footer { display:flex;align-items:center;justify-content:space-between;padding:10px 16px;gap:8px;flex-wrap:wrap;border-top:1px solid #e2e8f0;flex-shrink:0; }
+    .geno-open-btn { font-size:.8rem;padding:3px 10px;border:1px solid #9ae6b4;border-radius:4px;background:#f0fff4;color:#276749;cursor:pointer;transition:background .1s; }
+    .geno-open-btn:hover { background:#c6f6d5; }
   </style>
 </head>
 <body>
@@ -2511,6 +2529,9 @@
         </div>
         <div id="rec-summary" class="field-input rt-editor" contenteditable="true"
              style="resize:vertical;min-height:180px;overflow:auto;white-space:pre-wrap;line-height:1.6;"></div>
+        <div style="margin-top:6px;">
+          <button type="button" class="geno-open-btn" onclick="openGenogramEditor('rec-summary',_recordCaseId,'rec_sum_'+(_editingRecordId||'new'))">＋ 家族圖</button>
+        </div>
         <div id="attachPicker_recimg" class="attach-picker-wrap" style="margin-top:8px;"></div>
       </div>
 
@@ -2723,6 +2744,7 @@
           <input type="file" id="ii-family-image-input" accept="image/*" style="display:none;" onchange="iiLoadFamilyImage(this)" />
           <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('ii-family-image-input').click()">📎 附上家系圖圖片（非必填）</button>
           <button type="button" id="ii-family-image-clear" class="btn btn-secondary btn-sm" style="display:none;" onclick="iiClearFamilyImage()">移除圖片</button>
+          <button type="button" class="geno-open-btn" onclick="openGenogramEditor('ii-family',_initialInterviewCaseId,'ii_fam_'+_initialInterviewCaseId)">＋ 家族圖</button>
         </div>
         <div id="ii-family-image-preview" style="margin-top:8px;"></div>
         <label class="field-label" style="margin-top:10px;">(二)主訴問題</label>
@@ -3749,6 +3771,387 @@ function handleFloatingBack() {
 function setAlert(containerId, type, msg) {
   document.getElementById(containerId).innerHTML =
     msg ? `<div class="alert alert-${type}">${msg}</div>` : '';
+}
+
+// ════════════════════════════════════════════════════════════════
+//  GenogramEditor — Bowen 家族圖繪製工具
+// ════════════════════════════════════════════════════════════════
+const GenogramEditor = (() => {
+  'use strict';
+  const NS = 'http://www.w3.org/2000/svg';
+  const SZ = 22;
+  let _svg=null,_vp=null;
+  let _objs=[],_selId=null;
+  let _tool='select',_placeShape='male',_linkType='married';
+  let _zoom=1,_panX=0,_panY=0;
+  let _undo=[],_redo=[];
+  let _idSeq=1,_dragBeforeState=null;
+  let _dragging=null,_connectFrom=null,_connectLine=null;
+  let _fieldId=null,_storeKey=null,_caseId=null,_canvasH=400;
+
+  const _el=(tag,attrs={})=>{const e=document.createElementNS(NS,tag);for(const[k,v]of Object.entries(attrs))e.setAttribute(k,String(v));return e;};
+  const _uid=()=>'g'+(++_idSeq)+'_'+(Date.now()%1000000);
+
+  // ── Shape drawing ────────────────────────────────────────────────
+  function _nodeEl(o) {
+    const g=_el('g',{class:'geno-node','data-id':o.id,transform:`translate(${o.x},${o.y})`});
+    const sel=o.id===_selId,sc=sel?'#3182ce':'#1a202c',sw=sel?'2.5':'1.8',t=o.shapeType;
+    if(t==='male'||t==='dead_m'||t==='ip_m'){
+      if(t==='ip_m')g.appendChild(_el('rect',{x:-(SZ+5),y:-(SZ+5),width:(SZ+5)*2,height:(SZ+5)*2,fill:'none',stroke:sc,'stroke-width':sw}));
+      g.appendChild(_el('rect',{x:-SZ,y:-SZ,width:SZ*2,height:SZ*2,fill:t==='dead_m'?'#e2e8f0':'#fff',stroke:sc,'stroke-width':sw}));
+      if(t==='dead_m'){g.appendChild(_el('line',{x1:-(SZ-4),y1:-(SZ-4),x2:SZ-4,y2:SZ-4,stroke:sc,'stroke-width':sw}));g.appendChild(_el('line',{x1:SZ-4,y1:-(SZ-4),x2:-(SZ-4),y2:SZ-4,stroke:sc,'stroke-width':sw}));}
+    }else if(t==='female'||t==='dead_f'||t==='ip_f'){
+      if(t==='ip_f')g.appendChild(_el('circle',{cx:0,cy:0,r:SZ+5,fill:'none',stroke:sc,'stroke-width':sw}));
+      g.appendChild(_el('circle',{cx:0,cy:0,r:SZ,fill:t==='dead_f'?'#e2e8f0':'#fff',stroke:sc,'stroke-width':sw}));
+      if(t==='dead_f'){const r=SZ*.65;g.appendChild(_el('line',{x1:-r,y1:-r,x2:r,y2:r,stroke:sc,'stroke-width':sw}));g.appendChild(_el('line',{x1:r,y1:-r,x2:-r,y2:r,stroke:sc,'stroke-width':sw}));}
+    }else if(t==='unknown'){
+      g.appendChild(_el('polygon',{points:`0,${-SZ} ${SZ},0 0,${SZ} ${-SZ},0`,fill:'#fff',stroke:sc,'stroke-width':sw}));
+    }else if(t==='abort'){
+      g.appendChild(_el('polygon',{points:`0,${-SZ*.8} ${SZ*.75},${SZ*.6} ${-SZ*.75},${SZ*.6}`,fill:sc,stroke:'none'}));
+    }else if(t==='stillbirth'){
+      const s=SZ*.5;g.appendChild(_el('rect',{x:-s,y:-s,width:s*2,height:s*2,fill:sc,stroke:'none'}));
+    }else{
+      g.appendChild(_el('circle',{cx:0,cy:0,r:SZ,fill:'#fff',stroke:sc,'stroke-width':sw}));
+    }
+    if(sel)g.appendChild(_el('circle',{cx:0,cy:0,r:SZ+11,fill:'none',stroke:'#3182ce','stroke-width':'1','stroke-dasharray':'3,2',opacity:'0.5'}));
+    if(o.label){const lbl=_el('text',{x:0,y:SZ+14,'text-anchor':'middle','font-size':'11',fill:'#2d3748','font-family':'sans-serif'});lbl.textContent=o.label;g.appendChild(lbl);}
+    g.appendChild(_el('rect',{x:-(SZ+8),y:-(SZ+8),width:(SZ+8)*2,height:(SZ+8)*2,fill:'transparent',stroke:'none'}));
+    return g;
+  }
+
+  function _linkEl(o) {
+    const fm=_objs.find(x=>x.id===o.from),to=_objs.find(x=>x.id===o.to);
+    if(!fm||!to)return null;
+    const g=_el('g',{class:'geno-conn','data-id':o.id});
+    const sel=o.id===_selId,sc=sel?'#3182ce':'#1a202c';
+    const x1=fm.x,y1=fm.y,x2=to.x,y2=to.y,d=`M${x1} ${y1}L${x2} ${y2}`;
+    const dash=o.linkType==='dashed'?'7,4':o.linkType==='dotted'?'2,5':'';
+    g.appendChild(_el('path',{d,fill:'none',stroke:sc,'stroke-width':'1.8',...(dash?{'stroke-dasharray':dash}:{})}));
+    if(o.linkType==='separated'||o.linkType==='divorced'){
+      const mx=(x1+x2)/2,my=(y1+y2)/2,dx=x2-x1,dy=y2-y1,len=Math.hypot(dx,dy)||1;
+      const nx=-dy/len,ny=dx/len,SL=9,n=o.linkType==='divorced'?2:1;
+      for(let i=0;i<n;i++){
+        const off=n===2?(i===0?-5.5:5.5):0,px=mx+(dx/len)*off,py=my+(dy/len)*off;
+        g.appendChild(_el('line',{x1:px+nx*SL,y1:py+ny*SL,x2:px-nx*SL,y2:py-ny*SL,stroke:sc,'stroke-width':'1.8'}));
+      }
+    }
+    g.appendChild(_el('path',{d,fill:'none',stroke:'transparent','stroke-width':'14'}));
+    return g;
+  }
+
+  function _textEl(o) {
+    const g=_el('g',{class:'geno-text-obj','data-id':o.id});
+    const sel=o.id===_selId;
+    const t=_el('text',{x:o.x,y:o.y,'font-size':o.fontSize||12,fill:sel?'#3182ce':'#1a202c','font-family':'sans-serif'});
+    t.textContent=o.text;g.appendChild(t);
+    if(sel)g.appendChild(_el('rect',{x:o.x-3,y:o.y-14,width:o.text.length*(o.fontSize||12)*0.62+10,height:18,fill:'none',stroke:'#3182ce','stroke-width':'1','stroke-dasharray':'3,2'}));
+    return g;
+  }
+
+  // ── Render ───────────────────────────────────────────────────────
+  function _render() {
+    if(!_vp)return;
+    while(_vp.firstChild)_vp.removeChild(_vp.firstChild);
+    _vp.setAttribute('transform',`translate(${_panX},${_panY}) scale(${_zoom})`);
+    const grid=_el('g');
+    for(let x=-2400;x<=2400;x+=60)grid.appendChild(_el('line',{x1:x,y1:-2400,x2:x,y2:2400,stroke:'#a0aec0','stroke-width':'0.5',opacity:'0.35'}));
+    for(let y=-2400;y<=2400;y+=60)grid.appendChild(_el('line',{x1:-2400,y1:y,x2:2400,y2:y,stroke:'#a0aec0','stroke-width':'0.5',opacity:'0.35'}));
+    _vp.appendChild(grid);
+    for(const o of _objs)if(o.type==='link'){const g=_linkEl(o);if(g)_vp.appendChild(g);}
+    for(const o of _objs)if(o.type==='node')_vp.appendChild(_nodeEl(o));
+    for(const o of _objs)if(o.type==='text')_vp.appendChild(_textEl(o));
+    if(_connectLine)_vp.appendChild(_connectLine);
+  }
+
+  // ── Coords & Hit ─────────────────────────────────────────────────
+  const _toSVG=(cx,cy)=>{const r=_svg.getBoundingClientRect();return{x:(cx-r.left-_panX)/_zoom,y:(cy-r.top-_panY)/_zoom};};
+  const _hitNode=(x,y)=>[..._objs].reverse().find(o=>o.type==='node'&&Math.abs(x-o.x)<=SZ+8&&Math.abs(y-o.y)<=SZ+8)||null;
+  const _hitText=(x,y)=>[..._objs].reverse().find(o=>o.type==='text'&&x>=o.x-5&&x<=o.x+o.text.length*8&&y>=o.y-16&&y<=o.y+4)||null;
+  const _hitLink=(x,y)=>[..._objs].reverse().find(o=>{
+    if(o.type!=='link')return false;
+    const fm=_objs.find(n=>n.id===o.from),to=_objs.find(n=>n.id===o.to);
+    if(!fm||!to)return false;
+    const dx=to.x-fm.x,dy=to.y-fm.y,len=Math.hypot(dx,dy)||1;
+    const t2=Math.max(0,Math.min(1,((x-fm.x)*dx+(y-fm.y)*dy)/(len*len)));
+    return Math.hypot(x-(fm.x+t2*dx),y-(fm.y+t2*dy))<=10;
+  })||null;
+
+  // ── Undo/Redo ────────────────────────────────────────────────────
+  const _snap=()=>JSON.parse(JSON.stringify(_objs));
+  const _pushUndo=()=>{_undo.push(_snap());if(_undo.length>60)_undo.shift();_redo=[];};
+  function undo(){if(!_undo.length)return;_redo.push(_snap());_objs=_undo.pop();_selId=null;_render();}
+  function redo(){if(!_redo.length)return;_undo.push(_snap());_objs=_redo.pop();_selId=null;_render();}
+
+  // ── Mouse events ─────────────────────────────────────────────────
+  function _onMouseDown(e){
+    if(e.button!==0)return;e.preventDefault();
+    const{x,y}=_toSVG(e.clientX,e.clientY);
+    const nd=_hitNode(x,y),tx=!nd&&_hitText(x,y),lk=!nd&&!tx&&_hitLink(x,y);
+    if(_tool==='select'){
+      if(nd){_selId=nd.id;_dragBeforeState=_snap();_dragging={type:'node',id:nd.id,sx:x,sy:y,ox:nd.x,oy:nd.y};}
+      else if(tx){_selId=tx.id;_dragBeforeState=_snap();_dragging={type:'text',id:tx.id,sx:x,sy:y,ox:tx.x,oy:tx.y};}
+      else if(lk){_selId=lk.id;_dragging=null;}
+      else{_selId=null;_dragging={type:'pan',sx:e.clientX,sy:e.clientY,ox:_panX,oy:_panY};}
+      _render();
+    }else if(_tool.startsWith('place_')){
+      _pushUndo();
+      const sh=_tool.slice(6),n={id:_uid(),type:'node',shapeType:sh,x:Math.round(x),y:Math.round(y),label:''};
+      _objs.push(n);_selId=n.id;_render();
+    }else if(_tool==='connect'){
+      if(nd){
+        if(!_connectFrom){_connectFrom=nd.id;_connectLine=_el('line',{x1:nd.x,y1:nd.y,x2:nd.x,y2:nd.y,stroke:'#3182ce','stroke-width':'1.5','stroke-dasharray':'4,3','pointer-events':'none'});}
+        else if(nd.id!==_connectFrom){_pushUndo();_objs.push({id:_uid(),type:'link',from:_connectFrom,to:nd.id,linkType:_linkType});_connectFrom=null;_connectLine=null;_render();}
+      }else{_connectFrom=null;_connectLine=null;_render();}
+    }else if(_tool==='text'){
+      const t=prompt('輸入文字：');
+      if(t&&t.trim()){_pushUndo();_objs.push({id:_uid(),type:'text',x:Math.round(x),y:Math.round(y),text:t.trim(),fontSize:12});_render();}
+    }else if(_tool==='erase'){
+      const tgt=nd||tx||lk;
+      if(tgt){_pushUndo();_objs=_objs.filter(o=>o.id!==tgt.id&&!(o.type==='link'&&(o.from===tgt.id||o.to===tgt.id)));if(_selId===tgt.id)_selId=null;_render();}
+    }
+  }
+
+  function _onMouseMove(e){
+    if(_dragging){
+      if(_dragging.type==='node'||_dragging.type==='text'){
+        const{x,y}=_toSVG(e.clientX,e.clientY);
+        const o=_objs.find(o=>o.id===_dragging.id);
+        if(o){o.x=_dragging.ox+(x-_dragging.sx);o.y=_dragging.oy+(y-_dragging.sy);_render();}
+      }else if(_dragging.type==='pan'){
+        _panX=_dragging.ox+(e.clientX-_dragging.sx);_panY=_dragging.oy+(e.clientY-_dragging.sy);_render();
+      }
+    }
+    if(_connectLine&&_connectFrom){
+      const{x,y}=_toSVG(e.clientX,e.clientY);_connectLine.setAttribute('x2',x);_connectLine.setAttribute('y2',y);_render();
+    }
+  }
+
+  function _onMouseUp(){
+    if(_dragging&&(_dragging.type==='node'||_dragging.type==='text')&&_dragBeforeState){
+      const o=_objs.find(x=>x.id===_dragging.id);
+      if(o&&(Math.abs(o.x-_dragging.ox)>2||Math.abs(o.y-_dragging.oy)>2)){_undo.push(_dragBeforeState);if(_undo.length>60)_undo.shift();_redo=[];}
+      _dragBeforeState=null;
+    }
+    _dragging=null;
+  }
+
+  function _onWheel(e){
+    e.preventDefault();
+    const f=e.deltaY<0?1.1:0.9,r=_svg.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+    _panX=mx+(_panX-mx)*f;_panY=my+(_panY-my)*f;
+    _zoom=Math.max(0.15,Math.min(5,_zoom*f));_render();
+  }
+
+  function _onKeyDown(e){
+    if(!document.getElementById('geno-overlay'))return;
+    if(e.key==='z'&&(e.ctrlKey||e.metaKey)&&!e.shiftKey){e.preventDefault();undo();}
+    if((e.key==='y'||(e.key==='z'&&e.shiftKey))&&(e.ctrlKey||e.metaKey)){e.preventDefault();redo();}
+    if((e.key==='Delete'||e.key==='Backspace')&&document.activeElement.tagName!=='INPUT'&&document.activeElement.tagName!=='TEXTAREA'&&document.activeElement.tagName!=='SELECT'){e.preventDefault();deleteSelected();}
+    if(e.key==='Escape'){_connectFrom=null;_connectLine=null;_render();}
+  }
+
+  // ── Actions ──────────────────────────────────────────────────────
+  function deleteSelected(){if(!_selId)return;_pushUndo();_objs=_objs.filter(o=>o.id!==_selId&&!(o.type==='link'&&(o.from===_selId||o.to===_selId)));_selId=null;_render();}
+
+  function editLabel(){
+    const o=_objs.find(x=>x.id===_selId);if(!o)return;
+    const cur=o.type==='node'?(o.label||''):o.text;
+    const v=prompt(o.type==='text'?'編輯文字：':'輸入姓名/標籤：',cur);
+    if(v!==null){_pushUndo();if(o.type==='text')o.text=v;else o.label=v;_render();}
+  }
+
+  // ── Export PNG ────────────────────────────────────────────────────
+  function _exportPng(cb){
+    let lx=Infinity,ly=Infinity,hx=-Infinity,hy=-Infinity;
+    for(const o of _objs){
+      if(o.type==='node'){lx=Math.min(lx,o.x-SZ-15);ly=Math.min(ly,o.y-SZ-20);hx=Math.max(hx,o.x+SZ+15);hy=Math.max(hy,o.y+SZ+20);}
+      if(o.type==='text'){lx=Math.min(lx,o.x-5);ly=Math.min(ly,o.y-16);hx=Math.max(hx,o.x+o.text.length*8);hy=Math.max(hy,o.y+5);}
+      if(o.type==='link'){
+        const fm=_objs.find(x=>x.id===o.from),to=_objs.find(x=>x.id===o.to);
+        if(fm){lx=Math.min(lx,fm.x-5);ly=Math.min(ly,fm.y-5);hx=Math.max(hx,fm.x+5);hy=Math.max(hy,fm.y+5);}
+        if(to){lx=Math.min(lx,to.x-5);ly=Math.min(ly,to.y-5);hx=Math.max(hx,to.x+5);hy=Math.max(hy,to.y+5);}
+      }
+    }
+    if(!isFinite(lx)){lx=0;ly=0;hx=300;hy=200;}
+    const P=28,W=hx-lx+P*2,H=hy-ly+P*2;
+    const s2=_el('svg',{xmlns:NS,width:W,height:H,viewBox:`${lx-P} ${ly-P} ${W} ${H}`});
+    s2.style.background='#fff';
+    for(const o of _objs)if(o.type==='link'){const g=_linkEl(o);if(g)s2.appendChild(g);}
+    for(const o of _objs){if(o.type==='node')s2.appendChild(_nodeEl(o));if(o.type==='text')s2.appendChild(_textEl(o));}
+    const svgStr=new XMLSerializer().serializeToString(s2);
+    const blob=new Blob([svgStr],{type:'image/svg+xml;charset=utf-8'});
+    const url=URL.createObjectURL(blob);
+    const img=new Image();
+    img.onload=()=>{
+      const sc=2,c=document.createElement('canvas');c.width=W*sc;c.height=H*sc;
+      const ctx=c.getContext('2d');ctx.scale(sc,sc);ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);ctx.drawImage(img,0,0,W,H);
+      URL.revokeObjectURL(url);cb(c.toDataURL('image/png'));
+    };
+    img.onerror=()=>{URL.revokeObjectURL(url);cb(null);};
+    img.src=url;
+  }
+
+  // ── JSON storage ────────────────────────────────────────────────
+  function _saveJson(){
+    try{
+      const c=(typeof casesData!=='undefined')&&casesData&&casesData.find(x=>x.id===_caseId);
+      if(!c)return;if(!c.genogramStore)c.genogramStore={};
+      c.genogramStore[_storeKey]={objs:JSON.parse(JSON.stringify(_objs)),idSeq:_idSeq};
+    }catch(e){}
+  }
+  function _loadJson(){
+    try{
+      const c=(typeof casesData!=='undefined')&&casesData&&casesData.find(x=>x.id===_caseId);
+      if(!c||!c.genogramStore||!c.genogramStore[_storeKey])return;
+      const d=c.genogramStore[_storeKey];
+      _objs=JSON.parse(JSON.stringify(d.objs||[]));
+      if(d.idSeq)_idSeq=Math.max(_idSeq,d.idSeq);
+    }catch(e){}
+  }
+
+  // ── Build UI ──────────────────────────────────────────────────────
+  function _buildUI(){
+    const shapes=[
+      {id:'male',label:'男性 □'},{id:'female',label:'女性 ○'},
+      {id:'dead_m',label:'已故男'},{id:'dead_f',label:'已故女'},
+      {id:'ip_m',label:'IP(男)'},{id:'ip_f',label:'IP(女)'},
+      {id:'unknown',label:'不明 ◇'},{id:'abort',label:'流產 ▲'},{id:'stillbirth',label:'死胎 ■'},
+    ];
+    const ov=document.createElement('div');ov.id='geno-overlay';
+    ov.innerHTML=`<div id="geno-modal">
+  <div id="geno-header">
+    <span style="font-weight:600;font-size:1rem;">家族圖繪製</span>
+    <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+      <button class="geno-tb-btn" onclick="GenogramEditor.undo()">↩ 復原</button>
+      <button class="geno-tb-btn" onclick="GenogramEditor.redo()">↪ 重做</button>
+      <button class="geno-tb-btn" onclick="GenogramEditor.zoomFit()">⊞ 全圖</button>
+      <button onclick="GenogramEditor.close()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:#a0aec0;line-height:1;padding:0 4px;">&times;</button>
+    </div>
+  </div>
+  <div id="geno-toolbox">
+    <span style="font-size:.76rem;color:#718096;white-space:nowrap;">工具：</span>
+    <button class="geno-tb-btn active" id="geno-t-select" onclick="GenogramEditor.setTool('select')">↖ 選取</button>
+    <button class="geno-tb-btn" id="geno-t-connect" onclick="GenogramEditor.setTool('connect')">─ 連線</button>
+    <button class="geno-tb-btn" id="geno-t-text" onclick="GenogramEditor.setTool('text')">T 文字</button>
+    <button class="geno-tb-btn" id="geno-t-erase" onclick="GenogramEditor.setTool('erase')">✕ 橡皮擦</button>
+    <span class="geno-tb-sep"></span>
+    <span style="font-size:.76rem;color:#718096;white-space:nowrap;">連線：</span>
+    <select id="geno-lt" class="geno-tb-btn" style="padding:3px 6px;" onchange="GenogramEditor.setLinkType(this.value)">
+      <option value="married">婚姻</option><option value="separated">分居</option><option value="divorced">離婚</option>
+      <option value="dashed">同居</option><option value="parent">親子</option><option value="sibling">手足</option><option value="dotted">虛線</option>
+    </select>
+    <span class="geno-tb-sep"></span>
+    <button class="geno-tb-btn" onclick="GenogramEditor.deleteSelected()">🗑 刪除</button>
+    <button class="geno-tb-btn" onclick="GenogramEditor.editLabel()">✏ 標籤</button>
+  </div>
+  <div id="geno-shape-palette">
+    <span style="font-size:.76rem;color:#276749;white-space:nowrap;margin-right:2px;">放置：</span>
+    ${shapes.map(s=>`<button class="geno-shape-btn${s.id==='male'?' active':''}" id="geno-s-${s.id}" onclick="GenogramEditor.setShape('${s.id}')">${s.label}</button>`).join('')}
+  </div>
+  <div id="geno-canvas-wrap" style="height:${_canvasH}px;">
+    <svg id="geno-svg" xmlns="${NS}"><g id="geno-vp"></g></svg>
+  </div>
+  <div id="geno-footer">
+    <div style="display:flex;align-items:center;gap:8px;font-size:.8rem;color:#718096;">
+      <span>畫布高：</span>
+      <input type="range" style="width:70px;" min="200" max="680" value="${_canvasH}" oninput="GenogramEditor.setHeight(+this.value)">
+      <span id="geno-hv">${_canvasH}px</span>
+      <span style="color:#a0aec0;font-size:.72rem;">（滾輪縮放・拖曳移動・點兩個節點連線）</span>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn btn-secondary btn-sm" onclick="GenogramEditor.close()">取消</button>
+      <button class="btn btn-primary btn-sm" onclick="GenogramEditor.save()">插入家族圖</button>
+    </div>
+  </div>
+</div>`;
+    document.body.appendChild(ov);
+    _svg=document.getElementById('geno-svg');_vp=document.getElementById('geno-vp');
+    _svg.addEventListener('mousedown',_onMouseDown);
+    _svg.addEventListener('mousemove',_onMouseMove);
+    _svg.addEventListener('mouseup',_onMouseUp);
+    _svg.addEventListener('mouseleave',_onMouseUp);
+    _svg.addEventListener('wheel',_onWheel,{passive:false});
+    document.addEventListener('keydown',_onKeyDown);
+    requestAnimationFrame(()=>{
+      const w=document.getElementById('geno-canvas-wrap');
+      if(w){_panX=w.offsetWidth/2;_panY=_canvasH/2;_render();}
+    });
+  }
+
+  // ── Public API ────────────────────────────────────────────────────
+  function open({fieldId,caseId,storeKey}){
+    if(document.getElementById('geno-overlay'))return;
+    _fieldId=fieldId;_caseId=caseId||null;_storeKey=storeKey||fieldId;
+    _objs=[];_selId=null;_tool='select';_placeShape='male';_linkType='married';
+    _zoom=1;_panX=0;_panY=0;_undo=[];_redo=[];_connectFrom=null;_connectLine=null;
+    _loadJson();_buildUI();
+  }
+
+  function close(){
+    const ov=document.getElementById('geno-overlay');if(ov)ov.remove();
+    document.removeEventListener('keydown',_onKeyDown);
+    _svg=null;_vp=null;
+  }
+
+  function save(){
+    if(!_objs.length){close();return;}
+    _exportPng(dataUrl=>{
+      if(!dataUrl){alert('匯出圖片失敗，請重試。');return;}
+      const editor=document.getElementById(_fieldId);
+      if(editor){
+        const img=document.createElement('img');
+        img.src=dataUrl;img.alt='家族圖';
+        img.style.cssText='max-width:100%;height:auto;display:block;margin:6px 0;border:1px solid #e2e8f0;border-radius:4px;';
+        img.setAttribute('data-geno-key',_storeKey);
+        const old=editor.querySelector('[data-geno-key="'+_storeKey+'"]');
+        if(old)old.replaceWith(img);else editor.appendChild(img);
+      }
+      _saveJson();close();
+    });
+  }
+
+  function setTool(t){
+    _tool=t;_connectFrom=null;_connectLine=null;
+    ['select','connect','text','erase'].forEach(n=>document.getElementById('geno-t-'+n)&&document.getElementById('geno-t-'+n).classList.toggle('active',n===t));
+    _render();
+  }
+
+  function setShape(s){
+    _placeShape=s;_tool='place_'+s;
+    ['select','connect','text','erase'].forEach(n=>{const b=document.getElementById('geno-t-'+n);if(b)b.classList.remove('active');});
+    document.querySelectorAll('.geno-shape-btn').forEach(b=>b.classList.remove('active'));
+    const btn=document.getElementById('geno-s-'+s);if(btn)btn.classList.add('active');
+  }
+
+  function setLinkType(t){_linkType=t;}
+
+  function setHeight(h){
+    _canvasH=h;
+    const w=document.getElementById('geno-canvas-wrap');if(w)w.style.height=h+'px';
+    const v=document.getElementById('geno-hv');if(v)v.textContent=h+'px';
+  }
+
+  function zoomFit(){
+    if(!_objs.length){_zoom=1;_panX=0;_panY=0;_render();return;}
+    let lx=Infinity,ly=Infinity,hx=-Infinity,hy=-Infinity;
+    for(const o of _objs){
+      if(o.type==='node'){lx=Math.min(lx,o.x-SZ);ly=Math.min(ly,o.y-SZ);hx=Math.max(hx,o.x+SZ);hy=Math.max(hy,o.y+SZ);}
+      if(o.type==='text'){lx=Math.min(lx,o.x);ly=Math.min(ly,o.y-14);hx=Math.max(hx,o.x+o.text.length*8);hy=Math.max(hy,o.y);}
+    }
+    if(!isFinite(lx))return;
+    const wrap=document.getElementById('geno-canvas-wrap');if(!wrap)return;
+    const W=wrap.offsetWidth,H=wrap.offsetHeight,cW=hx-lx+80,cH=hy-ly+80;
+    _zoom=Math.min(W/cW,H/cH,3);
+    _panX=(W-cW*_zoom)/2-lx*_zoom+40*_zoom;
+    _panY=(H-cH*_zoom)/2-ly*_zoom+40*_zoom;
+    _render();
+  }
+
+  return{open,close,save,undo,redo,setTool,setShape,setLinkType,setHeight,zoomFit,deleteSelected,editLabel};
+})();
+
+function openGenogramEditor(fieldId,caseId,storeKey){
+  GenogramEditor.open({fieldId,caseId:caseId||null,storeKey:storeKey||fieldId});
 }
 
 // ══════════════════════════════════════════════
@@ -24143,7 +24546,7 @@ function openPsychiatristModal(caseId, recordId) {
           <div style="flex:1;"><label class="field-label">開始時間</label><input type="text" class="field-input" id="pr-start" maxlength="5" placeholder="HH:MM" value="${escHtml(pr.timeStart)}" onblur="_bkTimeBlur(this)"></div>
           <div style="flex:1;"><label class="field-label">結束時間</label><input type="text" class="field-input" id="pr-end" maxlength="5" placeholder="HH:MM" value="${escHtml(pr.timeEnd)}" onblur="_bkTimeBlur(this)"></div>
         </div>
-        <div style="margin-bottom:12px;"><label class="field-label">主述與會談資料<span class="req">*</span></label>${_prRt}<div class="field-input rt-editor" id="pr-main" contenteditable="true" style="min-height:120px;overflow:auto;line-height:1.6;"></div></div>
+        <div style="margin-bottom:12px;"><label class="field-label">主述與會談資料<span class="req">*</span></label>${_prRt}<div class="field-input rt-editor" id="pr-main" contenteditable="true" style="min-height:120px;overflow:auto;line-height:1.6;"></div><div style="margin-top:5px;"><button type="button" class="geno-open-btn" data-case="${escHtml(caseId)}" data-store="pr_main_${escHtml(pr.id||caseId)}" onclick="openGenogramEditor('pr-main',this.dataset.case,this.dataset.store)">＋ 家族圖</button></div></div>
         <div style="margin-bottom:12px;"><label class="field-label">核心問題之評估與判斷<span class="req">*</span></label>${_prRt}<div class="field-input rt-editor" id="pr-core" contenteditable="true" style="min-height:120px;overflow:auto;line-height:1.6;"></div></div>
         <div style="margin-bottom:12px;"><label class="field-label">介入處遇<span class="req">*</span></label>${_prRt}<div class="field-input rt-editor" id="pr-interv" contenteditable="true" style="min-height:90px;overflow:auto;line-height:1.6;"></div></div>
         <div style="margin-bottom:16px;"><label class="field-label">給學生諮商中心的建議<span class="req">*</span></label>${_prRt}<div class="field-input rt-editor" id="pr-rec" contenteditable="true" style="min-height:90px;overflow:auto;line-height:1.6;"></div></div>
