@@ -1728,7 +1728,6 @@
       <div class="form-actions">
         <button class="btn btn-secondary" onclick="cancelClosureEval()">取消</button>
         <button class="btn btn-secondary" id="btn-print-eval" onclick="printClosureEval()">列印</button>
-        <button class="btn btn-secondary" id="btn-pdf-eval" onclick="printClosureEval(null,null,null,null,'pdf')">下載PDF</button>
         <button class="btn btn-danger" id="btn-confirm-closure" onclick="saveClosureEval()">確認結案</button>
       </div>
     </div>
@@ -3002,7 +3001,6 @@
         <button id="ii-save-btn" class="btn btn-primary" onclick="saveInitialInterview()">儲存初次晤談表</button>
         <button class="btn btn-secondary" onclick="draftInitialInterview()">暫存草稿</button>
         <button class="btn btn-secondary" onclick="printInitialInterview()">列印</button>
-        <button class="btn btn-secondary" onclick="printInitialInterview(null,'pdf')">下載PDF</button>
         <button class="btn btn-secondary" style="color:#c53030;border-color:#fc8181;" onclick="discardInitialInterview()">捨棄離開</button>
       </div>
     </div>
@@ -4985,69 +4983,6 @@ function _printViaIframe(html) {
   frame.srcdoc = clean;
 }
 
-async function _downloadPdf(html, filename) {
-  if (!window.html2canvas || !window.jspdf) {
-    showLoading('載入 PDF 工具…');
-    try {
-      await Promise.all([
-        !window.html2canvas ? new Promise((res, rej) => {
-          const s = document.createElement('script');
-          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
-          s.onload = res; s.onerror = () => rej(new Error('html2canvas 載入失敗'));
-          document.head.appendChild(s);
-        }) : Promise.resolve(),
-        !window.jspdf ? new Promise((res, rej) => {
-          const s = document.createElement('script');
-          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-          s.onload = res; s.onerror = () => rej(new Error('jsPDF 載入失敗'));
-          document.head.appendChild(s);
-        }) : Promise.resolve(),
-      ]);
-    } catch(e) { hideLoading(); alert('PDF 工具載入失敗：' + e.message); return; }
-    hideLoading();
-  }
-  showLoading('產生 PDF…');
-  const clean = _stripPrintScript(html);
-  const frame = document.createElement('iframe');
-  // 設超大高度讓瀏覽器一次渲染全部內容，避免截圖時底部被裁
-  frame.style.cssText = 'position:fixed;left:-9999px;top:0;width:794px;height:9999px;border:0;visibility:hidden;';
-  document.body.appendChild(frame);
-  try {
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('PDF 渲染逾時')), 15000);
-      frame.onload = () => { clearTimeout(timer); resolve(); };
-      frame.srcdoc = clean;
-    });
-    await new Promise(r => setTimeout(r, 500));
-    const bodyEl = frame.contentDocument.body;
-    const fullH = bodyEl.scrollHeight;
-    const canvas = await html2canvas(bodyEl, {
-      scale: 2, useCORS: true, allowTaint: true, backgroundColor: '#ffffff',
-      scrollX: 0, scrollY: 0,
-      width: bodyEl.scrollWidth,
-      height: fullH,
-      windowWidth: bodyEl.scrollWidth,
-      windowHeight: fullH,
-    });
-    const { jsPDF } = window.jspdf;
-    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-    const pW = doc.internal.pageSize.getWidth();
-    const pH = doc.internal.pageSize.getHeight();
-    const imgData = canvas.toDataURL('image/jpeg', 0.92);
-    const imgProps = doc.getImageProperties(imgData);
-    const imgTotalH = (imgProps.height * pW) / imgProps.width;
-    let heightLeft = imgTotalH, pos = 0;
-    doc.addImage(imgData, 'JPEG', 0, pos, pW, imgTotalH);
-    heightLeft -= pH;
-    while (heightLeft > 0) {
-      pos -= pH; doc.addPage();
-      doc.addImage(imgData, 'JPEG', 0, pos, pW, imgTotalH);
-      heightLeft -= pH;
-    }
-    doc.save(filename || 'document.pdf');
-  } catch(e) { alert('PDF 產生失敗：' + e.message); }
-  finally { frame.remove(); hideLoading(); }
-}
 
 function printRecord(caseId, recordId, mode = 'print') {
   const c = casesData.find(x => x.id === caseId);
@@ -5180,8 +5115,7 @@ td+td{padding-left:12pt}
 <script>window.addEventListener('load',()=>window.print());<\/script>
 </body></html>`;
 
-  if (mode === 'pdf') { const c2 = casesData.find(x=>x.id===caseId); _downloadPdf(html, `晤談紀錄_${(c2?.name||caseId)}_${recordId}.pdf`); }
-  else _printViaIframe(html);
+  _printViaIframe(html);
 }
 
 async function pollNotifications() {
@@ -6064,7 +5998,7 @@ function _buildAllSemTimeline(relatedCases, currentCaseId, isAdminUser) {
       const topics = r.topics?.length ? `<div style="margin:4px 0;">${r.topics.map(t=>`<span class="badge badge-gray" style="margin-right:3px;">${escHtml(t)}</span>`).join('')}</div>` : '';
       let actions = viewBtn;
       if (item.isCurrent && !r.deleted && !isPending) {
-        actions += `<button class="btn-rec btn-rec-edit" onclick="printRecord('${escHtml(rc.id)}','${escHtml(r.id)}')">列印</button><button class="btn-rec btn-rec-edit" onclick="printRecord('${escHtml(rc.id)}','${escHtml(r.id)}','pdf')">下載PDF</button>`;
+        actions += `<button class="btn-rec btn-rec-edit" onclick="printRecord('${escHtml(rc.id)}','${escHtml(r.id)}')">列印</button>`;
         if (isRecordCreator(r)) actions += isEditable(r.createdAt) ? `<button class="btn-rec btn-rec-edit" onclick="editRecord('${escHtml(rc.id)}','${escHtml(r.id)}')">編輯</button>` : `<span class="edit-locked">超過2週</span>`;
       }
       if (item.isCurrent && !r.deleted && (isRecordCreator(r) || isAdminUser))
@@ -6085,7 +6019,7 @@ function _buildAllSemTimeline(relatedCases, currentCaseId, isAdminUser) {
       const ii = item.data;
       const probBadges = (ii.problemsMain||[]).map(p=>`<span class="badge badge-gray" style="margin-right:3px;">${escHtml(p)}</span>`).join('');
       let actions = viewBtn;
-      if (item.isCurrent) actions += `<button class="btn btn-secondary btn-sm" style="font-size:.75rem;" onclick="printInitialInterview('${escHtml(item.caseId)}')">列印</button><button class="btn btn-secondary btn-sm" style="font-size:.75rem;" onclick="printInitialInterview('${escHtml(item.caseId)}','pdf')">下載PDF</button>`;
+      if (item.isCurrent) actions += `<button class="btn btn-secondary btn-sm" style="font-size:.75rem;" onclick="printInitialInterview('${escHtml(item.caseId)}')">列印</button>`;
       return `<div class="record-card" style="margin-bottom:8px;border:1.5px solid #b2d8b2;background:#f6fbf6;${!item.isCurrent?'opacity:.8;':''}">
         <div class="record-card-header">
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
@@ -6104,7 +6038,7 @@ function _buildAllSemTimeline(relatedCases, currentCaseId, isAdminUser) {
       const diagLabel = pr.diagnosisType==='specific'?`符合：${escHtml(pr.diagnosisName||'—')}`:'不符合任一精神疾患診斷';
       const deletedBadge = pr.deleted?`<span class="deleted-badge">已刪除</span>`:'';
       let actions = viewBtn;
-      if (item.isCurrent && !pr.deleted) actions += `<button class="btn btn-secondary btn-sm" style="font-size:.75rem;" onclick="printPsychiatristRecord('${escHtml(item.caseId)}','${escHtml(pr.id)}')">列印</button><button class="btn btn-secondary btn-sm" style="font-size:.75rem;" onclick="printPsychiatristRecord('${escHtml(item.caseId)}','${escHtml(pr.id)}','pdf')">下載PDF</button>`;
+      if (item.isCurrent && !pr.deleted) actions += `<button class="btn btn-secondary btn-sm" style="font-size:.75rem;" onclick="printPsychiatristRecord('${escHtml(item.caseId)}','${escHtml(pr.id)}')">列印</button>`;
       return `<div class="record-card${pr.deleted?' deleted':''}" style="margin-bottom:8px;border-left:3px solid #e9d8fd;${!item.isCurrent?'opacity:.8;':''}">
         <div class="record-card-header">
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
@@ -6519,7 +6453,6 @@ function showCaseDetail(caseId) {
               ? `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="openInitialInterviewPage('${cid}')">編輯</button>`
               : `<span style="font-size:.78rem;color:#a0aec0;">超過2週，不可編輯</span>`}
             <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="printInitialInterview('${cid}')">列印</button>
-            <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="printInitialInterview('${cid}','pdf')">下載PDF</button>
             ${iiCanDelete && !caseIsDeleted ? `<button class="btn btn-danger btn-sm" style="font-size:.78rem;" onclick="deleteInitialInterview('${cid}')">刪除</button>` : ''}
             <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${cid}')" style="font-size:.78rem;">清除</button>
             <button class="rec-toggle-btn" onclick="toggleRecordExpand('${iiId}')">展開 ▼</button>
@@ -6662,7 +6595,7 @@ function showCaseDetail(caseId) {
       } else if (ev.replacedBy) {
         statusTag = `<span style="background:#e2e8f0;color:#718096;border-radius:4px;padding:1px 5px;font-size:.72rem;">已取代</span>`;
       } else if (ev.evalId && !ev._isLegacy) {
-        actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printClosureEval('${escHtml(cid)}',null,null,'${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;">列印</button><button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printClosureEval('${escHtml(cid)}',null,null,'${escHtml(ev.evalId)}','pdf')" style="font-size:.72rem;padding:2px 7px;">下載PDF</button>
+        actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printClosureEval('${escHtml(cid)}',null,null,'${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;">列印</button>
 <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();openClosureEvalPage('${escHtml(cid)}','${ev.type||'closure'}','${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;">編輯</button>
 <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();softDeleteEval('${escHtml(cid)}','${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;color:#c53030;border-color:#fc8181;">刪除</button>`;
       }
@@ -9016,8 +8949,7 @@ function printClosureEval(caseId, semIdx, semPrefix, evalId, mode = 'print') {
     return;
   }
   const html = _buildEvalPrintHtml(c, ev, formTitle);
-  if (mode === 'pdf') _downloadPdf(html, `${formTitle}_${c.name}_${(ev.evaluatedAt||'').slice(0,10)}.pdf`);
-  else _printViaIframe(html);
+  _printViaIframe(html);
 }
 
 async function saveClosureEval() {
@@ -13105,8 +13037,7 @@ ${sigGrid}
 <script>window.addEventListener('load',()=>window.print());<\/script>
 </body></html>`;
   const _iiC2 = casesData.find(x => x.id === caseId);
-  if (mode === 'pdf') _downloadPdf(html, `初談紀錄_${(_iiC2?.name||caseId)}.pdf`);
-  else _printViaIframe(html);
+  _printViaIframe(html);
 }
 
 // ══════════════════════════════════════════════
@@ -22061,8 +21992,7 @@ function _renderAllTransferEvalsCard(c, cid) {
       : (!isDeleted && !isReplaced && teId
         ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();openTransferEvalForm('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">編輯</button>
            <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();softDeleteTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;color:#c53030;border-color:#fc8181;">刪除</button>
-           <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">列印</button>
-           <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printTransferEval('${escHtml(cid)}','${teId}','pdf')" style="font-size:.72rem;padding:2px 7px;">下載PDF</button>`
+           <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printTransferEval('${escHtml(cid)}','${teId}')" style="font-size:.72rem;padding:2px 7px;">列印</button>`
         : '');
     return `<div class="te-card${isDeleted?' te-deleted':''}">
       <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:${bgColor};cursor:pointer;flex-wrap:wrap;" onclick="toggleTECard('${safeId}')">
@@ -22145,8 +22075,7 @@ function printTransferEval(caseId, teId, mode = 'print') {
   ${stripHtml(ev.transferAssessment) ? `<div class="section"><div class="label" style="font-weight:700;margin-bottom:6px;">轉銜評估</div><div class="desc">${stripHtml(ev.transferAssessment)}</div></div>` : ''}
   <div class="section"><table><tr><th>轉銜評估建議</th></tr><tr><td style="padding:8px;font-weight:700;">${esc(recLabels[ev.recommendation] || ev.recommendation || '—')}</td></tr></table></div>
   </body></html>`;
-  if (mode === 'pdf') _downloadPdf(htmlBody, `轉銜評估_${c.name}_${(ev.evalDate||ev.filledDate||'').slice(0,10)}.pdf`);
-  else _printViaIframe(htmlBody);
+  _printViaIframe(htmlBody);
 }
 
 let _teFormCaseId = null;
@@ -23564,7 +23493,7 @@ function _renderTransferRow(r) {
   }
   const actions = r.type === 'outgoing'
     ? `<button class="btn btn-secondary btn-sm" onclick="openTransferAssessmentModal('${escHtml(r.id)}','outgoing')">填寫評估</button>
-       ${hasAssessment ? `<button class="btn btn-secondary btn-sm" onclick="printTransferAssessment('${escHtml(r.id)}')">列印</button><button class="btn btn-secondary btn-sm" onclick="printTransferAssessment('${escHtml(r.id)}','pdf')">下載PDF</button>` : ''}
+       ${hasAssessment ? `<button class="btn btn-secondary btn-sm" onclick="printTransferAssessment('${escHtml(r.id)}')">列印</button>` : ''}
        <button class="btn btn-danger btn-sm" onclick="deleteTransferRecord('${escHtml(r.id)}')">刪除</button>`
     : `${!r.caseId ? `<button class="btn btn-primary btn-sm" onclick="createCaseFromTransfer('${escHtml(r.id)}')">建立個案</button>` : `<button class="btn btn-secondary btn-sm" onclick="showCaseDetail('${escHtml(r.caseId)}')">查看個案</button>`}
        <button class="btn btn-danger btn-sm" onclick="deleteTransferRecord('${escHtml(r.id)}')">刪除</button>`;
@@ -23796,7 +23725,7 @@ function openTransferAssessmentModal(transferId, type) {
         </div>
         <div style="display:flex;gap:10px;">
           <button class="btn btn-primary" onclick="saveTransferAssessment('${isNew?'__new__':escHtml(r.id)}','${t}')">儲存</button>
-          ${!isNew && r.recommendation ? `<button class="btn btn-secondary" onclick="printTransferAssessment('${escHtml(r.id)}')">列印</button><button class="btn btn-secondary" onclick="printTransferAssessment('${escHtml(r.id)}','pdf')">下載PDF</button>` : ''}
+          ${!isNew && r.recommendation ? `<button class="btn btn-secondary" onclick="printTransferAssessment('${escHtml(r.id)}')">列印</button>` : ''}
           <button class="btn btn-secondary" onclick="document.getElementById('transfer-assessment-modal').remove()">取消</button>
         </div>
       </div>
@@ -23969,8 +23898,7 @@ function printTransferAssessment(transferId, mode = 'print') {
     </div>
     <div class="sect"><h3>建議</h3>${recHtml}</div>
     </body></html>`;
-  if (mode === 'pdf') _downloadPdf(html, `轉銜評估表_${transferId}.pdf`);
-  else _printViaIframe(html);
+  _printViaIframe(html);
 }
 
 // ══════════════════════════════════════════════
@@ -24448,8 +24376,7 @@ function printPsychiatristRecord(caseId, recordId, mode = 'print') {
       <tr><th>其他注意事項</th><td colspan="3" style="min-height:50px;">${renderMaybeHtml(pr.otherNotes||'')}</td></tr>
     </table>
     </body></html>`;
-  if (mode === 'pdf') _downloadPdf(html, `精神科評估_${caseId}_${recordId}.pdf`);
-  else _printViaIframe(html);
+  _printViaIframe(html);
 }
 
 // ══════════════════════════════════════════════
