@@ -9,8 +9,8 @@ const CONFIG_FILE_ID_OVERRIDE = '1CKXefjjiB-PrIFZa-DBQ7Q2ASs-TQroj';
 
 // 白名單：前端可傳入的 rootFolderId → configOverride（null = 從該 root 路徑查找 config.json）
 const ALLOWED_ROOTS = {
-  '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP': { configOverride: '1CKXefjjiB-PrIFZa-DBQ7Q2ASs-TQroj' }, // 正式版
-  '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx': { configOverride: null },                                  // 測試版
+  '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP': { configOverride: '1CKXefjjiB-PrIFZa-DBQ7Q2ASs-TQroj', calendarName: 'SCC 空間預約' },       // 正式版
+  '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx': { configOverride: null,                                  calendarName: '[DEV] SCC 空間預約' }, // 測試版
 };
 
 // ── 進入點 ────────────────────────────────────────────────────────────────────
@@ -23,11 +23,12 @@ function doPost(e) {
     const userEmail = verifyIdToken_(idToken);
     if (!userEmail) return jsonResp_({ error: 'Unauthorized' });
 
-    // 根據前端傳入的 rootFolderId 決定此次請求的資料根目錄
-    let ctx = { root: ROOT_FOLDER_ID, configOverride: CONFIG_FILE_ID_OVERRIDE };
+    // 根據前端傳入的 rootFolderId 決定此次請求的資料根目錄與日曆名稱
+    let ctx = { root: ROOT_FOLDER_ID, configOverride: CONFIG_FILE_ID_OVERRIDE, calendarName: CALENDAR_NAME };
     if (rootFolderId) {
       if (!ALLOWED_ROOTS[rootFolderId]) return jsonResp_({ error: 'Unauthorized rootFolderId' });
-      ctx = { root: rootFolderId, configOverride: ALLOWED_ROOTS[rootFolderId].configOverride };
+      const rootCfg = ALLOWED_ROOTS[rootFolderId];
+      ctx = { root: rootFolderId, configOverride: rootCfg.configOverride, calendarName: rootCfg.calendarName || CALENDAR_NAME };
     }
 
     let result;
@@ -47,10 +48,10 @@ function doPost(e) {
       case 'listFolder':         result = listFolder_(params); break;
       case 'listDir':            result = listDir_(params, ctx); break;
       case 'resolveDir':         result = resolveDir_(params, ctx); break;
-      case 'createCalendarEvent':  result = createCalendarEvent_(params); break;
-      case 'updateCalendarEvent':  result = updateCalendarEvent_(params); break;
-      case 'deleteCalendarEvent':  result = deleteCalendarEvent_(params); break;
-      case 'listCalendarEvents':   result = listCalendarEvents_(params); break;
+      case 'createCalendarEvent':  result = createCalendarEvent_(params, ctx); break;
+      case 'updateCalendarEvent':  result = updateCalendarEvent_(params, ctx); break;
+      case 'deleteCalendarEvent':  result = deleteCalendarEvent_(params, ctx); break;
+      case 'listCalendarEvents':   result = listCalendarEvents_(params, ctx); break;
       case 'uploadFile':           result = uploadFile_(params); break;
       case 'downloadFileBase64':   result = downloadFileBase64_(params); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
@@ -357,10 +358,11 @@ function listDir_({ path, fields, pageSize }, ctx) {
 
 // ── Calendar Actions ──────────────────────────────────────────────────────────
 
-function getOrCreateCalendar_() {
-  const cals = CalendarApp.getCalendarsByName(CALENDAR_NAME);
+function getOrCreateCalendar_(ctx) {
+  const name = (ctx && ctx.calendarName) || CALENDAR_NAME;
+  const cals = CalendarApp.getCalendarsByName(name);
   if (cals.length > 0) return cals[0];
-  return CalendarApp.createCalendar(CALENDAR_NAME, { color: CalendarApp.Color.CYAN });
+  return CalendarApp.createCalendar(name, { color: CalendarApp.Color.CYAN });
 }
 
 function parseEventTimes_(date, startTime, endTime) {
@@ -396,8 +398,8 @@ function buildEventDesc_(actorName, notes, dateTime, bkSerial, isEdit) {
   return desc;
 }
 
-function createCalendarEvent_({ room, customRoom, date, startTime, endTime, counselorName, notes, creatorName, createdAt, bkSerial }) {
-  const cal = getOrCreateCalendar_();
+function createCalendarEvent_({ room, customRoom, date, startTime, endTime, counselorName, notes, creatorName, createdAt, bkSerial }, ctx) {
+  const cal = getOrCreateCalendar_(ctx);
   const { start, end } = parseEventTimes_(date, startTime, endTime);
   const title = buildEventTitle_(room, counselorName, customRoom || '');
   const desc  = buildEventDesc_(creatorName || counselorName || '', notes, createdAt, bkSerial, false);
@@ -405,8 +407,8 @@ function createCalendarEvent_({ room, customRoom, date, startTime, endTime, coun
   return event.getId();
 }
 
-function updateCalendarEvent_({ eventId, room, customRoom, date, startTime, endTime, counselorName, notes, creatorName, createdAt, updatedAt, isEdit, bkSerial }) {
-  const cal = getOrCreateCalendar_();
+function updateCalendarEvent_({ eventId, room, customRoom, date, startTime, endTime, counselorName, notes, creatorName, createdAt, updatedAt, isEdit, bkSerial }, ctx) {
+  const cal = getOrCreateCalendar_(ctx);
   const event = cal.getEventById(eventId);
   if (!event) throw new Error('Event not found: ' + eventId);
   const { start, end } = parseEventTimes_(date, startTime, endTime);
@@ -435,16 +437,52 @@ function downloadFileBase64_({ fileId }) {
   };
 }
 
-function deleteCalendarEvent_({ eventId }) {
-  const cal = getOrCreateCalendar_();
+// ── 一次性工具：將正式版啟用使用者加入正式版 GC 為編輯者 ─────────────────────
+// 在 Apps Script 編輯器中手動選取此函式並執行，勿透過 doPost 觸發。
+function setupProdCalendarEditors() {
+  const PROD_CONFIG_ID = '1CKXefjjiB-PrIFZa-DBQ7Q2ASs-TQroj';
+  const PROD_CAL_NAME  = 'SCC 空間預約';
+
+  // 讀取正式版 config.json
+  const res = UrlFetchApp.fetch(
+    'https://www.googleapis.com/drive/v3/files/' + PROD_CONFIG_ID + '?alt=media&supportsAllDrives=true',
+    { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true }
+  );
+  if (res.getResponseCode() >= 400) { Logger.log('無法讀取 config.json：' + res.getContentText()); return; }
+  const config = JSON.parse(res.getContentText());
+
+  // 取得（或建立）正式版日曆
+  const cals = CalendarApp.getCalendarsByName(PROD_CAL_NAME);
+  const cal = cals.length > 0 ? cals[0] : CalendarApp.createCalendar(PROD_CAL_NAME, { color: CalendarApp.Color.CYAN });
+  Logger.log('日曆：' + cal.getName() + '（ID: ' + cal.getId() + '）');
+
+  // 逐一加入未停用的使用者
+  const users = config.users || {};
+  const added = [], skipped = [];
+  for (const email in users) {
+    const info = users[email];
+    if (info.disabled) { skipped.push(email + '（已停用）'); continue; }
+    try {
+      cal.addEditor(email);
+      added.push(email);
+    } catch (e) {
+      skipped.push(email + '（失敗：' + e.message + '）');
+    }
+  }
+  Logger.log('✅ 已加入（' + added.length + '）：\n' + added.join('\n'));
+  if (skipped.length) Logger.log('⏭ 跳過（' + skipped.length + '）：\n' + skipped.join('\n'));
+}
+
+function deleteCalendarEvent_({ eventId }, ctx) {
+  const cal = getOrCreateCalendar_(ctx);
   const event = cal.getEventById(eventId);
   if (event) event.deleteEvent();
   return { ok: true };
 }
 
-function listCalendarEvents_({ startDate, endDate }) {
+function listCalendarEvents_({ startDate, endDate }, ctx) {
   const tz  = 'Asia/Taipei';
-  const cal = getOrCreateCalendar_();
+  const cal = getOrCreateCalendar_(ctx);
   const start = new Date(startDate + 'T00:00:00+08:00');
   const end   = new Date(endDate   + 'T23:59:59+08:00');
   const events = cal.getEvents(start, end);
