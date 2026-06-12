@@ -903,14 +903,15 @@
     #geno-sidebar { width:170px;min-width:120px;max-width:400px;flex-shrink:0;overflow-y:auto;border-right:1px solid #e2e8f0;background:#fafafa;padding:4px 3px;user-select:none; }
     #geno-sb-resize { position:absolute;top:0;left:170px;width:7px;height:100%;cursor:col-resize;z-index:3;border-radius:3px; }
     #geno-sb-resize:hover,#geno-sb-resize.active { background:rgba(49,130,206,0.3); }
-    .geno-sb-sec { font-size:.67rem;font-weight:700;color:#718096;padding:3px 5px;background:#edf2f7;border-radius:3px;margin-bottom:3px;letter-spacing:.04em;text-transform:uppercase; }
-    .geno-sb-grid { display:grid;grid-template-columns:1fr 1fr;gap:2px;margin-bottom:2px; }
-    .geno-sb-item { display:flex;flex-direction:column;align-items:center;cursor:pointer;padding:3px 2px;border-radius:4px;border:1px solid transparent;font-size:.63rem;color:#4a5568;text-align:center; }
+    .geno-sb-sec { font-size:.78rem;font-weight:700;color:#4a5568;padding:4px 6px;background:#edf2f7;border-radius:3px;margin-bottom:3px;letter-spacing:.02em;display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none; }
+    .geno-sb-sec:hover { background:#e2e8f0; }
+    .geno-sb-grid { display:grid;grid-template-columns:repeat(auto-fill,minmax(62px,1fr));gap:3px;margin-bottom:3px; }
+    .geno-sb-item { display:flex;flex-direction:column;align-items:center;cursor:pointer;padding:4px 3px;border-radius:4px;border:1px solid transparent;font-size:.72rem;color:#4a5568;text-align:center; }
     .geno-sb-item:hover { background:#e2e8f0;border-color:#cbd5e0; }
     .geno-sb-item.active { background:#bee3f8;border-color:#3182ce; }
-    .geno-sb-item span { margin-top:2px;line-height:1.2;max-width:66px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-    .geno-sb-lnk { flex-direction:row !important;gap:5px;padding:4px 5px !important; }
-    .geno-sb-lnk span { margin-top:0 !important;white-space:nowrap;font-size:.67rem; }
+    .geno-sb-item span { margin-top:2px;line-height:1.2;max-width:72px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+    .geno-sb-lnk { flex-direction:row !important;gap:5px;padding:5px 6px !important; }
+    .geno-sb-lnk span { margin-top:0 !important;white-space:nowrap;font-size:.72rem; }
     #geno-canvas-wrap { flex:1;overflow:hidden;cursor:crosshair;background:#fafbfc;position:relative;min-width:0; }
     #geno-svg { width:100%;height:100%;display:block; }
     .geno-tb-btn { padding:3px 8px;border:1px solid #cbd5e0;border-radius:4px;background:#fff;cursor:pointer;font-size:.8rem;color:#2d3748;white-space:nowrap;transition:background .1s; }
@@ -3669,17 +3670,13 @@ const RT_UL_TYPES  = ['disc', 'circle', 'square', 'dash'];
 const RT_OL_LABELS = { decimal:'1.', paren:'(1)', 'upper-alpha':'A.', 'lower-alpha':'a.' };
 const RT_UL_LABELS = { disc:'•', circle:'○', square:'▪', dash:'–' };
 
-// 限制 type="date" 年份最多4位、最大9999（瀏覽器允許6位，填寫不順）
-function _clampDateYear(e) {
-  const el = e.target;
-  if (el.type !== 'date' || !el.value) return;
-  const parts = el.value.split('-');
-  if (!parts[0]) return;
-  const yr = parseInt(parts[0], 10);
-  if (yr > 9999) { parts[0] = '9999'; el.value = parts.join('-'); }
-}
-document.addEventListener('input', _clampDateYear);
-document.addEventListener('change', _clampDateYear);
+document.addEventListener('keydown', function(e) {
+  if (e.key !== 'Tab') return;
+  const editor = e.target.closest?.('.rt-editor');
+  if (!editor) return;
+  e.preventDefault();
+  if (e.shiftKey) _rtOutdent(); else _rtCycleIndent();
+});
 
 document.addEventListener('dblclick', function(e) {
   const img = e.target.closest('img[data-geno-key]');
@@ -3808,6 +3805,34 @@ function _rtCycleIndent() {
   block.style.paddingLeft = nextPl > 0 ? nextPl + 'em' : '';
 }
 
+function _rtOutdent() {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return;
+  let node = sel.getRangeAt(0).startContainer;
+  if (node.nodeType === 3) node = node.parentElement;
+  const editor = node?.closest?.('.rt-editor');
+  let listEl = null, cur = node;
+  while (cur && cur !== editor) {
+    if (cur.nodeName === 'OL' || cur.nodeName === 'UL') { listEl = cur; break; }
+    cur = cur.parentElement;
+  }
+  if (listEl) {
+    const curMl = parseFloat(listEl.style.marginLeft) || 0;
+    const nextMl = Math.max(0, curMl - 2);
+    listEl.style.marginLeft = nextMl > 0 ? nextMl + 'em' : '';
+    return;
+  }
+  let block = null; cur = node;
+  while (cur && cur !== editor) {
+    if (/^(P|DIV|H[1-6]|BLOCKQUOTE)$/.test(cur.nodeName)) { block = cur; break; }
+    cur = cur.parentElement;
+  }
+  if (!block) return;
+  const curPl = parseFloat(block.style.paddingLeft) || 0;
+  const nextPl = Math.max(0, curPl - 2);
+  block.style.paddingLeft = nextPl > 0 ? nextPl + 'em' : '';
+}
+
 function scrollToTop() {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -3861,6 +3886,7 @@ const GenogramEditor = (() => {
   let _fieldId=null,_storeKey=null,_caseId=null;
   let _textFontSize=12,_textBold=false,_textItalic=false,_textStrike=false;
   let _snapEnabled=true;
+  let _sbCollapsed={nodes:false,structural:false,emotional:false,custom:false};
 
   const _el=(tag,attrs={})=>{const e=document.createElementNS(NS,tag);for(const[k,v]of Object.entries(attrs))e.setAttribute(k,String(v));return e;};
   const _uid=()=>'g'+(++_idSeq)+'_'+(Date.now()%1000000);
@@ -4346,12 +4372,19 @@ const GenogramEditor = (() => {
     for(const id of ids){const o=_objs.find(x=>x.id===id);if(!o)continue;if(o.type==='node'){if(isStroke)o.strokeColor=color;else o.fillColor=color;}else{o.strokeColor=color;}}
     _render();
   }
+  function applyStrokeColor(color){
+    if(!_selId&&_multiSel.size===0)return;_pushUndo();
+    const ids=new Set(_multiSel);if(_selId)ids.add(_selId);
+    for(const id of ids){const o=_objs.find(x=>x.id===id);if(o)o.strokeColor=color;}
+    _render();
+  }
   function clearColor(){
     if(!_selId&&_multiSel.size===0)return;_pushUndo();
     const ids=new Set(_multiSel);if(_selId)ids.add(_selId);
     for(const id of ids){const o=_objs.find(x=>x.id===id);if(o){delete o.fillColor;delete o.strokeColor;}}
     _render();
   }
+  function toggleSbSection(key){_sbCollapsed[key]=!_sbCollapsed[key];_renderSidebar();}
 
   // ── Custom components ─────────────────────────────────────────────
   function saveAsCustom(){
@@ -4492,36 +4525,39 @@ const GenogramEditor = (() => {
   }
 
   // ── Sidebar ───────────────────────────────────────────────────────
+  function _sbSec(title,key,content){
+    const c=_sbCollapsed[key];
+    return `<div class="geno-sb-sec" onclick="GenogramEditor.toggleSbSection('${key}')" style="margin-top:5px;">${title}<span style="font-size:.8rem;color:#a0aec0;">${c?'▶':'▼'}</span></div>`+(c?'':content);
+  }
   function _renderSidebar(){
     const sb=document.getElementById('geno-sidebar');if(!sb)return;
     const nodes=[{id:'male',name:'男性'},{id:'female',name:'女性'},{id:'pregnant',name:'懷孕'},{id:'unknown',name:'性別不明'},{id:'ip_m',name:'IP個案(男)'},{id:'ip_f',name:'IP個案(女)'},{id:'dead_m',name:'已故男'},{id:'dead_f',name:'已故女'},{id:'abort',name:'流產'},{id:'stillbirth',name:'死胎/死產'}];
     const sl=[{id:'married',name:'婚姻'},{id:'separated',name:'分居'},{id:'divorced',name:'離婚'},{id:'parent',name:'親子'},{id:'adopted',name:'領養'},{id:'foster',name:'寄養'},{id:'twin',name:'多胞胎'}];
     const el=[{id:'fused',name:'融合/極度親密'},{id:'close',name:'親密'},{id:'ambivalent',name:'矛盾'},{id:'conflict',name:'衝突'},{id:'cutoff',name:'情感疏離'}];
-    let h='<div class="geno-sb-sec">人物節點</div><div class="geno-sb-grid">';
-    for(const n of nodes)h+=`<div class="geno-sb-item" id="geno-sb-n-${n.id}" onclick="GenogramEditor.setShape('${n.id}')" title="${n.name}">${_shapeSvg(n.id,30)}<span>${n.name}</span></div>`;
-    h+='</div><div class="geno-sb-sec" style="margin-top:5px;">結構關係線</div>';
-    for(const l of sl)h+=`<div class="geno-sb-item geno-sb-lnk" id="geno-sb-l-${l.id}" onclick="GenogramEditor.setLinkType('${l.id}');GenogramEditor.setTool('connect')" title="${l.name}">${_linkSvg(l.id)}<span>${l.name}</span></div>`;
-    h+='<div class="geno-sb-sec" style="margin-top:5px;">情緒關係線</div>';
-    for(const l of el)h+=`<div class="geno-sb-item geno-sb-lnk" id="geno-sb-l-${l.id}" onclick="GenogramEditor.setLinkType('${l.id}');GenogramEditor.setTool('connect')" title="${l.name}">${_linkSvg(l.id)}<span>${l.name}</span></div>`;
     const customs=(configData&&configData.customComponents)||[];
-    h+='<div class="geno-sb-sec" style="margin-top:5px;">自訂元件</div>';
-    if(!customs.length)h+='<div style="font-size:.68rem;color:#a0aec0;padding:4px 6px;">（尚無自訂元件）</div>';
-    for(let i=0;i<customs.length;i++){
-      const cc=customs[i],vw=Math.max((cc.bbox&&cc.bbox.w)||60,10),vh=Math.max((cc.bbox&&cc.bbox.h)||60,10);
+    let h=_sbSec('人物節點','nodes',
+      '<div class="geno-sb-grid">'+nodes.map(n=>`<div class="geno-sb-item" id="geno-sb-n-${n.id}" onclick="GenogramEditor.setShape('${n.id}')" title="${n.name}">${_shapeSvg(n.id,30)}<span>${n.name}</span></div>`).join('')+'</div>');
+    h+=_sbSec('結構關係線','structural',
+      sl.map(l=>`<div class="geno-sb-item geno-sb-lnk" id="geno-sb-l-${l.id}" onclick="GenogramEditor.setTool('connect');GenogramEditor.setLinkType('${l.id}')" title="${l.name}">${_linkSvg(l.id)}<span>${l.name}</span></div>`).join(''));
+    h+=_sbSec('情緒關係線','emotional',
+      el.map(l=>`<div class="geno-sb-item geno-sb-lnk" id="geno-sb-l-${l.id}" onclick="GenogramEditor.setTool('connect');GenogramEditor.setLinkType('${l.id}')" title="${l.name}">${_linkSvg(l.id)}<span>${l.name}</span></div>`).join(''));
+    const customContent=(!customs.length?'<div style="font-size:.72rem;color:#a0aec0;padding:4px 6px;">（尚無自訂元件）</div>':customs.map((cc,i)=>{
+      const vw=Math.max((cc.bbox&&cc.bbox.w)||60,10),vh=Math.max((cc.bbox&&cc.bbox.h)||60,10);
       const mini=cc.objects.filter(o=>o.type==='node'||o.type==='path').map(o=>{
         if(o.type==='node')return `<g transform="translate(${o.x},${o.y})">${_shapeSvg(o.shapeType,SZ*2).replace(/^<svg[^>]*>/,'').replace(/<[/]svg>$/,'')}</g>`;
         if(o.type==='path')return `<path d="${o.d}" fill="none" stroke="#1a202c" stroke-width="1.5"/>`;
         return'';
       }).join('');
-      h+=`<div style="display:flex;align-items:center;gap:4px;padding:3px 4px;border:1px solid #e2e8f0;border-radius:4px;margin-bottom:3px;cursor:pointer;" onclick="GenogramEditor.placeCustom(${i})" title="${cc.name}"><svg xmlns="${NS}" width="40" height="40" viewBox="0 0 ${vw} ${vh}" style="flex-shrink:0;background:#f7fafc;border-radius:2px;">${mini}</svg><span style="font-size:.7rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${cc.name}</span><button onclick="event.stopPropagation();GenogramEditor.deleteCustom(${i})" style="font-size:.7rem;padding:1px 4px;border:1px solid #fcc;border-radius:3px;background:#fff;cursor:pointer;color:#e53e3e;" title="刪除">&#215;</button></div>`;
-    }
+      return `<div style="display:flex;align-items:center;gap:4px;padding:3px 4px;border:1px solid #e2e8f0;border-radius:4px;margin-bottom:3px;cursor:pointer;" onclick="GenogramEditor.placeCustom(${i})" title="${cc.name}"><svg xmlns="${NS}" width="40" height="40" viewBox="0 0 ${vw} ${vh}" style="flex-shrink:0;background:#f7fafc;border-radius:2px;">${mini}</svg><span style="font-size:.72rem;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${cc.name}</span><button onclick="event.stopPropagation();GenogramEditor.deleteCustom(${i})" style="font-size:.72rem;padding:1px 4px;border:1px solid #fcc;border-radius:3px;background:#fff;cursor:pointer;color:#e53e3e;" title="刪除">&#215;</button></div>`;
+    }).join(''));
+    h+=_sbSec('自訂元件','custom',customContent);
     sb.innerHTML=h;
   }
 
   // ── Build UI ──────────────────────────────────────────────────────
   function _buildUI(){
     const ov=document.createElement('div');ov.id='geno-overlay';
-    ov.innerHTML=`<div id="geno-header"><span style="font-weight:700;font-size:1.1rem;color:#2b6cb0;">家族圖繪製</span><div style="display:flex;gap:6px;align-items:center;"><button class="geno-tb-btn" onclick="GenogramEditor.undo()" title="Ctrl+Z">↩ 復原</button><button class="geno-tb-btn" onclick="GenogramEditor.redo()" title="Ctrl+Y">↪ 重做</button><button class="geno-tb-btn" onclick="GenogramEditor.zoomFit()">⊞ 全圖</button><div class="geno-tb-sep"></div><button class="btn btn-secondary btn-sm" onclick="GenogramEditor.close()">取消</button><button class="btn btn-primary btn-sm" onclick="GenogramEditor.save()">插入家族圖</button></div></div><div id="geno-toolbar"><span style="font-size:.76rem;color:#718096;margin-right:2px;">工具：</span><button class="geno-tb-btn active" id="geno-t-select" onclick="GenogramEditor.setTool('select')" title="選取/拖曳；拖曳空白處框選多物件；Space+拖曳平移">↖ 選取/移動</button><button class="geno-tb-btn" id="geno-t-connect" onclick="GenogramEditor.setTool('connect')" title="點兩個節點連線（先在側欄選連線類型）">─ 連線</button><button class="geno-tb-btn" id="geno-t-text" onclick="GenogramEditor.setTool('text')" title="點畫布新增文字；雙擊編輯">T 文字</button><button class="geno-tb-btn" id="geno-t-freehand" onclick="GenogramEditor.setTool('freehand')" title="自由手繪">✏ 手繪</button><button class="geno-tb-btn" id="geno-t-erase" onclick="GenogramEditor.setTool('erase')" title="點物件刪除">✕ 橡皮擦</button><div class="geno-tb-sep"></div><span style="font-size:.76rem;color:#718096;margin-right:2px;">文字：</span><button class="geno-tb-btn" id="geno-txt-bold" onclick="GenogramEditor.toggleTextProp('bold')" title="粗體" style="font-weight:700;min-width:26px;">B</button><button class="geno-tb-btn" id="geno-txt-italic" onclick="GenogramEditor.toggleTextProp('italic')" title="斜體" style="font-style:italic;min-width:26px;">I</button><button class="geno-tb-btn" id="geno-txt-strike" onclick="GenogramEditor.toggleTextProp('strikethrough')" title="刪除線" style="text-decoration:line-through;min-width:26px;">S</button><select id="geno-txt-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.applyFontSize(+this.value)" title="字級">${[8,9,10,11,12,14,16,18,20,24].map(n=>`<option value="${n}"${n===12?' selected':''}>${n}px</option>`).join('')}</select><div class="geno-tb-sep"></div><button class="geno-tb-btn active" id="geno-snap-btn" onclick="GenogramEditor.toggleSnap()" title="網格吸附">⊡ 吸附</button><button class="geno-tb-btn" onclick="GenogramEditor.saveAsCustom()" title="將已選取物件存為共用自訂元件">📌 自訂元件</button><button class="geno-tb-btn" onclick="GenogramEditor.deleteSelected()" title="刪除所選（Delete鍵）">🗑 刪除</button><button class="geno-tb-btn" onclick="GenogramEditor.clearSelect()" title="取消選取（Esc）">☐ 取消</button><button class="geno-tb-btn" onclick="GenogramEditor.autoArrangeAll()" title="均勻排列所有子女，自動調整倒ㄇ寬度">✨ 美化</button><div class="geno-tb-sep"></div><span style="font-size:.75rem;color:#718096;" title="填色（Shift+點=改線條色）">顏色：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyColor('${c}',event)" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:1.5px solid #a0aec0;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<button class="geno-tb-btn" onclick="GenogramEditor.clearColor()" title="清除選取物件的顏色設定">✕色</button></div><div id="geno-body"><div id="geno-sidebar"></div><div id="geno-sb-resize"></div><div id="geno-canvas-wrap"><svg id="geno-svg" xmlns="${NS}"><g id="geno-vp"></g></svg></div></div>`;
+    ov.innerHTML=`<div id="geno-header"><span style="font-weight:700;font-size:1.1rem;color:#2b6cb0;">家族圖繪製</span><div style="display:flex;gap:6px;align-items:center;"><button class="geno-tb-btn" onclick="GenogramEditor.undo()" title="Ctrl+Z">↩ 復原</button><button class="geno-tb-btn" onclick="GenogramEditor.redo()" title="Ctrl+Y">↪ 重做</button><button class="geno-tb-btn" onclick="GenogramEditor.zoomFit()">⊞ 全圖</button><div class="geno-tb-sep"></div><button class="btn btn-secondary btn-sm" onclick="GenogramEditor.close()">取消</button><button class="btn btn-primary btn-sm" onclick="GenogramEditor.save()">插入家族圖</button></div></div><div id="geno-toolbar"><span style="font-size:.76rem;color:#718096;margin-right:2px;">工具：</span><button class="geno-tb-btn active" id="geno-t-select" onclick="GenogramEditor.setTool('select')" title="選取/拖曳；拖曳空白處框選多物件；Space+拖曳平移">↖ 選取/移動</button><button class="geno-tb-btn" id="geno-t-connect" onclick="GenogramEditor.setTool('connect')" title="點兩個節點連線（先在側欄選連線類型）">─ 連線</button><button class="geno-tb-btn" id="geno-t-text" onclick="GenogramEditor.setTool('text')" title="點畫布新增文字；雙擊編輯">T 文字</button><button class="geno-tb-btn" id="geno-t-freehand" onclick="GenogramEditor.setTool('freehand')" title="自由手繪">✏ 手繪</button><button class="geno-tb-btn" id="geno-t-erase" onclick="GenogramEditor.setTool('erase')" title="點物件刪除">✕ 橡皮擦</button><div class="geno-tb-sep"></div><span style="font-size:.76rem;color:#718096;margin-right:2px;">文字：</span><button class="geno-tb-btn" id="geno-txt-bold" onclick="GenogramEditor.toggleTextProp('bold')" title="粗體" style="font-weight:700;min-width:26px;">B</button><button class="geno-tb-btn" id="geno-txt-italic" onclick="GenogramEditor.toggleTextProp('italic')" title="斜體" style="font-style:italic;min-width:26px;">I</button><button class="geno-tb-btn" id="geno-txt-strike" onclick="GenogramEditor.toggleTextProp('strikethrough')" title="刪除線" style="text-decoration:line-through;min-width:26px;">S</button><select id="geno-txt-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.applyFontSize(+this.value)" title="字級">${[8,9,10,11,12,14,16,18,20,24].map(n=>`<option value="${n}"${n===12?' selected':''}>${n}px</option>`).join('')}</select><div class="geno-tb-sep"></div><button class="geno-tb-btn active" id="geno-snap-btn" onclick="GenogramEditor.toggleSnap()" title="網格吸附">⊡ 吸附</button><button class="geno-tb-btn" onclick="GenogramEditor.saveAsCustom()" title="將已選取物件存為共用自訂元件">📌 自訂元件</button><button class="geno-tb-btn" onclick="GenogramEditor.deleteSelected()" title="刪除所選（Delete鍵）">🗑 刪除</button><button class="geno-tb-btn" onclick="GenogramEditor.clearSelect()" title="取消選取（Esc）">☐ 取消</button><button class="geno-tb-btn" onclick="GenogramEditor.autoArrangeAll()" title="均勻排列所有子女，自動調整倒ㄇ寬度">✨ 美化</button><div class="geno-tb-sep"></div><span style="font-size:.75rem;color:#718096;">填色：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:1.5px solid #a0aec0;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<span style="font-size:.75rem;color:#718096;margin-left:6px;" title="節點外框色、關係線顏色">框線：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyStrokeColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:2.5px solid #718096;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<button class="geno-tb-btn" onclick="GenogramEditor.clearColor()" onmousedown="event.preventDefault()" title="清除選取物件的顏色設定">✕色</button></div><div id="geno-body"><div id="geno-sidebar"></div><div id="geno-sb-resize"></div><div id="geno-canvas-wrap"><svg id="geno-svg" xmlns="${NS}"><g id="geno-vp"></g></svg></div></div>`;
     document.body.appendChild(ov);
     _svg=document.getElementById('geno-svg');_vp=document.getElementById('geno-vp');
     _svg.addEventListener('mousedown',_onMouseDown);
@@ -4642,7 +4678,7 @@ const GenogramEditor = (() => {
     _zoom=Math.min(W/cW,H/cH,3);_panX=(W-cW*_zoom)/2-lx*_zoom+40*_zoom;_panY=(H-cH*_zoom)/2-ly*_zoom+40*_zoom;_render();
   }
 
-  return{open,close,save,undo,redo,setTool,setShape,setLinkType,toggleTextProp,applyFontSize,toggleSnap,zoomFit,deleteSelected,editLabel,saveAsCustom,deleteCustom,placeCustom,applyColor,clearColor,clearSelect,autoArrangeAll};
+  return{open,close,save,undo,redo,setTool,setShape,setLinkType,toggleTextProp,applyFontSize,toggleSnap,zoomFit,deleteSelected,editLabel,saveAsCustom,deleteCustom,placeCustom,applyColor,applyStrokeColor,clearColor,clearSelect,autoArrangeAll,toggleSbSection};
 })();
 
 function openGenogramEditor(fieldId,caseId,storeKey){
@@ -7051,8 +7087,8 @@ function showCaseDetail(caseId) {
     semActHtml += ` <button class="btn btn-secondary" onclick="openEditCasePage('${cid}')">編輯基本資料</button>`;
     semActHtml += ` <button class="btn btn-secondary" onclick="openBatchPrintModal('${cid}')" data-tip="產生事件處理記錄表">記錄批次列印</button>`;
     semActHtml += ` <button class="btn btn-secondary" onclick="_scrollToIiCard('${cid}')" data-tip="會跳到初次晤談表卡片區（需切換到本學期模式）">移至初次晤談卡片</button>`;
-    semActHtml += ` <button class="btn btn-secondary" onclick="document.getElementById('cs-psychiatrist')?.scrollIntoView({behavior:'smooth',block:'center'})" data-tip="會跳到精神科醫師評估卡片區">移至精神科醫師卡片</button>`;
-    semActHtml += ` <button class="btn btn-secondary" onclick="document.getElementById('cs-eval')?.scrollIntoView({behavior:'smooth',block:'center'})" data-tip="會跳到結案/學期評估卡片區">移至結案/學期評估卡片</button>`;
+    semActHtml += ` <button class="btn btn-secondary" onclick="_scrollToPsychCard('${cid}')" data-tip="會跳到精神科醫師評估卡片區">移至精神科醫師卡片</button>`;
+    semActHtml += ` <button class="btn btn-secondary" onclick="_scrollToEvalCard('${cid}')" data-tip="會跳到結案/學期評估卡片區">移至結案/學期評估卡片</button>`;
     if (isActive) {
       semActHtml += ` <button class="btn btn-danger" onclick="closeCaseConfirm('${cid}')">結案</button>`;
     }
@@ -13306,9 +13342,9 @@ function openInitialInterviewPage(caseId) {
   // Load custom service options into ii- lists
   _iiLoadCustomServiceOptions();
 
-  // Reset interview date/time/interviewer
+  // Reset interview date/time/interviewer — default date to today for new forms
   const _iiDateEl = document.getElementById('ii-interview-date');
-  if (_iiDateEl) _iiDateEl.value = '';
+  if (_iiDateEl) _iiDateEl.value = new Date().toISOString().split('T')[0];
   const _iiTimeEl = document.getElementById('ii-interview-time');
   if (_iiTimeEl) _iiTimeEl.value = '';
   const _iiTimeOtherEl = document.getElementById('ii-interview-time-other');
@@ -13687,14 +13723,32 @@ async function confirmIiContinuation(caseId) {
   }
 }
 
+function _showAllSemWarning(caseId, label) {
+  const existing = document.getElementById('_all-sem-warn-modal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = '_all-sem-warn-modal';
+  modal.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.4);';
+  modal.innerHTML = `<div style="background:#fff;border-radius:10px;padding:24px 28px;max-width:380px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,.2);"><div style="font-weight:700;font-size:1rem;margin-bottom:10px;color:#2d3748;">⚠ 無法捲動至「${label}」</div><div style="font-size:.9rem;color:#4a5568;margin-bottom:18px;">目前為「所有學期」模式，${label}不會顯示。<br>請切換回「本學期」模式後再使用此功能。</div><div style="display:flex;gap:10px;justify-content:flex-end;"><button onclick="document.getElementById('_all-sem-warn-modal').remove()" style="padding:7px 18px;border:1px solid #cbd5e0;border-radius:6px;background:#fff;cursor:pointer;font-size:.9rem;">確認</button><button onclick="_setDetailSemFilter('current','${caseId}');document.getElementById('_all-sem-warn-modal').remove();" style="padding:7px 18px;border:none;border-radius:6px;background:#3182ce;color:#fff;cursor:pointer;font-size:.9rem;font-weight:600;">切回本學期</button></div></div>`;
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
 // 從現有晤談紀錄挑一筆作為「初次晤談」
 function _scrollToIiCard(cid) {
   const el = document.getElementById('ii-card-' + cid);
-  if (el) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  } else {
-    alert('目前為「所有學期」檢視模式，初次晤談卡片不會顯示。\n請切換到「本學期」模式後再使用此功能。');
-  }
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  else _showAllSemWarning(cid, '初次晤談卡片');
+}
+function _scrollToPsychCard(cid) {
+  const el = document.getElementById('cs-psychiatrist');
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  else _showAllSemWarning(cid, '精神科醫師卡片');
+}
+function _scrollToEvalCard(cid) {
+  const el = document.getElementById('cs-eval');
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  else _showAllSemWarning(cid, '結案/學期評估卡片');
 }
 
 function pickRecordAsInitialInterview(caseId) {
