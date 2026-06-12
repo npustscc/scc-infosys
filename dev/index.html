@@ -14910,9 +14910,18 @@ async function loadUserTodos() {
   if (!email) return;
   try {
     const usersId = await getUsersFolderId();
-    const fileName = `todos_${email}.json`;
-    const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
-    const res = await driveQuery(q, 'id');
+    const envSuffix = DRIVE_FOLDER_ID.slice(-8);
+    const newFileName = `todos_${email}_${envSuffix}.json`;
+    const oldFileName = `todos_${email}.json`;
+    // Try env-specific file first; fall back to legacy file (auto-migrates on next save)
+    let q = `name='${newFileName}' and '${usersId}' in parents and trashed=false`;
+    let res = await driveQuery(q, 'id');
+    let isLegacy = false;
+    if (!res.files?.length) {
+      q = `name='${oldFileName}' and '${usersId}' in parents and trashed=false`;
+      res = await driveQuery(q, 'id');
+      isLegacy = true;
+    }
     if (res.files && res.files.length) {
       _todoFileId = res.files[0].id;
       const raw = await driveReadJsonById(_todoFileId);
@@ -14921,6 +14930,8 @@ async function loadUserTodos() {
       const _prefs = raw?.caseSearchPrefs || {};
       if (_prefs.closureStatus !== undefined) _cnClosureStatus = _prefs.closureStatus;
       if (_prefs.archived !== undefined) _cnArchived = _prefs.archived;
+      // Loaded from legacy file → clear file ID so saveUserTodos creates a new env-specific file
+      if (isLegacy) { _todoFileId = null; saveUserTodos().catch(() => {}); }
     } else {
       todosData = [];
       _suppressedTodoRecordIds = new Set();
@@ -14935,7 +14946,8 @@ async function loadUserTodos() {
 async function saveUserTodos() {
   const email = currentUser?.email;
   if (!email) return;
-  const fileName = `todos_${email}.json`;
+  const envSuffix = DRIVE_FOLDER_ID.slice(-8);
+  const fileName = `todos_${email}_${envSuffix}.json`;
   const content = { todos: todosData, suppressedRecordIds: [..._suppressedTodoRecordIds], caseSearchPrefs: { closureStatus: _cnClosureStatus, archived: _cnArchived }, updatedAt: new Date().toISOString() };
   const usersId = await getUsersFolderId();
   if (!_todoFileId) {
@@ -15429,9 +15441,15 @@ async function _fetchAdminTodosForUser(email) {
   if (_adminTodosCache[email] !== undefined) return _adminTodosCache[email];
   try {
     const usersId = await getUsersFolderId();
-    const fileName = `todos_${email}.json`;
-    const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
-    const res = await driveQuery(q, 'id');
+    const envSuffix = DRIVE_FOLDER_ID.slice(-8);
+    const newFileName = `todos_${email}_${envSuffix}.json`;
+    const oldFileName = `todos_${email}.json`;
+    let q = `name='${newFileName}' and '${usersId}' in parents and trashed=false`;
+    let res = await driveQuery(q, 'id');
+    if (!res.files?.length) {
+      q = `name='${oldFileName}' and '${usersId}' in parents and trashed=false`;
+      res = await driveQuery(q, 'id');
+    }
     if (res.files && res.files.length) {
       const raw = await driveReadJsonById(res.files[0].id);
       _adminTodosCache[email] = Array.isArray(raw?.todos) ? raw.todos : [];
@@ -22614,9 +22632,11 @@ function _computeGradStatus(c, curSemStr) {
   const digits = sid.slice(1);
   if (digits.length < 3 || !/^\d/.test(digits)) return null;
   const { progMap, degreeMap } = _buildDegreeMaps();
-  const progYears = progMap[typeChar];
+  let progYears = progMap[typeChar];
   if (!progYears) return null;
   const degreeName = degreeMap[typeChar] || '';
+  // 獸醫系大學部：學號第5-6位為16（如 B11316xxx），修業年限為5年
+  if (typeChar === 'B' && sid.length >= 6 && sid[4] === '1' && sid[5] === '6') progYears = 5;
   const admYear = parseInt(digits.slice(0, 3), 10);
   if (isNaN(admYear) || admYear < 80 || admYear > 200) return null;
   const sem = curSemStr || currentSemesterPrefix();
@@ -23322,9 +23342,24 @@ function _renderGradTransferTab() {
     const dec = _getGradTransferDecision(c.id, semToUse);
     const decStatus = dec?.status || 'pending';
     const isResolved = decStatus !== 'pending';
-    const gradBadge = gs.isOverdue
-      ? `<span class="grad-badge grad-overdue" style="font-size:.7rem;">${gs.degreeName}${gs.yearsAttended}年，延畢中</span>`
-      : `<span class="grad-badge grad-near" style="font-size:.7rem;">預作畢業</span>`;
+    let gradBadge;
+    if (decStatus === 'stay') {
+      // 本學期不離校 = 仍屬延畢，下學期自動再出現
+      gradBadge = `<span class="grad-badge grad-overdue" style="font-size:.7rem;">${gs.degreeName}${gs.yearsAttended}年，延畢中</span>`;
+    } else if (decStatus !== 'pending') {
+      // 已決議 = 已畢業；但直升碩博士若在新學期重新開案則取消已畢業標籤
+      const hideGraduated = decStatus === 'direct_admission' &&
+        casesData.some(cc => !cc.deleted && cc.name === c.name && cc.id !== c.id);
+      gradBadge = hideGraduated
+        ? (gs.isOverdue
+            ? `<span class="grad-badge grad-overdue" style="font-size:.7rem;">${gs.degreeName}${gs.yearsAttended}年，延畢中</span>`
+            : `<span class="grad-badge grad-near" style="font-size:.7rem;">預作畢業</span>`)
+        : `<span class="grad-badge" style="background:#e6fffa;color:#1d6a3a;border:1px solid #81e6d9;font-size:.7rem;">已畢業</span>`;
+    } else {
+      gradBadge = gs.isOverdue
+        ? `<span class="grad-badge grad-overdue" style="font-size:.7rem;">${gs.degreeName}${gs.yearsAttended}年，延畢中</span>`
+        : `<span class="grad-badge grad-near" style="font-size:.7rem;">預作畢業</span>`;
+    }
     const resolvedBadge = isResolved
       ? `<span style="font-size:.72rem;background:#d5f5e3;color:#1d6a3a;border-radius:8px;padding:1px 7px;border:1px solid #9ae6b4;font-weight:600;">已決議</span>`
       : '';
