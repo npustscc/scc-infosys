@@ -63,6 +63,11 @@
       padding:4px 13px; font-size:.82rem; cursor:pointer; font-weight:600;
       transition:background .15s; }
     #header-back-btn:hover { background:rgba(255,255,255,.3); }
+    #header-prev-btn { display:none; white-space:nowrap; flex-shrink:0;
+      background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.3); color:rgba(255,255,255,.85); border-radius:20px;
+      padding:4px 13px; font-size:.78rem; cursor:pointer; font-weight:500;
+      transition:background .15s;max-width:260px;overflow:hidden;text-overflow:ellipsis; }
+    #header-prev-btn:hover { background:rgba(255,255,255,.2); }
     #header-scroll-top { white-space:nowrap;
       background:rgba(255,255,255,.18); border:none; color:#fff; border-radius:20px;
       padding:4px 13px; font-size:.82rem; cursor:pointer; font-weight:600;
@@ -895,7 +900,9 @@
     #geno-header { display:flex;align-items:center;justify-content:space-between;padding:10px 18px;border-bottom:2px solid #3182ce;background:linear-gradient(90deg,#ebf8ff,#f0fff4);flex-shrink:0; }
     #geno-toolbar { display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:6px 10px;background:#f7fafc;border-bottom:1px solid #e2e8f0;flex-shrink:0; }
     #geno-body { display:flex;flex:1;overflow:hidden;min-height:0; }
-    #geno-sidebar { width:152px;flex-shrink:0;overflow-y:auto;border-right:1px solid #e2e8f0;background:#fafafa;padding:4px 3px; }
+    #geno-sidebar { width:170px;min-width:120px;max-width:400px;flex-shrink:0;overflow-y:auto;border-right:1px solid #e2e8f0;background:#fafafa;padding:4px 3px;position:relative;user-select:none; }
+    #geno-sb-resize { position:absolute;top:0;right:-3px;width:7px;height:100%;cursor:col-resize;z-index:2;border-radius:3px; }
+    #geno-sb-resize:hover,#geno-sb-resize.active { background:rgba(49,130,206,0.3); }
     .geno-sb-sec { font-size:.67rem;font-weight:700;color:#718096;padding:3px 5px;background:#edf2f7;border-radius:3px;margin-bottom:3px;letter-spacing:.04em;text-transform:uppercase; }
     .geno-sb-grid { display:grid;grid-template-columns:1fr 1fr;gap:2px;margin-bottom:2px; }
     .geno-sb-item { display:flex;flex-direction:column;align-items:center;cursor:pointer;padding:3px 2px;border-radius:4px;border:1px solid transparent;font-size:.63rem;color:#4a5568;text-align:center; }
@@ -936,6 +943,7 @@
   <div style="display:flex;align-items:center;gap:10px;min-width:0;overflow:hidden;">
     <h1 style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">🏫 國立屏東科技大學學生諮商中心資訊系統</h1>
     <button id="header-back-btn" onclick="handleFloatingBack()">← 返回</button>
+    <button id="header-prev-btn" onclick="handlePrevPage()" title="返回上一頁">← 上一頁：<span id="header-prev-label"></span></button>
   </div>
   <div id="user-info" style="display:none;">
     <div id="header-lock-btn" onclick="lockScreen(true)" title="鎖定畫面" style="display:none;cursor:pointer;padding:4px 8px;border-radius:6px;transition:background .15s;align-items:center;font-size:1.25rem;line-height:1;" onmouseover="this.style.background='rgba(255,255,255,.15)'" onmouseout="this.style.background=''">🔒</div>
@@ -1768,6 +1776,8 @@
         <div class="form-section-title">八向度風險評估</div>
         <div id="te-dims"></div>
       </div>
+
+      <div id="te-service-history" style="margin-bottom:14px;"></div>
 
       <div class="form-section">
         <div class="form-section-title">質性描述</div>
@@ -3550,6 +3560,35 @@ function showToast(msg, type = 'success', duration = 3500) {
   setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, duration);
 }
 
+let _prevNavState = null;
+function _navPageLabel(pid) {
+  const m={'page-cases':'個案列表','page-case-detail':'個案詳細','page-pending':'不開案個案','page-bookings':'空間預約','page-psychiatry':'精神科評估','page-casenums':'案號管理','page-stats':'統計分析','page-event-records':'事件處理記錄','page-psych-test-db':'心理測驗庫','page-transfer':'轉銜管理','page-admin':'系統管理','page-recycle':'資源回收桶','page-unassigned-records':'未歸屬記錄','page-issues':'錯誤回報/許願池','page-pdf-tool':'PDF工具','page-audit':'稽核日誌','page-prefs':'偏好設定','page-todos':'待辦事項','page-new-record':'晤談紀錄','page-new-case':'新增個案','page-closure-eval':'結案評估','page-transfer-eval':'轉銜評估','page-initial-interview':'初談紀錄'};
+  return m[pid]||pid;
+}
+function _buildNavState(pid) {
+  if(!pid)return null;
+  let label=_navPageLabel(pid),restore;
+  if(pid==='page-case-detail'&&typeof _detailCaseId!=='undefined'&&_detailCaseId){
+    const c=(casesData||[]).find(x=>x.id===_detailCaseId);
+    if(c)label=`個案詳細：${c.name}`;
+    const cid=_detailCaseId;restore=()=>showCaseDetail(cid);
+  }else{
+    const ne=document.querySelector(`[data-nav-id="${pid}"]`);
+    const renderMap={'page-cases':()=>{try{renderCases();}catch(_){}},'page-transfer':()=>{try{renderTransferPage();}catch(_){}},'page-todos':()=>{try{renderTodosPage();}catch(_){}},'page-pending':()=>{try{renderPendingList();}catch(_){}},'page-psychiatry':()=>{try{renderPsychiatryPage();}catch(_){}}};
+    restore=()=>{showPage(pid,ne);if(renderMap[pid])renderMap[pid]();};
+  }
+  return{label,restore};
+}
+function _updatePrevBtn(){
+  const btn=document.getElementById('header-prev-btn'),lbl=document.getElementById('header-prev-label');
+  if(!btn)return;
+  if(_prevNavState){btn.style.display='';if(lbl)lbl.textContent=_prevNavState.label;}
+  else btn.style.display='none';
+}
+function handlePrevPage(){
+  const s=_prevNavState;_prevNavState=null;_updatePrevBtn();
+  if(s?.restore)s.restore();
+}
 function showPage(pageId, navEl) {
   // 離開待辦頁時標記待派案 todo 為已讀
   const prevPage = document.querySelector('.page.active')?.id;
@@ -3559,12 +3598,14 @@ function showPage(pageId, navEl) {
     if (changed) saveUserTodos().catch(() => {});
   }
   const alreadyActive = document.getElementById(pageId)?.classList.contains('active');
+  if (prevPage && prevPage !== pageId) { _prevNavState = _buildNavState(prevPage); }
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById(pageId).classList.add('active');
   if (navEl) navEl.classList.add('active');
   if (!alreadyActive) { window.scrollTo(0, 0); _syslog('info', `USER 導航：${pageId}`); }
   updateFloatingBackBtn(pageId);
+  _updatePrevBtn();
 }
 
 // 返回按鈕：banner 左上方 title 右邊
@@ -3867,6 +3908,35 @@ const GenogramEditor = (() => {
     return g;
   }
 
+  function _linkElFamily(o,childLinks,fe){
+    const A=_objs.find(x=>x.id===o.from),B=_objs.find(x=>x.id===o.to);
+    if(!A||!B)return null;
+    const g=_el('g',{class:'geno-conn','data-id':o.id});
+    const sel=!fe&&o.id===_selId,sc=sel?'#3182ce':'#1a202c',lt=o.linkType;
+    const ax=A.x,ay=A.y,bx=B.x,by=B.y;
+    const barY=Math.max(ay,by)+54,midX=(ax+bx)/2;
+    g.appendChild(_el('line',{x1:ax,y1:ay,x2:ax,y2:barY,stroke:sc,'stroke-width':'1.8'}));
+    g.appendChild(_el('line',{x1:ax,y1:barY,x2:bx,y2:barY,stroke:sc,'stroke-width':'1.8'}));
+    g.appendChild(_el('line',{x1:bx,y1:by,x2:bx,y2:barY,stroke:sc,'stroke-width':'1.8'}));
+    if(lt==='separated'||lt==='divorced'){
+      const ym=(ay+barY)/2,n=lt==='divorced'?2:1;
+      for(let i=0;i<n;i++){const off=n===2?(i===0?-5.5:5.5):0;g.appendChild(_el('line',{x1:ax-9,y1:ym+off-5,x2:ax+9,y2:ym+off+5,stroke:sc,'stroke-width':'1.8'}));}
+    }
+    const chn=childLinks.map(cl=>_objs.find(x=>x.id===cl.childId)).filter(Boolean);
+    chn.sort((a,b)=>a.x-b.x);
+    if(chn.length===1){
+      const c=chn[0];
+      g.appendChild(_el('line',{x1:midX,y1:barY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'}));
+    }else if(chn.length>1){
+      const sibY=barY+42;
+      g.appendChild(_el('line',{x1:midX,y1:barY,x2:midX,y2:sibY,stroke:sc,'stroke-width':'1.8'}));
+      g.appendChild(_el('line',{x1:chn[0].x,y1:sibY,x2:chn[chn.length-1].x,y2:sibY,stroke:sc,'stroke-width':'1.8'}));
+      for(const c of chn)g.appendChild(_el('line',{x1:c.x,y1:sibY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'}));
+    }
+    g.appendChild(_el('path',{d:`M${ax} ${ay}L${bx} ${barY}`,fill:'none',stroke:'transparent','stroke-width':'14'}));
+    return g;
+  }
+
   function _textEl(o,fe){
     const g=_el('g',{class:'geno-text-obj','data-id':o.id});
     const sel=!fe&&(o.id===_selId||_multiSel.has(o.id)),fs=o.fontSize||12;
@@ -3897,7 +3967,7 @@ const GenogramEditor = (() => {
     pat.appendChild(_el('circle',{cx:'1',cy:'1',r:'1.3',fill:'#b0bec5',opacity:'0.55'}));
     defs.appendChild(pat);_vp.appendChild(defs);
     _vp.appendChild(_el('rect',{x:'-3000',y:'-3000',width:'6000',height:'6000',fill:'url(#gp)'}));
-    for(const o of _objs)if(o.type==='link'){const g=_linkEl(o,false);if(g)_vp.appendChild(g);}
+    {const fam=new Set(_objs.filter(o=>o.type==='link'&&o.coupleId).map(o=>o.coupleId));for(const o of _objs)if(o.type==='link'){if(fam.has(o.id)&&['married','separated','divorced'].includes(o.linkType)){const cl=_objs.filter(x=>x.type==='link'&&x.coupleId===o.id);const g=_linkElFamily(o,cl,false);if(g)_vp.appendChild(g);}else if(!o.coupleId){const g=_linkEl(o,false);if(g)_vp.appendChild(g);}}}
     for(const o of _objs){
       if(o.type==='node')_vp.appendChild(_nodeEl(o,false));
       else if(o.type==='text')_vp.appendChild(_textEl(o,false));
@@ -3956,6 +4026,11 @@ const GenogramEditor = (() => {
     if(_tool==='select'){
       if(anyHit){
         const hitId=(nd||tx||ph||lk).id;
+        if(e.shiftKey){
+          if(_multiSel.has(hitId)){_multiSel.delete(hitId);}
+          else{if(_selId){_multiSel.add(_selId);_selId=null;}_multiSel.add(hitId);}
+          _render();return;
+        }
         if(_multiSel.has(hitId)){
           _dragBeforeState=_snap();
           const origObjs=[..._multiSel].map(id=>_objs.find(o=>o.id===id)).filter(Boolean);
@@ -3996,7 +4071,18 @@ const GenogramEditor = (() => {
     }else if(_tool==='connect'){
       if(nd){
         if(!_connectFrom){_connectFrom=nd.id;_connectLine=_el('line',{x1:nd.x,y1:nd.y,x2:nd.x,y2:nd.y,stroke:'#3182ce','stroke-width':'1.5','stroke-dasharray':'4,3','pointer-events':'none'});}
-        else if(nd.id!==_connectFrom){_pushUndo();_objs.push({id:_uid(),type:'link',from:_connectFrom,to:nd.id,linkType:_linkType});_connectFrom=null;_connectLine=null;_render();}
+        else if(nd.id!==_connectFrom){
+          _pushUndo();
+          const nl={id:_uid(),type:'link',from:_connectFrom,to:nd.id,linkType:_linkType};
+          if(['parent','adopted','foster'].includes(_linkType)){
+            const CTYPE=['married','separated','divorced'];
+            const fCpl=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===_connectFrom||o.to===_connectFrom));
+            const tCpl=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===nd.id||o.to===nd.id));
+            if(tCpl.length&&!fCpl.length){nl.coupleId=tCpl[0].id;nl.childId=_connectFrom;nl.parentId=nd.id;}
+            else if(fCpl.length&&!tCpl.length){nl.coupleId=fCpl[0].id;nl.childId=nd.id;nl.parentId=_connectFrom;}
+          }
+          _objs.push(nl);_connectFrom=null;_connectLine=null;_render();
+        }
       }else{_connectFrom=null;_connectLine=null;_render();}
     }else if(_tool==='text'){
       _pushUndo();
@@ -4006,11 +4092,9 @@ const GenogramEditor = (() => {
       _freehandPts=[[x,y]];
       _freehandEl=_el('path',{d:`M${x} ${y}`,fill:'none',stroke:'#1a202c','stroke-width':'1.8','stroke-linecap':'round','pointer-events':'none'});
     }else if(_tool==='erase'){
-      if(anyHit){
-        _pushUndo();const tid=(nd||tx||ph||lk).id;
-        _objs=_objs.filter(o=>o.id!==tid&&!(o.type==='link'&&(o.from===tid||o.to===tid)));
-        if(_selId===tid)_selId=null;_multiSel.delete(tid);_render();
-      }
+      _dragBeforeState=_snap();
+      if(anyHit){const tid=(nd||tx||ph||lk).id;_objs=_objs.filter(o=>o.id!==tid&&!(o.type==='link'&&(o.from===tid||o.to===tid)));if(_selId===tid)_selId=null;_multiSel.delete(tid);}
+      _dragging={type:'erase',changed:!!anyHit};_render();
     }
   }
 
@@ -4035,6 +4119,10 @@ const GenogramEditor = (() => {
         _panX=_dragging.ox+(e.clientX-_dragging.sx);_panY=_dragging.oy+(e.clientY-_dragging.sy);_render();
       }else if(_dragging.type==='box'&&_boxSel){
         _boxSel.x2=x;_boxSel.y2=y;_render();
+      }else if(_dragging.type==='erase'){
+        const _n=_hitNode(x,y),_t=!_n&&_hitText(x,y),_p=!_n&&!_t&&_hitPath(x,y),_l=!_n&&!_t&&!_p&&_hitLink(x,y);
+        const _h=_n||_t||_p||_l;
+        if(_h){const tid=_h.id;_objs=_objs.filter(o=>o.id!==tid&&!(o.type==='link'&&(o.from===tid||o.to===tid)));if(_selId===tid)_selId=null;_multiSel.delete(tid);_dragging.changed=true;_render();}
       }
     }
     if(_connectLine&&_connectFrom){_connectLine.setAttribute('x2',x);_connectLine.setAttribute('y2',y);_render();}
@@ -4057,6 +4145,9 @@ const GenogramEditor = (() => {
         _dragBeforeState=null;
       }else if(_dragging.type==='box'&&_boxSel){
         _selectInBox(_boxSel.x1,_boxSel.y1,_boxSel.x2,_boxSel.y2);_boxSel=null;
+      }else if(_dragging.type==='erase'&&_dragBeforeState){
+        if(_dragging.changed){_undo.push(_dragBeforeState);if(_undo.length>60)_undo.shift();_redo=[];}
+        _dragBeforeState=null;
       }
     }
     _dragging=null;
@@ -4142,27 +4233,47 @@ const GenogramEditor = (() => {
   function saveAsCustom(){
     const ids=new Set(_multiSel);if(_selId)ids.add(_selId);
     if(!ids.size){alert('請先選取一組物件。');return;}
-    const name=prompt('請輸入自訂元件名稱：','');if(!name||!name.trim())return;
-    const allIds=new Set(ids);
-    for(const o of _objs)if(o.type==='link'&&ids.has(o.from)&&ids.has(o.to))allIds.add(o.id);
-    const selected=_objs.filter(o=>allIds.has(o.id));
-    let lx=Infinity,ly=Infinity,hx=-Infinity,hy=-Infinity;
-    for(const o of selected){
-      if(o.type==='node'){lx=Math.min(lx,o.x-SZ);ly=Math.min(ly,o.y-SZ);hx=Math.max(hx,o.x+SZ);hy=Math.max(hy,o.y+SZ);}
-      else if(o.type==='text'){lx=Math.min(lx,o.x);ly=Math.min(ly,o.y-(o.fontSize||12));hx=Math.max(hx,o.x+o.text.length*8);hy=Math.max(hy,o.y+4);}
-      else if(o.type==='path'&&o.bbox){lx=Math.min(lx,o.bbox.x);ly=Math.min(ly,o.bbox.y);hx=Math.max(hx,o.bbox.x+o.bbox.w);hy=Math.max(hy,o.bbox.y+o.bbox.h);}
-    }
-    if(!isFinite(lx)){lx=0;ly=0;hx=60;hy=60;}
-    const norm=JSON.parse(JSON.stringify(selected)).map(o=>{
-      if(o.type==='node'){o.x-=lx;o.y-=ly;}
-      else if(o.type==='text'){o.x-=lx;o.y-=ly;}
-      else if(o.type==='path'){o.points=(o.points||[]).map(([px,py])=>[px-lx,py-ly]);o.d=_ptsToD(o.points);o.bbox=_calcBbox(o.points);}
-      return o;
+    _showNamePanel(name=>{
+      const allIds=new Set(ids);
+      for(const o of _objs)if(o.type==='link'&&ids.has(o.from)&&ids.has(o.to))allIds.add(o.id);
+      const selected=_objs.filter(o=>allIds.has(o.id));
+      let lx=Infinity,ly=Infinity,hx=-Infinity,hy=-Infinity;
+      for(const o of selected){
+        if(o.type==='node'){lx=Math.min(lx,o.x-SZ);ly=Math.min(ly,o.y-SZ);hx=Math.max(hx,o.x+SZ);hy=Math.max(hy,o.y+SZ);}
+        else if(o.type==='text'){lx=Math.min(lx,o.x);ly=Math.min(ly,o.y-(o.fontSize||12));hx=Math.max(hx,o.x+o.text.length*8);hy=Math.max(hy,o.y+4);}
+        else if(o.type==='path'&&o.bbox){lx=Math.min(lx,o.bbox.x);ly=Math.min(ly,o.bbox.y);hx=Math.max(hx,o.bbox.x+o.bbox.w);hy=Math.max(hy,o.bbox.y+o.bbox.h);}
+      }
+      if(!isFinite(lx)){lx=0;ly=0;hx=60;hy=60;}
+      const norm=JSON.parse(JSON.stringify(selected)).map(o=>{
+        if(o.type==='node'){o.x-=lx;o.y-=ly;}
+        else if(o.type==='text'){o.x-=lx;o.y-=ly;}
+        else if(o.type==='path'){o.points=(o.points||[]).map(([px,py])=>[px-lx,py-ly]);o.d=_ptsToD(o.points);o.bbox=_calcBbox(o.points);}
+        return o;
+      });
+      if(!configData)configData={};if(!configData.customComponents)configData.customComponents=[];
+      configData.customComponents.push({name,objects:norm,bbox:{w:hx-lx,h:hy-ly}});
+      driveUpdateJsonFile(CONFIG_FILE,configData).catch(()=>{});
+      _renderSidebar();
     });
-    if(!configData)configData={};if(!configData.customComponents)configData.customComponents=[];
-    configData.customComponents.push({name:name.trim(),objects:norm,bbox:{w:hx-lx,h:hy-ly}});
-    driveUpdateJsonFile(CONFIG_FILE,configData).catch(()=>{});
-    _renderSidebar();alert('「'+name.trim()+'」已儲存為自訂元件。');
+  }
+  function _showNamePanel(cb){
+    const old=document.getElementById('geno-name-panel');if(old)old.remove();
+    const tb=document.getElementById('geno-toolbar');if(!tb)return;
+    tb.style.position='relative';
+    const p=document.createElement('div');
+    p.id='geno-name-panel';
+    p.style.cssText='position:absolute;top:calc(100% + 6px);right:8px;background:#fff;border:1.5px solid #3182ce;border-radius:10px;padding:14px 16px;z-index:100002;box-shadow:0 6px 24px rgba(0,0,0,0.18);min-width:230px;';
+    p.innerHTML='<div style="font-size:.83rem;font-weight:700;color:#2b6cb0;margin-bottom:10px;">💾 儲存為自訂元件</div>'
+      +'<input id="geno-np-inp" type="text" placeholder="輸入元件名稱…" maxlength="30" style="width:100%;box-sizing:border-box;border:1px solid #cbd5e0;border-radius:6px;padding:6px 10px;font-size:.88rem;outline:none;margin-bottom:10px;transition:border .2s;" onfocus="this.style.borderColor=\'#3182ce\'" onblur="this.style.borderColor=\'#cbd5e0\'">'
+      +'<div style="display:flex;gap:8px;justify-content:flex-end;">'
+      +'<button onclick="document.getElementById(\'geno-name-panel\').remove()" style="font-size:.82rem;padding:5px 12px;border:1px solid #e2e8f0;border-radius:6px;background:#f7fafc;cursor:pointer;color:#4a5568;">取消</button>'
+      +'<button id="geno-np-ok" style="font-size:.82rem;padding:5px 14px;border:none;border-radius:6px;background:#3182ce;color:#fff;cursor:pointer;font-weight:700;">確認儲存</button>'
+      +'</div>';
+    tb.appendChild(p);
+    const inp=document.getElementById('geno-np-inp');inp.focus();
+    const confirm=()=>{const v=inp.value.trim();if(!v){inp.style.borderColor='#e53e3e';return;}p.remove();cb(v);};
+    document.getElementById('geno-np-ok').onclick=confirm;
+    inp.addEventListener('keydown',ev=>{if(ev.key==='Enter')confirm();if(ev.key==='Escape')p.remove();ev.stopPropagation();});
   }
   function deleteCustom(idx){
     if(!configData||!configData.customComponents)return;
@@ -4191,7 +4302,7 @@ const GenogramEditor = (() => {
     if(!isFinite(lx)){lx=0;ly=0;hx=300;hy=200;}
     const P=28,W=hx-lx+P*2,H=hy-ly+P*2;
     const s2=_el('svg',{xmlns:NS,width:W,height:H,viewBox:`${lx-P} ${ly-P} ${W} ${H}`});s2.style.background='#fff';
-    for(const o of _objs)if(o.type==='link'){const g=_linkEl(o,true);if(g)s2.appendChild(g);}
+    {const fam=new Set(_objs.filter(o=>o.type==='link'&&o.coupleId).map(o=>o.coupleId));for(const o of _objs)if(o.type==='link'){if(fam.has(o.id)&&['married','separated','divorced'].includes(o.linkType)){const cl=_objs.filter(x=>x.type==='link'&&x.coupleId===o.id);const g=_linkElFamily(o,cl,true);if(g)s2.appendChild(g);}else if(!o.coupleId){const g=_linkEl(o,true);if(g)s2.appendChild(g);}}}
     for(const o of _objs){
       if(o.type==='node')s2.appendChild(_nodeEl(o,true));
       else if(o.type==='text')s2.appendChild(_textEl(o,true));
@@ -4277,7 +4388,7 @@ const GenogramEditor = (() => {
   // ── Build UI ──────────────────────────────────────────────────────
   function _buildUI(){
     const ov=document.createElement('div');ov.id='geno-overlay';
-    ov.innerHTML=`<div id="geno-header"><span style="font-weight:700;font-size:1.1rem;color:#2b6cb0;">家族圖繪製</span><div style="display:flex;gap:6px;align-items:center;"><button class="geno-tb-btn" onclick="GenogramEditor.undo()" title="Ctrl+Z">↩ 復原</button><button class="geno-tb-btn" onclick="GenogramEditor.redo()" title="Ctrl+Y">↪ 重做</button><button class="geno-tb-btn" onclick="GenogramEditor.zoomFit()">⊞ 全圖</button><div class="geno-tb-sep"></div><button class="btn btn-secondary btn-sm" onclick="GenogramEditor.close()">取消</button><button class="btn btn-primary btn-sm" onclick="GenogramEditor.save()">插入家族圖</button></div></div><div id="geno-toolbar"><span style="font-size:.76rem;color:#718096;margin-right:2px;">工具：</span><button class="geno-tb-btn active" id="geno-t-select" onclick="GenogramEditor.setTool('select')" title="選取/拖曳；拖曳空白處框選多物件；Space+拖曳平移">↖ 選取</button><button class="geno-tb-btn" id="geno-t-connect" onclick="GenogramEditor.setTool('connect')" title="點兩個節點連線（先在側欄選連線類型）">─ 連線</button><button class="geno-tb-btn" id="geno-t-text" onclick="GenogramEditor.setTool('text')" title="點畫布新增文字；雙擊編輯">T 文字</button><button class="geno-tb-btn" id="geno-t-freehand" onclick="GenogramEditor.setTool('freehand')" title="自由手繪">✏ 手繪</button><button class="geno-tb-btn" id="geno-t-erase" onclick="GenogramEditor.setTool('erase')" title="點物件刪除">✕ 橡皮擦</button><div class="geno-tb-sep"></div><span style="font-size:.76rem;color:#718096;margin-right:2px;">文字：</span><button class="geno-tb-btn" id="geno-txt-bold" onclick="GenogramEditor.toggleTextProp('bold')" title="粗體" style="font-weight:700;min-width:26px;">B</button><button class="geno-tb-btn" id="geno-txt-italic" onclick="GenogramEditor.toggleTextProp('italic')" title="斜體" style="font-style:italic;min-width:26px;">I</button><button class="geno-tb-btn" id="geno-txt-strike" onclick="GenogramEditor.toggleTextProp('strikethrough')" title="刪除線" style="text-decoration:line-through;min-width:26px;">S</button><select id="geno-txt-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.applyFontSize(+this.value)" title="字級">${[8,9,10,11,12,14,16,18,20,24].map(n=>`<option value="${n}"${n===12?' selected':''}>${n}px</option>`).join('')}</select><div class="geno-tb-sep"></div><button class="geno-tb-btn active" id="geno-snap-btn" onclick="GenogramEditor.toggleSnap()" title="網格吸附">⊡ 吸附</button><button class="geno-tb-btn" onclick="GenogramEditor.saveAsCustom()" title="將已選取物件存為共用自訂元件">📌 自訂元件</button><button class="geno-tb-btn" onclick="GenogramEditor.deleteSelected()" title="刪除所選（Delete鍵）">🗑 刪除</button></div><div id="geno-body"><div id="geno-sidebar"></div><div id="geno-canvas-wrap"><svg id="geno-svg" xmlns="${NS}"><g id="geno-vp"></g></svg></div></div>`;
+    ov.innerHTML=`<div id="geno-header"><span style="font-weight:700;font-size:1.1rem;color:#2b6cb0;">家族圖繪製</span><div style="display:flex;gap:6px;align-items:center;"><button class="geno-tb-btn" onclick="GenogramEditor.undo()" title="Ctrl+Z">↩ 復原</button><button class="geno-tb-btn" onclick="GenogramEditor.redo()" title="Ctrl+Y">↪ 重做</button><button class="geno-tb-btn" onclick="GenogramEditor.zoomFit()">⊞ 全圖</button><div class="geno-tb-sep"></div><button class="btn btn-secondary btn-sm" onclick="GenogramEditor.close()">取消</button><button class="btn btn-primary btn-sm" onclick="GenogramEditor.save()">插入家族圖</button></div></div><div id="geno-toolbar"><span style="font-size:.76rem;color:#718096;margin-right:2px;">工具：</span><button class="geno-tb-btn active" id="geno-t-select" onclick="GenogramEditor.setTool('select')" title="選取/拖曳；拖曳空白處框選多物件；Space+拖曳平移">↖ 選取</button><button class="geno-tb-btn" id="geno-t-connect" onclick="GenogramEditor.setTool('connect')" title="點兩個節點連線（先在側欄選連線類型）">─ 連線</button><button class="geno-tb-btn" id="geno-t-text" onclick="GenogramEditor.setTool('text')" title="點畫布新增文字；雙擊編輯">T 文字</button><button class="geno-tb-btn" id="geno-t-freehand" onclick="GenogramEditor.setTool('freehand')" title="自由手繪">✏ 手繪</button><button class="geno-tb-btn" id="geno-t-erase" onclick="GenogramEditor.setTool('erase')" title="點物件刪除">✕ 橡皮擦</button><div class="geno-tb-sep"></div><span style="font-size:.76rem;color:#718096;margin-right:2px;">文字：</span><button class="geno-tb-btn" id="geno-txt-bold" onclick="GenogramEditor.toggleTextProp('bold')" title="粗體" style="font-weight:700;min-width:26px;">B</button><button class="geno-tb-btn" id="geno-txt-italic" onclick="GenogramEditor.toggleTextProp('italic')" title="斜體" style="font-style:italic;min-width:26px;">I</button><button class="geno-tb-btn" id="geno-txt-strike" onclick="GenogramEditor.toggleTextProp('strikethrough')" title="刪除線" style="text-decoration:line-through;min-width:26px;">S</button><select id="geno-txt-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.applyFontSize(+this.value)" title="字級">${[8,9,10,11,12,14,16,18,20,24].map(n=>`<option value="${n}"${n===12?' selected':''}>${n}px</option>`).join('')}</select><div class="geno-tb-sep"></div><button class="geno-tb-btn active" id="geno-snap-btn" onclick="GenogramEditor.toggleSnap()" title="網格吸附">⊡ 吸附</button><button class="geno-tb-btn" onclick="GenogramEditor.saveAsCustom()" title="將已選取物件存為共用自訂元件">📌 自訂元件</button><button class="geno-tb-btn" onclick="GenogramEditor.deleteSelected()" title="刪除所選（Delete鍵）">🗑 刪除</button></div><div id="geno-body"><div id="geno-sidebar"><div id="geno-sb-resize"></div></div><div id="geno-canvas-wrap"><svg id="geno-svg" xmlns="${NS}"><g id="geno-vp"></g></svg></div></div>`;
     document.body.appendChild(ov);
     _svg=document.getElementById('geno-svg');_vp=document.getElementById('geno-vp');
     _svg.addEventListener('mousedown',_onMouseDown);
@@ -4289,6 +4400,7 @@ const GenogramEditor = (() => {
     document.addEventListener('keydown',_onKeyDown);
     document.addEventListener('keyup',_onKeyUp);
     _renderSidebar();
+    {const sbR=document.getElementById('geno-sb-resize'),sbE=document.getElementById('geno-sidebar');if(sbR&&sbE){let _sd=null;const _sm=e=>{if(!_sd)return;sbE.style.width=Math.max(120,Math.min(400,_sd.w+(e.clientX-_sd.x)))+'px';};const _su=()=>{_sd=null;sbR.classList.remove('active');document.removeEventListener('mousemove',_sm);document.removeEventListener('mouseup',_su);};sbR.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();_sd={x:e.clientX,w:sbE.offsetWidth};sbR.classList.add('active');document.addEventListener('mousemove',_sm);document.addEventListener('mouseup',_su);});}}
     requestAnimationFrame(()=>{
       const w=document.getElementById('geno-canvas-wrap');
       if(w){_panX=w.offsetWidth/2;_panY=w.offsetHeight/2;_render();}
@@ -4317,18 +4429,45 @@ const GenogramEditor = (() => {
     if(!_objs.length){close();return;}
     _exportPng(dataUrl=>{
       if(!dataUrl){alert('匯出圖片失敗，請重試。');return;}
-      const editor=document.getElementById(_fieldId);
-      if(editor){
-        const img=document.createElement('img');img.src=dataUrl;img.alt='家族圖';
-        img.style.cssText='max-width:100%;height:auto;display:block;margin:6px 0;border:1px solid #e2e8f0;border-radius:4px;cursor:pointer;';
-        img.title='雙擊重新編輯家族圖';
-        img.setAttribute('data-geno-key',_storeKey);img.setAttribute('data-geno-cid',_caseId||'');
-        img.addEventListener('dblclick',()=>openGenogramEditor(_fieldId,_caseId,_storeKey));
-        const old=editor.querySelector('[data-geno-key="'+_storeKey+'"]');
-        if(old)old.replaceWith(img);else editor.appendChild(img);
-      }
-      _saveJson();close();
+      _showSizePanel(dataUrl,w=>{
+        const editor=document.getElementById(_fieldId);
+        if(editor){
+          const img=document.createElement('img');img.src=dataUrl;img.alt='家族圖';
+          img.style.cssText='width:'+w+';height:auto;display:block;margin:6px 0;border:1px solid #e2e8f0;border-radius:4px;cursor:pointer;';
+          img.title='雙擊重新編輯家族圖';
+          img.setAttribute('data-geno-key',_storeKey);img.setAttribute('data-geno-cid',_caseId||'');
+          img.addEventListener('dblclick',()=>openGenogramEditor(_fieldId,_caseId,_storeKey));
+          const old=editor.querySelector('[data-geno-key="'+_storeKey+'"]');
+          if(old)old.replaceWith(img);else editor.appendChild(img);
+        }
+        _saveJson();close();
+      });
     });
+  }
+  function _showSizePanel(dataUrl,cb){
+    const p=document.createElement('div');
+    p.id='geno-size-panel';
+    p.style.cssText='position:fixed;inset:0;z-index:100005;background:rgba(15,23,42,0.5);display:flex;align-items:center;justify-content:center;';
+    p.innerHTML='<div style="background:#fff;border-radius:14px;padding:26px;width:380px;box-shadow:0 10px 48px rgba(0,0,0,0.28);">'
+      +'<div style="font-weight:700;font-size:1.05rem;color:#2b6cb0;margin-bottom:14px;">插入家族圖前，設定顯示大小</div>'
+      +'<div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:14px;background:#f7fafc;display:flex;align-items:center;justify-content:center;min-height:80px;padding:8px;">'
+      +'<img id="geno-sp-prev" src="'+dataUrl+'" style="max-width:100%;height:auto;border-radius:4px;" alt="預覽"/></div>'
+      +'<label style="font-size:.84rem;color:#4a5568;display:block;margin-bottom:6px;">顯示寬度：<span id="geno-sp-val" style="font-weight:700;color:#2b6cb0;">100%</span></label>'
+      +'<input type="range" id="geno-sp-sl" min="15" max="100" value="100" style="width:100%;accent-color:#3182ce;cursor:pointer;margin-bottom:16px;">'
+      +'<div style="display:flex;gap:8px;margin-bottom:16px;">'
+      +'<button onclick="document.getElementById(\'geno-sp-sl\').value=33;document.getElementById(\'geno-sp-sl\').dispatchEvent(new Event(\'input\'))" style="flex:1;font-size:.8rem;padding:5px;border:1px solid #e2e8f0;border-radius:6px;background:#f7fafc;cursor:pointer;">小 (33%)</button>'
+      +'<button onclick="document.getElementById(\'geno-sp-sl\').value=60;document.getElementById(\'geno-sp-sl\').dispatchEvent(new Event(\'input\'))" style="flex:1;font-size:.8rem;padding:5px;border:1px solid #e2e8f0;border-radius:6px;background:#f7fafc;cursor:pointer;">中 (60%)</button>'
+      +'<button onclick="document.getElementById(\'geno-sp-sl\').value=100;document.getElementById(\'geno-sp-sl\').dispatchEvent(new Event(\'input\'))" style="flex:1;font-size:.8rem;padding:5px;border:1px solid #e2e8f0;border-radius:6px;background:#f7fafc;cursor:pointer;">大 (100%)</button>'
+      +'</div>'
+      +'<div style="display:flex;gap:10px;justify-content:flex-end;">'
+      +'<button id="geno-sp-cancel" style="font-size:.88rem;padding:8px 18px;border:1px solid #e2e8f0;border-radius:8px;background:#f7fafc;cursor:pointer;color:#4a5568;">取消</button>'
+      +'<button id="geno-sp-ok" style="font-size:.88rem;padding:8px 22px;border:none;border-radius:8px;background:#3182ce;color:#fff;cursor:pointer;font-weight:700;">插入家族圖</button>'
+      +'</div></div>';
+    document.body.appendChild(p);
+    const sl=document.getElementById('geno-sp-sl'),val=document.getElementById('geno-sp-val'),prev=document.getElementById('geno-sp-prev');
+    sl.addEventListener('input',()=>{val.textContent=sl.value+'%';prev.style.width=sl.value+'%';});
+    document.getElementById('geno-sp-cancel').onclick=()=>p.remove();
+    document.getElementById('geno-sp-ok').onclick=()=>{p.remove();cb(sl.value+'%');};
   }
 
   function setTool(t){
@@ -22774,6 +22913,27 @@ function openTransferEvalForm(caseId, teId) {
         + '<div id="te-dim-exp-' + i + '" style="font-size:.78rem;color:#718096;font-style:italic;margin-top:4px;padding:3px 6px;border-left:3px solid #e2e8f0;min-height:1em;">' + escHtml(_getDimExp(i, cur)) + '</div>'
         + '</div>';
     }).join('');
+  }
+
+  // 服務概況 badges（八向度後、質性描述前）
+  const svcEl = document.getElementById('te-service-history');
+  if (svcEl) {
+    const allSems = Array.isArray(c.semesters) && c.semesters.length ? [...c.semesters].sort() : [openDateToSemPrefix(c.openDate)].filter(Boolean);
+    const badges = allSems.map(s => {
+      const snap = c.basicInfoSnapshots?.[s];
+      const coName = snap?.counselorText || snap?.counselorName || snap?.counselorEmail || c.counselorText || c.counselorName || c.counselorEmail || '—';
+      const cnt = (c.records||[]).filter(r => !r.deleted && openDateToSemPrefix(r.date) === s).length;
+      const isCur = s === activeSem;
+      return `<span style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:.8rem;background:${isCur?'#ebf8ff':'#f7fafc'};border:1px solid ${isCur?'#90cdf4':'#e2e8f0'};color:${isCur?'#2b6cb0':'#4a5568'};white-space:nowrap;font-weight:${isCur?600:400};">`
+        + `<span style="color:#a0aec0;font-size:.72rem;">${escHtml(semesterLabel(s))}</span>`
+        + `<span>${escHtml(coName)}</span>`
+        + `<span style="background:${isCur?'#3182ce':'#718096'};color:#fff;border-radius:10px;padding:1px 7px;font-size:.72rem;font-weight:700;">${cnt}次</span>`
+        + `</span>`;
+    }).join('');
+    svcEl.innerHTML = `<div style="background:#f7fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;">`
+      + `<div style="font-size:.76rem;font-weight:700;color:#718096;margin-bottom:8px;text-transform:uppercase;letter-spacing:.04em;">各學期服務概況（主責・次數）</div>`
+      + `<div style="display:flex;flex-wrap:wrap;gap:6px;">${badges||'<span style="color:#a0aec0;font-size:.82rem;">無資料</span>'}</div>`
+      + `</div>`;
   }
 
   // 建議 radios
