@@ -3669,16 +3669,17 @@ const RT_UL_TYPES  = ['disc', 'circle', 'square', 'dash'];
 const RT_OL_LABELS = { decimal:'1.', paren:'(1)', 'upper-alpha':'A.', 'lower-alpha':'a.' };
 const RT_UL_LABELS = { disc:'•', circle:'○', square:'▪', dash:'–' };
 
-// 限制 type="date" 年份最多4位（瀏覽器預設允許6位，填寫不順）
-document.addEventListener('input', function (e) {
+// 限制 type="date" 年份最多4位、最大9999（瀏覽器允許6位，填寫不順）
+function _clampDateYear(e) {
   const el = e.target;
   if (el.type !== 'date' || !el.value) return;
   const parts = el.value.split('-');
-  if (parts[0] && parts[0].length > 4) {
-    parts[0] = parts[0].slice(0, 4);
-    el.value = parts.join('-');
-  }
-});
+  if (!parts[0]) return;
+  const yr = parseInt(parts[0], 10);
+  if (yr > 9999) { parts[0] = '9999'; el.value = parts.join('-'); }
+}
+document.addEventListener('input', _clampDateYear);
+document.addEventListener('change', _clampDateYear);
 
 document.addEventListener('click', function (e) {
   const btn = e.target.closest('.rt-btn');
@@ -3951,13 +3952,16 @@ const GenogramEditor = (() => {
     // 一般孩子：以子女 X 吸附到倒ㄇ下緣（保持直線）
     const barLx=Math.min(ax,bx),barRx=Math.max(ax,bx);
     for(const{node:c,cl}of normChn){const bpX=Math.max(barLx,Math.min(barRx,c.x));const dash=cl.linkType==='adopted'?'7,4':cl.linkType==='foster'?'2,4':null;const la={x1:bpX,y1:barY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'};if(dash)la['stroke-dasharray']=dash;g.appendChild(_el('line',la));}
-    // 多胞胎：依群組倒V（支援 adopted/foster 虛線）
+    // 多胞胎：依群組倒V（支援 adopted/foster 虛線；若全為領養/寄養則 hub 線也虛線）
     for(const pairs of Object.values(twinGroups)){
       pairs.sort((a,b)=>a.node.x-b.node.x);
       const gMidX=pairs.reduce((s,p)=>s+p.node.x,0)/pairs.length;
       const bpX=Math.max(barLx,Math.min(barRx,gMidX));
       const dropY=barY+30;
-      g.appendChild(_el('line',{x1:bpX,y1:barY,x2:bpX,y2:dropY,stroke:sc,'stroke-width':'1.8'}));
+      const allAdopted=pairs.every(p=>p.cl.linkType==='adopted'),allFoster=pairs.every(p=>p.cl.linkType==='foster');
+      const hubA={x1:bpX,y1:barY,x2:bpX,y2:dropY,stroke:sc,'stroke-width':'1.8'};
+      if(allAdopted)hubA['stroke-dasharray']='7,4';else if(allFoster)hubA['stroke-dasharray']='2,4';
+      g.appendChild(_el('line',hubA));
       for(const{node:c,cl}of pairs){const dash=cl.linkType==='adopted'?'7,4':cl.linkType==='foster'?'2,4':null;const la={x1:bpX,y1:dropY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'};if(dash)la['stroke-dasharray']=dash;g.appendChild(_el('line',la));}
     }
     g.appendChild(_el('path',{d:`M${ax} ${ay}L${bx} ${barY}`,fill:'none',stroke:'transparent','stroke-width':'14'}));
@@ -4142,7 +4146,7 @@ const GenogramEditor = (() => {
               else if(fCpl.length&&!tCpl.length){nl.coupleId=fCpl[0].id;nl.childId=nd.id;nl.parentId=_connectFrom;}
               if(nl.coupleId){
                 const exCl=_objs.find(o=>o.type==='link'&&o.coupleId===nl.coupleId&&o.childId===nl.childId);
-                if(exCl){exCl.linkType=nl.linkType;delete exCl.twinGroupId;}else{_objs.push(nl);}
+                if(exCl){exCl.linkType=nl.linkType;}else{_objs.push(nl);}
                 _autoArrangeCouple(nl.coupleId);
               }else{_objs.push(nl);}
             }else{
@@ -4319,10 +4323,13 @@ const GenogramEditor = (() => {
   function autoArrangeAll(){
     _pushUndo();
     const CTYPE=['married','separated','divorced'];
-    for(const o of _objs)if(o.type==='link'&&CTYPE.includes(o.linkType))_autoArrangeCouple(o.id);
+    let n=0;for(const o of _objs)if(o.type==='link'&&CTYPE.includes(o.linkType)){_autoArrangeCouple(o.id);n++;}
     _render();
+    const tip=document.createElement('div');tip.textContent=n?`已均勻排列 ${n} 個家庭組子女位置`:'未找到配偶連線（需先用「結婚/分居/離婚」連線連結兩個節點，才能美化子女排列）';
+    tip.style.cssText='position:fixed;bottom:30px;left:50%;transform:translateX(-50%);background:#2d3748;color:#fff;padding:8px 18px;border-radius:8px;font-size:.85rem;z-index:200000;pointer-events:none;opacity:1;transition:opacity .5s';
+    document.body.appendChild(tip);setTimeout(()=>{tip.style.opacity='0';setTimeout(()=>tip.remove(),500);},2500);
   }
-  function clearSelect(){_selId=null;_multiSel=new Set();_render();}
+  function clearSelect(){_connectFrom=null;_connectLine=null;_boxSel=null;_selId=null;_multiSel=new Set();_render();}
   function applyColor(color,event){
     if(!_selId&&_multiSel.size===0)return;_pushUndo();
     const ids=new Set(_multiSel);if(_selId)ids.add(_selId);
@@ -4591,6 +4598,8 @@ const GenogramEditor = (() => {
     _tool=t;_connectFrom=null;_connectLine=null;
     ['select','connect','text','freehand','erase'].forEach(n=>{const b=document.getElementById('geno-t-'+n);if(b)b.classList.toggle('active',n===t);});
     if(!t.startsWith('place_'))document.querySelectorAll('.geno-sb-item').forEach(b=>b.classList.remove('active'));
+    const cursors={select:'default',connect:'crosshair',text:'text',freehand:'crosshair',erase:'cell'};
+    if(_svg)_svg.style.cursor=cursors[t]||'default';
     _render();
   }
 
@@ -4599,6 +4608,7 @@ const GenogramEditor = (() => {
     ['select','connect','text','freehand','erase'].forEach(n=>{const b=document.getElementById('geno-t-'+n);if(b)b.classList.remove('active');});
     document.querySelectorAll('.geno-sb-item').forEach(b=>b.classList.remove('active'));
     const btn=document.getElementById('geno-sb-n-'+s);if(btn)btn.classList.add('active');
+    if(_svg)_svg.style.cursor='copy';
   }
 
   function setLinkType(t){
@@ -4623,7 +4633,7 @@ const GenogramEditor = (() => {
     _zoom=Math.min(W/cW,H/cH,3);_panX=(W-cW*_zoom)/2-lx*_zoom+40*_zoom;_panY=(H-cH*_zoom)/2-ly*_zoom+40*_zoom;_render();
   }
 
-  return{open,close,save,undo,redo,setTool,setShape,setLinkType,toggleTextProp,applyFontSize,toggleSnap,zoomFit,deleteSelected,editLabel,saveAsCustom,deleteCustom,placeCustom};
+  return{open,close,save,undo,redo,setTool,setShape,setLinkType,toggleTextProp,applyFontSize,toggleSnap,zoomFit,deleteSelected,editLabel,saveAsCustom,deleteCustom,placeCustom,applyColor,clearColor,clearSelect,autoArrangeAll};
 })();
 
 function openGenogramEditor(fieldId,caseId,storeKey){
@@ -7031,7 +7041,7 @@ function showCaseDetail(caseId) {
     }
     semActHtml += ` <button class="btn btn-secondary" onclick="openEditCasePage('${cid}')">編輯基本資料</button>`;
     semActHtml += ` <button class="btn btn-secondary" onclick="openBatchPrintModal('${cid}')" data-tip="產生事件處理記錄表">記錄批次列印</button>`;
-    semActHtml += ` <button class="btn btn-secondary" onclick="document.getElementById('ii-card-${cid}')?.scrollIntoView({behavior:'smooth',block:'center'})" data-tip="會跳到初次晤談表卡片區">移至初次晤談卡片</button>`;
+    semActHtml += ` <button class="btn btn-secondary" onclick="_scrollToIiCard('${cid}')" data-tip="會跳到初次晤談表卡片區（需切換到本學期模式）">移至初次晤談卡片</button>`;
     semActHtml += ` <button class="btn btn-secondary" onclick="document.getElementById('cs-psychiatrist')?.scrollIntoView({behavior:'smooth',block:'center'})" data-tip="會跳到精神科醫師評估卡片區">移至精神科醫師卡片</button>`;
     semActHtml += ` <button class="btn btn-secondary" onclick="document.getElementById('cs-eval')?.scrollIntoView({behavior:'smooth',block:'center'})" data-tip="會跳到結案/學期評估卡片區">移至結案/學期評估卡片</button>`;
     if (isActive) {
@@ -13665,6 +13675,15 @@ async function confirmIiContinuation(caseId) {
 }
 
 // 從現有晤談紀錄挑一筆作為「初次晤談」
+function _scrollToIiCard(cid) {
+  const el = document.getElementById('ii-card-' + cid);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } else {
+    alert('目前為「所有學期」檢視模式，初次晤談卡片不會顯示。\n請切換到「本學期」模式後再使用此功能。');
+  }
+}
+
 function pickRecordAsInitialInterview(caseId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
