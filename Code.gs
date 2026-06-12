@@ -442,35 +442,48 @@ function downloadFileBase64_({ fileId }) {
 function setupProdCalendarEditors() {
   const PROD_CONFIG_ID = '1CKXefjjiB-PrIFZa-DBQ7Q2ASs-TQroj';
   const PROD_CAL_NAME  = 'SCC 空間預約';
+  const token = ScriptApp.getOAuthToken();
 
   // 讀取正式版 config.json
   const res = UrlFetchApp.fetch(
     'https://www.googleapis.com/drive/v3/files/' + PROD_CONFIG_ID + '?alt=media&supportsAllDrives=true',
-    { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true }
+    { headers: { Authorization: 'Bearer ' + token }, muteHttpExceptions: true }
   );
   if (res.getResponseCode() >= 400) { Logger.log('無法讀取 config.json：' + res.getContentText()); return; }
   const config = JSON.parse(res.getContentText());
 
   // 取得（或建立）正式版日曆
-  const cals = CalendarApp.getCalendarsByName(PROD_CAL_NAME);
-  const cal = cals.length > 0 ? cals[0] : CalendarApp.createCalendar(PROD_CAL_NAME, { color: CalendarApp.Color.CYAN });
-  Logger.log('日曆：' + cal.getName() + '（ID: ' + cal.getId() + '）');
+  const owned = CalendarApp.getOwnedCalendarsByName(PROD_CAL_NAME);
+  const cal = owned.length > 0 ? owned[0] : CalendarApp.createCalendar(PROD_CAL_NAME, { color: CalendarApp.Color.CYAN });
+  const calId = cal.getId();
+  Logger.log('日曆：' + cal.getName() + '（ID: ' + calId + '）');
 
-  // 逐一加入未停用的使用者
+  // 透過 Calendar REST API 加入編輯者（ACL writer）
   const users = config.users || {};
   const added = [], skipped = [];
   for (const email in users) {
     const info = users[email];
     if (info.disabled) { skipped.push(email + '（已停用）'); continue; }
-    try {
-      cal.addEditor(email);
+    if (email.startsWith('nomail_') || !email.includes('@')) { skipped.push(email + '（無 email）'); continue; }
+    const aclRes = UrlFetchApp.fetch(
+      'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calId) + '/acl',
+      {
+        method: 'post',
+        contentType: 'application/json',
+        payload: JSON.stringify({ role: 'writer', scope: { type: 'user', value: email } }),
+        headers: { Authorization: 'Bearer ' + token },
+        muteHttpExceptions: true
+      }
+    );
+    if (aclRes.getResponseCode() < 300) {
       added.push(email);
-    } catch (e) {
-      skipped.push(email + '（失敗：' + e.message + '）');
+    } else {
+      skipped.push(email + '（失敗 ' + aclRes.getResponseCode() + '：' + aclRes.getContentText().substring(0, 80) + '）');
     }
   }
   Logger.log('✅ 已加入（' + added.length + '）：\n' + added.join('\n'));
   if (skipped.length) Logger.log('⏭ 跳過（' + skipped.length + '）：\n' + skipped.join('\n'));
+  return { added, skipped, calId };
 }
 
 function deleteCalendarEvent_({ eventId }, ctx) {
