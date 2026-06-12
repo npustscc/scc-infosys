@@ -3922,22 +3922,21 @@ const GenogramEditor = (() => {
       const ym=(ay+barY)/2,n=lt==='divorced'?2:1;
       for(let i=0;i<n;i++){const off=n===2?(i===0?-5.5:5.5):0;g.appendChild(_el('line',{x1:ax-9,y1:ym+off-5,x2:ax+9,y2:ym+off+5,stroke:sc,'stroke-width':'1.8'}));}
     }
-    const chn=childLinks.map(cl=>({node:_objs.find(x=>x.id===cl.childId),lt:cl.linkType})).filter(x=>x.node);
+    const chn=childLinks.map(cl=>({node:_objs.find(x=>x.id===cl.childId),cl})).filter(x=>x.node);
     chn.sort((a,b)=>a.node.x-b.node.x);
-    const twinChn=chn.filter(x=>x.lt==='twin');
-    const normChn=chn.filter(x=>x.lt!=='twin');
-    // 一般孩子：各自從 barY 中點直接連線
-    if(normChn.length===1){
-      const c=normChn[0].node;
-      g.appendChild(_el('line',{x1:midX,y1:barY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'}));
-    }else if(normChn.length>1){
-      for(const{node:c}of normChn)g.appendChild(_el('line',{x1:midX,y1:barY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'}));
-    }
-    // 多胞胎孩子：從 barY 向下一個共同 drop 點後倒 V 連到各孩子
-    if(twinChn.length>0){
-      const dropX=midX,dropY=barY+30;
-      g.appendChild(_el('line',{x1:midX,y1:barY,x2:dropX,y2:dropY,stroke:sc,'stroke-width':'1.8'}));
-      for(const{node:c}of twinChn)g.appendChild(_el('line',{x1:dropX,y1:dropY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'}));
+    const twinGroups={};const normChn=[];
+    for(const{node,cl}of chn){if(cl.twinGroupId){if(!twinGroups[cl.twinGroupId])twinGroups[cl.twinGroupId]=[];twinGroups[cl.twinGroupId].push(node);}else{normChn.push(node);}}
+    // 一般孩子：均勻分配到倒ㄇ下緣
+    const nn=normChn.length;
+    for(let i=0;i<nn;i++){const c=normChn[i];const bpX=nn===1?midX:ax+(bx-ax)*(i+1)/(nn+1);g.appendChild(_el('line',{x1:bpX,y1:barY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'}));}
+    // 多胞胎：依群組倒V
+    for(const nodes of Object.values(twinGroups)){
+      nodes.sort((a,b)=>a.x-b.x);
+      const gMidX=nodes.reduce((s,n)=>s+n.x,0)/nodes.length;
+      const bpX=Math.max(Math.min(gMidX,Math.max(ax,bx)),Math.min(ax,bx));
+      const dropY=barY+30;
+      g.appendChild(_el('line',{x1:bpX,y1:barY,x2:bpX,y2:dropY,stroke:sc,'stroke-width':'1.8'}));
+      for(const c of nodes)g.appendChild(_el('line',{x1:bpX,y1:dropY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'}));
     }
     g.appendChild(_el('path',{d:`M${ax} ${ay}L${bx} ${barY}`,fill:'none',stroke:'transparent','stroke-width':'14'}));
     return g;
@@ -4083,21 +4082,48 @@ const GenogramEditor = (() => {
       if(nd){
         if(!_connectFrom){_connectFrom=nd.id;_connectLine=_el('line',{x1:nd.x,y1:nd.y,x2:nd.x,y2:nd.y,stroke:'#3182ce','stroke-width':'1.5','stroke-dasharray':'4,3','pointer-events':'none'});}
         else if(nd.id!==_connectFrom){
-          _pushUndo();
-          const nl={id:_uid(),type:'link',from:_connectFrom,to:nd.id,linkType:_linkType};
-          if(['parent','adopted','foster','twin'].includes(_linkType)){
-            const CTYPE=['married','separated','divorced'];
-            const fCpl=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===_connectFrom||o.to===_connectFrom));
-            const tCpl=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===nd.id||o.to===nd.id));
-            if(tCpl.length&&!fCpl.length){nl.coupleId=tCpl[0].id;nl.childId=_connectFrom;nl.parentId=nd.id;}
-            else if(fCpl.length&&!tCpl.length){nl.coupleId=fCpl[0].id;nl.childId=nd.id;nl.parentId=_connectFrom;}
+          const CTYPE=['married','separated','divorced'];
+          if(_linkType==='twin'){
+            const hasCplChn=nid=>_objs.some(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===nid||o.to===nid)&&_objs.some(c=>c.type==='link'&&c.coupleId===o.id));
+            const isPartnerOnly=nid=>{const cpls=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===nid||o.to===nid));return cpls.length>0&&!_objs.some(c=>c.type==='link'&&cpls.some(cp=>c.coupleId===cp.id));};
+            if(hasCplChn(_connectFrom)||hasCplChn(nd.id)){
+              alert('此節點已是父母，無法標記為多胞胎。\n請點選尚無子女的節點。');
+            }else if(isPartnerOnly(_connectFrom)||isPartnerOnly(nd.id)){
+              _pushUndo();
+              const nl={id:_uid(),type:'link',from:_connectFrom,to:nd.id,linkType:'parent'};
+              const fCpl=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===_connectFrom||o.to===_connectFrom));
+              const tCpl=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===nd.id||o.to===nd.id));
+              if(tCpl.length&&!fCpl.length){nl.coupleId=tCpl[0].id;nl.childId=_connectFrom;nl.parentId=nd.id;}
+              else if(fCpl.length&&!tCpl.length){nl.coupleId=fCpl[0].id;nl.childId=nd.id;nl.parentId=_connectFrom;}
+              _objs.push(nl);
+            }else{
+              const clA=_objs.find(o=>o.type==='link'&&o.childId===_connectFrom);
+              const clB=_objs.find(o=>o.type==='link'&&o.childId===nd.id);
+              if(!clA||!clB||clA.coupleId!==clB.coupleId){
+                alert('兩個節點需為同一對父母的孩子，才能標記為多胞胎。');
+              }else{
+                _pushUndo();
+                const tgId='tg_'+_uid();
+                clA.twinGroupId=tgId;clB.twinGroupId=tgId;
+              }
+            }
+          }else{
+            _pushUndo();
+            const nl={id:_uid(),type:'link',from:_connectFrom,to:nd.id,linkType:_linkType};
+            if(['parent','adopted','foster'].includes(_linkType)){
+              const fCpl=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===_connectFrom||o.to===_connectFrom));
+              const tCpl=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===nd.id||o.to===nd.id));
+              if(tCpl.length&&!fCpl.length){nl.coupleId=tCpl[0].id;nl.childId=_connectFrom;nl.parentId=nd.id;}
+              else if(fCpl.length&&!tCpl.length){nl.coupleId=fCpl[0].id;nl.childId=nd.id;nl.parentId=_connectFrom;}
+            }
+            // 建立伴侶關係時自動對齊 Y（僅此次，後續使用者可自行調整）
+            if(['married','separated','divorced'].includes(_linkType)){
+              const fNode=_objs.find(o=>o.id===_connectFrom);
+              if(fNode){const ay=_snapG((fNode.y+nd.y)/2);fNode.y=ay;nd.y=ay;}
+            }
+            _objs.push(nl);
           }
-          // 建立伴侶關係時自動對齊 Y（僅此次，後續使用者可自行調整）
-          if(['married','separated','divorced'].includes(_linkType)){
-            const fNode=_objs.find(o=>o.id===_connectFrom);
-            if(fNode){const ay=_snapG((fNode.y+nd.y)/2);fNode.y=ay;nd.y=ay;}
-          }
-          _objs.push(nl);_connectFrom=null;_connectLine=null;_render();
+          _connectFrom=null;_connectLine=null;_render();
         }
       }else{_connectFrom=null;_connectLine=null;_render();}
     }else if(_tool==='text'){
@@ -4249,7 +4275,12 @@ const GenogramEditor = (() => {
   function saveAsCustom(){
     const ids=new Set(_multiSel);if(_selId)ids.add(_selId);
     if(!ids.size){alert('請先選取一組物件。');return;}
-    _showNamePanel(name=>{
+    let cx=0,cy=0,cnt=0;
+    for(const o of _objs.filter(o=>ids.has(o.id))){if(o.type==='node'||o.type==='text'){cx+=o.x;cy+=o.y;cnt++;}else if(o.type==='path'&&o.bbox){cx+=o.bbox.x+o.bbox.w/2;cy+=o.bbox.y+o.bbox.h/2;cnt++;}}
+    if(!cnt){cx=0;cy=0;}else{cx/=cnt;cy/=cnt;}
+    const _svgR=_svg.getBoundingClientRect();
+    const anchor={x:_svgR.left+cx*_zoom+_panX,y:_svgR.top+cy*_zoom+_panY};
+    _showNamePanel(anchor,name=>{
       const allIds=new Set(ids);
       for(const o of _objs)if(o.type==='link'&&ids.has(o.from)&&ids.has(o.to))allIds.add(o.id);
       const selected=_objs.filter(o=>allIds.has(o.id));
@@ -4272,22 +4303,24 @@ const GenogramEditor = (() => {
       _renderSidebar();
     });
   }
-  function _showNamePanel(cb){
+  function _showNamePanel(anchor,cb){
     const old=document.getElementById('geno-name-panel');if(old)old.remove();
-    const tb=document.getElementById('geno-toolbar');if(!tb)return;
-    tb.style.position='relative';
+    const PW=240;
+    const px=Math.min(Math.max((anchor.x||200)-PW/2,8),window.innerWidth-PW-8);
+    const py=Math.min((anchor.y||200)+20,window.innerHeight-170);
     const p=document.createElement('div');
     p.id='geno-name-panel';
-    p.style.cssText='position:absolute;top:calc(100% + 6px);right:8px;background:#fff;border:1.5px solid #3182ce;border-radius:10px;padding:14px 16px;z-index:100002;box-shadow:0 6px 24px rgba(0,0,0,0.18);min-width:230px;';
+    p.style.cssText=`position:fixed;left:${px}px;top:${py}px;background:#fff;border:1.5px solid #3182ce;border-radius:10px;padding:14px 16px;z-index:100002;box-shadow:0 6px 24px rgba(0,0,0,0.18);min-width:${PW}px;`;
     p.innerHTML='<div style="font-size:.83rem;font-weight:700;color:#2b6cb0;margin-bottom:10px;">💾 儲存為自訂元件</div>'
       +'<input id="geno-np-inp" type="text" placeholder="輸入元件名稱…" maxlength="30" style="width:100%;box-sizing:border-box;border:1px solid #cbd5e0;border-radius:6px;padding:6px 10px;font-size:.88rem;outline:none;margin-bottom:10px;transition:border .2s;" onfocus="this.style.borderColor=\'#3182ce\'" onblur="this.style.borderColor=\'#cbd5e0\'">'
       +'<div style="display:flex;gap:8px;justify-content:flex-end;">'
-      +'<button onclick="document.getElementById(\'geno-name-panel\').remove()" style="font-size:.82rem;padding:5px 12px;border:1px solid #e2e8f0;border-radius:6px;background:#f7fafc;cursor:pointer;color:#4a5568;">取消</button>'
+      +'<button id="geno-np-cancel" style="font-size:.82rem;padding:5px 12px;border:1px solid #e2e8f0;border-radius:6px;background:#f7fafc;cursor:pointer;color:#4a5568;">取消</button>'
       +'<button id="geno-np-ok" style="font-size:.82rem;padding:5px 14px;border:none;border-radius:6px;background:#3182ce;color:#fff;cursor:pointer;font-weight:700;">確認儲存</button>'
       +'</div>';
-    tb.appendChild(p);
+    document.body.appendChild(p);
     const inp=document.getElementById('geno-np-inp');inp.focus();
     const confirm=()=>{const v=inp.value.trim();if(!v){inp.style.borderColor='#e53e3e';return;}p.remove();cb(v);};
+    document.getElementById('geno-np-cancel').onclick=()=>p.remove();
     document.getElementById('geno-np-ok').onclick=confirm;
     inp.addEventListener('keydown',ev=>{if(ev.key==='Enter')confirm();if(ev.key==='Escape')p.remove();ev.stopPropagation();});
   }
@@ -23363,33 +23396,55 @@ function _gradFilterClear() {
 
 function setGradTransferDecision(caseId, sem, status) {
   if (!status) return;
-  let noTransferReason = null;
   if (status === 'noTransfer_self_reason') {
-    const r = prompt('請填寫不轉銜原因：', _getGradTransferDecision(caseId, sem)?.noTransferReason || '');
-    if (r === null) {
-      // 使用者取消，還原選單
-      const sel = document.getElementById('gd-sel-' + caseId);
-      if (sel) sel.value = _getGradTransferDecision(caseId, sem)?.status || '';
-      return;
-    }
-    noTransferReason = r.trim();
+    const sel = document.getElementById('gd-sel-' + caseId);
+    const curReason = _getGradTransferDecision(caseId, sem)?.noTransferReason || '';
+    _showGradReasonPanel(sel, curReason, reason => {
+      if (reason === null) { if (sel) sel.value = _getGradTransferDecision(caseId, sem)?.status || ''; return; }
+      _saveGradTransferDecision(caseId, sem, status, reason);
+    });
+    return;
   }
+  _saveGradTransferDecision(caseId, sem, status, null);
+}
+
+function _saveGradTransferDecision(caseId, sem, status, noTransferReason) {
   const now = new Date().toISOString();
   const ex = _getGradTransferDecision(caseId, sem);
   if (ex) { ex.status = status; if (noTransferReason !== null) ex.noTransferReason = noTransferReason; ex.updatedAt = now; ex.updatedBy = currentUser?.email; }
   else { transferData.push({ id:`gr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, type:'graduation', caseId, semester:sem, status, noTransferReason, createdAt:now, createdBy:currentUser?.email }); }
-  // 若日期尚未填寫，自動帶入今日
   const dateInp = document.getElementById('gd-date-' + caseId);
-  if (dateInp && !dateInp.value) {
-    const today = new Date().toISOString().slice(0, 10);
-    dateInp.value = today;
-    setGradTransferMeetingDate(caseId, sem, today);
-  }
+  if (dateInp && !dateInp.value) { const today = new Date().toISOString().slice(0, 10); dateInp.value = today; setGradTransferMeetingDate(caseId, sem, today); }
   _checkTransferGradTodos();
-  // 重繪當前分頁
   if (window._transferTab === 'graduation') { document.getElementById('transfer-body').innerHTML = _renderGradTransferTab(); }
   const jobId = bgJobAdd('儲存校級轉銜決議');
   (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('設定校級轉銜決議', caseId, null, status); } catch (e) { bgJobFail(jobId, e.message); } })();
+}
+
+function _showGradReasonPanel(anchorEl, currentReason, cb) {
+  const old = document.getElementById('grad-reason-panel'); if (old) old.remove();
+  const rect = anchorEl ? anchorEl.getBoundingClientRect() : {left:200, bottom:300};
+  const PW = 280;
+  const px = Math.min(Math.max(rect.left, 8), window.innerWidth - PW - 8);
+  const py = Math.min(rect.bottom + 8, window.innerHeight - 180);
+  const p = document.createElement('div');
+  p.id = 'grad-reason-panel';
+  p.style.cssText = `position:fixed;left:${px}px;top:${py}px;background:#fff;border:1.5px solid #d97706;border-radius:10px;padding:14px 16px;z-index:100002;box-shadow:0 6px 24px rgba(0,0,0,0.18);min-width:${PW}px;`;
+  const safeReason = (currentReason||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+  p.innerHTML = '<div style="font-size:.83rem;font-weight:700;color:#92400e;margin-bottom:10px;">✏️ 主責評估不轉銜原因</div>'
+    + `<input id="grad-reason-inp" type="text" placeholder="請填寫不轉銜原因…" maxlength="100" value="${safeReason}" style="width:100%;box-sizing:border-box;border:1px solid #cbd5e0;border-radius:6px;padding:6px 10px;font-size:.88rem;outline:none;margin-bottom:10px;transition:border .2s;" onfocus="this.style.borderColor='#d97706'" onblur="this.style.borderColor='#cbd5e0'">`
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;">'
+    + '<button id="grad-reason-cancel" style="font-size:.82rem;padding:5px 12px;border:1px solid #e2e8f0;border-radius:6px;background:#f7fafc;cursor:pointer;color:#4a5568;">取消</button>'
+    + '<button id="grad-reason-ok" style="font-size:.82rem;padding:5px 14px;border:none;border-radius:6px;background:#d97706;color:#fff;cursor:pointer;font-weight:700;">確認</button>'
+    + '</div>';
+  document.body.appendChild(p);
+  const inp = document.getElementById('grad-reason-inp');
+  inp.focus(); inp.select();
+  const confirm = () => { const v = inp.value.trim(); if (!v) { inp.style.borderColor='#e53e3e'; return; } p.remove(); cb(v); };
+  const cancel = () => { p.remove(); cb(null); };
+  document.getElementById('grad-reason-cancel').onclick = cancel;
+  document.getElementById('grad-reason-ok').onclick = confirm;
+  inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') confirm(); if (ev.key === 'Escape') cancel(); ev.stopPropagation(); });
 }
 
 function setGradTransferMeetingDate(caseId, sem, date) {
