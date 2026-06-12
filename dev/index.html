@@ -899,9 +899,9 @@
     #geno-overlay { position:fixed;inset:0;z-index:99999;background:#fff;display:flex;flex-direction:column;overflow:hidden; }
     #geno-header { display:flex;align-items:center;justify-content:space-between;padding:10px 18px;border-bottom:2px solid #3182ce;background:linear-gradient(90deg,#ebf8ff,#f0fff4);flex-shrink:0; }
     #geno-toolbar { display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:6px 10px;background:#f7fafc;border-bottom:1px solid #e2e8f0;flex-shrink:0; }
-    #geno-body { display:flex;flex:1;overflow:hidden;min-height:0; }
-    #geno-sidebar { width:170px;min-width:120px;max-width:400px;flex-shrink:0;overflow-y:auto;border-right:1px solid #e2e8f0;background:#fafafa;padding:4px 3px;position:relative;user-select:none; }
-    #geno-sb-resize { position:absolute;top:0;right:-3px;width:7px;height:100%;cursor:col-resize;z-index:2;border-radius:3px; }
+    #geno-body { display:flex;flex:1;overflow:hidden;min-height:0;position:relative; }
+    #geno-sidebar { width:170px;min-width:120px;max-width:400px;flex-shrink:0;overflow-y:auto;border-right:1px solid #e2e8f0;background:#fafafa;padding:4px 3px;user-select:none; }
+    #geno-sb-resize { position:absolute;top:0;left:170px;width:7px;height:100%;cursor:col-resize;z-index:3;border-radius:3px; }
     #geno-sb-resize:hover,#geno-sb-resize.active { background:rgba(49,130,206,0.3); }
     .geno-sb-sec { font-size:.67rem;font-weight:700;color:#718096;padding:3px 5px;background:#edf2f7;border-radius:3px;margin-bottom:3px;letter-spacing:.04em;text-transform:uppercase; }
     .geno-sb-grid { display:grid;grid-template-columns:1fr 1fr;gap:2px;margin-bottom:2px; }
@@ -3922,16 +3922,22 @@ const GenogramEditor = (() => {
       const ym=(ay+barY)/2,n=lt==='divorced'?2:1;
       for(let i=0;i<n;i++){const off=n===2?(i===0?-5.5:5.5):0;g.appendChild(_el('line',{x1:ax-9,y1:ym+off-5,x2:ax+9,y2:ym+off+5,stroke:sc,'stroke-width':'1.8'}));}
     }
-    const chn=childLinks.map(cl=>_objs.find(x=>x.id===cl.childId)).filter(Boolean);
-    chn.sort((a,b)=>a.x-b.x);
-    if(chn.length===1){
-      const c=chn[0];
+    const chn=childLinks.map(cl=>({node:_objs.find(x=>x.id===cl.childId),lt:cl.linkType})).filter(x=>x.node);
+    chn.sort((a,b)=>a.node.x-b.node.x);
+    const twinChn=chn.filter(x=>x.lt==='twin');
+    const normChn=chn.filter(x=>x.lt!=='twin');
+    // 一般孩子：各自從 barY 中點直接連線
+    if(normChn.length===1){
+      const c=normChn[0].node;
       g.appendChild(_el('line',{x1:midX,y1:barY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'}));
-    }else if(chn.length>1){
-      const sibY=barY+42;
-      g.appendChild(_el('line',{x1:midX,y1:barY,x2:midX,y2:sibY,stroke:sc,'stroke-width':'1.8'}));
-      g.appendChild(_el('line',{x1:chn[0].x,y1:sibY,x2:chn[chn.length-1].x,y2:sibY,stroke:sc,'stroke-width':'1.8'}));
-      for(const c of chn)g.appendChild(_el('line',{x1:c.x,y1:sibY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'}));
+    }else if(normChn.length>1){
+      for(const{node:c}of normChn)g.appendChild(_el('line',{x1:midX,y1:barY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'}));
+    }
+    // 多胞胎孩子：從 barY 向下一個共同 drop 點後倒 V 連到各孩子
+    if(twinChn.length>0){
+      const dropX=midX,dropY=barY+30;
+      g.appendChild(_el('line',{x1:midX,y1:barY,x2:dropX,y2:dropY,stroke:sc,'stroke-width':'1.8'}));
+      for(const{node:c}of twinChn)g.appendChild(_el('line',{x1:dropX,y1:dropY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'}));
     }
     g.appendChild(_el('path',{d:`M${ax} ${ay}L${bx} ${barY}`,fill:'none',stroke:'transparent','stroke-width':'14'}));
     return g;
@@ -4041,7 +4047,12 @@ const GenogramEditor = (() => {
           if(hObj){
             _dragBeforeState=_snap();
             if(hObj.type==='path')_dragging={type:'single-path',id:hitId,sx:x,sy:y,origPts:JSON.parse(JSON.stringify(hObj.points))};
-            else _dragging={type:'single',id:hitId,sx:x,sy:y,ox:hObj.x,oy:hObj.y};
+            else{
+              // 若拖曳伴侶節點，同步帶動其子女
+              const _lkChn=[];
+              if(hObj.type==='node'){const CTYPE=['married','separated','divorced'];const cpls=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===hitId||o.to===hitId));for(const cp of cpls){const cks=_objs.filter(o=>o.type==='link'&&o.coupleId===cp.id);for(const ck of cks){const cn=_objs.find(o=>o.id===ck.childId);if(cn&&!_lkChn.find(c=>c.id===cn.id))_lkChn.push({id:cn.id,ox:cn.x,oy:cn.y});}}}
+              _dragging={type:'single',id:hitId,sx:x,sy:y,ox:hObj.x,oy:hObj.y,lkChn:_lkChn};
+            }
           }else _dragging=null;
         }
         _render();
@@ -4074,12 +4085,17 @@ const GenogramEditor = (() => {
         else if(nd.id!==_connectFrom){
           _pushUndo();
           const nl={id:_uid(),type:'link',from:_connectFrom,to:nd.id,linkType:_linkType};
-          if(['parent','adopted','foster'].includes(_linkType)){
+          if(['parent','adopted','foster','twin'].includes(_linkType)){
             const CTYPE=['married','separated','divorced'];
             const fCpl=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===_connectFrom||o.to===_connectFrom));
             const tCpl=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===nd.id||o.to===nd.id));
             if(tCpl.length&&!fCpl.length){nl.coupleId=tCpl[0].id;nl.childId=_connectFrom;nl.parentId=nd.id;}
             else if(fCpl.length&&!tCpl.length){nl.coupleId=fCpl[0].id;nl.childId=nd.id;nl.parentId=_connectFrom;}
+          }
+          // 建立伴侶關係時自動對齊 Y（僅此次，後續使用者可自行調整）
+          if(['married','separated','divorced'].includes(_linkType)){
+            const fNode=_objs.find(o=>o.id===_connectFrom);
+            if(fNode){const ay=_snapG((fNode.y+nd.y)/2);fNode.y=ay;nd.y=ay;}
           }
           _objs.push(nl);_connectFrom=null;_connectLine=null;_render();
         }
@@ -4103,7 +4119,7 @@ const GenogramEditor = (() => {
     if(_dragging){
       if(_dragging.type==='single'){
         const o=_objs.find(o=>o.id===_dragging.id);
-        if(o){o.x=_dragging.ox+(x-_dragging.sx);o.y=_dragging.oy+(y-_dragging.sy);_render();}
+        if(o){const ddx=x-_dragging.sx,ddy=y-_dragging.sy;o.x=_dragging.ox+ddx;o.y=_dragging.oy+ddy;for(const lc of(_dragging.lkChn||[])){const cn=_objs.find(o=>o.id===lc.id);if(cn){cn.x=lc.ox+ddx;cn.y=lc.oy+ddy;}}_render();}
       }else if(_dragging.type==='single-path'){
         const o=_objs.find(o=>o.id===_dragging.id);
         if(o){const ddx=x-_dragging.sx,ddy=y-_dragging.sy;o.points=_dragging.origPts.map(([px,py])=>[px+ddx,py+ddy]);o.d=_ptsToD(o.points);o.bbox=_calcBbox(o.points);_render();}
@@ -4135,7 +4151,7 @@ const GenogramEditor = (() => {
     if(_dragging){
       if(_dragging.type==='single'&&_dragBeforeState){
         const o=_objs.find(o=>o.id===_dragging.id);
-        if(o&&(Math.abs(o.x-_dragging.ox)>2||Math.abs(o.y-_dragging.oy)>2)){_undo.push(_dragBeforeState);if(_undo.length>60)_undo.shift();_redo=[];o.x=_snapG(o.x);o.y=_snapG(o.y);}
+        if(o&&(Math.abs(o.x-_dragging.ox)>2||Math.abs(o.y-_dragging.oy)>2)){_undo.push(_dragBeforeState);if(_undo.length>60)_undo.shift();_redo=[];o.x=_snapG(o.x);o.y=_snapG(o.y);for(const lc of(_dragging.lkChn||[])){const cn=_objs.find(o=>o.id===lc.id);if(cn){cn.x=_snapG(cn.x);cn.y=_snapG(cn.y);}}}
         _dragBeforeState=null;
       }else if(_dragging.type==='single-path'&&_dragBeforeState){
         _undo.push(_dragBeforeState);if(_undo.length>60)_undo.shift();_redo=[];_dragBeforeState=null;
@@ -4362,7 +4378,7 @@ const GenogramEditor = (() => {
   function _renderSidebar(){
     const sb=document.getElementById('geno-sidebar');if(!sb)return;
     const nodes=[{id:'male',name:'男性'},{id:'female',name:'女性'},{id:'pregnant',name:'懷孕'},{id:'unknown',name:'性別不明'},{id:'ip_m',name:'IP個案(男)'},{id:'ip_f',name:'IP個案(女)'},{id:'dead_m',name:'已故男'},{id:'dead_f',name:'已故女'},{id:'abort',name:'流產'},{id:'stillbirth',name:'死胎/死產'}];
-    const sl=[{id:'married',name:'婚姻'},{id:'separated',name:'分居'},{id:'divorced',name:'離婚'},{id:'parent',name:'親子'},{id:'adopted',name:'領養'},{id:'foster',name:'寄養'},{id:'sibling',name:'手足'},{id:'twin',name:'雙胞胎'}];
+    const sl=[{id:'married',name:'婚姻'},{id:'separated',name:'分居'},{id:'divorced',name:'離婚'},{id:'parent',name:'親子'},{id:'adopted',name:'領養'},{id:'foster',name:'寄養'},{id:'twin',name:'多胞胎'}];
     const el=[{id:'fused',name:'融合/極度親密'},{id:'conflict',name:'衝突'},{id:'cutoff',name:'情感疏離'}];
     let h='<div class="geno-sb-sec">人物節點</div><div class="geno-sb-grid">';
     for(const n of nodes)h+=`<div class="geno-sb-item" id="geno-sb-n-${n.id}" onclick="GenogramEditor.setShape('${n.id}')" title="${n.name}">${_shapeSvg(n.id,30)}<span>${n.name}</span></div>`;
@@ -4388,7 +4404,7 @@ const GenogramEditor = (() => {
   // ── Build UI ──────────────────────────────────────────────────────
   function _buildUI(){
     const ov=document.createElement('div');ov.id='geno-overlay';
-    ov.innerHTML=`<div id="geno-header"><span style="font-weight:700;font-size:1.1rem;color:#2b6cb0;">家族圖繪製</span><div style="display:flex;gap:6px;align-items:center;"><button class="geno-tb-btn" onclick="GenogramEditor.undo()" title="Ctrl+Z">↩ 復原</button><button class="geno-tb-btn" onclick="GenogramEditor.redo()" title="Ctrl+Y">↪ 重做</button><button class="geno-tb-btn" onclick="GenogramEditor.zoomFit()">⊞ 全圖</button><div class="geno-tb-sep"></div><button class="btn btn-secondary btn-sm" onclick="GenogramEditor.close()">取消</button><button class="btn btn-primary btn-sm" onclick="GenogramEditor.save()">插入家族圖</button></div></div><div id="geno-toolbar"><span style="font-size:.76rem;color:#718096;margin-right:2px;">工具：</span><button class="geno-tb-btn active" id="geno-t-select" onclick="GenogramEditor.setTool('select')" title="選取/拖曳；拖曳空白處框選多物件；Space+拖曳平移">↖ 選取</button><button class="geno-tb-btn" id="geno-t-connect" onclick="GenogramEditor.setTool('connect')" title="點兩個節點連線（先在側欄選連線類型）">─ 連線</button><button class="geno-tb-btn" id="geno-t-text" onclick="GenogramEditor.setTool('text')" title="點畫布新增文字；雙擊編輯">T 文字</button><button class="geno-tb-btn" id="geno-t-freehand" onclick="GenogramEditor.setTool('freehand')" title="自由手繪">✏ 手繪</button><button class="geno-tb-btn" id="geno-t-erase" onclick="GenogramEditor.setTool('erase')" title="點物件刪除">✕ 橡皮擦</button><div class="geno-tb-sep"></div><span style="font-size:.76rem;color:#718096;margin-right:2px;">文字：</span><button class="geno-tb-btn" id="geno-txt-bold" onclick="GenogramEditor.toggleTextProp('bold')" title="粗體" style="font-weight:700;min-width:26px;">B</button><button class="geno-tb-btn" id="geno-txt-italic" onclick="GenogramEditor.toggleTextProp('italic')" title="斜體" style="font-style:italic;min-width:26px;">I</button><button class="geno-tb-btn" id="geno-txt-strike" onclick="GenogramEditor.toggleTextProp('strikethrough')" title="刪除線" style="text-decoration:line-through;min-width:26px;">S</button><select id="geno-txt-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.applyFontSize(+this.value)" title="字級">${[8,9,10,11,12,14,16,18,20,24].map(n=>`<option value="${n}"${n===12?' selected':''}>${n}px</option>`).join('')}</select><div class="geno-tb-sep"></div><button class="geno-tb-btn active" id="geno-snap-btn" onclick="GenogramEditor.toggleSnap()" title="網格吸附">⊡ 吸附</button><button class="geno-tb-btn" onclick="GenogramEditor.saveAsCustom()" title="將已選取物件存為共用自訂元件">📌 自訂元件</button><button class="geno-tb-btn" onclick="GenogramEditor.deleteSelected()" title="刪除所選（Delete鍵）">🗑 刪除</button></div><div id="geno-body"><div id="geno-sidebar"><div id="geno-sb-resize"></div></div><div id="geno-canvas-wrap"><svg id="geno-svg" xmlns="${NS}"><g id="geno-vp"></g></svg></div></div>`;
+    ov.innerHTML=`<div id="geno-header"><span style="font-weight:700;font-size:1.1rem;color:#2b6cb0;">家族圖繪製</span><div style="display:flex;gap:6px;align-items:center;"><button class="geno-tb-btn" onclick="GenogramEditor.undo()" title="Ctrl+Z">↩ 復原</button><button class="geno-tb-btn" onclick="GenogramEditor.redo()" title="Ctrl+Y">↪ 重做</button><button class="geno-tb-btn" onclick="GenogramEditor.zoomFit()">⊞ 全圖</button><div class="geno-tb-sep"></div><button class="btn btn-secondary btn-sm" onclick="GenogramEditor.close()">取消</button><button class="btn btn-primary btn-sm" onclick="GenogramEditor.save()">插入家族圖</button></div></div><div id="geno-toolbar"><span style="font-size:.76rem;color:#718096;margin-right:2px;">工具：</span><button class="geno-tb-btn active" id="geno-t-select" onclick="GenogramEditor.setTool('select')" title="選取/拖曳；拖曳空白處框選多物件；Space+拖曳平移">↖ 選取/移動</button><button class="geno-tb-btn" id="geno-t-connect" onclick="GenogramEditor.setTool('connect')" title="點兩個節點連線（先在側欄選連線類型）">─ 連線</button><button class="geno-tb-btn" id="geno-t-text" onclick="GenogramEditor.setTool('text')" title="點畫布新增文字；雙擊編輯">T 文字</button><button class="geno-tb-btn" id="geno-t-freehand" onclick="GenogramEditor.setTool('freehand')" title="自由手繪">✏ 手繪</button><button class="geno-tb-btn" id="geno-t-erase" onclick="GenogramEditor.setTool('erase')" title="點物件刪除">✕ 橡皮擦</button><div class="geno-tb-sep"></div><span style="font-size:.76rem;color:#718096;margin-right:2px;">文字：</span><button class="geno-tb-btn" id="geno-txt-bold" onclick="GenogramEditor.toggleTextProp('bold')" title="粗體" style="font-weight:700;min-width:26px;">B</button><button class="geno-tb-btn" id="geno-txt-italic" onclick="GenogramEditor.toggleTextProp('italic')" title="斜體" style="font-style:italic;min-width:26px;">I</button><button class="geno-tb-btn" id="geno-txt-strike" onclick="GenogramEditor.toggleTextProp('strikethrough')" title="刪除線" style="text-decoration:line-through;min-width:26px;">S</button><select id="geno-txt-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.applyFontSize(+this.value)" title="字級">${[8,9,10,11,12,14,16,18,20,24].map(n=>`<option value="${n}"${n===12?' selected':''}>${n}px</option>`).join('')}</select><div class="geno-tb-sep"></div><button class="geno-tb-btn active" id="geno-snap-btn" onclick="GenogramEditor.toggleSnap()" title="網格吸附">⊡ 吸附</button><button class="geno-tb-btn" onclick="GenogramEditor.saveAsCustom()" title="將已選取物件存為共用自訂元件">📌 自訂元件</button><button class="geno-tb-btn" onclick="GenogramEditor.deleteSelected()" title="刪除所選（Delete鍵）">🗑 刪除</button></div><div id="geno-body"><div id="geno-sidebar"></div><div id="geno-sb-resize"></div><div id="geno-canvas-wrap"><svg id="geno-svg" xmlns="${NS}"><g id="geno-vp"></g></svg></div></div>`;
     document.body.appendChild(ov);
     _svg=document.getElementById('geno-svg');_vp=document.getElementById('geno-vp');
     _svg.addEventListener('mousedown',_onMouseDown);
@@ -4400,7 +4416,7 @@ const GenogramEditor = (() => {
     document.addEventListener('keydown',_onKeyDown);
     document.addEventListener('keyup',_onKeyUp);
     _renderSidebar();
-    {const sbR=document.getElementById('geno-sb-resize'),sbE=document.getElementById('geno-sidebar');if(sbR&&sbE){let _sd=null;const _sm=e=>{if(!_sd)return;sbE.style.width=Math.max(120,Math.min(400,_sd.w+(e.clientX-_sd.x)))+'px';};const _su=()=>{_sd=null;sbR.classList.remove('active');document.removeEventListener('mousemove',_sm);document.removeEventListener('mouseup',_su);};sbR.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();_sd={x:e.clientX,w:sbE.offsetWidth};sbR.classList.add('active');document.addEventListener('mousemove',_sm);document.addEventListener('mouseup',_su);});}}
+    {const sbR=document.getElementById('geno-sb-resize'),sbE=document.getElementById('geno-sidebar');if(sbR&&sbE){sbR.style.left=sbE.offsetWidth+'px';let _sd=null;const _sm=e=>{if(!_sd)return;const w=Math.max(120,Math.min(400,_sd.w+(e.clientX-_sd.x)));sbE.style.width=w+'px';sbR.style.left=w+'px';};const _su=()=>{_sd=null;sbR.classList.remove('active');document.removeEventListener('mousemove',_sm);document.removeEventListener('mouseup',_su);};sbR.addEventListener('mousedown',e=>{e.preventDefault();e.stopPropagation();_sd={x:e.clientX,w:sbE.offsetWidth};sbR.classList.add('active');document.addEventListener('mousemove',_sm);document.addEventListener('mouseup',_su);});}}
     requestAnimationFrame(()=>{
       const w=document.getElementById('geno-canvas-wrap');
       if(w){_panX=w.offsetWidth/2;_panY=w.offsetHeight/2;_render();}
@@ -5906,9 +5922,12 @@ async function pollNotifications() {
 }
 
 async function checkForUpdate() {
+  // 測試版不偵測更新（避免 GitHub Pages 批次 ETag 失效時誤報到正式版）
+  if (window.location.pathname.includes('/dev/')) return;
   try {
     const resp = await fetch(location.href, { method: 'HEAD', cache: 'no-store' });
-    const tag = resp.headers.get('etag') || resp.headers.get('last-modified');
+    // 優先用 last-modified（per-file 準確），避免 GitHub Pages ETag 在任何 push 後全部重置
+    const tag = resp.headers.get('last-modified') || resp.headers.get('etag');
     if (_versionEtag === null) {
       _versionEtag = tag;
     } else if (tag && tag !== _versionEtag && !_updateAvailable) {
@@ -23128,9 +23147,9 @@ function _renderGradTransferTab() {
   if (F.filled    !== 'all') gradCases = gradCases.filter(({ c }) => F.filled === 'yes' ? _hasCaseTransferEval(c.id, semToUse) : !_hasCaseTransferEval(c.id, semToUse));
   if (F.gradStatus !== 'all') gradCases = gradCases.filter(({ gs }) => F.gradStatus === 'overdue' ? gs.isOverdue : !gs.isOverdue);
   if (F.search) { const q = F.search.toLowerCase(); gradCases = gradCases.filter(({ c }) => (c.studentId||'').toLowerCase().includes(q) || (c.name||'').toLowerCase().includes(q) || (c.id||'').toLowerCase().includes(q)); }
-  const decLabelMap = { pending:'待決議', noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）', untraceable:'年久不可考' };
-  const decColorMap = { pending:'#718096', noTransfer_self:'#1d6a3a', transfer_school:'#c0392b', noTransfer_school:'#1d6a3a', stay:'#553c9a', b_case:'#4a5568', one_time_consult:'#4a5568', direct_admission:'#2b6cb0', untraceable:'#6b7280' };
-  const decBgMap = { pending:'#f0f4f8', noTransfer_self:'#d5f5e3', transfer_school:'#fde8e8', noTransfer_school:'#d5f5e3', stay:'#e9d8fd', b_case:'#e2e8f0', one_time_consult:'#e2e8f0', direct_admission:'#e0f2fe', untraceable:'#f3f4f6' };
+  const decLabelMap = { pending:'待決議', noTransfer_self:'主責評估綠燈不轉銜', noTransfer_self_reason:'主責評估不轉銜（原因自填）', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）', untraceable:'年久不可考' };
+  const decColorMap = { pending:'#718096', noTransfer_self:'#1d6a3a', noTransfer_self_reason:'#276749', transfer_school:'#c0392b', noTransfer_school:'#1d6a3a', stay:'#553c9a', b_case:'#4a5568', one_time_consult:'#4a5568', direct_admission:'#2b6cb0', untraceable:'#6b7280' };
+  const decBgMap = { pending:'#f0f4f8', noTransfer_self:'#d5f5e3', noTransfer_self_reason:'#c6f6d5', transfer_school:'#fde8e8', noTransfer_school:'#d5f5e3', stay:'#e9d8fd', b_case:'#e2e8f0', one_time_consult:'#e2e8f0', direct_admission:'#e0f2fe', untraceable:'#f3f4f6' };
   const today = new Date().toISOString().slice(0, 10);
   const statsBar = `<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
     <span style="background:#f0f4f8;border-radius:8px;padding:6px 14px;font-size:.85rem;">共 <strong>${total}</strong> 位</span>
@@ -23196,7 +23215,8 @@ function _renderGradTransferTab() {
     <span style="font-size:.82rem;color:#2b6cb0;font-weight:600;">批次套用：</span>
     <select id="grad-batch-status" style="padding:4px 8px;font-size:.82rem;border:1px solid #bee3f8;border-radius:4px;background:#fff;">
       <option value="">選擇決議</option>
-      <option value="noTransfer_self">依主責評估不需轉銜</option>
+      <option value="noTransfer_self">主責評估綠燈不轉銜</option>
+      <option value="noTransfer_self_reason">主責評估不轉銜（原因自填）</option>
       <option value="transfer_school">校級建議轉銜</option>
       <option value="noTransfer_school">校級建議不需轉銜</option>
       <option value="stay">本學期不離校</option>
@@ -23226,6 +23246,7 @@ function _renderGradTransferTab() {
       : `<span style="font-size:.73rem;background:#fde8e8;color:#c0392b;border-radius:8px;padding:1px 7px;border:1px solid #fc8181;">未填評估</span>`;
     const decStyle = `font-size:.73rem;padding:2px 8px;border-radius:10px;background:${decBgMap[decStatus]};color:${decColorMap[decStatus]};border:1px solid ${decColorMap[decStatus]};`;
     const schoolDateDisplay = dec?.schoolMeetingDate ? `<span style="font-size:.75rem;color:#718096;">校級會議：${escHtml(dec.schoolMeetingDate)}</span>` : '';
+    const reasonDisplay = decStatus === 'noTransfer_self_reason' && dec?.noTransferReason ? `<span style="font-size:.72rem;color:#276749;background:#f0fff4;border:1px solid #9ae6b4;border-radius:6px;padding:1px 6px;" title="不轉銜原因">原因：${escHtml(dec.noTransferReason)}</span>` : '';
     // ── 開案學期歷史 badges ──
     const isExpanded = window._gradCardExpanded?.has(c.id) || false;
     const semMap = {};
@@ -23268,6 +23289,7 @@ function _renderGradTransferTab() {
           <span style="color:#718096;font-size:.82rem;">${escHtml(c.studentId||'—')}</span>
           ${gradBadge}${resolvedBadge}${teBadge}
           <span style="${decStyle}">${decLabelMap[decStatus]||'—'}</span>
+          ${reasonDisplay}
           <span style="font-size:.78rem;color:#718096;">主責：${escHtml(c.counselorName||c.counselorEmail||'—')}</span>
           ${schoolDateDisplay}
         </div>
@@ -23276,7 +23298,8 @@ function _renderGradTransferTab() {
           ${!hasTE ? `<button class="btn btn-primary btn-sm" onclick="showCaseDetail('${escHtml(c.id)}');setTimeout(()=>openTransferEvalForm('${escHtml(c.id)}',null),500)">填寫評估</button>` : ''}
           <select class="field-input" id="gd-sel-${escHtml(c.id)}" style="padding:4px 8px;font-size:.82rem;width:auto;max-width:170px;" onchange="setGradTransferDecision('${escHtml(c.id)}','${semToUse}',this.value)">
             <option value="">設定校級決議▼</option>
-            <option value="noTransfer_self"${decStatus==='noTransfer_self'?' selected':''}>依主責評估不需轉銜</option>
+            <option value="noTransfer_self"${decStatus==='noTransfer_self'?' selected':''}>主責評估綠燈不轉銜</option>
+            <option value="noTransfer_self_reason"${decStatus==='noTransfer_self_reason'?' selected':''}>主責評估不轉銜（原因自填）</option>
             <option value="transfer_school"${decStatus==='transfer_school'?' selected':''}>校級建議轉銜</option>
             <option value="noTransfer_school"${decStatus==='noTransfer_school'?' selected':''}>校級建議不需轉銜</option>
             <option value="stay"${decStatus==='stay'?' selected':''}>本學期不離校</option>
@@ -23285,7 +23308,7 @@ function _renderGradTransferTab() {
             <option value="direct_admission"${decStatus==='direct_admission'?' selected':''}>直升碩/博士（免評估）</option>
             <option value="untraceable"${decStatus==='untraceable'?' selected':''}>年久不可考</option>
           </select>
-          <input type="date" value="${escHtml(dec?.schoolMeetingDate||'')}" title="校級評估會議日期" style="padding:4px;font-size:.8rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="setGradTransferMeetingDate('${escHtml(c.id)}','${semToUse}',this.value)">
+          <input type="date" id="gd-date-${escHtml(c.id)}" value="${escHtml(dec?.schoolMeetingDate||'')}" title="校級評估會議日期" style="padding:4px;font-size:.8rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="setGradTransferMeetingDate('${escHtml(c.id)}','${semToUse}',this.value)">
           ${chevBtn}
         </div>
       </div>
@@ -23340,10 +23363,28 @@ function _gradFilterClear() {
 
 function setGradTransferDecision(caseId, sem, status) {
   if (!status) return;
+  let noTransferReason = null;
+  if (status === 'noTransfer_self_reason') {
+    const r = prompt('請填寫不轉銜原因：', _getGradTransferDecision(caseId, sem)?.noTransferReason || '');
+    if (r === null) {
+      // 使用者取消，還原選單
+      const sel = document.getElementById('gd-sel-' + caseId);
+      if (sel) sel.value = _getGradTransferDecision(caseId, sem)?.status || '';
+      return;
+    }
+    noTransferReason = r.trim();
+  }
   const now = new Date().toISOString();
   const ex = _getGradTransferDecision(caseId, sem);
-  if (ex) { ex.status = status; ex.updatedAt = now; ex.updatedBy = currentUser?.email; }
-  else { transferData.push({ id:`gr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, type:'graduation', caseId, semester:sem, status, createdAt:now, createdBy:currentUser?.email }); }
+  if (ex) { ex.status = status; if (noTransferReason !== null) ex.noTransferReason = noTransferReason; ex.updatedAt = now; ex.updatedBy = currentUser?.email; }
+  else { transferData.push({ id:`gr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`, type:'graduation', caseId, semester:sem, status, noTransferReason, createdAt:now, createdBy:currentUser?.email }); }
+  // 若日期尚未填寫，自動帶入今日
+  const dateInp = document.getElementById('gd-date-' + caseId);
+  if (dateInp && !dateInp.value) {
+    const today = new Date().toISOString().slice(0, 10);
+    dateInp.value = today;
+    setGradTransferMeetingDate(caseId, sem, today);
+  }
   _checkTransferGradTodos();
   // 重繪當前分頁
   if (window._transferTab === 'graduation') { document.getElementById('transfer-body').innerHTML = _renderGradTransferTab(); }
@@ -23844,7 +23885,7 @@ function _renderUnassignedTab() {
   if (!unassigned.length) {
     return `<div class="empty-state"><div class="icon">✅</div><p>目前無未歸屬的校級評估資料</p></div>`;
   }
-  const decLabelMap = { pending:'待決議', noTransfer_self:'主責評估不需轉銜', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）', untraceable:'年久不可考' };
+  const decLabelMap = { pending:'待決議', noTransfer_self:'主責評估綠燈不轉銜', noTransfer_self_reason:'主責評估不轉銜（原因自填）', transfer_school:'校級建議轉銜', noTransfer_school:'校級建議不需轉銜', stay:'本學期不離校', b_case:'B案（無須評估）', one_time_consult:'一次性諮詢不予討論', direct_admission:'直升碩/博士（免評估）', untraceable:'年久不可考' };
   const rows = unassigned.map(r => {
     const createdAt = r.createdAt ? new Date(r.createdAt).toLocaleDateString('zh-TW') : '—';
     return `<div class="record-card" style="margin-bottom:8px;border-left:3px solid #f6ad55;">
