@@ -9056,7 +9056,11 @@ async function saveRecord() {
     if (nextBkStart >= nextBkEnd) {
       _recAlert('預約下次：結束時間必須晚於開始時間。'); return;
     }
+    const _editOldBkId = _editingRecordId
+      ? (casesData[cidx]?.records?.find(r => r.id === _editingRecordId)?.nextBkId || '')
+      : '';
     const conflict = bookingsData.find(b =>
+      b.id !== _editOldBkId &&
       b.room === nextBkRoom && b.date === nextBkDate &&
       b.startTime < nextBkEnd && b.endTime > nextBkStart
     );
@@ -9064,6 +9068,16 @@ async function saveRecord() {
       const cEl = document.getElementById('rec-next-bk-conflict');
       if (cEl) { cEl.style.display = ''; cEl.textContent = `衝突：${nextBkRoom} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已有預約（${conflict.counselorName || '—'}）。`; }
       _recAlert('預約下次的時間與既有預約衝突，請修改。'); return;
+    }
+    const counselorConflict = bookingsData.find(b =>
+      b.id !== _editOldBkId &&
+      b.date === nextBkDate && b.counselorEmail === currentUser.email &&
+      b.startTime < nextBkEnd && b.endTime > nextBkStart
+    );
+    if (counselorConflict) {
+      const cEl = document.getElementById('rec-next-bk-conflict');
+      if (cEl) { cEl.style.display = ''; cEl.textContent = `您在 ${(counselorConflict.startTime||'').slice(0,5)}–${(counselorConflict.endTime||'').slice(0,5)} 已有另一預約（${counselorConflict.room || '—'}${counselorConflict.caseName ? '，' + counselorConflict.caseName : ''}）。`; }
+      _recAlert('您在此時段已有其他預約，請修改下次預約時間。'); return;
     }
   }
   const counselorList = [..._recCounselors];
@@ -9138,6 +9152,19 @@ async function saveRecord() {
               caseId: _recordCaseId, caseName: casesData[cidx]?.name || '',
               notes: '', createdAt: _nbNow, updatedAt: _nbNow };
             bookingsData.push(newBk);
+            try {
+              const _gcCalId = await proxyCall('createCalendarEvent', {
+                room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
+                counselorName: myName, notes: '',
+                creatorName: configData?.users?.[currentUser.email]?.name || myName,
+                createdAt: _nbNow, updatedAt: _nbNow, isEdit: false, bkSerial: newBk.bkSerial,
+              });
+              if (_gcCalId) {
+                newBk.calendarEventId = _gcCalId;
+                const _bkRef = bookingsData.find(x => x.id === _editNextBkId);
+                if (_bkRef) _bkRef.calendarEventId = _gcCalId;
+              }
+            } catch(_) {}
             _bkGcQueue.set(newBk.id, { ...newBk });
           } else {
             const bkIdx = bookingsData.findIndex(b => b.id === _editNextBkId);
@@ -9193,6 +9220,20 @@ async function saveRecord() {
             notes: '', createdAt: _nbNow, updatedAt: _nbNow };
           bookingsData.push(newBk);
           await saveBookings().catch(e => console.warn('預約儲存失敗:', e));
+          try {
+            const _gcCalId = await proxyCall('createCalendarEvent', {
+              room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
+              counselorName: myName, notes: '',
+              creatorName: configData?.users?.[currentUser.email]?.name || myName,
+              createdAt: _nbNow, updatedAt: _nbNow, isEdit: false, bkSerial: newBk.bkSerial,
+            });
+            if (_gcCalId) {
+              newBk.calendarEventId = _gcCalId;
+              const _bkRef = bookingsData.find(x => x.id === _newBkId);
+              if (_bkRef) _bkRef.calendarEventId = _gcCalId;
+              await saveBookings().catch(() => {});
+            }
+          } catch(_) {}
           _bkGcQueue.set(newBk.id, { ...newBk });
           _bkGcFlush();
         }
