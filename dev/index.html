@@ -24664,7 +24664,8 @@ async function downloadGradTransferExcelTemplate() {
 // ══════════════════════════════════════════════
 function renderTransferPage() {
   if (window._transferTab === 'outgoing') window._transferTab = 'incoming';
-  const tab = window._transferTab || 'graduation';
+  if (!window._transferTab) { try { window._transferTab = localStorage.getItem('scc_trTab_' + DRIVE_FOLDER_ID) || 'graduation'; } catch(_) { window._transferTab = 'graduation'; } }
+  const tab = window._transferTab;
   const tsf = window._transferStatusFilter || 'all';
   const incoming = transferData.filter(r => r.type === 'incoming');
   const curSem = currentSemesterPrefix();
@@ -24677,7 +24678,7 @@ function renderTransferPage() {
   const withdrawList = transferData.filter(r => r.type === 'withdraw' && r.semester === curSem);
   const withdrawAll  = transferData.filter(r => r.type === 'withdraw');
   const tabBtn = (id, label, count, warn) =>
-    `<button onclick="window._transferTab='${id}';window._transferStatusFilter='all';renderTransferPage()" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:${tab===id?'700':'400'};background:${tab===id?'#3498db':(warn&&count>0?'#fff7ed':'#f0f4f8')};color:${tab===id?'#fff':(warn&&count>0?'#9c4221':'#4a5568')};${warn&&count>0?'border:1px solid #fb923c;':''}">${label}（${count}）</button>`;
+    `<button onclick="window._transferTab='${id}';try{localStorage.setItem('scc_trTab_'+DRIVE_FOLDER_ID,'${id}');}catch(_){}window._transferStatusFilter='all';renderTransferPage()" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:${tab===id?'700':'400'};background:${tab===id?'#3498db':(warn&&count>0?'#fff7ed':'#f0f4f8')};color:${tab===id?'#fff':(warn&&count>0?'#9c4221':'#4a5568')};${warn&&count>0?'border:1px solid #fb923c;':''}">${label}（${count}）</button>`;
   const importInBtn  = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'incoming')"><span class="btn btn-secondary btn-sm">📥 匯入轉入名單</span></label>`;
   const dlTemplateBtn = `<button class="btn btn-secondary btn-sm" onclick="downloadTransferImportTemplate()" data-tip="下載轉入名單 Excel 範例檔，填寫後即可批次匯入。">📄 下載範例</button>`;
   const addInBtn  = `<button class="btn btn-primary btn-sm" onclick="openTransferAssessmentModal(null,'incoming')">＋ 手動新增</button>`;
@@ -24740,15 +24741,17 @@ function _renderWithdrawTab(allWithdraw) {
   const semOpts = [...new Set(allWithdraw.filter(r => r.semester).map(r => r.semester))].sort().reverse();
 
   const getLinkedCase = r => r.studentId ? casesData.filter(c => !c.deleted && c.studentId === r.studentId).sort((a, b) => (b.openDate||'').localeCompare(a.openDate||''))[0] : null;
+  // 決議從畢業轉銜記錄取（共用資料），若無個案則從 withdraw 記錄取
+  const getWdDecStatus = r => { const lc = getLinkedCase(r); const gd = lc ? _getGradTransferDecision(lc.id, semToUse) : null; return gd?.status || r.decision || 'pending'; };
 
   let records = allWithdraw.filter(r => r.semester === semToUse);
   const total = records.length;
   const withEval = records.filter(r => { const lc = getLinkedCase(r); return lc && _hasCaseTransferEval(lc.id, semToUse); }).length;
-  const withDec  = records.filter(r => r.decision && r.decision !== 'pending').length;
+  const withDec  = records.filter(r => getWdDecStatus(r) !== 'pending').length;
 
-  if (!F.showResolved) records = records.filter(r => !r.decision || r.decision === 'pending');
+  if (!F.showResolved) records = records.filter(r => getWdDecStatus(r) === 'pending');
   if (F.counselor) records = records.filter(r => { const lc = getLinkedCase(r); return lc && (lc.counselorEmail === F.counselor || lc.counselorName === F.counselor); });
-  if (F.decision !== 'all') records = records.filter(r => (r.decision || 'pending') === F.decision);
+  if (F.decision !== 'all') records = records.filter(r => getWdDecStatus(r) === F.decision);
   if (F.filled !== 'all') records = records.filter(r => { const lc = getLinkedCase(r); const has = lc ? _hasCaseTransferEval(lc.id, semToUse) : false; return F.filled === 'yes' ? has : !has; });
   if (F.search) { const q = F.search.toLowerCase(); records = records.filter(r => (r.name||'').toLowerCase().includes(q) || (r.studentId||'').toLowerCase().includes(q) || (getLinkedCase(r)?.id||'').toLowerCase().includes(q)); }
 
@@ -24821,7 +24824,7 @@ function _renderWithdrawTab(allWithdraw) {
       <option value="untraceable">年久不可考</option>
     </select>
     <input type="date" id="wd-batch-date" value="${today}" title="校級評估會議日期" style="padding:4px 8px;font-size:.82rem;border:1px solid #bee3f8;border-radius:4px;">
-    <button class="btn btn-primary btn-sm" onclick="_applyWithdrawBatch()">套用至已勾選</button>
+    <button class="btn btn-primary btn-sm" onclick="_applyWithdrawBatch('${semToUse}')">套用至已勾選</button>
     <span id="wd-batch-info" style="font-size:.82rem;color:#2b6cb0;"></span>
   </div>`;
 
@@ -24832,7 +24835,10 @@ function _renderWithdrawTab(allWithdraw) {
 
   const rows = records.map(r => {
     const lc = getLinkedCase(r);
-    const decStatus = r.decision || 'pending';
+    const gradDec = lc ? _getGradTransferDecision(lc.id, semToUse) : null;
+    const decStatus = gradDec?.status || r.decision || 'pending';
+    const meetingDate = gradDec?.schoolMeetingDate || r.schoolMeetingDate || '';
+    const noTransferReason = gradDec?.noTransferReason || r.noTransferReason || '';
     const isResolved = decStatus !== 'pending';
     const hasTE = lc ? _hasCaseTransferEval(lc.id, semToUse) : false;
 
@@ -24846,8 +24852,8 @@ function _renderWithdrawTab(allWithdraw) {
         : `<span style="font-size:.73rem;background:#fde8e8;color:#c0392b;border-radius:8px;padding:1px 7px;border:1px solid #fc8181;">未填評估</span>`)
       : '';
     const decStyle = `font-size:.73rem;padding:2px 8px;border-radius:10px;background:${_TRANSFER_DEC_BG[decStatus]||'#f0f4f8'};color:${_TRANSFER_DEC_COLOR[decStatus]||'#718096'};border:1px solid ${_TRANSFER_DEC_COLOR[decStatus]||'#cbd5e0'};`;
-    const schoolDateDisplay = r.schoolMeetingDate ? `<span style="font-size:.75rem;color:#718096;">校級會議：${escHtml(r.schoolMeetingDate)}</span>` : '';
-    const reasonDisplay = decStatus === 'noTransfer_self_reason' && r.noTransferReason ? `<span style="font-size:.72rem;color:#276749;background:#f0fff4;border:1px solid #9ae6b4;border-radius:6px;padding:1px 6px;">原因：${escHtml(r.noTransferReason)}</span>` : '';
+    const schoolDateDisplay = meetingDate ? `<span style="font-size:.75rem;color:#718096;">校級會議：${escHtml(meetingDate)}</span>` : '';
+    const reasonDisplay = decStatus === 'noTransfer_self_reason' && noTransferReason ? `<span style="font-size:.72rem;color:#276749;background:#f0fff4;border:1px solid #9ae6b4;border-radius:6px;padding:1px 6px;">原因：${escHtml(noTransferReason)}</span>` : '';
     const counselorInfo = lc && (lc.counselorName || lc.counselorEmail) ? `<span style="font-size:.78rem;color:#718096;">主責：${escHtml(lc.counselorName || lc.counselorEmail)}</span>` : '';
 
     const isExpanded = window._withdrawCardExpanded?.has(r.id) || false;
@@ -24857,6 +24863,14 @@ function _renderWithdrawTab(allWithdraw) {
     const chevBtn = Object.keys(semMap).length > 2
       ? `<button onclick="event.stopPropagation();_withdrawToggleHistory('${escHtml(r.id)}')" data-hist-chev="${escHtml(r.id)}" title="展開／收合歷史學期" style="background:none;border:1px solid #e2e8f0;border-radius:4px;cursor:pointer;padding:2px 7px;font-size:.8rem;color:#718096;line-height:1.2;flex-shrink:0;">${isExpanded?'▲':'▼'}</button>`
       : '';
+    // 決議/日期 onchange：有連結個案時寫入共用畢業轉銜記錄，否則寫入 withdraw 記錄
+    const lcId = lc ? escHtml(lc.id) : '';
+    const decOnchange = lc
+      ? `setWithdrawDecision('${escHtml(r.id)}',this.value,'${lcId}','${semToUse}')`
+      : `setWithdrawDecision('${escHtml(r.id)}',this.value)`;
+    const dateOnchange = lc
+      ? `setWithdrawMeetingDate('${escHtml(r.id)}',this.value,'${lcId}','${semToUse}')`
+      : `setWithdrawMeetingDate('${escHtml(r.id)}',this.value)`;
 
     return `<div class="record-card" style="margin-bottom:8px;${isResolved?'border-left:3px solid '+(_TRANSFER_DEC_COLOR[decStatus]||'#718096')+';opacity:.88;':''}">
       <div class="record-card-header" style="flex-wrap:wrap;gap:6px;">
@@ -24871,7 +24885,7 @@ function _renderWithdrawTab(allWithdraw) {
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
           ${lc ? `<button class="btn btn-secondary btn-sm" onclick="showCaseDetail('${escHtml(lc.id)}')">查看個案</button>` : ''}
           ${(lc && !hasTE) ? `<button class="btn btn-primary btn-sm" onclick="showCaseDetail('${escHtml(lc.id)}');setTimeout(()=>openTransferEvalForm('${escHtml(lc.id)}',null),500)">填寫評估</button>` : ''}
-          <select class="field-input" id="wd-sel-${escHtml(r.id)}" style="padding:4px 8px;font-size:.82rem;width:auto;max-width:170px;" onchange="setWithdrawDecision('${escHtml(r.id)}',this.value)">
+          <select class="field-input" id="wd-sel-${escHtml(r.id)}" style="padding:4px 8px;font-size:.82rem;width:auto;max-width:170px;" onchange="${decOnchange}">
             <option value="">設定決議▼</option>
             <option value="noTransfer_self"${decStatus==='noTransfer_self'?' selected':''}>主責評估綠燈不轉銜</option>
             <option value="noTransfer_self_reason"${decStatus==='noTransfer_self_reason'?' selected':''}>主責評估不轉銜（原因自填）</option>
@@ -24882,7 +24896,7 @@ function _renderWithdrawTab(allWithdraw) {
             <option value="one_time_consult"${decStatus==='one_time_consult'?' selected':''}>一次性諮詢不予討論</option>
             <option value="untraceable"${decStatus==='untraceable'?' selected':''}>年久不可考</option>
           </select>
-          <input type="date" id="wd-date-${escHtml(r.id)}" value="${escHtml(r.schoolMeetingDate||'')}" title="校級評估會議日期" style="padding:4px;font-size:.8rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="setWithdrawMeetingDate('${escHtml(r.id)}',this.value)">
+          <input type="date" id="wd-date-${escHtml(r.id)}" value="${escHtml(meetingDate)}" title="校級評估會議日期" style="padding:4px;font-size:.8rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="${dateOnchange}">
           <button class="btn btn-danger btn-sm" onclick="_deleteWithdrawRecord('${escHtml(r.id)}')">刪除</button>
           ${chevBtn}
         </div>
@@ -24944,10 +24958,25 @@ function _clearWithdrawList(sem) {
   (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('清空教務處轉/退學名單', null, null, `${count}筆`); } catch(e) { bgJobFail(jobId, e.message); } })();
 }
 
-function setWithdrawDecision(recordId, status) {
+function setWithdrawDecision(recordId, status, lcId, sem) {
   if (!status) return;
   const r = transferData.find(t => t.id === recordId);
   if (!r) return;
+  if (lcId) {
+    const sel = document.getElementById('wd-sel-' + recordId);
+    if (status === 'noTransfer_self_reason') {
+      const curReason = _getGradTransferDecision(lcId, sem)?.noTransferReason || '';
+      _showGradReasonPanel(sel, curReason, reason => {
+        if (reason === null) { if (sel) sel.value = _getGradTransferDecision(lcId, sem)?.status || r.decision || ''; return; }
+        _saveGradTransferDecision(lcId, sem, status, reason);
+        _withdrawRefreshInPlace();
+      });
+      return;
+    }
+    _saveGradTransferDecision(lcId, sem, status, null);
+    _withdrawRefreshInPlace();
+    return;
+  }
   if (status === 'noTransfer_self_reason') {
     const sel = document.getElementById('wd-sel-' + recordId);
     const curReason = r.noTransferReason || '';
@@ -24967,9 +24996,18 @@ function setWithdrawDecision(recordId, status) {
   (async () => { try { await saveTransfer(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); } })();
 }
 
-function setWithdrawMeetingDate(recordId, date) {
+function setWithdrawMeetingDate(recordId, date, lcId, sem) {
   const r = transferData.find(t => t.id === recordId);
   if (!r) return;
+  if (lcId) {
+    const ex = _getGradTransferDecision(lcId, sem);
+    if (ex) {
+      ex.schoolMeetingDate = date; ex.updatedAt = new Date().toISOString(); ex.updatedBy = currentUser?.email;
+      const jobId = bgJobAdd(`更新轉/退學會議日期：${r.name}`);
+      (async () => { try { await saveTransfer(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); } })();
+      return;
+    }
+  }
   r.schoolMeetingDate = date; r.updatedAt = new Date().toISOString();
   const jobId = bgJobAdd(`更新轉/退學會議日期：${r.name}`);
   (async () => { try { await saveTransfer(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); } })();
@@ -25002,7 +25040,7 @@ function _withdrawCbChange() {
   if (info) info.textContent = checked > 0 ? `已選 ${checked} 位` : '';
 }
 
-function _applyWithdrawBatch() {
+function _applyWithdrawBatch(sem) {
   const status = document.getElementById('wd-batch-status')?.value;
   const date   = document.getElementById('wd-batch-date')?.value;
   if (!status && !date) { alert('請選擇決議或填入校級評估會議日期'); return; }
@@ -25012,9 +25050,23 @@ function _applyWithdrawBatch() {
   checkedRids.forEach(rid => {
     const r = transferData.find(t => t.id === rid);
     if (!r) return;
-    if (status) r.decision = status;
-    if (date) r.schoolMeetingDate = date;
-    r.updatedAt = now;
+    const lc = sem ? casesData.filter(c => c.studentId === r.studentId && !c.deleted).sort((a,b) => (b.openDate||'').localeCompare(a.openDate||''))[0] : null;
+    if (lc) {
+      const ex = _getGradTransferDecision(lc.id, sem);
+      if (ex) {
+        if (status) ex.status = status;
+        if (date) ex.schoolMeetingDate = date;
+        ex.updatedAt = now; ex.updatedBy = currentUser?.email;
+      } else if (status) {
+        transferData.push({ id:`gr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+          type:'graduation', caseId:lc.id, semester:sem, status,
+          schoolMeetingDate:date||'', createdAt:now, createdBy:currentUser?.email });
+      }
+    } else {
+      if (status) r.decision = status;
+      if (date) r.schoolMeetingDate = date;
+      r.updatedAt = now;
+    }
   });
   _withdrawRefreshInPlace();
   const jobId = bgJobAdd(`批次套用轉/退學決議（${checkedRids.length}筆）`);
