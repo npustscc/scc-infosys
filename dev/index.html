@@ -23637,16 +23637,29 @@ function _renderGradTransferTab() {
         const evals = cc.semesterEvaluations || [];
         const hasTypedClosures = evals.some(e => e.type === 'closure');
         const ev = evals.find(e => e.type === 'closure' && e.semester === sem) || (!hasTypedClosures ? (cc.closureEvaluation || null) : null);
-        semMap[sem] = { caseId: cc.id, counselorName: configData?.users?.[cc.counselorEmail]?.name || cc.counselorName || '', light: ev?.light || ev?.statusLight || '', status: cc.semesterStatus?.[sem] || cc.status || 'active' };
+        const ms = semesterMonths(sem);
+        const recCount = (cc.records || []).filter(r => !r.deleted && ms.includes((r.date||'').slice(0,7))).length;
+        semMap[sem] = { caseId: cc.id, counselorName: configData?.users?.[cc.counselorEmail]?.name || cc.counselorName || '', light: ev?.light || ev?.statusLight || '', status: cc.semesterStatus?.[sem] || cc.status || 'active', recCount };
       });
     });
     const histSems = Object.keys(semMap).sort().reverse().map(sem => ({ sem, ...semMap[sem] }));
-    const makeHistChip = ({ sem, caseId, counselorName, light, status }) => {
+    // 最初來源 chip：找同學號最早 openDate 的個案，取其 source
+    const _firstBySid = c.studentId
+      ? casesData.filter(cc => !cc.deleted && cc.studentId === c.studentId)
+          .sort((a, b) => (a.openDate||'').localeCompare(b.openDate||''))[0]
+      : null;
+    const _firstSrcSem = _firstBySid ? openDateToSemPrefix(_firstBySid.openDate) : '';
+    const _firstSrcVal = (_firstBySid?.source || '');
+    const sourceChip = (_firstSrcSem && _firstSrcVal)
+      ? `<span style="display:inline-block;background:#fffbeb;border:1px solid #fbd38d;color:#744210;border-radius:10px;padding:1px 8px;font-size:.74rem;white-space:nowrap;" data-tip="首次進案來源">${escHtml(semesterLabel(_firstSrcSem))}學期，${escHtml(_firstSrcVal)}</span>`
+      : '';
+    const makeHistChip = ({ sem, caseId, counselorName, light, status, recCount }) => {
       const { bg, border, color } = _histLightStyles[light]
         || (status !== 'closed'
           ? (sem < curSem ? { bg:'#f3e8ff',border:'#a855f7',color:'#6b21a8' } : { bg:'#ebf8ff',border:'#63b3ed',color:'#2b6cb0' })
           : { bg:'#f0f4f8',border:'#cbd5e0',color:'#718096' });
-      return `<span onclick="event.stopPropagation();showCaseDetailAtSem('${escHtml(caseId)}','${escHtml(sem)}')" style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:1px 8px;font-size:.78rem;white-space:nowrap;cursor:pointer;" data-tip="點選跳至 ${semesterLabel(sem)} 學期">${escHtml(semesterLabel(sem))}${counselorName ? `<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(counselorName)}</span>` : ''}</span>`;
+      const tipText = `學期：${semesterLabel(sem)}｜主責：${counselorName||'—'}｜服務次數：${recCount??0} 次`;
+      return `<span onclick="event.stopPropagation();showCaseDetailAtSem('${escHtml(caseId)}','${escHtml(sem)}')" style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:1px 8px;font-size:.78rem;white-space:nowrap;cursor:pointer;" data-tip="${escHtml(tipText)}">${escHtml(semesterLabel(sem))}${counselorName ? `<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(counselorName)}</span>` : ''}<span style="font-size:.7rem;opacity:.8;margin-left:3px;">: ${recCount??0}次</span></span>`;
     };
     const HIST_LIMIT = 2;
     const visibleHist = histSems.slice(0, HIST_LIMIT);
@@ -23672,6 +23685,7 @@ function _renderGradTransferTab() {
           ${reasonDisplay}
           <span style="font-size:.78rem;color:#718096;">主責：${escHtml(c.counselorName||c.counselorEmail||'—')}</span>
           ${schoolDateDisplay}
+          ${sourceChip}
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
           <button class="btn btn-secondary btn-sm" onclick="showCaseDetail('${escHtml(c.id)}')">查看個案</button>
