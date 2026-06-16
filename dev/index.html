@@ -22924,6 +22924,14 @@ function _hasCaseTransferEval(caseId, sem) {
   return (c.transferEvaluations || []).some(e => e.semester === sem && !e.deletedAt);
 }
 
+function _getLatestTeId(caseId, sem) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return null;
+  const evals = (c.transferEvaluations || []).filter(e => !e.deletedAt && !e.replacedBy && e.semester === sem);
+  evals.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+  return evals[0]?.teId || null;
+}
+
 function _getGradTransferDecision(caseId, sem) {
   return (transferData || []).find(r => r.type === 'graduation' && r.caseId === caseId && r.semester === sem);
 }
@@ -23407,9 +23415,9 @@ function openTransferEvalForm(caseId, teId) {
   if (byEl) byEl.innerHTML = buildCounselorOptgroups(null, '— 請選擇 —');
   if (coEl) coEl.innerHTML = buildCounselorOptgroups(null, '— 請選擇 —');
 
-  // 評估日期
+  // 評估日期：編輯時沿用原值，新增時預設當日
   const evalDateEl = document.getElementById('te-eval-date');
-  if (evalDateEl) evalDateEl.value = existing?.evalDate || autoSrcDate || '';
+  if (evalDateEl) evalDateEl.value = existing?.evalDate || new Date().toISOString().slice(0, 10);
 
   showPage('page-transfer-eval', null);
   scrollToTop();
@@ -23796,7 +23804,9 @@ function _renderGradTransferTab() {
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
           <button class="btn btn-secondary btn-sm" onclick="showCaseDetail('${escHtml(c.id)}')">查看個案</button>
-          ${!hasTE ? `<button class="btn btn-primary btn-sm" onclick="showCaseDetail('${escHtml(c.id)}');setTimeout(()=>openTransferEvalForm('${escHtml(c.id)}',null),500)">填寫評估</button>` : ''}
+          ${hasTE
+            ? `<button class="btn btn-secondary btn-sm" onclick="showCaseDetail('${escHtml(c.id)}');setTimeout(()=>openTransferEvalForm('${escHtml(c.id)}',_getLatestTeId('${escHtml(c.id)}','${semToUse}')),500)">編輯評估</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="showCaseDetail('${escHtml(c.id)}');setTimeout(()=>openTransferEvalForm('${escHtml(c.id)}',null),500)">填寫評估</button>`}
           <select class="field-input" id="gd-sel-${escHtml(c.id)}" style="padding:4px 8px;font-size:.82rem;width:auto;max-width:170px;" onchange="setGradTransferDecision('${escHtml(c.id)}','${semToUse}',this.value)">
             <option value="">設定校級決議▼</option>
             <option value="noTransfer_self"${decStatus==='noTransfer_self'?' selected':''}>主責評估綠燈不轉銜</option>
@@ -24978,7 +24988,9 @@ function _renderWithdrawTab(allWithdraw) {
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
           ${lc ? `<button class="btn btn-secondary btn-sm" onclick="showCaseDetail('${escHtml(lc.id)}')">查看個案</button>` : ''}
-          ${(lc && !hasTE) ? `<button class="btn btn-primary btn-sm" onclick="showCaseDetail('${escHtml(lc.id)}');setTimeout(()=>openTransferEvalForm('${escHtml(lc.id)}',null),500)">填寫評估</button>` : ''}
+          ${lc ? (hasTE
+            ? `<button class="btn btn-secondary btn-sm" onclick="showCaseDetail('${escHtml(lc.id)}');setTimeout(()=>openTransferEvalForm('${escHtml(lc.id)}',_getLatestTeId('${escHtml(lc.id)}','${semToUse}')),500)">編輯評估</button>`
+            : `<button class="btn btn-primary btn-sm" onclick="showCaseDetail('${escHtml(lc.id)}');setTimeout(()=>openTransferEvalForm('${escHtml(lc.id)}',null),500)">填寫評估</button>`) : ''}
           <select class="field-input" id="wd-sel-${escHtml(r.id)}" style="padding:4px 8px;font-size:.82rem;width:auto;max-width:170px;" onchange="${decOnchange}">
             <option value="">設定決議▼</option>
             <option value="noTransfer_self"${decStatus==='noTransfer_self'?' selected':''}>主責評估綠燈不轉銜</option>
@@ -25058,16 +25070,22 @@ function setWithdrawDecision(recordId, status, lcId, sem) {
   if (!r) return;
   if (lcId) {
     const sel = document.getElementById('wd-sel-' + recordId);
+    const _autoFillGradDate = () => {
+      const gradEx = _getGradTransferDecision(lcId, sem);
+      if (gradEx && !gradEx.schoolMeetingDate) gradEx.schoolMeetingDate = new Date().toISOString().slice(0, 10);
+    };
     if (status === 'noTransfer_self_reason') {
       const curReason = _getGradTransferDecision(lcId, sem)?.noTransferReason || '';
       _showGradReasonPanel(sel, curReason, reason => {
         if (reason === null) { if (sel) sel.value = _getGradTransferDecision(lcId, sem)?.status || r.decision || ''; return; }
         _saveGradTransferDecision(lcId, sem, status, reason);
+        _autoFillGradDate();
         _withdrawRefreshInPlace();
       });
       return;
     }
     _saveGradTransferDecision(lcId, sem, status, null);
+    _autoFillGradDate();
     _withdrawRefreshInPlace();
     return;
   }
@@ -25077,6 +25095,7 @@ function setWithdrawDecision(recordId, status, lcId, sem) {
     _showGradReasonPanel(sel, curReason, reason => {
       if (reason === null) { if (sel) sel.value = r.decision || ''; return; }
       r.decision = status; r.noTransferReason = reason; r.updatedAt = new Date().toISOString();
+      if (!r.schoolMeetingDate) r.schoolMeetingDate = new Date().toISOString().slice(0, 10);
       _withdrawRefreshInPlace();
       const jobId = bgJobAdd(`設定轉/退學決議：${r.name}`);
       (async () => { try { await saveTransfer(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); } })();
@@ -25084,6 +25103,7 @@ function setWithdrawDecision(recordId, status, lcId, sem) {
     return;
   }
   r.decision = status; r.updatedAt = new Date().toISOString();
+  if (!r.schoolMeetingDate) r.schoolMeetingDate = new Date().toISOString().slice(0, 10);
   if (r.noTransferReason && status !== 'noTransfer_self_reason') delete r.noTransferReason;
   _withdrawRefreshInPlace();
   const jobId = bgJobAdd(`設定轉/退學決議：${r.name}`);
