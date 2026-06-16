@@ -24690,7 +24690,7 @@ function renderTransferPage() {
   const withdrawContent = tab === 'withdraw' ? _renderWithdrawTab(withdrawList) : '';
   document.getElementById('transfer-body').innerHTML = `
     <div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;">
-      ${tabBtn('withdraw','教務休退學名單',withdrawList.length)}
+      ${tabBtn('withdraw','教務處轉/退學名單',withdrawList.length)}
       ${tabBtn('graduation','本學期預作畢業',gradCount)}
       ${tabBtn('incoming','轉入學生',incoming.length)}
       ${tabBtn('unassigned','未歸屬校級評估',unassignedCount,true)}
@@ -24708,20 +24708,23 @@ function _renderWithdrawTab(list) {
   const importBtn = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm,.xls" style="display:none" onchange="handleImportWithdrawExcel(this)"><span class="btn btn-secondary btn-sm">📥 匯入名單 (Excel)</span></label>`;
   const dlBtn = `<button class="btn btn-secondary btn-sm" onclick="downloadWithdrawTemplate()" data-tip="下載範本（姓名、學號兩欄），填寫後匯入。">📄 下載範本</button>`;
   const addBtn = `<button class="btn btn-primary btn-sm" onclick="_openWithdrawManualAdd()">＋ 手動新增</button>`;
-  const rows = list.length === 0
-    ? `<div class="empty-state"><div class="icon">📋</div><p>本學期尚無休退學名單</p></div>`
-    : list.map(r => `<div class="record-card" style="margin-bottom:8px;">
+  const clearBtn = list.length > 0 ? `<button class="btn btn-danger btn-sm" onclick="_clearWithdrawList()" data-tip="清空本學期名單（測試用）">🗑 清空名單</button>` : '';
+  const listHtml = list.length === 0
+    ? `<div class="empty-state"><div class="icon">📋</div><p>本學期尚無教務處轉/退學名單</p></div>`
+    : list.map(r => `<div class="record-card" style="margin-bottom:10px;">
         <div class="record-card-header">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <strong>${escHtml(r.name||'—')}</strong>
             <span style="color:#718096;font-size:.83rem;">${escHtml(r.studentId||'')}</span>
           </div>
-          <div><button class="btn btn-danger btn-sm" onclick="_deleteWithdrawRecord('${escHtml(r.id)}')">刪除</button></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-danger btn-sm" onclick="_deleteWithdrawRecord('${escHtml(r.id)}')">刪除</button>
+          </div>
         </div>
       </div>`).join('');
-  return `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importBtn}${dlBtn}${addBtn}</div>
+  return `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;">${importBtn}${dlBtn}${addBtn}${clearBtn}</div>
     <div id="withdraw-manual-add-area"></div>
-    <div>${rows}</div>`;
+    <div>${listHtml}</div>`;
 }
 
 function _openWithdrawManualAdd() {
@@ -24744,8 +24747,8 @@ function _confirmWithdrawManualAdd() {
   const now = new Date().toISOString();
   transferData.push({ id: 'wd_' + Date.now() + '_' + Math.random().toString(36).slice(2), type: 'withdraw', name, studentId, semester: curSem, createdAt: now, createdBy: currentUser?.email, createdByName: currentUser?.name });
   renderTransferPage();
-  const jobId = bgJobAdd(`新增休退學名單：${name || studentId}`);
-  (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('新增休退學名單', null, null, `${name} ${studentId}`); } catch(e) { bgJobFail(jobId, e.message); } })();
+  const jobId = bgJobAdd(`新增教務處轉/退學名單：${name || studentId}`);
+  (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('新增教務處轉/退學名單', null, null, `${name} ${studentId}`); } catch(e) { bgJobFail(jobId, e.message); } })();
 }
 
 function _deleteWithdrawRecord(id) {
@@ -24753,13 +24756,24 @@ function _deleteWithdrawRecord(id) {
   if (!r || !confirm(`確定刪除「${r.name || r.studentId}」？`)) return;
   transferData = transferData.filter(t => t.id !== id);
   renderTransferPage();
-  const jobId = bgJobAdd(`刪除休退學名單：${r.name || r.studentId}`);
-  (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('刪除休退學名單', null, null, `${r.name} ${r.studentId}`); } catch(e) { bgJobFail(jobId, e.message); } })();
+  const jobId = bgJobAdd(`刪除教務處轉/退學名單：${r.name || r.studentId}`);
+  (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('刪除教務處轉/退學名單', null, null, `${r.name} ${r.studentId}`); } catch(e) { bgJobFail(jobId, e.message); } })();
+}
+
+function _clearWithdrawList() {
+  const curSem = currentSemesterPrefix();
+  const count = transferData.filter(t => t.type === 'withdraw' && t.semester === curSem).length;
+  if (!confirm(`確定清空本學期教務處轉/退學名單（共 ${count} 筆）？`)) return;
+  transferData = transferData.filter(t => !(t.type === 'withdraw' && t.semester === curSem));
+  renderTransferPage();
+  const jobId = bgJobAdd(`清空教務處轉/退學名單（${count}筆）`);
+  (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('清空教務處轉/退學名單', null, null, `${count}筆`); } catch(e) { bgJobFail(jobId, e.message); } })();
 }
 
 async function handleImportWithdrawExcel(input) {
   if (!input.files?.length) return;
   const file = input.files[0]; input.value = '';
+  document.getElementById('transfer-body').innerHTML = '<div style="padding:20px;color:#718096;">解析中…</div>';
   if (!window.XLSX) {
     try {
       await new Promise((resolve, reject) => {
@@ -24768,35 +24782,78 @@ async function handleImportWithdrawExcel(input) {
         s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
         document.head.appendChild(s);
       });
-    } catch(e) { alert(e.message); return; }
+    } catch(e) { alert(e.message); renderTransferPage(); return; }
   }
   try {
     const ab = await file.arrayBuffer();
     const wb = XLSX.read(ab, { type: 'array', password: '7617' });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-    if (rows.length < 2) { alert('找不到資料列'); return; }
-    const headers = rows[0].map(h => String(h).trim());
-    const nameIdx = headers.findIndex(h => /姓名/.test(h));
-    const sidIdx  = headers.findIndex(h => /學號/.test(h));
-    if (nameIdx < 0 && sidIdx < 0) { alert('找不到「姓名」或「學號」欄位'); return; }
-    const curSem = currentSemesterPrefix();
+    if (rows.length < 2) { alert('找不到資料列'); renderTransferPage(); return; }
+    await showWithdrawImportPreview(rows);
+  } catch(e) { alert('解析失敗：' + e.message); renderTransferPage(); }
+}
+
+async function showWithdrawImportPreview(rows) {
+  const headers = rows[0].map(h => String(h).trim());
+  const dataRows = rows.slice(1).filter(r => r.some(v => v !== ''));
+  const nameIdx = headers.findIndex(h => /姓名/.test(h));
+  const sidIdx  = headers.findIndex(h => /學號/.test(h));
+  if (nameIdx < 0 && sidIdx < 0) { alert('找不到「姓名」或「學號」欄位'); renderTransferPage(); return; }
+  const curSem = currentSemesterPrefix();
+  const students = dataRows.map(r => ({
+    name: nameIdx >= 0 ? String(r[nameIdx]||'').trim() : '',
+    studentId: sidIdx >= 0 ? String(r[sidIdx]||'').trim() : '',
+  })).filter(s => s.name || s.studentId);
+  if (!students.length) { alert('未找到有效資料。'); renderTransferPage(); return; }
+  students.forEach(s => {
+    s._dup = !!(s.studentId && transferData.some(t => t.type === 'withdraw' && t.semester === curSem && t.studentId === s.studentId));
+  });
+  let sel = new Set(students.map((_,i) => i).filter(i => !students[i]._dup));
+  const render = () => {
+    const tbody = students.map((s, i) =>
+      `<tr style="${s._dup?'background:#fff8e1;':''}">
+        <td style="padding:6px 8px;"><input type="checkbox" ${sel.has(i)?'checked':''} onchange="window._wdSel(${i},this.checked)"></td>
+        <td style="padding:6px 8px;">${escHtml(s.name)}</td>
+        <td style="padding:6px 8px;">${escHtml(s.studentId)}</td>
+        <td style="padding:6px 8px;color:#d97706;font-size:.8rem;">${s._dup?'⚠ 重複':''}</td>
+      </tr>`).join('');
+    document.getElementById('wd-import-list').innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:.88rem;">
+        <thead><tr style="background:#f7fafc;font-size:.8rem;">
+          <th style="padding:6px 8px;"><input type="checkbox" onchange="window._wdSelAll(this.checked)"></th>
+          <th style="padding:6px 8px;">姓名</th><th style="padding:6px 8px;">學號</th><th></th>
+        </tr></thead><tbody>${tbody}</tbody>
+      </table>`;
+    document.getElementById('wd-confirm-btn').textContent = `匯入 ${sel.size} 筆`;
+  };
+  window._wdSel = (i, c) => { c ? sel.add(i) : sel.delete(i); render(); };
+  window._wdSelAll = (c) => { sel = c ? new Set(students.map((_,i)=>i)) : new Set(); render(); };
+  document.getElementById('transfer-body').innerHTML = `
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <h3 style="font-size:1rem;color:#1a202c;">匯入教務處轉/退學名單（共 ${students.length} 筆）</h3>
+        <button onclick="renderTransferPage()" style="background:none;border:none;cursor:pointer;font-size:1.3rem;color:#718096;">&times;</button>
+      </div>
+      ${students.some(s=>s._dup)?'<div style="padding:8px 12px;background:#fff8e1;border-radius:6px;color:#d97706;font-size:.85rem;margin-bottom:10px;">⚠ 黃色列為本學期已有記錄，預設不匯入</div>':''}
+      <div id="wd-import-list" style="max-height:60vh;overflow-y:auto;"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;">
+        <button id="wd-confirm-btn" class="btn btn-primary" onclick="window._wdConfirm()">匯入</button>
+        <button class="btn btn-secondary" onclick="renderTransferPage()">取消</button>
+      </div>
+    </div>`;
+  render();
+  window._wdConfirm = async () => {
+    const toImport = students.filter((_,i) => sel.has(i));
+    if (!toImport.length) { alert('未選取任何記錄'); return; }
     const now = new Date().toISOString();
-    let count = 0;
-    rows.slice(1).forEach((r, i) => {
-      const name = nameIdx >= 0 ? String(r[nameIdx] || '').trim() : '';
-      const studentId = sidIdx >= 0 ? String(r[sidIdx] || '').trim() : '';
-      if (!name && !studentId) return;
-      if (studentId && transferData.some(t => t.type === 'withdraw' && t.semester === curSem && t.studentId === studentId)) return;
-      transferData.push({ id: `wd_${Date.now()}_${i}_${Math.random().toString(36).slice(2)}`, type: 'withdraw', name, studentId, semester: curSem, createdAt: now, createdBy: currentUser?.email, createdByName: currentUser?.name });
-      count++;
+    toImport.forEach(s => {
+      transferData.push({ id: 'wd_' + Date.now() + '_' + Math.random().toString(36).slice(2), type: 'withdraw', name: s.name, studentId: s.studentId, semester: curSem, createdAt: now, createdBy: currentUser?.email, createdByName: currentUser?.name });
     });
     renderTransferPage();
-    if (count > 0) {
-      const jobId = bgJobAdd(`匯入休退學名單（${count}筆）`);
-      (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('匯入休退學名單', null, null, `${count}筆`); } catch(e) { bgJobFail(jobId, e.message); } })();
-    } else { alert('未匯入任何記錄（可能全部重複）。'); }
-  } catch(e) { alert('解析失敗：' + e.message); }
+    const jobId = bgJobAdd(`匯入教務處轉/退學名單（${toImport.length}筆）`);
+    (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('匯入教務處轉/退學名單', null, null, `${toImport.length}筆`); } catch(e) { bgJobFail(jobId, e.message); } })();
+  };
 }
 
 async function downloadWithdrawTemplate() {
@@ -24811,8 +24868,8 @@ async function downloadWithdrawTemplate() {
   const ws = XLSX.utils.aoa_to_sheet([['姓名', '學號']]);
   ws['!cols'] = [14, 12].map(wch => ({ wch }));
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, '休退學名單');
-  XLSX.writeFile(wb, '樣版_休退學名單批次匯入.xlsx');
+  XLSX.utils.book_append_sheet(wb, ws, '教務處轉退學名單');
+  XLSX.writeFile(wb, '樣版_教務處轉退學名單批次匯入.xlsx');
 }
 
 function _renderTransferRow(r) {
