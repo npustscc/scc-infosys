@@ -2643,7 +2643,7 @@
             </div>
             <div>
               <label class="field-label">日期</label>
-              <input type="date" class="field-input" id="rec-next-bk-date">
+              <input type="date" class="field-input" id="rec-next-bk-date" onchange="_checkRecNextBkRealtime()">
             </div>
             <div>
               <label class="field-label">節次</label>
@@ -2668,11 +2668,11 @@
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
                 <div>
                   <label class="field-label">開始時間</label>
-                  <input type="text" class="field-input" id="rec-next-bk-start" maxlength="5" placeholder="09:10">
+                  <input type="text" class="field-input" id="rec-next-bk-start" maxlength="5" placeholder="09:10" oninput="_checkRecNextBkRealtime()">
                 </div>
                 <div>
                   <label class="field-label">結束時間</label>
-                  <input type="text" class="field-input" id="rec-next-bk-end" maxlength="5" placeholder="09:10">
+                  <input type="text" class="field-input" id="rec-next-bk-end" maxlength="5" placeholder="09:10" oninput="_checkRecNextBkRealtime()">
                 </div>
               </div>
             </div>
@@ -8245,6 +8245,7 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
 
   showPage('page-new-record', null);
   _checkRecBkConflict();
+  _checkRecNextBkRealtime();
 
   // 啟動自動儲存（crash recovery；草稿還原改由登入時 _migrateLocalStorageDrafts 處理）
   startRecordDraftAutosave();
@@ -8355,7 +8356,44 @@ function toggleNextBookingFields() {
   if (!show) {
     const c = document.getElementById('rec-next-bk-conflict');
     if (c) c.style.display = 'none';
+  } else {
+    _checkRecNextBkRealtime();
   }
+}
+
+// 下次預約欄位即時衝突檢查
+function _checkRecNextBkRealtime() {
+  const cEl = document.getElementById('rec-next-bk-conflict');
+  if (!cEl) return;
+  if (!document.getElementById('rec-next-bk-toggle')?.checked) { cEl.style.display = 'none'; return; }
+  const room  = _recNextBkRoom;
+  const date  = document.getElementById('rec-next-bk-date')?.value || '';
+  const start = document.getElementById('rec-next-bk-start')?.value || '';
+  const end   = document.getElementById('rec-next-bk-end')?.value || '';
+  if (!room || !date || !start || !end) { cEl.style.display = 'none'; return; }
+  if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end) || start >= end) { cEl.style.display = 'none'; return; }
+  const oldBkId = _editingRecordId
+    ? (casesData.find(c => c.id === _recordCaseId)?.records?.find(r => r.id === _editingRecordId)?.nextBkId || '')
+    : '';
+  const conflict = bookingsData.find(b =>
+    b.id !== oldBkId && b.room === room && b.date === date &&
+    b.startTime < end && b.endTime > start
+  );
+  if (conflict) {
+    cEl.style.display = '';
+    cEl.textContent = `衝突：${room} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已有預約（${conflict.counselorName || '—'}）。`;
+    return;
+  }
+  const ccConflict = bookingsData.find(b =>
+    b.id !== oldBkId && b.date === date && b.counselorEmail === currentUser?.email &&
+    b.startTime < end && b.endTime > start
+  );
+  if (ccConflict) {
+    cEl.style.display = '';
+    cEl.textContent = `您在 ${(ccConflict.startTime||'').slice(0,5)}–${(ccConflict.endTime||'').slice(0,5)} 已有另一預約（${ccConflict.room || '—'}${ccConflict.caseName ? '，' + ccConflict.caseName : ''}）。`;
+    return;
+  }
+  cEl.style.display = 'none';
 }
 
 function toggleRecNextBkPeriod(sel) {
@@ -8375,6 +8413,7 @@ function toggleRecNextBkPeriod(sel) {
     document.getElementById('rec-next-bk-end').value   = '';
     if (timeRow) timeRow.style.display = 'none';
   }
+  _checkRecNextBkRealtime();
 }
 
 function snapshotRecordDraft() {
@@ -9121,6 +9160,10 @@ async function saveRecord() {
         _editBkAction = 'create';
       }
     }
+    // 捕捉舊預約快照，供 bgJob 與稽核日誌記錄「從哪改到哪」
+    const _prevBkSnap = (_editBkAction === 'update')
+      ? { ...(bookingsData.find(b => b.id === _editNextBkId) || {}) }
+      : null;
     Object.assign(casesData[cidx].records[ridx], {
       date, time, topics, serviceItems, summary, assessment, nextPlan, notes,
       counselorName, counselors: counselorList, interventionMode, interviewees, intervieweeNote,
@@ -9177,16 +9220,29 @@ async function saveRecord() {
           } else {
             const bkIdx = bookingsData.findIndex(b => b.id === _editNextBkId);
             if (bkIdx >= 0) {
+              const _updLabel = `更新行事曆預約：${myName} `
+                + `${_prevBkSnap?.date||''} ${(_prevBkSnap?.startTime||'').slice(0,5)}–${(_prevBkSnap?.endTime||'').slice(0,5)} ${_prevBkSnap?.room||''}`
+                + ` → ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
+              const _updJobId = bgJobAdd(_updLabel);
               Object.assign(bookingsData[bkIdx], { room: nextBkRoom, date: nextBkDate,
                 startTime: nextBkStart, endTime: nextBkEnd, updatedAt: _nbNow });
               _bkGcQueue.set(bookingsData[bkIdx].id, { ...bookingsData[bkIdx] });
+              bgJobDone(_updJobId);
             }
           }
           await saveBookings().catch(e => console.warn('預約儲存失敗:', e));
           _bkGcFlush();
         }
         bgJobProgress(jobId, 90);
-        auditLog('編輯晤談紀錄', _recordCaseId, editedId, date ? `${date}（${semesterLabel(openDateToSemPrefix(date))}）` : '');
+        let _auditBkNote = '';
+        if (_editBkAction === 'update' && _prevBkSnap) {
+          _auditBkNote = `；預約 ${_prevBkSnap.date||''} ${(_prevBkSnap.startTime||'').slice(0,5)}–${(_prevBkSnap.endTime||'').slice(0,5)} ${_prevBkSnap.room||''}`
+            + ` → ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
+        } else if (_editBkAction === 'create') {
+          _auditBkNote = `；新增預約 ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
+        }
+        auditLog('編輯晤談紀錄', _recordCaseId, editedId,
+          (date ? `${date}（${semesterLabel(openDateToSemPrefix(date))}）` : '') + _auditBkNote);
         bgJobDone(jobId);
       } catch(err) {
         casesData[cidx].records[ridx] = prev;
@@ -20781,7 +20837,7 @@ function _populateRecNextBkRoomChips(restoreRoom) {
     `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">${chips||'<span style="color:#a0aec0;font-size:.82rem;">（無空間）</span>'}</div>`+
     `<div style="display:flex;gap:6px;"><input type="text" id="rec-next-bk-inp" class="field-input" placeholder="新增自訂空間…" style="flex:1;font-size:.82rem;padding:5px 9px;" onkeydown="if(event.key==='Enter'){event.preventDefault();_recNextAddCustomRoom();}"/><button type="button" onclick="_recNextAddCustomRoom()" style="padding:5px 14px;background:#edf2f7;border:1px solid #cbd5e0;border-radius:6px;cursor:pointer;font-size:.82rem;white-space:nowrap;">新增</button></div>`;
 }
-function _recNextPickRoom(room) { _recNextBkRoom = room; _populateRecNextBkRoomChips(room); }
+function _recNextPickRoom(room) { _recNextBkRoom = room; _populateRecNextBkRoomChips(room); _checkRecNextBkRealtime(); }
 function _recNextAddCustomRoom() {
   const inp = document.getElementById('rec-next-bk-inp');
   const name = (inp?.value||'').trim(); if (!name) return;
