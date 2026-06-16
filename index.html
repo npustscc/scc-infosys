@@ -2643,7 +2643,7 @@
             </div>
             <div>
               <label class="field-label">日期</label>
-              <input type="date" class="field-input" id="rec-next-bk-date">
+              <input type="date" class="field-input" id="rec-next-bk-date" onchange="_checkRecNextBkRealtime()">
             </div>
             <div>
               <label class="field-label">節次</label>
@@ -2668,11 +2668,11 @@
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
                 <div>
                   <label class="field-label">開始時間</label>
-                  <input type="text" class="field-input" id="rec-next-bk-start" maxlength="5" placeholder="09:10">
+                  <input type="text" class="field-input" id="rec-next-bk-start" maxlength="5" placeholder="09:10" oninput="_checkRecNextBkRealtime()">
                 </div>
                 <div>
                   <label class="field-label">結束時間</label>
-                  <input type="text" class="field-input" id="rec-next-bk-end" maxlength="5" placeholder="09:10">
+                  <input type="text" class="field-input" id="rec-next-bk-end" maxlength="5" placeholder="09:10" oninput="_checkRecNextBkRealtime()">
                 </div>
               </div>
             </div>
@@ -3136,7 +3136,7 @@
 // ══════════════════════════════════════════════
 const CLIENT_ID   = '68582831293-fecbka17adht886tm6oh18vrdsdg1hbj.apps.googleusercontent.com';
 const SCOPES      = 'https://www.googleapis.com/auth/drive openid profile email';
-const DRIVE_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP'; // 正式版資料夾
+const DRIVE_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP';
 const BOOTSTRAP_ADMIN_EMAIL = 'linkinlol528101@gmail.com'; // 永久管理者備援帳號
 const CONFIG_FILE     = 'config.json';
 const CASES_INDEX     = 'cases/index.json'; // 舊格式（升級後僅作備份）
@@ -8245,6 +8245,7 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
 
   showPage('page-new-record', null);
   _checkRecBkConflict();
+  _checkRecNextBkRealtime();
 
   // 啟動自動儲存（crash recovery；草稿還原改由登入時 _migrateLocalStorageDrafts 處理）
   startRecordDraftAutosave();
@@ -8355,7 +8356,44 @@ function toggleNextBookingFields() {
   if (!show) {
     const c = document.getElementById('rec-next-bk-conflict');
     if (c) c.style.display = 'none';
+  } else {
+    _checkRecNextBkRealtime();
   }
+}
+
+// 下次預約欄位即時衝突檢查
+function _checkRecNextBkRealtime() {
+  const cEl = document.getElementById('rec-next-bk-conflict');
+  if (!cEl) return;
+  if (!document.getElementById('rec-next-bk-toggle')?.checked) { cEl.style.display = 'none'; return; }
+  const room  = _recNextBkRoom;
+  const date  = document.getElementById('rec-next-bk-date')?.value || '';
+  const start = document.getElementById('rec-next-bk-start')?.value || '';
+  const end   = document.getElementById('rec-next-bk-end')?.value || '';
+  if (!room || !date || !start || !end) { cEl.style.display = 'none'; return; }
+  if (!/^\d{2}:\d{2}$/.test(start) || !/^\d{2}:\d{2}$/.test(end) || start >= end) { cEl.style.display = 'none'; return; }
+  const oldBkId = _editingRecordId
+    ? (casesData.find(c => c.id === _recordCaseId)?.records?.find(r => r.id === _editingRecordId)?.nextBkId || '')
+    : '';
+  const conflict = bookingsData.find(b =>
+    b.id !== oldBkId && b.room === room && b.date === date &&
+    b.startTime < end && b.endTime > start
+  );
+  if (conflict) {
+    cEl.style.display = '';
+    cEl.textContent = `衝突：${room} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已有預約（${conflict.counselorName || '—'}）。`;
+    return;
+  }
+  const ccConflict = bookingsData.find(b =>
+    b.id !== oldBkId && b.date === date && b.counselorEmail === currentUser?.email &&
+    b.startTime < end && b.endTime > start
+  );
+  if (ccConflict) {
+    cEl.style.display = '';
+    cEl.textContent = `您在 ${(ccConflict.startTime||'').slice(0,5)}–${(ccConflict.endTime||'').slice(0,5)} 已有另一預約（${ccConflict.room || '—'}${ccConflict.caseName ? '，' + ccConflict.caseName : ''}）。`;
+    return;
+  }
+  cEl.style.display = 'none';
 }
 
 function toggleRecNextBkPeriod(sel) {
@@ -8375,6 +8413,7 @@ function toggleRecNextBkPeriod(sel) {
     document.getElementById('rec-next-bk-end').value   = '';
     if (timeRow) timeRow.style.display = 'none';
   }
+  _checkRecNextBkRealtime();
 }
 
 function snapshotRecordDraft() {
@@ -9036,6 +9075,9 @@ async function saveRecord() {
   const notes         = getRichTextValue('rec-notes');
   if (!_recCounselors.length) { _recAlert('請至少新增一位晤談者。'); return; }
 
+  const cidx = casesData.findIndex(c => c.id === _recordCaseId);
+  if (cidx === -1) return;
+
   // 預約下次：衝突檢查
   const nbToggle = document.getElementById('rec-next-bk-toggle');
   const wantNextBooking = nbToggle?.checked;
@@ -9056,7 +9098,11 @@ async function saveRecord() {
     if (nextBkStart >= nextBkEnd) {
       _recAlert('預約下次：結束時間必須晚於開始時間。'); return;
     }
+    const _editOldBkId = _editingRecordId
+      ? (casesData[cidx]?.records?.find(r => r.id === _editingRecordId)?.nextBkId || '')
+      : '';
     const conflict = bookingsData.find(b =>
+      b.id !== _editOldBkId &&
       b.room === nextBkRoom && b.date === nextBkDate &&
       b.startTime < nextBkEnd && b.endTime > nextBkStart
     );
@@ -9065,12 +9111,19 @@ async function saveRecord() {
       if (cEl) { cEl.style.display = ''; cEl.textContent = `衝突：${nextBkRoom} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已有預約（${conflict.counselorName || '—'}）。`; }
       _recAlert('預約下次的時間與既有預約衝突，請修改。'); return;
     }
+    const counselorConflict = bookingsData.find(b =>
+      b.id !== _editOldBkId &&
+      b.date === nextBkDate && b.counselorEmail === currentUser.email &&
+      b.startTime < nextBkEnd && b.endTime > nextBkStart
+    );
+    if (counselorConflict) {
+      const cEl = document.getElementById('rec-next-bk-conflict');
+      if (cEl) { cEl.style.display = ''; cEl.textContent = `您在 ${(counselorConflict.startTime||'').slice(0,5)}–${(counselorConflict.endTime||'').slice(0,5)} 已有另一預約（${counselorConflict.room || '—'}${counselorConflict.caseName ? '，' + counselorConflict.caseName : ''}）。`; }
+      _recAlert('您在此時段已有其他預約，請修改下次預約時間。'); return;
+    }
   }
   const counselorList = [..._recCounselors];
   const counselorName = counselorList.map(c => c.label).join('、');
-
-  const cidx = casesData.findIndex(c => c.id === _recordCaseId);
-  if (cidx === -1) return;
   if (!casesData[cidx].records) casesData[cidx].records = [];
   const _caseLabel = casesData[cidx]?.name || _recordCaseId;
 
@@ -9107,6 +9160,10 @@ async function saveRecord() {
         _editBkAction = 'create';
       }
     }
+    // 捕捉舊預約快照，供 bgJob 與稽核日誌記錄「從哪改到哪」
+    const _prevBkSnap = (_editBkAction === 'update')
+      ? { ...(bookingsData.find(b => b.id === _editNextBkId) || {}) }
+      : null;
     Object.assign(casesData[cidx].records[ridx], {
       date, time, topics, serviceItems, summary, assessment, nextPlan, notes,
       counselorName, counselors: counselorList, interventionMode, interviewees, intervieweeNote,
@@ -9138,20 +9195,54 @@ async function saveRecord() {
               caseId: _recordCaseId, caseName: casesData[cidx]?.name || '',
               notes: '', createdAt: _nbNow, updatedAt: _nbNow };
             bookingsData.push(newBk);
+            const _calLabel2 = `新增行事曆事件：${myName} ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
+            const _calJobId2 = bgJobAdd(_calLabel2);
+            (async () => {
+              try {
+                const _gcCalId = await proxyCall('createCalendarEvent', {
+                  room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
+                  counselorName: myName, notes: '',
+                  creatorName: configData?.users?.[currentUser.email]?.name || myName,
+                  createdAt: _nbNow, updatedAt: _nbNow, isEdit: false, bkSerial: newBk.bkSerial,
+                });
+                if (_gcCalId) {
+                  newBk.calendarEventId = _gcCalId;
+                  const _bkRef = bookingsData.find(x => x.id === _editNextBkId);
+                  if (_bkRef) _bkRef.calendarEventId = _gcCalId;
+                  await saveBookings().catch(() => {});
+                }
+                bgJobDone(_calJobId2);
+              } catch(e) {
+                bgJobFail(_calJobId2, e.message);
+              }
+            })();
             _bkGcQueue.set(newBk.id, { ...newBk });
           } else {
             const bkIdx = bookingsData.findIndex(b => b.id === _editNextBkId);
             if (bkIdx >= 0) {
+              const _updLabel = `更新行事曆預約：${myName} `
+                + `${_prevBkSnap?.date||''} ${(_prevBkSnap?.startTime||'').slice(0,5)}–${(_prevBkSnap?.endTime||'').slice(0,5)} ${_prevBkSnap?.room||''}`
+                + ` → ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
+              const _updJobId = bgJobAdd(_updLabel);
               Object.assign(bookingsData[bkIdx], { room: nextBkRoom, date: nextBkDate,
                 startTime: nextBkStart, endTime: nextBkEnd, updatedAt: _nbNow });
               _bkGcQueue.set(bookingsData[bkIdx].id, { ...bookingsData[bkIdx] });
+              bgJobDone(_updJobId);
             }
           }
           await saveBookings().catch(e => console.warn('預約儲存失敗:', e));
           _bkGcFlush();
         }
         bgJobProgress(jobId, 90);
-        auditLog('編輯晤談紀錄', _recordCaseId, editedId, date ? `${date}（${semesterLabel(openDateToSemPrefix(date))}）` : '');
+        let _auditBkNote = '';
+        if (_editBkAction === 'update' && _prevBkSnap) {
+          _auditBkNote = `；預約 ${_prevBkSnap.date||''} ${(_prevBkSnap.startTime||'').slice(0,5)}–${(_prevBkSnap.endTime||'').slice(0,5)} ${_prevBkSnap.room||''}`
+            + ` → ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
+        } else if (_editBkAction === 'create') {
+          _auditBkNote = `；新增預約 ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
+        }
+        auditLog('編輯晤談紀錄', _recordCaseId, editedId,
+          (date ? `${date}（${semesterLabel(openDateToSemPrefix(date))}）` : '') + _auditBkNote);
         bgJobDone(jobId);
       } catch(err) {
         casesData[cidx].records[ridx] = prev;
@@ -9174,6 +9265,20 @@ async function saveRecord() {
     };
     casesData[cidx].records.push(newRecord);
     casesData[cidx].updatedAt = new Date().toISOString();
+
+    // 立刻把預約推入記憶體（讓同 session 的衝突檢查可立即偵測）
+    let _newBkObj = null;
+    if (_newBkId) {
+      const myName = configData?.users?.[currentUser.email]?.name || currentUser.email || '';
+      const _nbNow = new Date().toISOString();
+      _newBkObj = { id: _newBkId, bkSerial: _bkNextSerial(), room: nextBkRoom,
+        date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
+        counselorEmail: currentUser.email, counselorName: myName,
+        caseId: _recordCaseId, caseName: casesData[cidx]?.name || '',
+        notes: '', createdAt: _nbNow, updatedAt: _nbNow };
+      bookingsData.push(_newBkObj);
+    }
+
     clearRecordDraft();
     showCaseDetail(_recordCaseId);
     const jobId = bgJobAdd('新增晤談紀錄', _caseLabel);
@@ -9182,18 +9287,32 @@ async function saveRecord() {
         bgJobProgress(jobId, 40);
         await saveCasesChunks(_recordCaseId);
         bgJobProgress(jobId, 75);
-        if (_newBkId) {
-          const myName = configData?.users?.[currentUser.email]?.name || currentUser.email || '';
-          const caseObj = casesData[cidx];
-          const _nbNow = new Date().toISOString();
-          const newBk = { id: _newBkId, bkSerial: _bkNextSerial(), room: nextBkRoom,
-            date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
-            counselorEmail: currentUser.email, counselorName: myName,
-            caseId: _recordCaseId, caseName: caseObj?.name || '',
-            notes: '', createdAt: _nbNow, updatedAt: _nbNow };
-          bookingsData.push(newBk);
+        if (_newBkObj) {
           await saveBookings().catch(e => console.warn('預約儲存失敗:', e));
-          _bkGcQueue.set(newBk.id, { ...newBk });
+          // Calendar event 建立：獨立 bgJob 以顯示詳細資訊
+          const _calLabel = `新增行事曆事件：${_newBkObj.counselorName} ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
+          const _calJobId = bgJobAdd(_calLabel);
+          (async () => {
+            try {
+              const _gcCalId = await proxyCall('createCalendarEvent', {
+                room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
+                counselorName: _newBkObj.counselorName, notes: '',
+                creatorName: configData?.users?.[currentUser.email]?.name || _newBkObj.counselorName,
+                createdAt: _newBkObj.createdAt, updatedAt: _newBkObj.updatedAt,
+                isEdit: false, bkSerial: _newBkObj.bkSerial,
+              });
+              if (_gcCalId) {
+                _newBkObj.calendarEventId = _gcCalId;
+                const _bkRef = bookingsData.find(x => x.id === _newBkId);
+                if (_bkRef) _bkRef.calendarEventId = _gcCalId;
+                await saveBookings().catch(() => {});
+              }
+              bgJobDone(_calJobId);
+            } catch(e) {
+              bgJobFail(_calJobId, e.message);
+            }
+          })();
+          _bkGcQueue.set(_newBkObj.id, { ..._newBkObj });
           _bkGcFlush();
         }
         bgJobProgress(jobId, 90);
@@ -9202,6 +9321,11 @@ async function saveRecord() {
       } catch(err) {
         const failIdx = casesData[cidx]?.records.findIndex(r => r.id === newRecord.id);
         if (failIdx >= 0) casesData[cidx].records.splice(failIdx, 1);
+        // 若預約已推入記憶體，回滾
+        if (_newBkObj) {
+          const _bkIdx = bookingsData.findIndex(b => b.id === _newBkId);
+          if (_bkIdx >= 0) bookingsData.splice(_bkIdx, 1);
+        }
         bgJobFail(jobId, err.message);
       }
     })();
@@ -14637,6 +14761,7 @@ async function saveCase() {
         cfgChanged = addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name) || cfgChanged;
       if (cfgChanged) { await driveUpdateJsonFile(CONFIG_FILE, configData); renderNotifBell(); }
       auditLog('編輯個案', newCase.id, null, semesterLabel(_editSem) + '學期基本資料');
+      document.getElementById('btn-save-case').disabled = false;
       hideLoading();
       renderCases();
       showCaseDetail(newCase.id);
@@ -14966,7 +15091,7 @@ async function getOrCreateCasesSubfolder(name) {
   }
 }
 
-const _CASES_FOLDER_LS_KEY = 'scc_cases_folder_id_v2';
+const _CASES_FOLDER_LS_KEY = 'scc_cases_folder_id_v2_' + DRIVE_FOLDER_ID;
 async function getCasesFolderId() {
   if (!_casesFolderIdCache) {
     const cached = localStorage.getItem(_CASES_FOLDER_LS_KEY) || null;
@@ -20712,7 +20837,7 @@ function _populateRecNextBkRoomChips(restoreRoom) {
     `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">${chips||'<span style="color:#a0aec0;font-size:.82rem;">（無空間）</span>'}</div>`+
     `<div style="display:flex;gap:6px;"><input type="text" id="rec-next-bk-inp" class="field-input" placeholder="新增自訂空間…" style="flex:1;font-size:.82rem;padding:5px 9px;" onkeydown="if(event.key==='Enter'){event.preventDefault();_recNextAddCustomRoom();}"/><button type="button" onclick="_recNextAddCustomRoom()" style="padding:5px 14px;background:#edf2f7;border:1px solid #cbd5e0;border-radius:6px;cursor:pointer;font-size:.82rem;white-space:nowrap;">新增</button></div>`;
 }
-function _recNextPickRoom(room) { _recNextBkRoom = room; _populateRecNextBkRoomChips(room); }
+function _recNextPickRoom(room) { _recNextBkRoom = room; _populateRecNextBkRoomChips(room); _checkRecNextBkRealtime(); }
 function _recNextAddCustomRoom() {
   const inp = document.getElementById('rec-next-bk-inp');
   const name = (inp?.value||'').trim(); if (!name) return;
@@ -23512,16 +23637,29 @@ function _renderGradTransferTab() {
         const evals = cc.semesterEvaluations || [];
         const hasTypedClosures = evals.some(e => e.type === 'closure');
         const ev = evals.find(e => e.type === 'closure' && e.semester === sem) || (!hasTypedClosures ? (cc.closureEvaluation || null) : null);
-        semMap[sem] = { caseId: cc.id, counselorName: configData?.users?.[cc.counselorEmail]?.name || cc.counselorName || '', light: ev?.light || ev?.statusLight || '', status: cc.semesterStatus?.[sem] || cc.status || 'active' };
+        const ms = semesterMonths(sem);
+        const recCount = (cc.records || []).filter(r => !r.deleted && ms.includes((r.date||'').slice(0,7))).length;
+        semMap[sem] = { caseId: cc.id, counselorName: configData?.users?.[cc.counselorEmail]?.name || cc.counselorName || '', light: ev?.light || ev?.statusLight || '', status: cc.semesterStatus?.[sem] || cc.status || 'active', recCount };
       });
     });
     const histSems = Object.keys(semMap).sort().reverse().map(sem => ({ sem, ...semMap[sem] }));
-    const makeHistChip = ({ sem, caseId, counselorName, light, status }) => {
+    // 最初來源 chip：找同學號最早 openDate 的個案，取其 source
+    const _firstBySid = c.studentId
+      ? casesData.filter(cc => !cc.deleted && cc.studentId === c.studentId)
+          .sort((a, b) => (a.openDate||'').localeCompare(b.openDate||''))[0]
+      : null;
+    const _firstSrcSem = _firstBySid ? openDateToSemPrefix(_firstBySid.openDate) : '';
+    const _firstSrcVal = (_firstBySid?.source || '');
+    const sourceChip = (_firstSrcSem && _firstSrcVal)
+      ? `<span style="display:inline-block;background:#fffbeb;border:1px solid #fbd38d;color:#744210;border-radius:10px;padding:1px 8px;font-size:.74rem;white-space:nowrap;" data-tip="首次進案來源">${escHtml(semesterLabel(_firstSrcSem))}學期，${escHtml(_firstSrcVal)}</span>`
+      : '';
+    const makeHistChip = ({ sem, caseId, counselorName, light, status, recCount }) => {
       const { bg, border, color } = _histLightStyles[light]
         || (status !== 'closed'
           ? (sem < curSem ? { bg:'#f3e8ff',border:'#a855f7',color:'#6b21a8' } : { bg:'#ebf8ff',border:'#63b3ed',color:'#2b6cb0' })
           : { bg:'#f0f4f8',border:'#cbd5e0',color:'#718096' });
-      return `<span onclick="event.stopPropagation();showCaseDetailAtSem('${escHtml(caseId)}','${escHtml(sem)}')" style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:1px 8px;font-size:.78rem;white-space:nowrap;cursor:pointer;" data-tip="點選跳至 ${semesterLabel(sem)} 學期">${escHtml(semesterLabel(sem))}${counselorName ? `<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(counselorName)}</span>` : ''}</span>`;
+      const tipText = `學期：${semesterLabel(sem)}｜主責：${counselorName||'—'}｜服務次數：${recCount??0} 次`;
+      return `<span onclick="event.stopPropagation();showCaseDetailAtSem('${escHtml(caseId)}','${escHtml(sem)}')" style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:1px 8px;font-size:.78rem;white-space:nowrap;cursor:pointer;" data-tip="${escHtml(tipText)}">${escHtml(semesterLabel(sem))}${counselorName ? `<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(counselorName)}</span>` : ''}<span style="font-size:.7rem;opacity:.8;margin-left:3px;">: ${recCount??0}次</span></span>`;
     };
     const HIST_LIMIT = 2;
     const visibleHist = histSems.slice(0, HIST_LIMIT);
@@ -23547,6 +23685,7 @@ function _renderGradTransferTab() {
           ${reasonDisplay}
           <span style="font-size:.78rem;color:#718096;">主責：${escHtml(c.counselorName||c.counselorEmail||'—')}</span>
           ${schoolDateDisplay}
+          ${sourceChip}
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
           <button class="btn btn-secondary btn-sm" onclick="showCaseDetail('${escHtml(c.id)}')">查看個案</button>
