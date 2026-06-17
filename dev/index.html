@@ -20305,14 +20305,45 @@ function _mlShowAuthModal(authUrl) {
   m.innerHTML = `<div style="background:#fff;border-radius:14px;padding:30px 34px;max-width:460px;width:90%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.18);">
     <div style="font-size:2rem;margin-bottom:10px;">🔑</div>
     <h3 style="margin:0 0 8px;font-size:1.05rem;color:#1a202c;">需要 npust5 Gmail 授權</h3>
-    <p style="color:#718096;font-size:.88rem;margin-bottom:22px;line-height:1.6;">請點「前往授權」，以 <strong>heartnpust5@gmail.com</strong> 帳號登入並允許存取。<br>授權完成後關閉彈出視窗，再按「重新嘗試」。</p>
+    <p style="color:#718096;font-size:.88rem;margin-bottom:22px;line-height:1.6;">點「前往授權」，以 <strong>heartnpust5@gmail.com</strong> 帳號登入並允許存取。<br>授權完成後彈出視窗會自動關閉。</p>
+    <div id="ml-auth-status" style="display:none;color:#059669;font-size:.9rem;margin-bottom:12px;"></div>
     <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
-      <a href="${authUrl}" target="_blank" class="btn btn-primary" style="text-decoration:none;">前往授權 ↗</a>
-      <button class="btn btn-secondary" onclick="document.getElementById('ml-auth-modal').remove();window._mlFetch()">重新嘗試</button>
+      <button id="ml-auth-btn" class="btn btn-primary" onclick="_mlOpenAuthPopup('${authUrl}')">前往授權 ↗</button>
       <button class="btn btn-secondary" onclick="document.getElementById('ml-auth-modal').remove()">關閉</button>
     </div>
   </div>`;
   document.body.appendChild(m);
+}
+
+function _mlOpenAuthPopup(authUrl) {
+  const w = 520, h = 620;
+  const left = Math.max(0, (screen.width - w) / 2);
+  const top  = Math.max(0, (screen.height - h) / 2);
+  const popup = window.open(authUrl, 'npust5Auth', `width=${w},height=${h},left=${left},top=${top},scrollbars=yes`);
+  if (!popup) { alert('請允許彈出視窗後再試'); return; }
+
+  const handler = async (e) => {
+    if (e.data?.type !== 'npust5_oauth') return;
+    window.removeEventListener('message', handler);
+    const statusEl = document.getElementById('ml-auth-status');
+    const btnEl    = document.getElementById('ml-auth-btn');
+    if (statusEl) { statusEl.style.display = 'block'; statusEl.textContent = '交換 token 中…'; }
+    if (btnEl) btnEl.disabled = true;
+    try {
+      const result = await proxyCall('exchangeNpust5OAuthCode', { code: e.data.code, state: e.data.state });
+      if (result?.ok) {
+        if (statusEl) statusEl.textContent = '✅ 授權成功！正在擷取信件…';
+        setTimeout(() => { document.getElementById('ml-auth-modal')?.remove(); window._mlFetch(); }, 800);
+      } else {
+        if (statusEl) { statusEl.style.color = '#dc2626'; statusEl.textContent = '❌ 授權失敗：' + (result?.error || '未知'); }
+        if (btnEl) btnEl.disabled = false;
+      }
+    } catch(err) {
+      if (statusEl) { statusEl.style.color = '#dc2626'; statusEl.textContent = '❌ 錯誤：' + err.message; }
+      if (btnEl) btnEl.disabled = false;
+    }
+  };
+  window.addEventListener('message', handler);
 }
 
 // ── 關鍵字設定 Tab ─────────────────────────────────────
