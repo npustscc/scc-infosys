@@ -3053,6 +3053,9 @@
     <!-- 待辦事項 -->
     <div id="page-todos" class="page">
       <div class="page-title">待辦事項</div>
+      <div style="background:#ebf8ff;border:1px solid #bee3f8;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:.84rem;color:#2b6cb0;">
+        <strong>使用說明：</strong>待辦事項會隨系統狀態自動更新，不需手動維護。「刪除」僅移除此筆通知項目（標記已讀或不再顯示），<strong>不會刪除</strong>該通知所代表的個案資料、評估記錄或名單。
+      </div>
       <div id="todos-filter-bar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center;">
         <select class="field-select" id="todos-filter-user" onchange="_onTodosUserFilterChange()" style="display:none;max-width:180px;" title="管理者：查看其他人員待辦事項"></select>
         <span id="todos-admin-loading" style="display:none;font-size:.82rem;color:#718096;align-self:center;">載入中…</span>
@@ -3068,6 +3071,7 @@
           <option value="case_assignment">待派案</option>
           <option value="transfer_grad_counselor">轉銜：主責轉出學生</option>
           <option value="transfer_grad_coord">轉銜管理（協調員）</option>
+          <option value="transfer_withdraw_coord">教務處名單（協調員）</option>
           <option value="transfer_closure_reminder">轉銜結案追蹤</option>
         </select>
         <select class="field-select" id="todos-filter-status" onchange="renderTodosPage()" style="max-width:130px;">
@@ -22977,6 +22981,7 @@ function _checkTransferGradTodos() {
     }
   }
   _checkTransferClosureReminders();
+  _checkWithdrawTodos();
   _syncTodoBadge();
 }
 
@@ -23020,6 +23025,32 @@ function _checkTransferClosureReminders() {
       transferRecId: rec.id, dueDate, stage, isLocked,
       done: false, notifRead: false, createdAt: new Date().toISOString(),
     });
+  });
+}
+
+function _checkWithdrawTodos() {
+  const curSem = currentSemesterPrefix();
+  todosData = todosData.filter(t => t.type !== 'transfer_withdraw_coord');
+  if (!_isTransferCoordinator()) return;
+  const semRecs = (transferData || []).filter(r => r.type === 'withdraw' && r.semester === curSem && !r.deleted);
+  const pending = semRecs.filter(r => _getWdDecision(r, curSem) === 'pending');
+  const deletedRecs = (transferData || []).filter(r => r.type === 'withdraw' && r.semester === curSem && r.deleted);
+  if (!semRecs.length && !deletedRecs.length) return;
+  const teNoDecCount = pending.filter(r => { const lc = _getLinkedCaseForWithdraw(r); return lc && _hasCaseTransferEval(lc.id, curSem); }).length;
+  const parts = [];
+  if (pending.length > 0) {
+    const teNote = teNoDecCount > 0 ? `（其中 ${teNoDecCount} 位已填評估）` : '';
+    parts.push(`${pending.length} 位待決議${teNote}`);
+  }
+  if (deletedRecs.length > 0) parts.push(`${deletedRecs.length} 位已刪除`);
+  if (!parts.length) return;
+  const detail = pending.slice(0, 5).map(r => r.name || r.studentId).join('、') + (pending.length > 5 ? `…等${pending.length}人` : '');
+  _putTodoItem({
+    id: `transfer_withdraw_coord_${curSem}`,
+    type: 'transfer_withdraw_coord',
+    label: `教務處名單（${semesterLabel(curSem)}）：${parts.join('、')}`,
+    detail: detail || undefined,
+    semester: curSem, done: false, notifRead: false, createdAt: new Date().toISOString(),
   });
 }
 
@@ -23076,6 +23107,54 @@ function _buildTEDimRows(ev) {
   }).join('');
   const sourceNote = ev.sourceEvalDate ? `（帶入自 ${escHtml(ev.sourceEvalDate)}）` : '';
   return `<div style="margin-top:10px;"><div style="font-size:.78rem;color:#a0aec0;margin-bottom:4px;">八向度${sourceNote}</div>${rows}</div>`;
+}
+
+// ── 教務處名單：歷史校級評估 chips（withdraw 卡片第二行） ──
+function _buildSchoolMeetingHistHtml(r) {
+  const hist = r.schoolMeetingHistory;
+  if (!hist || !hist.length) return '';
+  const chips = hist.map(h => {
+    const dateStr = h.date || h.recordedAt?.slice(0, 10) || '';
+    const decLabel = _TRANSFER_DEC_LABEL[h.decision] || h.decision || '—';
+    return `<span style="font-size:.74rem;background:#fef3c7;color:#92400e;border-radius:8px;padding:1px 7px;border:1px solid #fbbf24;white-space:nowrap;">${escHtml(dateStr ? dateStr + '：' : '校級評估：')}${escHtml(decLabel)}</span>`;
+  }).join('');
+  return `<div style="padding:3px 0 5px 30px;display:flex;align-items:center;flex-wrap:wrap;gap:3px;border-top:1px solid #f0f4f8;margin-top:2px;">
+    <span style="font-size:.74rem;color:#a0aec0;flex-shrink:0;margin-right:2px;">歷史校級評估：</span>
+    ${chips}
+  </div>`;
+}
+
+// ── 個案詳細頁：校級評估紀錄區塊（放在轉銜評估卡片區最上方） ──
+function _buildCaseSchoolEvalSection(c) {
+  const items = [];
+  (transferData || [])
+    .filter(r => r.type === 'withdraw' && r.studentId === c.studentId && !r.deleted)
+    .forEach(r => {
+      const sem = r.semester;
+      const gd = _getGradTransferDecision(c.id, sem);
+      const decStatus = gd?.status || r.decision || 'pending';
+      const decDate = gd?.schoolMeetingDate || r.schoolMeetingDate || '';
+      if (decStatus !== 'pending') {
+        items.push({ sem, date: decDate, label: _TRANSFER_DEC_LABEL[decStatus] || decStatus, decStatus, isCurrent: true });
+      }
+      (r.schoolMeetingHistory || []).forEach(h => {
+        items.push({ sem, date: h.date || '', label: _TRANSFER_DEC_LABEL[h.decision] || h.decision || '—', decStatus: h.decision, isCurrent: false });
+      });
+    });
+  if (!items.length) return '';
+  items.sort((a, b) => (b.date || b.sem || '').localeCompare(a.date || a.sem || ''));
+  const chips = items.map(item => {
+    const semLbl = semesterLabel(item.sem || '');
+    const bg     = item.isCurrent ? (_TRANSFER_DEC_BG[item.decStatus]    || '#f0f4f8') : '#fef3c7';
+    const color  = item.isCurrent ? (_TRANSFER_DEC_COLOR[item.decStatus] || '#718096') : '#92400e';
+    const border = item.isCurrent ? color : '#fbbf24';
+    const tag    = item.isCurrent ? '' : ' <span style="font-size:.7rem;opacity:.7;">（歷史）</span>';
+    return `<span style="font-size:.76rem;padding:2px 8px;border-radius:10px;background:${bg};color:${color};border:1px solid ${border};white-space:nowrap;">${escHtml(semLbl)}${item.date ? ' ' + item.date : ''}：${escHtml(item.label)}${tag}</span>`;
+  }).join('');
+  return `<div style="padding:10px 14px 8px;background:#fffbeb;border-bottom:1px solid #fbd38d;border-radius:6px 6px 0 0;">
+    <div style="font-size:.78rem;color:#744210;margin-bottom:6px;font-weight:600;">校級評估紀錄</div>
+    <div style="display:flex;flex-wrap:wrap;gap:4px;">${chips}</div>
+  </div>`;
 }
 
 // ── 共用：轉銜評估卡片展開內容 ──
@@ -23174,7 +23253,7 @@ function _renderAllTransferEvalsCard(c, cid) {
       <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();openTransferEvalForm('${escHtml(cid)}',null)" style="font-size:.78rem;padding:3px 10px;white-space:nowrap;flex-shrink:0;">＋ 新增轉銜評估</button>
       <span class="toggle-icon">▲</span>
     </div>
-    <div class="section-body">${cards}</div>
+    <div class="section-body">${_buildCaseSchoolEvalSection(c)}${cards}</div>
   </div>`;
 }
 
@@ -23555,6 +23634,17 @@ const _TRANSFER_DEC_LABEL = { pending:'待決議', noTransfer_self:'主責評估
 const _TRANSFER_DEC_COLOR = { pending:'#718096', noTransfer_self:'#1d6a3a', noTransfer_self_reason:'#276749', transfer_school:'#c0392b', noTransfer_school:'#1d6a3a', stay:'#553c9a', b_case:'#4a5568', one_time_consult:'#4a5568', direct_admission:'#2b6cb0', untraceable:'#6b7280' };
 const _TRANSFER_DEC_BG    = { pending:'#f0f4f8', noTransfer_self:'#d5f5e3', noTransfer_self_reason:'#c6f6d5', transfer_school:'#fde8e8', noTransfer_school:'#d5f5e3', stay:'#e9d8fd', b_case:'#e2e8f0', one_time_consult:'#e2e8f0', direct_admission:'#e0f2fe', untraceable:'#f3f4f6' };
 
+function _getLinkedCaseForWithdraw(r) {
+  if (!r?.studentId) return null;
+  return casesData.filter(c => !c.deleted && c.studentId === r.studentId)
+    .sort((a, b) => (b.openDate||'').localeCompare(a.openDate||''))[0] || null;
+}
+function _getWdDecision(r, sem) {
+  const lc = _getLinkedCaseForWithdraw(r);
+  const gd = lc ? _getGradTransferDecision(lc.id, sem) : null;
+  return gd?.status || r.decision || 'pending';
+}
+
 const _HIST_LIGHT_STYLES = { '紅燈':{ bg:'#fde8e8',border:'#fc8181',color:'#c0392b' }, '橙燈':{ bg:'#fdebd0',border:'#f6ad55',color:'#9c4a00' }, '黃燈':{ bg:'#fef9e7',border:'#ecc94b',color:'#7d6608' }, '綠燈':{ bg:'#d5f5e3',border:'#68d391',color:'#1d6a3a' } };
 
 function _buildCaseSemMap(studentId) {
@@ -23663,9 +23753,13 @@ function _renderGradTransferTab() {
   const withDec = allGradCases.filter(({ c }) => { const d = _getGradTransferDecision(c.id, semToUse); return d && d.status !== 'pending'; }).length;
   // 套用篩選
   let gradCases = allGradCases;
-  if (!F.showResolved) gradCases = gradCases.filter(({ c }) => { const d = _getGradTransferDecision(c.id, semToUse); return !d || d.status === 'pending'; });
+  if (F.decision === 'resolved') {
+    gradCases = gradCases.filter(({ c }) => (_getGradTransferDecision(c.id, semToUse)?.status || 'pending') !== 'pending');
+  } else {
+    if (!F.showResolved) gradCases = gradCases.filter(({ c }) => { const d = _getGradTransferDecision(c.id, semToUse); return !d || d.status === 'pending'; });
+    if (F.decision !== 'all') gradCases = gradCases.filter(({ c }) => (_getGradTransferDecision(c.id, semToUse)?.status || 'pending') === F.decision);
+  }
   if (F.counselor) gradCases = gradCases.filter(({ c }) => (c.counselorEmail||c.counselorName||'') === F.counselor);
-  if (F.decision  !== 'all') gradCases = gradCases.filter(({ c }) => (_getGradTransferDecision(c.id, semToUse)?.status || 'pending') === F.decision);
   if (F.filled    !== 'all') gradCases = gradCases.filter(({ c }) => F.filled === 'yes' ? _hasCaseTransferEval(c.id, semToUse) : !_hasCaseTransferEval(c.id, semToUse));
   if (F.gradStatus !== 'all') gradCases = gradCases.filter(({ gs }) => F.gradStatus === 'overdue' ? gs.isOverdue : !gs.isOverdue);
   if (F.search) { const q = F.search.toLowerCase(); gradCases = gradCases.filter(({ c }) => (c.studentId||'').toLowerCase().includes(q) || (c.name||'').toLowerCase().includes(q) || (c.id||'').toLowerCase().includes(q)); }
@@ -23691,6 +23785,7 @@ function _renderGradTransferTab() {
     <select id="grad-filter-decision" style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="_gradFilterChange()">
       <option value="all"${F.decision==='all'?' selected':''}>全部決議</option>
       <option value="pending"${F.decision==='pending'?' selected':''}>待決議</option>
+      <option value="resolved"${F.decision==='resolved'?' selected':''}>已決議（全部）</option>
       <option value="noTransfer_self"${F.decision==='noTransfer_self'?' selected':''}>主責不需轉銜</option>
       <option value="transfer_school"${F.decision==='transfer_school'?' selected':''}>校級建議轉銜</option>
       <option value="noTransfer_school"${F.decision==='noTransfer_school'?' selected':''}>校級不需轉銜</option>
@@ -23854,6 +23949,7 @@ function _gradFilterChange() {
   if (g('grad-filter-gradstatus'))  F.gradStatus  = g('grad-filter-gradstatus').value;
   if (g('grad-filter-showresolved')) F.showResolved = g('grad-filter-showresolved').checked;
   if (g('grad-filter-search'))      F.search      = g('grad-filter-search').value;
+  if (F.decision === 'resolved') { F.showResolved = true; const cb = g('grad-filter-showresolved'); if (cb) cb.checked = true; }
   try { localStorage.setItem('scc_gtf_' + DRIVE_FOLDER_ID, JSON.stringify(F)); } catch(_) {}
   const _gr = document.getElementById('grad-results-body');
   if (_gr) {
@@ -24843,18 +24939,22 @@ function _renderWithdrawTab(allWithdraw) {
 
   const semOpts = [...new Set(allWithdraw.filter(r => r.semester).map(r => r.semester))].sort().reverse();
 
-  const getLinkedCase = r => r.studentId ? casesData.filter(c => !c.deleted && c.studentId === r.studentId).sort((a, b) => (b.openDate||'').localeCompare(a.openDate||''))[0] : null;
-  // 決議從畢業轉銜記錄取（共用資料），若無個案則從 withdraw 記錄取
-  const getWdDecStatus = r => { const lc = getLinkedCase(r); const gd = lc ? _getGradTransferDecision(lc.id, semToUse) : null; return gd?.status || r.decision || 'pending'; };
+  const getLinkedCase = r => _getLinkedCaseForWithdraw(r);
+  const getWdDecStatus = r => _getWdDecision(r, semToUse);
 
-  let records = allWithdraw.filter(r => r.semester === semToUse);
+  let records = allWithdraw.filter(r => r.semester === semToUse && !r.deleted);
+  const deletedCount = allWithdraw.filter(r => r.semester === semToUse && r.deleted).length;
   const total = records.length;
   const withEval = records.filter(r => { const lc = getLinkedCase(r); return lc && _hasCaseTransferEval(lc.id, semToUse); }).length;
   const withDec  = records.filter(r => getWdDecStatus(r) !== 'pending').length;
 
-  if (!F.showResolved) records = records.filter(r => getWdDecStatus(r) === 'pending');
+  if (F.decision === 'resolved') {
+    records = records.filter(r => getWdDecStatus(r) !== 'pending');
+  } else {
+    if (!F.showResolved) records = records.filter(r => getWdDecStatus(r) === 'pending');
+    if (F.decision !== 'all') records = records.filter(r => getWdDecStatus(r) === F.decision);
+  }
   if (F.counselor) records = records.filter(r => { const lc = getLinkedCase(r); return lc && (lc.counselorEmail === F.counselor || lc.counselorName === F.counselor); });
-  if (F.decision !== 'all') records = records.filter(r => getWdDecStatus(r) === F.decision);
   if (F.filled !== 'all') records = records.filter(r => { const lc = getLinkedCase(r); const has = lc ? _hasCaseTransferEval(lc.id, semToUse) : false; return F.filled === 'yes' ? has : !has; });
   if (F.search) { const q = F.search.toLowerCase(); records = records.filter(r => (r.name||'').toLowerCase().includes(q) || (r.studentId||'').toLowerCase().includes(q) || (getLinkedCase(r)?.id||'').toLowerCase().includes(q)); }
 
@@ -24864,6 +24964,7 @@ function _renderWithdrawTab(allWithdraw) {
     <span style="background:#f0f4f8;border-radius:8px;padding:6px 14px;font-size:.85rem;">共 <strong>${total}</strong> 位</span>
     <span style="background:#f0fff4;border-radius:8px;padding:6px 14px;font-size:.85rem;">已填評估：<strong>${withEval}</strong></span>
     <span style="background:#faf5ff;border-radius:8px;padding:6px 14px;font-size:.85rem;">已有決議：<strong>${withDec}</strong></span>
+    ${deletedCount > 0 ? `<span style="background:#fff5f5;border-radius:8px;padding:6px 14px;font-size:.85rem;color:#c53030;">已刪除：<strong>${deletedCount}</strong></span>` : ''}
     <span style="background:#ebf8ff;border-radius:8px;padding:6px 14px;font-size:.85rem;">篩選顯示：<strong>${records.length}</strong></span>
   </div>`;
 
@@ -24879,6 +24980,7 @@ function _renderWithdrawTab(allWithdraw) {
     <select id="wd-filter-decision" style="padding:4px 8px;font-size:.82rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="_withdrawFilterChange()">
       <option value="all"${F.decision==='all'?' selected':''}>全部決議</option>
       <option value="pending"${F.decision==='pending'?' selected':''}>待決議</option>
+      <option value="resolved"${F.decision==='resolved'?' selected':''}>已決議（全部）</option>
       <option value="noTransfer_self"${F.decision==='noTransfer_self'?' selected':''}>主責不需轉銜</option>
       <option value="noTransfer_self_reason"${F.decision==='noTransfer_self_reason'?' selected':''}>主責不轉銜（原因）</option>
       <option value="transfer_school"${F.decision==='transfer_school'?' selected':''}>校級建議轉銜</option>
@@ -25008,6 +25110,7 @@ function _renderWithdrawTab(allWithdraw) {
         </div>
       </div>
       ${histBadgesHtml}
+      ${_buildSchoolMeetingHistHtml(r)}
     </div>`;
   }).join('');
 
@@ -25047,11 +25150,17 @@ function _confirmWithdrawManualAdd() {
 
 function _deleteWithdrawRecord(id) {
   const r = transferData.find(t => t.id === id);
-  if (!r || !confirm(`確定刪除「${r.name || r.studentId}」？`)) return;
-  transferData = transferData.filter(t => t.id !== id);
+  if (!r || !confirm(`確定刪除「${r.name || r.studentId}」？\n\n刪除後仍可由管理者還原。`)) return;
+  r.deleted = true;
+  r.deletedAt = new Date().toISOString();
+  r.deletedBy = currentUser?.email;
+  r.deletedByName = configData?.users?.[currentUser?.email]?.name || currentUser?.name;
   renderTransferPage();
   const jobId = bgJobAdd(`刪除教務處轉/退學名單：${r.name || r.studentId}`);
-  (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('刪除教務處轉/退學名單', null, null, `${r.name} ${r.studentId}`); } catch(e) { bgJobFail(jobId, e.message); } })();
+  (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('刪除教務處轉/退學名單', null, null, `${r.name} ${r.studentId}`); } catch(e) {
+    delete r.deleted; delete r.deletedAt; delete r.deletedBy; delete r.deletedByName;
+    bgJobFail(jobId, e.message);
+  } })();
 }
 
 function _clearWithdrawList(sem) {
@@ -25204,6 +25313,7 @@ function _withdrawFilterChange() {
   if (g('wd-filter-filled'))      F.filled      = g('wd-filter-filled').value;
   if (g('wd-filter-showresolved')) F.showResolved = g('wd-filter-showresolved').checked;
   if (g('wd-filter-search'))      F.search      = g('wd-filter-search').value;
+  if (F.decision === 'resolved') { F.showResolved = true; const cb = g('wd-filter-showresolved'); if (cb) cb.checked = true; }
   try { localStorage.setItem('scc_wdf_' + DRIVE_FOLDER_ID, JSON.stringify(F)); } catch(_) {}
   const all = transferData.filter(r => r.type === 'withdraw');
   const _gr = document.getElementById('wd-results-body');
@@ -25276,18 +25386,21 @@ async function showWithdrawImportPreview(rows) {
   })).filter(s => s.name || s.studentId);
   if (!students.length) { alert('未找到有效資料。'); renderTransferPage(); return; }
   students.forEach(s => {
-    s._dup = !!(s.studentId && transferData.some(t => t.type === 'withdraw' && t.semester === curSem && t.studentId === s.studentId));
+    const existing = s.studentId ? transferData.find(t => t.type === 'withdraw' && t.semester === curSem && t.studentId === s.studentId && !t.deleted) : null;
+    s._dup = !!existing;
+    s._hasDecision = !!(existing && _getWdDecision(existing, curSem) !== 'pending');
   });
-  let sel = new Set(students.map((_,i) => i).filter(i => !students[i]._dup));
+  // 有決議的重複記錄預設不勾選（需手動確認）；無決議的重複及新記錄預設勾選
+  let sel = new Set(students.map((_,i) => i).filter(i => !students[i]._hasDecision));
   const render = () => {
     const hasDr = students.some(s => s.departureReason);
     const tbody = students.map((s, i) =>
-      `<tr style="${s._dup?'background:#fff8e1;':''}">
+      `<tr style="${s._hasDecision?'background:#fff5f5;':s._dup?'background:#fff8e1;':''}">
         <td style="padding:6px 8px;"><input type="checkbox" ${sel.has(i)?'checked':''} onchange="window._wdSel(${i},this.checked)"></td>
         <td style="padding:6px 8px;">${escHtml(s.name)}</td>
         <td style="padding:6px 8px;">${escHtml(s.studentId)}</td>
         ${hasDr ? `<td style="padding:6px 8px;font-size:.82rem;color:#92400e;">${escHtml(s.departureReason)}</td>` : ''}
-        <td style="padding:6px 8px;color:#d97706;font-size:.8rem;">${s._dup?'⚠ 重複':''}</td>
+        <td style="padding:6px 8px;font-size:.8rem;">${s._hasDecision?'<span style="color:#c53030;">⚠ 重複（已有決議，匯入將清除舊決議）</span>':s._dup?'<span style="color:#d97706;">⚠ 重複（將更新既有資料）</span>':''}</td>
       </tr>`).join('');
     document.getElementById('wd-import-list').innerHTML = `
       <table style="width:100%;border-collapse:collapse;font-size:.88rem;">
@@ -25307,7 +25420,8 @@ async function showWithdrawImportPreview(rows) {
         <h3 style="font-size:1rem;color:#1a202c;">匯入教務處轉/退學名單（共 ${students.length} 筆）</h3>
         <button onclick="renderTransferPage()" style="background:none;border:none;cursor:pointer;font-size:1.3rem;color:#718096;">&times;</button>
       </div>
-      ${students.some(s=>s._dup)?'<div style="padding:8px 12px;background:#fff8e1;border-radius:6px;color:#d97706;font-size:.85rem;margin-bottom:10px;">⚠ 黃色列為本學期已有記錄，預設不匯入</div>':''}
+      ${students.some(s=>s._hasDecision)?'<div style="padding:8px 12px;background:#fff5f5;border:1px solid #fc8181;border-radius:6px;color:#c53030;font-size:.85rem;margin-bottom:8px;">🔴 紅色列已有決議，匯入時舊決議將備份至歷史記錄，決議重設為待決議。預設不勾選，請手動確認再勾選。</div>':''}
+      ${students.some(s=>s._dup&&!s._hasDecision)?'<div style="padding:8px 12px;background:#fff8e1;border-radius:6px;color:#d97706;font-size:.85rem;margin-bottom:8px;">⚠ 黃色列為本學期已有記錄（尚無決議），匯入時將更新姓名與離校原因。</div>':''}
       <div id="wd-import-list" style="max-height:60vh;overflow-y:auto;"></div>
       <div style="margin-top:16px;display:flex;gap:10px;">
         <button id="wd-confirm-btn" class="btn btn-primary" onclick="window._wdConfirm()">匯入</button>
@@ -25320,9 +25434,33 @@ async function showWithdrawImportPreview(rows) {
     if (!toImport.length) { alert('未選取任何記錄'); return; }
     const now = new Date().toISOString();
     toImport.forEach(s => {
-      const rec = { id: 'wd_' + Date.now() + '_' + Math.random().toString(36).slice(2), type: 'withdraw', name: s.name, studentId: s.studentId, semester: curSem, createdAt: now, createdBy: currentUser?.email, createdByName: currentUser?.name };
-      if (s.departureReason) rec.departureReason = s.departureReason;
-      transferData.push(rec);
+      if (s._dup) {
+        const existing = transferData.find(t => t.type === 'withdraw' && t.semester === curSem && t.studentId === s.studentId && !t.deleted);
+        if (existing) {
+          if (s._hasDecision) {
+            // 備份舊決議到歷史
+            const lc = _getLinkedCaseForWithdraw(existing);
+            const gd = lc ? _getGradTransferDecision(lc.id, curSem) : null;
+            const oldDec = gd?.status || existing.decision || '';
+            const oldDate = gd?.schoolMeetingDate || existing.schoolMeetingDate || '';
+            const oldReason = gd?.noTransferReason || existing.noTransferReason || '';
+            if (oldDec && oldDec !== 'pending') {
+              if (!existing.schoolMeetingHistory) existing.schoolMeetingHistory = [];
+              existing.schoolMeetingHistory.push({ decision: oldDec, date: oldDate, noTransferReason: oldReason, recordedAt: now });
+              if (gd) { gd.status = 'pending'; delete gd.schoolMeetingDate; delete gd.noTransferReason; }
+              else { delete existing.decision; delete existing.schoolMeetingDate; delete existing.noTransferReason; }
+            }
+          }
+          if (s.name) existing.name = s.name;
+          if (s.departureReason !== undefined) existing.departureReason = s.departureReason;
+          existing.updatedAt = now;
+          existing.updatedBy = currentUser?.email;
+        }
+      } else {
+        const rec = { id: 'wd_' + Date.now() + '_' + Math.random().toString(36).slice(2), type: 'withdraw', name: s.name, studentId: s.studentId, semester: curSem, createdAt: now, createdBy: currentUser?.email, createdByName: currentUser?.name };
+        if (s.departureReason) rec.departureReason = s.departureReason;
+        transferData.push(rec);
+      }
     });
     renderTransferPage();
     const jobId = bgJobAdd(`匯入教務處轉/退學名單（${toImport.length}筆）`);
