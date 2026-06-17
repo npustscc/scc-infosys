@@ -1103,6 +1103,9 @@
       <div class="nav-item" id="nav-transfer-item" data-nav-id="page-transfer" onclick="showPage('page-transfer', this); renderTransferPage()" style="display:none;">
         <span class="icon">🔄</span> 轉銜管理 <span class="nav-drag-handle">⠿</span>
       </div>
+      <div class="nav-item" id="nav-mental-leave-item" data-nav-id="page-mental-leave" onclick="showPage('page-mental-leave', this); renderMentalLeavePage()" style="display:none;">
+        <span class="icon">🌿</span> 身心調適假管理 <span class="nav-drag-handle">⠿</span>
+      </div>
     </div>
 
     <div class="sidebar-section" id="nav-admin-section" style="display:none;">
@@ -3050,6 +3053,12 @@
       </div>
     </div>
 
+    <!-- 身心調適假管理 -->
+    <div id="page-mental-leave" class="page">
+      <div class="page-title">身心調適假管理</div>
+      <div id="mental-leave-body"></div>
+    </div>
+
     <!-- 待辦事項 -->
     <div id="page-todos" class="page">
       <div class="page-title">待辦事項</div>
@@ -3154,9 +3163,10 @@ const CHUNK_SIZE      = 20;
 const AUDIT_LOG_FILE  = 'audit_log.json';
 const BOOKINGS_FILE   = 'bookings.json';
 const ISSUES_FILE     = 'issues.json';
-const TRANSFER_FILE   = 'transfer.json';
+const TRANSFER_FILE         = 'transfer.json';
 const UNASSIGNED_RECORDS_FILE = 'unassigned_records.json';
-const PSYCH_TEST_DB_FILE = 'psych_test_db.json';
+const PSYCH_TEST_DB_FILE    = 'psych_test_db.json';
+const MENTAL_LEAVES_FILE    = 'mental_leaves.json';
 const ROOMS = ['玉山', '雪山', '中央山脈', '阿里山', '海岸山脈', '團體諮商室', '會議室', '其他'];
 const BK_PERIODS = [
   { label: '第1節  08:10–09:00',  start: '08:10', end: '09:00' },
@@ -3587,7 +3597,7 @@ function _buildNavState(pid) {
     const cid=_detailCaseId;restore=()=>showCaseDetail(cid);
   }else{
     const ne=document.querySelector(`[data-nav-id="${pid}"]`);
-    const renderMap={'page-cases':()=>{try{renderCases();}catch(_){}},'page-transfer':()=>{try{renderTransferPage();}catch(_){}},'page-todos':()=>{try{renderTodosPage();}catch(_){}},'page-pending':()=>{try{renderPendingList();}catch(_){}},'page-psychiatry':()=>{try{renderPsychiatryPage();}catch(_){}}};
+    const renderMap={'page-cases':()=>{try{renderCases();}catch(_){}},'page-transfer':()=>{try{renderTransferPage();}catch(_){}},'page-todos':()=>{try{renderTodosPage();}catch(_){}},'page-pending':()=>{try{renderPendingList();}catch(_){}},'page-psychiatry':()=>{try{renderPsychiatryPage();}catch(_){}},'page-mental-leave':()=>{try{renderMentalLeavePage();}catch(_){}}};
     restore=()=>{showPage(pid,ne);if(renderMap[pid])renderMap[pid]();};
   }
   return{label,restore};
@@ -3625,7 +3635,7 @@ function showPage(pageId, navEl) {
 function updateFloatingBackBtn(pageId) {
   const btn = document.getElementById('header-back-btn');
   if (!btn) return;
-  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-transfer-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings','page-recycle','page-transfer','page-psychiatry','page-unassigned-records','page-issues','page-event-records','page-pdf-tool','page-psych-test-db'];
+  const showOn = ['page-new-case','page-case-detail','page-new-record','page-closure-eval','page-transfer-eval','page-casenums','page-stats','page-admin','page-audit','page-prefs','page-pending','page-initial-interview','page-bookings','page-recycle','page-transfer','page-psychiatry','page-unassigned-records','page-issues','page-event-records','page-pdf-tool','page-psych-test-db','page-mental-leave'];
   btn.style.display = showOn.includes(pageId) ? 'inline-block' : 'none';
   btn.dataset.fromPage = pageId;
 }
@@ -4865,6 +4875,7 @@ async function afterLogin() {
       loadUnassignedRecords(),
       loadIssues(),
       loadUserTodos(),
+      loadMentalLeaves(),
     ]);
     setLoadingProgress(25);
     configData = cfg;
@@ -4953,8 +4964,9 @@ function resolveUserRole() {
   // 管理者才顯示使用者管理頁
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   document.getElementById('nav-admin-section').style.display = isAdmin ? '' : 'none';
-  // 轉銜管理顯示給管理者與轉銜窗口
+  // 轉銜管理 & 身心調適假管理 顯示給管理者與轉銜窗口
   document.getElementById('nav-transfer-item').style.display = (isAdmin || isTransferContact) ? '' : 'none';
+  document.getElementById('nav-mental-leave-item').style.display = (isAdmin || isTransferContact) ? '' : 'none';
 
   // 填充管理員頁使用者列表
   if (isAdmin && configData && configData.users) { renderAdminUsers(); renderAdminDegreeMapping(); }
@@ -7739,6 +7751,7 @@ function showCaseDetail(caseId) {
     semEvalHtml +
     (_detailSemFilter !== 'all' && iiCardHtml ? `<div style="margin-bottom:20px;">${iiCardHtml}</div>` : '') +
     (_detailSemFilter !== 'all' ? psyHtml : '') +
+    _buildMentalLeaveDetailCard(c) +
     recordsHtml;
   const _detSel = document.getElementById('detail-counselor-sel');
   if (_detSel) _detSel.value = c.counselorEmail || '';
@@ -19636,8 +19649,18 @@ function _bkNextSerial() {
   return bookingsData.reduce((m, b) => Math.max(m, b.bkSerial || 0), 0) + 1;
 }
 
-let transferData = [];  // loaded from transfer.json
-let psychTestDB  = {};  // { studentId: [{ testSemester, AL, D1, ... }] } loaded from psych_test_db.json
+let transferData    = [];  // loaded from transfer.json
+let psychTestDB     = {};  // loaded from psych_test_db.json
+let mentalLeavesData = []; // loaded from mental_leaves.json
+
+const ML_DEFAULT_KEYWORDS = [
+  // Level 3 危機/紅燈
+  ...'死,結束生命,不想活,自傷,自殘,自殺,跳,崩潰,喘不過氣,恐慌,解離,幻覺,車禍,意外,喪,暴力,性平,性騷,家暴'.split(',').map(kw=>({kw,level:3})),
+  // Level 2 醫療/黃燈
+  ...'身心科,精神科,急診,住院,看診,回診,諮商,藥物副作用,換藥,斷藥,戒斷,憂鬱,焦慮,躁鬱,失眠,厭食,暴食'.split(',').map(kw=>({kw,level:2})),
+  // Level 1 壓力/關注
+  ...'分手,感情問題,排擠,霸凌,期中,期末,退學,休學,擋修,家庭衝突,經濟壓力'.split(',').map(kw=>({kw,level:1})),
+];
 let _bkDaySpan = parseInt(localStorage.getItem('scc_bk_span') || '1') || 1;
 let _bkListView = false;
 let _bkListPage = 1;
@@ -20034,6 +20057,307 @@ async function savePsychTestDB() {
     await driveCreateJsonFile(PSYCH_TEST_DB_FILE, psychTestDB, DRIVE_FOLDER_ID);
   }
 }
+
+// ══════════════════════════════════════════════
+//  身心調適假管理
+// ══════════════════════════════════════════════
+
+async function loadMentalLeaves() {
+  try {
+    const data = await driveReadJson(MENTAL_LEAVES_FILE);
+    mentalLeavesData = Array.isArray(data?.records) ? data.records : [];
+  } catch(e) { mentalLeavesData = []; }
+}
+
+async function saveMentalLeaves() {
+  try {
+    await driveUpdateJsonFile(MENTAL_LEAVES_FILE, { records: mentalLeavesData });
+  } catch(e) {
+    if (!e.message.includes('找不到')) throw e;
+    await driveCreateJsonFile(MENTAL_LEAVES_FILE, { records: mentalLeavesData }, DRIVE_FOLDER_ID);
+  }
+}
+
+// 取得有效關鍵字庫（config 內有就用，否則用預設）
+function _mlKeywords() {
+  return Array.isArray(configData?.mentalLeaveKeywords) && configData.mentalLeaveKeywords.length
+    ? configData.mentalLeaveKeywords
+    : ML_DEFAULT_KEYWORDS;
+}
+
+// 比對請假緣由，回傳 { matchedKeywords: [{kw,level}], maxLevel }
+function _mlMatchKeywords(reason) {
+  if (!reason) return { matchedKeywords: [], maxLevel: 0 };
+  const kws = _mlKeywords();
+  const matched = kws.filter(k => reason.includes(k.kw));
+  const maxLevel = matched.reduce((m, k) => Math.max(m, k.level), 0);
+  return { matchedKeywords: matched, maxLevel };
+}
+
+// 風險 badge HTML
+function _mlRiskBadge(maxLevel, small) {
+  if (!maxLevel) return '';
+  const sz = small ? 'font-size:.72rem;padding:1px 6px;' : 'font-size:.8rem;padding:3px 10px;';
+  const map = { 3: ['🔴 紅燈 (危機)', '#c53030', '#fff5f5', '#fc8181'], 2: ['🟡 黃燈 (醫療)', '#d97706', '#fffbeb', '#fcd34d'], 1: ['🔵 關注', '#2b6cb0', '#ebf8ff', '#bee3f8'] };
+  const [label, color, bg, border] = map[maxLevel] || ['', '#718096', '#f7fafc', '#e2e8f0'];
+  return `<span style="${sz}background:${bg};color:${color};border:1px solid ${border};border-radius:12px;font-weight:600;">${label}</span>`;
+}
+
+// 個案詳細頁的身心調適假摺疊卡片
+function _buildMentalLeaveDetailCard(c) {
+  if (!c?.studentId) return '';
+  const sid = c.studentId;
+  const leaves = mentalLeavesData.filter(l => l.studentId === sid && !l.deleted);
+  const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  if (!isAdmin && !isTransferContact) return '';
+  if (!leaves.length) return '';
+  const cards = [...leaves].sort((a, b) => (b.leaveDate||'').localeCompare(a.leaveDate||'')).map(l => {
+    const { matchedKeywords, maxLevel } = _mlMatchKeywords(l.reason);
+    const kwChips = matchedKeywords.map(k =>
+      `<span style="font-size:.72rem;background:${maxLevel===3?'#fed7d7':maxLevel===2?'#fef9c3':'#dbeafe'};color:${maxLevel===3?'#9b2c2c':maxLevel===2?'#854d0e':'#1e40af'};border-radius:4px;padding:1px 6px;margin-right:3px;">${escHtml(k.kw)}</span>`
+    ).join('');
+    return `<div style="border:1px solid #e2e8f0;border-radius:6px;padding:8px 12px;margin-bottom:8px;background:${maxLevel>=3?'#fff5f5':maxLevel>=2?'#fffbeb':'#fff'};">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
+        <span style="font-weight:600;font-size:.88rem;">${escHtml(l.leaveDate||'—')}</span>
+        ${_mlRiskBadge(maxLevel, true)}
+        ${l.course ? `<span style="font-size:.8rem;color:#718096;">${escHtml(l.course)}</span>` : ''}
+      </div>
+      ${l.reason ? `<div style="font-size:.84rem;color:#4a5568;margin-bottom:4px;">緣由：${escHtml(l.reason)}</div>` : ''}
+      ${kwChips ? `<div style="margin-top:4px;">命中關鍵字：${kwChips}</div>` : ''}
+    </div>`;
+  }).join('');
+  const cardId = `ml-case-card-${escHtml(c.id)}`;
+  return `<div class="card" style="margin-bottom:20px;border:1.5px solid #a7c7a0;">
+    <div class="card-header" style="cursor:pointer;background:#f6fbf6;" onclick="toggleSection('${cardId}')">
+      <h3 style="color:#2d6a4f;">🌿 身心調適假紀錄（${leaves.length} 筆）</h3>
+      <span id="${cardId}-icon">▶</span>
+    </div>
+    <div id="${cardId}" style="display:none;padding:12px 16px;">${cards}</div>
+  </div>`;
+}
+
+// 主頁面渲染
+let _mlTab = 'records';
+function renderMentalLeavePage() {
+  const el = document.getElementById('mental-leave-body');
+  if (!el) return;
+  const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  const canManage = isAdmin || isTransferContact;
+  if (!canManage) { el.innerHTML = '<div style="padding:20px;color:#718096;">您沒有此頁面的存取權限。</div>'; return; }
+  el.innerHTML = `
+    <div style="display:flex;gap:2px;border-bottom:2px solid #e2e8f0;margin-bottom:20px;">
+      ${_mlTabBtn('records','📋 請假紀錄列表')}
+      ${_mlTabBtn('keywords','🔑 關鍵字設定')}
+    </div>
+    <div id="ml-tab-content"></div>`;
+  _mlRenderTab();
+}
+function _mlTabBtn(id, label) {
+  const active = _mlTab === id;
+  return `<button onclick="window._mlSwitchTab('${id}')" style="padding:8px 18px;border:none;cursor:pointer;background:none;font-size:.9rem;font-weight:${active?700:400};border-bottom:${active?'2.5px solid #2d6a4f':'2px solid transparent'};color:${active?'#2d6a4f':'#718096'};margin-bottom:-2px;">${label}</button>`;
+}
+window._mlSwitchTab = (id) => { _mlTab = id; renderMentalLeavePage(); };
+function _mlRenderTab() {
+  const el = document.getElementById('ml-tab-content');
+  if (!el) return;
+  if (_mlTab === 'keywords') _mlRenderKeywordsTab(el);
+  else _mlRenderRecordsTab(el);
+}
+
+// ── 請假紀錄列表 Tab ─────────────────────────────────────
+function _mlRenderRecordsTab(el) {
+  const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  const records = mentalLeavesData.filter(l => !l.deleted);
+  const q = (document.getElementById('ml-q')?.value || '').trim().toLowerCase();
+  const riskF = document.getElementById('ml-risk')?.value || '';
+  const semF  = document.getElementById('ml-sem')?.value  || '';
+
+  let filtered = records.filter(l => {
+    if (q && !((l.name||'').toLowerCase().includes(q) || (l.studentId||'').toLowerCase().includes(q) || (l.reason||'').toLowerCase().includes(q))) return false;
+    if (semF && l.semester !== semF) return false;
+    if (riskF) {
+      const { maxLevel } = _mlMatchKeywords(l.reason);
+      if (riskF === '3' && maxLevel !== 3) return false;
+      if (riskF === '2' && maxLevel !== 2) return false;
+      if (riskF === '1' && maxLevel < 1) return false;
+      if (riskF === '0' && maxLevel !== 0) return false;
+    }
+    return true;
+  });
+  filtered.sort((a, b) => (b.leaveDate||'').localeCompare(a.leaveDate||''));
+
+  const sems = [...new Set(records.map(l => l.semester).filter(Boolean))].sort().reverse();
+  const semOpts = sems.map(s => `<option value="${escHtml(s)}"${semF===s?' selected':''}>${escHtml(semesterLabel(s)||s)}</option>`).join('');
+
+  const rowsHtml = filtered.length ? filtered.map(l => {
+    const { matchedKeywords, maxLevel } = _mlMatchKeywords(l.reason);
+    const kwChips = matchedKeywords.slice(0, 4).map(k =>
+      `<span style="font-size:.7rem;background:${maxLevel===3?'#fed7d7':maxLevel===2?'#fef9c3':'#dbeafe'};color:${maxLevel===3?'#9b2c2c':maxLevel===2?'#854d0e':'#1e40af'};border-radius:4px;padding:0 5px;margin-right:2px;">${escHtml(k.kw)}</span>`
+    ).join('') + (matchedKeywords.length > 4 ? `<span style="font-size:.7rem;color:#718096;">+${matchedKeywords.length-4}</span>` : '');
+    const mc = casesData.find(c => !c.deleted && c.studentId === l.studentId);
+    const nameLink = mc
+      ? `<button onclick="showCaseDetail('${escHtml(mc.id)}')" style="border:none;background:none;cursor:pointer;color:#2b6cb0;font-weight:600;padding:0;font-size:inherit;">${escHtml(l.name||'—')}</button>`
+      : `<span>${escHtml(l.name||'—')}</span>`;
+    const rowBg = maxLevel===3?'#fff5f5':maxLevel===2?'#fffdf0':'';
+    return `<tr style="background:${rowBg};">
+      <td style="padding:7px 10px;">${nameLink}</td>
+      <td style="padding:7px 10px;font-family:monospace;">${escHtml(l.studentId||'—')}</td>
+      <td style="padding:7px 10px;">${escHtml(l.leaveDate||'—')}</td>
+      <td style="padding:7px 10px;font-size:.8rem;">${escHtml(l.reason||'—')}</td>
+      <td style="padding:7px 10px;">${_mlRiskBadge(maxLevel, true)}${kwChips ? `<div style="margin-top:3px;">${kwChips}</div>` : ''}</td>
+      <td style="padding:7px 10px;font-size:.8rem;color:#718096;">${escHtml(l.semester||'—')}</td>
+      ${isAdmin ? `<td style="padding:7px 10px;"><button class="btn btn-danger btn-sm" onclick="window._mlDeleteRecord('${escHtml(l.id)}')">刪除</button></td>` : ''}
+    </tr>`;
+  }).join('')
+    : `<tr><td colspan="99" style="text-align:center;padding:24px;color:#a0aec0;">尚無紀錄</td></tr>`;
+
+  const riskCount = (lv) => records.filter(l => _mlMatchKeywords(l.reason).maxLevel === lv).length;
+
+  el.innerHTML = `
+    <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+      <div class="info-card" style="min-width:110px;"><div class="num">${records.length}</div><div class="lbl">請假總筆數</div></div>
+      <div class="info-card" style="min-width:110px;background:#fff5f5;"><div class="num" style="color:#c53030;">${riskCount(3)}</div><div class="lbl">紅燈（危機）</div></div>
+      <div class="info-card" style="min-width:110px;background:#fffbeb;"><div class="num" style="color:#d97706;">${riskCount(2)}</div><div class="lbl">黃燈（醫療）</div></div>
+      <div class="info-card" style="min-width:110px;background:#eff6ff;"><div class="num" style="color:#2b6cb0;">${riskCount(1)}</div><div class="lbl">藍燈（關注）</div></div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+      <input type="text" id="ml-q" class="field-input" placeholder="搜尋姓名、學號、緣由…" value="${escHtml(q)}" oninput="renderMentalLeavePage()" style="max-width:220px;">
+      <select id="ml-risk" class="field-input" onchange="renderMentalLeavePage()" style="width:auto;">
+        <option value="">所有風險等級</option>
+        <option value="3"${riskF==='3'?' selected':''}>🔴 紅燈（危機）</option>
+        <option value="2"${riskF==='2'?' selected':''}>🟡 黃燈（醫療）</option>
+        <option value="1"${riskF==='1'?' selected':''}>🔵 關注</option>
+        <option value="0"${riskF==='0'?' selected':''}>無命中</option>
+      </select>
+      <select id="ml-sem" class="field-input" onchange="renderMentalLeavePage()" style="width:auto;">
+        <option value="">所有學期</option>${semOpts}
+      </select>
+      <button class="btn btn-primary" onclick="window._mlFetch()" style="white-space:nowrap;">📥 從信箱擷取</button>
+    </div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:.875rem;">
+        <thead><tr style="background:#f7fafc;text-align:left;">
+          <th style="padding:8px 10px;">姓名</th>
+          <th style="padding:8px 10px;">學號</th>
+          <th style="padding:8px 10px;">請假日期</th>
+          <th style="padding:8px 10px;min-width:160px;">請假緣由</th>
+          <th style="padding:8px 10px;">風險 / 關鍵字</th>
+          <th style="padding:8px 10px;">學期</th>
+          ${isAdmin ? '<th style="padding:8px 10px;"></th>' : ''}
+        </tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>`;
+}
+
+window._mlDeleteRecord = async (id) => {
+  if (!confirm('確定刪除此筆請假紀錄？')) return;
+  const r = mentalLeavesData.find(l => l.id === id);
+  if (!r) return;
+  r.deleted = true; r.deletedAt = new Date().toISOString(); r.deletedBy = currentUser?.email;
+  renderMentalLeavePage();
+  const jobId = bgJobAdd(`刪除身心調適假紀錄：${r.name||r.studentId}`);
+  try { await saveMentalLeaves(); bgJobDone(jobId); auditLog('刪除身心調適假紀錄', null, null, `${r.name} ${r.studentId}`); }
+  catch(e) { delete r.deleted; delete r.deletedAt; delete r.deletedBy; bgJobFail(jobId, e.message); }
+};
+
+window._mlFetch = async () => {
+  const btn = document.querySelector('[onclick="window._mlFetch()"]');
+  if (btn) { btn.disabled = true; btn.textContent = '擷取中…'; }
+  try {
+    const result = await proxyCall('fetchMentalLeaves');
+    if (result?.newCount !== undefined) {
+      await loadMentalLeaves();
+      renderMentalLeavePage();
+      showToast(`擷取完成，新增 ${result.newCount} 筆請假紀錄`);
+    }
+  } catch(e) {
+    alert('從信箱擷取失敗：' + e.message + '\n\n請確認 GAS 已部署，且信箱已設定轉寄或共享。');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📥 從信箱擷取'; }
+  }
+};
+
+// ── 關鍵字設定 Tab ─────────────────────────────────────
+function _mlRenderKeywordsTab(el) {
+  const kws = _mlKeywords();
+  const usingDefault = !Array.isArray(configData?.mentalLeaveKeywords) || !configData.mentalLeaveKeywords.length;
+  const levelLabel = { 3: '🔴 紅燈（危機）', 2: '🟡 黃燈（醫療）', 1: '🔵 關注' };
+  const levelColor = { 3: '#c53030', 2: '#d97706', 1: '#2b6cb0' };
+  const levelBg    = { 3: '#fff5f5',  2: '#fffbeb',  1: '#eff6ff' };
+  const tableRows = kws.map((k, i) => `
+    <tr>
+      <td style="padding:7px 10px;"><span style="font-size:.88rem;font-weight:600;">${escHtml(k.kw)}</span></td>
+      <td style="padding:7px 10px;"><span style="background:${levelBg[k.level]||'#f7fafc'};color:${levelColor[k.level]||'#718096'};border-radius:12px;padding:2px 10px;font-size:.8rem;font-weight:600;">${levelLabel[k.level]||k.level}</span></td>
+      <td style="padding:7px 10px;">
+        <button class="btn btn-danger btn-sm" onclick="window._mlDeleteKw(${i})">刪除</button>
+      </td>
+    </tr>`).join('');
+
+  el.innerHTML = `
+    ${usingDefault ? '<div style="background:#fffbeb;border:1px solid #f6d860;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:.84rem;color:#744210;">⚠ 目前使用<strong>系統預設關鍵字庫</strong>。新增或刪除任何關鍵字後，設定將獨立儲存至本系統設定檔。</div>' : ''}
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin-bottom:20px;">
+      <h4 style="margin:0 0 12px;font-size:.92rem;color:#2d3748;">新增關鍵字</h4>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <input type="text" id="ml-kw-new" class="field-input" placeholder="關鍵字（如：失眠）" style="max-width:160px;" maxlength="20">
+        <select id="ml-kw-level" class="field-input" style="width:auto;">
+          <option value="3">🔴 紅燈（危機）</option>
+          <option value="2" selected>🟡 黃燈（醫療）</option>
+          <option value="1">🔵 關注</option>
+        </select>
+        <button class="btn btn-primary" onclick="window._mlAddKw()">新增</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:.875rem;">
+        <thead><tr style="background:#f7fafc;text-align:left;">
+          <th style="padding:8px 10px;">關鍵字</th>
+          <th style="padding:8px 10px;">風險等級</th>
+          <th style="padding:8px 10px;"></th>
+        </tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>
+    ${usingDefault ? '' : `<div style="margin-top:14px;"><button class="btn btn-secondary btn-sm" onclick="window._mlResetKw()">還原預設關鍵字庫</button></div>`}`;
+}
+
+window._mlAddKw = async () => {
+  const kwEl = document.getElementById('ml-kw-new');
+  const kw = kwEl?.value.trim();
+  if (!kw) { alert('請輸入關鍵字'); return; }
+  const level = parseInt(document.getElementById('ml-kw-level')?.value || '2');
+  const kws = [..._mlKeywords()];
+  if (kws.some(k => k.kw === kw)) { alert('關鍵字已存在：' + kw); return; }
+  kws.push({ kw, level });
+  if (!configData) configData = {};
+  configData.mentalLeaveKeywords = kws;
+  if (kwEl) kwEl.value = '';
+  renderMentalLeavePage();
+  const jobId = bgJobAdd('儲存關鍵字設定');
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); }
+  catch(e) { bgJobFail(jobId, e.message); }
+};
+
+window._mlDeleteKw = async (i) => {
+  const kws = [..._mlKeywords()];
+  if (!kws[i] || !confirm(`確定刪除關鍵字「${kws[i].kw}」？`)) return;
+  kws.splice(i, 1);
+  if (!configData) configData = {};
+  configData.mentalLeaveKeywords = kws;
+  renderMentalLeavePage();
+  const jobId = bgJobAdd('儲存關鍵字設定');
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); }
+  catch(e) { bgJobFail(jobId, e.message); }
+};
+
+window._mlResetKw = async () => {
+  if (!confirm('確定還原為系統預設關鍵字庫？目前自訂設定將被清除。')) return;
+  if (configData) delete configData.mentalLeaveKeywords;
+  renderMentalLeavePage();
+  const jobId = bgJobAdd('還原預設關鍵字庫');
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); }
+  catch(e) { bgJobFail(jobId, e.message); }
+};
 function _upsertPsychTestDB(sid, sem, result) {
   if (!sid) return;
   if (!psychTestDB[sid]) psychTestDB[sid] = [];
