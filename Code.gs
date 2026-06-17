@@ -766,10 +766,21 @@ function runDumpNpust5Emails() {
 function listInboxEmails_(ctx) {
   var token = npust5GetAccessToken_();
   if (!token) return { needsAuth: true, authUrl: npust5BuildAuthUrl_() };
-  var searchData = gmailApi_(token, '/messages?maxResults=50&labelIds=INBOX');
-  var messages = searchData.messages || [];
+
+  // 確認授權帳號
+  var profile = gmailApi_(token, '/profile');
+  var authedEmail = profile.emailAddress || '(unknown)';
+
+  // 先試 INBOX，再試 all mail
+  var inboxData = gmailApi_(token, '/messages?maxResults=50&labelIds=INBOX');
+  var allData   = gmailApi_(token, '/messages?maxResults=50');
+
+  var messages = (inboxData.messages && inboxData.messages.length)
+    ? inboxData.messages
+    : (allData.messages || []);
+
   var emails = [];
-  messages.forEach(function(m) {
+  messages.slice(0, 20).forEach(function(m) {
     try {
       var msg = gmailApi_(token, '/messages/' + m.id + '?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date');
       var subject = '', from = '', date = '';
@@ -781,14 +792,22 @@ function listInboxEmails_(ctx) {
       emails.push({ id: m.id, subject: subject, from: from, date: date, snippet: msg.snippet || '' });
     } catch(e) { emails.push({ id: m.id, error: e.message }); }
   });
-  var dump = { dumpedAt: new Date().toISOString(), count: emails.length, emails: emails };
+
+  var dump = {
+    dumpedAt: new Date().toISOString(),
+    authedEmail: authedEmail,
+    inboxRaw: inboxData,
+    allMailRaw: allData,
+    count: emails.length,
+    emails: emails
+  };
   try {
     updateJson_({ path: 'ml_inbox_list.json', content: dump }, ctx);
   } catch(e) {
     var pi = resolvePathToParentAndName_('ml_inbox_list.json', ctx);
     driveUpload_('ml_inbox_list.json', dump, pi.parentId);
   }
-  return { count: emails.length, emails: emails };
+  return { authedEmail: authedEmail, inboxCount: (inboxData.messages || []).length, allCount: (allData.messages || []).length, emails: emails };
 }
 
 // ── 列出 inbox 最近 50 封信（不過濾主旨），診斷用（GAS 編輯器直接執行）
