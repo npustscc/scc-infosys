@@ -24095,6 +24095,28 @@ function parseTaiwanDate(str) {
   return s; // 無法識別則原樣保留
 }
 
+// ── 共用：姓名/學號雙向比對個案（供各匯入 Modal 共用） ──
+function _importMatchCase(name, sid) {
+  let mc = null, matchType = 'none';
+  if (sid && name) {
+    mc = casesData.find(c => !c.deleted && c.studentId === sid && c.name === name);
+    if (mc) matchType = 'full';
+    else {
+      const bySid = casesData.find(c => !c.deleted && c.studentId === sid);
+      const byNm  = casesData.find(c => !c.deleted && c.name === name);
+      if (bySid) { mc = bySid; matchType = 'sid_only'; }
+      else if (byNm) { mc = byNm; matchType = 'name_only'; }
+    }
+  } else if (sid) {
+    mc = casesData.find(c => !c.deleted && c.studentId === sid);
+    matchType = mc ? 'sid_only' : 'none';
+  } else if (name) {
+    mc = casesData.find(c => !c.deleted && c.name === name);
+    matchType = mc ? 'name_only' : 'none';
+  }
+  return { mc, matchType };
+}
+
 async function handleImportGradTransferExcel(input) {
   if (!input.files?.length) return;
   const file = input.files[0]; input.value = '';
@@ -24161,22 +24183,8 @@ async function showGradTransferImportPreview(rows, curSem) {
     renderTransferPage(); return;
   }
 
-  // ── 比對個案 ──
-  function _gtMatch(name, sid) {
-    let mc = null, matchType = 'none';
-    if (sid && name) {
-      mc = casesData.find(c => !c.deleted && c.studentId===sid && c.name===name);
-      if (mc) matchType = 'full';
-      else {
-        const bySid = casesData.find(c => !c.deleted && c.studentId===sid);
-        const byNm  = casesData.find(c => !c.deleted && c.name===name);
-        if (bySid) { mc = bySid; matchType = 'sid_only'; }
-        else if (byNm) { mc = byNm; matchType = 'name_only'; }
-      }
-    } else if (sid) { mc = casesData.find(c => !c.deleted && c.studentId===sid); matchType = mc?'sid_only':'none'; }
-    else if (name) { mc = casesData.find(c => !c.deleted && c.name===name); matchType = mc?'name_only':'none'; }
-    return { mc, matchType };
-  }
+  // ── 比對個案（使用共用函式）──
+  const _gtMatch = (name, sid) => _importMatchCase(name, sid);
 
   const decLblMap = { pending:'未決議', noTransfer_school:'校級不轉銜', transfer_school:'校級建議轉銜' };
   const entries = rows.slice(1).filter(r => r.some(v => v)).map((r, i) => {
@@ -25351,21 +25359,20 @@ async function handleImportWithdrawExcel(input) {
   if (!input.files?.length) return;
   const file = input.files[0]; input.value = '';
   document.getElementById('transfer-body').innerHTML = '<div style="padding:20px;color:#718096;">解析中…</div>';
-  if (!window.XLSX) {
-    try {
+  try {
+    if (!window.XLSX) {
       await new Promise((resolve, reject) => {
         const s = document.createElement('script');
         s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
         s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
         document.head.appendChild(s);
       });
-    } catch(e) { alert(e.message); renderTransferPage(); return; }
-  }
-  try {
-    const ab = await file.arrayBuffer();
-    const wb = XLSX.read(ab, { type: 'array', password: '7617' });
+    }
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
     const ws = wb.Sheets[wb.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+    const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, dateNF: 'yyyy-mm-dd' });
+    const rows = raw.map(r => Array.isArray(r) ? r.map(c => (c == null ? '' : String(c).trim())) : []);
     if (rows.length < 2) { alert('找不到資料列'); renderTransferPage(); return; }
     await showWithdrawImportPreview(rows);
   } catch(e) { alert('解析失敗：' + e.message); renderTransferPage(); }
@@ -25373,77 +25380,262 @@ async function handleImportWithdrawExcel(input) {
 
 async function showWithdrawImportPreview(rows) {
   const headers = rows[0].map(h => String(h).trim());
-  const dataRows = rows.slice(1).filter(r => r.some(v => v !== ''));
   const nameIdx = headers.findIndex(h => /姓名/.test(h));
   const sidIdx  = headers.findIndex(h => /學號/.test(h));
   const drIdx   = headers.findIndex(h => /離校原因/.test(h));
   if (nameIdx < 0 && sidIdx < 0) { alert('找不到「姓名」或「學號」欄位'); renderTransferPage(); return; }
   const curSem = currentSemesterPrefix();
-  const students = dataRows.map(r => ({
-    name: nameIdx >= 0 ? String(r[nameIdx]||'').trim() : '',
-    studentId: sidIdx >= 0 ? String(r[sidIdx]||'').trim() : '',
-    departureReason: drIdx >= 0 ? String(r[drIdx]||'').trim() : '',
-  })).filter(s => s.name || s.studentId);
-  if (!students.length) { alert('未找到有效資料。'); renderTransferPage(); return; }
-  students.forEach(s => {
-    const existing = s.studentId ? transferData.find(t => t.type === 'withdraw' && t.semester === curSem && t.studentId === s.studentId && !t.deleted) : null;
-    s._dup = !!existing;
-    s._hasDecision = !!(existing && _getWdDecision(existing, curSem) !== 'pending');
+
+  // ── 分類每一列資料 ──
+  const entries = rows.slice(1).filter(r => r.some(v => v)).map((r, i) => {
+    const originalName    = nameIdx >= 0 ? String(r[nameIdx]||'').trim() : '';
+    const originalSid     = sidIdx  >= 0 ? String(r[sidIdx] ||'').trim() : '';
+    const departureReason = drIdx   >= 0 ? String(r[drIdx]  ||'').trim() : '';
+    const { mc, matchType } = _importMatchCase(originalName, originalSid);
+    const existingWd = originalSid
+      ? transferData.find(t => t.type === 'withdraw' && t.semester === curSem && t.studentId === originalSid && !t.deleted)
+      : null;
+    const isDuplicate  = !!existingWd;
+    const _hasDecision = !!(existingWd && _getWdDecision(existingWd, curSem) !== 'pending');
+    // 預設勾選：正常資料，以及重複但尚無決議者
+    const _sel = (matchType === 'full' && !isDuplicate) || (isDuplicate && !_hasDecision);
+    return { i, name: originalName, sid: originalSid, originalName, originalSid,
+             departureReason, mc, matchType, isDuplicate, _hasDecision, _sel,
+             forceType: null, _relinking: false };
   });
-  // 有決議的重複記錄預設不勾選（需手動確認）；無決議的重複及新記錄預設勾選
-  let sel = new Set(students.map((_,i) => i).filter(i => !students[i]._hasDecision));
-  const render = () => {
-    const hasDr = students.some(s => s.departureReason);
-    const tbody = students.map((s, i) =>
-      `<tr style="${s._hasDecision?'background:#fff5f5;':s._dup?'background:#fff8e1;':''}">
-        <td style="padding:6px 8px;"><input type="checkbox" ${sel.has(i)?'checked':''} onchange="window._wdSel(${i},this.checked)"></td>
-        <td style="padding:6px 8px;">${escHtml(s.name)}</td>
-        <td style="padding:6px 8px;">${escHtml(s.studentId)}</td>
-        ${hasDr ? `<td style="padding:6px 8px;font-size:.82rem;color:#92400e;">${escHtml(s.departureReason)}</td>` : ''}
-        <td style="padding:6px 8px;font-size:.8rem;">${s._hasDecision?'<span style="color:#c53030;">⚠ 重複（已有決議，匯入將清除舊決議）</span>':s._dup?'<span style="color:#d97706;">⚠ 重複（將更新既有資料）</span>':''}</td>
-      </tr>`).join('');
-    document.getElementById('wd-import-list').innerHTML = `
-      <table style="width:100%;border-collapse:collapse;font-size:.88rem;">
-        <thead><tr style="background:#f7fafc;font-size:.8rem;">
-          <th style="padding:6px 8px;"><input type="checkbox" onchange="window._wdSelAll(this.checked)"></th>
-          <th style="padding:6px 8px;">姓名</th><th style="padding:6px 8px;">學號</th>
-          ${hasDr ? '<th style="padding:6px 8px;">離校原因</th>' : ''}<th></th>
-        </tr></thead><tbody>${tbody}</tbody>
-      </table>`;
-    document.getElementById('wd-confirm-btn').textContent = `匯入 ${sel.size} 筆`;
+  if (!entries.length) { alert('未找到有效資料。'); renderTransferPage(); return; }
+
+  let sel = new Set(entries.reduce((acc, e, idx) => { if (e._sel) acc.push(idx); return acc; }, []));
+  window._wdRow = entries;
+
+  // ── 頁籤分流 ──
+  // normal  : matchType==='full' && !isDuplicate
+  // dup     : isDuplicate===true
+  // mismatch: (sid_only|name_only) && !isDuplicate
+  // notfound: matchType==='none' && !isDuplicate
+  let previewTab = entries.some(e => e.matchType === 'full' && !e.isDuplicate) ? 'normal' : 'dup';
+  function _wdGetTabEntries(tab) {
+    switch (tab) {
+      case 'normal':   return entries.filter(e => e.matchType === 'full' && !e.isDuplicate);
+      case 'dup':      return entries.filter(e => e.isDuplicate);
+      case 'mismatch': return entries.filter(e => (e.matchType === 'sid_only' || e.matchType === 'name_only') && !e.isDuplicate);
+      case 'notfound': return entries.filter(e => e.matchType === 'none' && !e.isDuplicate);
+      default: return [];
+    }
+  }
+  window._wdPreviewTab = (t) => { previewTab = t; _wdRender(); };
+
+  // ── 勾選操作 ──
+  window._wdSel = (i, c) => { c ? sel.add(i) : sel.delete(i); _wdRender(); };
+  window._wdToggleAll = () => {
+    const tabIdxs = _wdGetTabEntries(previewTab).map(e => entries.indexOf(e));
+    const allSel  = tabIdxs.every(i => sel.has(i));
+    tabIdxs.forEach(i => allSel ? sel.delete(i) : sel.add(i));
+    _wdRender();
   };
-  window._wdSel = (i, c) => { c ? sel.add(i) : sel.delete(i); render(); };
-  window._wdSelAll = (c) => { sel = c ? new Set(students.map((_,i)=>i)) : new Set(); render(); };
+
+  // ── 欄位排序 ──
+  let sortKey = null, sortDir = 1;
+  window._wdSort = (key) => {
+    if (sortKey === key) sortDir = -sortDir; else { sortKey = key; sortDir = 1; }
+    const selSet = new Set([...sel].map(i => entries[i]));
+    entries.sort((a, b) => (a[key]||'').localeCompare(b[key]||'', 'zh-TW') * sortDir);
+    sel = new Set(entries.map((e, i) => selSet.has(e) ? i : -1).filter(i => i >= 0));
+    _wdRender();
+  };
+
+  // ── 行內編輯後重新驗證（blur 觸發）──
+  window._wdRevalidate = (i) => {
+    const e = window._wdRow[i];
+    const { mc, matchType } = _importMatchCase(e.name, e.sid);
+    const existingWd = e.sid ? transferData.find(t => t.type === 'withdraw' && t.semester === curSem && t.studentId === e.sid && !t.deleted) : null;
+    const isDuplicate  = !!existingWd;
+    const _hasDecision = !!(existingWd && _getWdDecision(existingWd, curSem) !== 'pending');
+    e.mc = mc; e.matchType = matchType; e.isDuplicate = isDuplicate; e._hasDecision = _hasDecision;
+    e.forceType = null; e._relinking = false;
+    if (matchType === 'full' && !isDuplicate)      sel.add(i);
+    else if (isDuplicate && !_hasDecision)          sel.add(i);
+    else                                            sel.delete(i);
+    _wdRender();
+    if (matchType !== 'full') {
+      const tr = document.querySelector(`tr[data-wd-row-idx="${i}"]`);
+      if (tr) { tr.classList.remove('gt-shake'); void tr.offsetWidth; tr.classList.add('gt-shake'); setTimeout(() => tr.classList.remove('gt-shake'), 600); }
+    }
+  };
+
+  // ── 動作按鈕 callback ──
+  window._wdForceLink    = (i) => { entries[i].forceType = 'direct';     sel.add(i);    _wdRender(); };
+  window._wdUpdateSid    = (i) => { entries[i].forceType = 'update_sid'; sel.add(i);    _wdRender(); };
+  window._wdStartRelink  = (i) => { window._wdRow[i]._relinking = true;                 _wdRender(); };
+  window._wdRelinkPick   = (i, cid) => {
+    const mc = casesData.find(c => c.id === cid);
+    if (!mc) return;
+    const e = window._wdRow[i];
+    e.mc = mc; e.sid = mc.studentId; e.forceType = 'relink'; e._relinking = false;
+    sel.add(i); _wdRender();
+  };
+  window._wdCancelRelink = (i) => { window._wdRow[i]._relinking = false; _wdRender(); };
+  window._wdCancelForce  = (i) => {
+    const e = entries[i];
+    const { mc, matchType } = _importMatchCase(e.name, e.sid);
+    const existingWd = e.sid ? transferData.find(t => t.type === 'withdraw' && t.semester === curSem && t.studentId === e.sid && !t.deleted) : null;
+    e.mc = mc; e.matchType = matchType; e.isDuplicate = !!existingWd;
+    e._hasDecision = !!(existingWd && _getWdDecision(existingWd, curSem) !== 'pending');
+    e.forceType = null; e._relinking = false; sel.delete(i); _wdRender();
+  };
+
+  // ── 單列渲染 ──
+  function _wdMakeRow(e, i) {
+    const forceAccepted = !!e.forceType;
+    const isEditable    = !e.isDuplicate && e.matchType !== 'full' && !forceAccepted && !e._relinking;
+    const manuallyFixed = (e.name !== e.originalName || e.sid !== e.originalSid) && e.matchType === 'full' && !e.isDuplicate;
+    const existingWd    = e.isDuplicate ? (transferData.find(t => t.type==='withdraw'&&t.semester===curSem&&t.studentId===e.sid&&!t.deleted)||{}) : null;
+    const decBadge = e.isDuplicate && e._hasDecision
+      ? `<span style="font-size:.72rem;background:#fed7aa;color:#9c4221;border-radius:4px;padding:1px 5px;border:1px solid #fb923c;">已有決議：${escHtml(_TRANSFER_DEC_LABEL[_getWdDecision(existingWd,curSem)]||'—')}</span>`
+      : e.isDuplicate
+        ? `<span style="font-size:.72rem;background:#e0f2fe;color:#0369a1;border-radius:4px;padding:1px 5px;border:1px solid #7dd3fc;">已有紀錄（尚無決議，將更新）</span>`
+        : '';
+    const warnMsg = !e.isDuplicate && !forceAccepted && !manuallyFixed
+      ? (e.matchType==='none'      ? '❌ 找不到個案'
+       : e.matchType==='sid_only'  ? `⚠ 學號符合姓名不符（系統：${escHtml(e.mc?.name||'—')}）`
+       : e.matchType==='name_only' ? `⚠ 姓名符合學號不符（系統：${escHtml(e.mc?.studentId||'—')}）` : '')
+      : '';
+    const rowBg = e.isDuplicate && e._hasDecision ? '#fff7ed'
+      : e.isDuplicate ? '#eff6ff'
+      : forceAccepted || manuallyFixed ? '#ecfdf5'
+      : isEditable ? '#fff8e1'
+      : (i % 2 === 0 ? '#fff' : '#f7fafc');
+    const auditHtml = [
+      e.name !== e.originalName ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原姓名：${escHtml(e.originalName)})</div>` : '',
+      e.sid  !== e.originalSid  ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原學號：${escHtml(e.originalSid)})</div>`  : '',
+    ].join('');
+    const _btn = (onclick, label, color, bg) =>
+      `<button onclick="${onclick}" style="margin-top:3px;font-size:.72rem;padding:2px 7px;border:1px solid ${color};background:${bg};color:${color};border-radius:4px;cursor:pointer;white-space:nowrap;">${label}</button>`;
+    let actionBtns = '';
+    if (!e.isDuplicate && !forceAccepted && !e._relinking) {
+      if      (e.matchType === 'sid_only')  actionBtns = _btn(`window._wdForceLink(${i})`, '直接匯入（以學號連結）', '#059669', '#ecfdf5') + _btn(`window._wdStartRelink(${i})`, '重新連結', '#718096', '#f7fafc');
+      else if (e.matchType === 'name_only') actionBtns = _btn(`window._wdUpdateSid(${i})`, '更新個案學號', '#2b6cb0', '#ebf8ff') + _btn(`window._wdStartRelink(${i})`, '重新連結', '#718096', '#f7fafc');
+      else if (e.matchType === 'none')      actionBtns = _btn(`window._wdStartRelink(${i})`, '手動連結個案', '#718096', '#f7fafc');
+    }
+    const relinkUI = e._relinking
+      ? `<div style="display:flex;flex-direction:column;gap:3px;margin-top:2px;">
+           <select onchange="if(this.value)window._wdRelinkPick(${i},this.value)" style="font-size:.75rem;padding:2px;max-width:180px;border:1px solid #a0aec0;border-radius:4px;">
+             <option value="">— 選擇個案 —</option>
+             ${casesData.filter(c=>!c.deleted).sort((a,b)=>(a.name||'').localeCompare(b.name||'','zh-TW')).map(c=>`<option value="${c.id}">${escHtml(c.name)}（${escHtml(c.studentId||'—')}）</option>`).join('')}
+           </select>
+           <button onclick="window._wdCancelRelink(${i})" style="font-size:.72rem;padding:1px 6px;border:1px solid #cbd5e0;background:#fff;color:#718096;border-radius:4px;cursor:pointer;width:fit-content;">取消</button>
+         </div>`
+      : '';
+    const forceLabelMap = { direct: '直接匯入（以學號連結）', update_sid: '更新個案學號後連結', relink: '重新連結至' };
+    const statusContent = e._relinking
+      ? relinkUI
+      : forceAccepted
+        ? `<span style="font-size:.78rem;color:#059669;">✅ ${forceLabelMap[e.forceType]||''}</span><div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">對應：${escHtml(e.mc?.name||'—')}（${escHtml(e.mc?.studentId||'—')}）</div><button onclick="window._wdCancelForce(${i})" style="margin-top:4px;font-size:.7rem;padding:1px 6px;border:1px solid #fc8181;background:#fff5f5;color:#c53030;border-radius:4px;cursor:pointer;">↩ 取消</button>`
+        : manuallyFixed
+          ? `<span style="font-size:.78rem;color:#059669;">✅ 已手動修正對應</span>${auditHtml}`
+          : `${decBadge}${warnMsg ? (decBadge ? '<br>' : '') + warnMsg : ''}<div style="display:flex;flex-direction:column;">${actionBtns}</div>${auditHtml}`;
+    return `<tr data-wd-row-idx="${i}" style="background:${rowBg};transition:background 0.3s;">
+      <td style="text-align:center;padding:4px 6px;"><input type="checkbox" id="wd-cb-${i}" ${sel.has(i)?'checked':''} onchange="window._wdSel(${i},this.checked)"></td>
+      <td style="min-width:60px;padding:4px 6px;"><div contenteditable="${isEditable}" style="outline:none;" oninput="window._wdRow[${i}].name=this.textContent.trim()" onblur="window._wdRevalidate(${i})">${escHtml(e.name)}</div></td>
+      <td style="min-width:80px;padding:4px 6px;"><div contenteditable="${isEditable}" style="outline:none;" oninput="window._wdRow[${i}].sid=this.textContent.trim()" onblur="window._wdRevalidate(${i})">${escHtml(e.sid)}</div></td>
+      <td style="padding:4px 6px;font-size:.82rem;color:#92400e;">${escHtml(e.departureReason||'')}</td>
+      <td style="font-size:.78rem;min-width:120px;">${statusContent}</td>
+    </tr>`;
+  }
+
+  // ── 主渲染函式 ──
+  function _wdRender() {
+    const el = document.getElementById('wd-import-list');
+    if (!el) return;
+    const normalCount   = entries.filter(e => e.matchType === 'full' && !e.isDuplicate).length;
+    const dupCount      = entries.filter(e => e.isDuplicate).length;
+    const mismatchCount = entries.filter(e => (e.matchType === 'sid_only' || e.matchType === 'name_only') && !e.isDuplicate).length;
+    const notfoundCount = entries.filter(e => e.matchType === 'none' && !e.isDuplicate).length;
+    const _sth = (label, key) => {
+      const arrow = sortKey === key ? (sortDir > 0 ? ' ▲' : ' ▼') : ' ⇅';
+      return `<th onclick="window._wdSort('${key}')" style="cursor:pointer;user-select:none;white-space:nowrap;">${label}<span style="font-size:.7rem;color:#a0aec0;">${arrow}</span></th>`;
+    };
+    const _tabBtn = (id, label, count, color, warn) => {
+      const active = previewTab === id;
+      const badge  = warn && count > 0 ? `<span style="font-size:.68rem;background:${color}25;color:${color};border-radius:8px;padding:0 5px;margin-left:3px;border:1px solid ${color}60;">!</span>` : '';
+      return `<button onclick="window._wdPreviewTab('${id}')" style="padding:6px 14px;border:none;cursor:pointer;font-size:.82rem;font-weight:${active?'700':'400'};background:none;border-bottom:${active?`2px solid ${color}`:'2px solid transparent'};color:${active?color:'#718096'};margin-bottom:-2px;white-space:nowrap;">${label}（${count}）${badge}</button>`;
+    };
+    const tabBtns = `<div class="gt-tabs-bar" style="position:sticky;top:0;z-index:20;background:#fff;display:flex;gap:2px;border-bottom:2px solid #e2e8f0;padding-bottom:2px;flex-wrap:wrap;padding-top:2px;">
+      ${_tabBtn('normal',   '正常資料',     normalCount,   '#2b6cb0', false)}
+      ${_tabBtn('dup',      '重複資料',     dupCount,      '#c05621', true)}
+      ${_tabBtn('mismatch', '姓名/學號不符', mismatchCount, '#d97706', true)}
+      ${_tabBtn('notfound', '找不到個案',   notfoundCount, '#e53e3e', true)}
+    </div>`;
+    const hintMap = {
+      normal:   `<div style="font-size:.82rem;color:#4a5568;margin-bottom:8px;">✅ 姓名與學號完全符合，尚無本學期轉退學紀錄，預設全選。</div>`,
+      dup:      `<div style="font-size:.82rem;color:#9c4221;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;margin-bottom:8px;">🔁 本學期已有轉退學紀錄。<br>• 尚無決議（藍色）：預設勾選，匯入後更新姓名與離校原因。<br>• 已有決議（橙色）：預設不勾選，勾選後匯入將舊決議備份至歷史，請謹慎確認。</div>`,
+      mismatch: `<div style="font-size:.82rem;color:#d97706;background:#fffaf0;border:1px solid #f6ad55;border-radius:6px;padding:8px 12px;margin-bottom:8px;">⚠ 學號或姓名其中一項符合，另一項不符。可直接點選格子修改，離開欄位後即時重新比對；或使用下方動作按鈕選擇處理方式。</div>`,
+      notfound: `<div style="font-size:.82rem;color:#e53e3e;background:#fff5f5;border:1px solid #fc8181;border-radius:6px;padding:8px 12px;margin-bottom:8px;">❌ 系統中找不到對應個案。勾選後仍可匯入（納入名單但暫無連結個案），或使用「手動連結個案」先行連結再確認。</div>`,
+    };
+    const emptyMap = { normal: '無正常資料', dup: '無重複資料', mismatch: '無姓名/學號不符資料', notfound: '無找不到個案的資料' };
+    const tabEntries  = _wdGetTabEntries(previewTab);
+    const tabIdxs     = tabEntries.map(e => entries.indexOf(e));
+    const tabSelCount = tabIdxs.filter(i => sel.has(i)).length;
+    const tbody = tabEntries.map(e => _wdMakeRow(e, entries.indexOf(e))).join('');
+    const tableHtml = tabEntries.length
+      ? `<table class="grad-import-table" style="width:100%;border-collapse:collapse;font-size:.85rem;">
+           <thead><tr id="wd-thead-row" style="background:#f7fafc;font-size:.8rem;position:sticky;top:0;">
+             <th style="width:30px;"><input type="checkbox" id="wd-sel-all-cb" title="全選/取消全選" onclick="window._wdToggleAll()"></th>
+             ${_sth('姓名','name')}${_sth('學號','sid')}<th>離校原因</th><th>狀態</th>
+           </tr></thead><tbody>${tbody}</tbody></table>`
+      : `<div style="padding:20px;text-align:center;color:#a0aec0;">${emptyMap[previewTab]}</div>`;
+    el.innerHTML = tabBtns + hintMap[previewTab] + tableHtml;
+    // sticky 頁籤列高度補偏
+    const tabsBarEl = el.querySelector('.gt-tabs-bar');
+    const theadEl   = document.getElementById('wd-thead-row');
+    if (tabsBarEl && theadEl) theadEl.style.top = tabsBarEl.offsetHeight + 'px';
+    // 全選 checkbox 三態
+    const headerCb = document.getElementById('wd-sel-all-cb');
+    if (headerCb && tabEntries.length > 0) {
+      headerCb.checked       = tabSelCount === tabEntries.length;
+      headerCb.indeterminate = tabSelCount > 0 && tabSelCount < tabEntries.length;
+    }
+    // 底部按鈕
+    const btn = document.getElementById('wd-confirm-btn');
+    if (btn) btn.textContent = `匯入 / 更新 ${sel.size} 筆`;
+    const selDupDecCount = [...sel].filter(i => entries[i]?.isDuplicate && entries[i]?._hasDecision).length;
+    const infoEl = document.getElementById('wd-sel-info');
+    if (infoEl) infoEl.textContent = selDupDecCount > 0 ? `（含 ${selDupDecCount} 筆將備份舊決議）` : '';
+  }
+
   document.getElementById('transfer-body').innerHTML = `
     <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:20px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-        <h3 style="font-size:1rem;color:#1a202c;">匯入教務處轉/退學名單（共 ${students.length} 筆）</h3>
+        <h3 style="font-size:1rem;color:#1a202c;">教務處轉/退學名單匯入（共 ${entries.length} 筆）</h3>
         <button onclick="renderTransferPage()" style="background:none;border:none;cursor:pointer;font-size:1.3rem;color:#718096;">&times;</button>
       </div>
-      ${students.some(s=>s._hasDecision)?'<div style="padding:8px 12px;background:#fff5f5;border:1px solid #fc8181;border-radius:6px;color:#c53030;font-size:.85rem;margin-bottom:8px;">🔴 紅色列已有決議，匯入時舊決議將備份至歷史記錄，決議重設為待決議。預設不勾選，請手動確認再勾選。</div>':''}
-      ${students.some(s=>s._dup&&!s._hasDecision)?'<div style="padding:8px 12px;background:#fff8e1;border-radius:6px;color:#d97706;font-size:.85rem;margin-bottom:8px;">⚠ 黃色列為本學期已有記錄（尚無決議），匯入時將更新姓名與離校原因。</div>':''}
       <div id="wd-import-list" style="max-height:60vh;overflow-y:auto;"></div>
-      <div style="margin-top:16px;display:flex;gap:10px;">
+      <div style="margin-top:14px;display:flex;gap:10px;align-items:center;">
         <button id="wd-confirm-btn" class="btn btn-primary" onclick="window._wdConfirm()">匯入</button>
         <button class="btn btn-secondary" onclick="renderTransferPage()">取消</button>
+        <span id="wd-sel-info" style="font-size:.82rem;color:#d97706;"></span>
       </div>
     </div>`;
-  render();
+  _wdRender();
+
+  // ── 寫入 ──
   window._wdConfirm = async () => {
-    const toImport = students.filter((_,i) => sel.has(i));
-    if (!toImport.length) { alert('未選取任何記錄'); return; }
+    const toImport = entries.filter((_, i) => sel.has(i));
+    if (!toImport.length) { alert('未選取任何列'); return; }
     const now = new Date().toISOString();
-    toImport.forEach(s => {
-      if (s._dup) {
-        const existing = transferData.find(t => t.type === 'withdraw' && t.semester === curSem && t.studentId === s.studentId && !t.deleted);
+    const sidUpdateCaseIds = [];
+    toImport.forEach(e => {
+      if (e.isDuplicate) {
+        // 重複：更新既有紀錄
+        const existing = transferData.find(t => t.type === 'withdraw' && t.semester === curSem && t.studentId === (e.originalSid || e.sid) && !t.deleted);
         if (existing) {
-          if (s._hasDecision) {
-            // 備份舊決議到歷史
+          if (e._hasDecision) {
+            // 舊決議備份到歷史
             const lc = _getLinkedCaseForWithdraw(existing);
             const gd = lc ? _getGradTransferDecision(lc.id, curSem) : null;
-            const oldDec = gd?.status || existing.decision || '';
-            const oldDate = gd?.schoolMeetingDate || existing.schoolMeetingDate || '';
-            const oldReason = gd?.noTransferReason || existing.noTransferReason || '';
+            const oldDec    = gd?.status || existing.decision || '';
+            const oldDate   = gd?.schoolMeetingDate || existing.schoolMeetingDate || '';
+            const oldReason = gd?.noTransferReason  || existing.noTransferReason  || '';
             if (oldDec && oldDec !== 'pending') {
               if (!existing.schoolMeetingHistory) existing.schoolMeetingHistory = [];
               existing.schoolMeetingHistory.push({ decision: oldDec, date: oldDate, noTransferReason: oldReason, recordedAt: now });
@@ -25451,20 +25643,35 @@ async function showWithdrawImportPreview(rows) {
               else { delete existing.decision; delete existing.schoolMeetingDate; delete existing.noTransferReason; }
             }
           }
-          if (s.name) existing.name = s.name;
-          if (s.departureReason !== undefined) existing.departureReason = s.departureReason;
-          existing.updatedAt = now;
-          existing.updatedBy = currentUser?.email;
+          if (e.name) existing.name = e.name;
+          existing.departureReason = e.departureReason || '';
+          existing.updatedAt = now; existing.updatedBy = currentUser?.email;
         }
       } else {
-        const rec = { id: 'wd_' + Date.now() + '_' + Math.random().toString(36).slice(2), type: 'withdraw', name: s.name, studentId: s.studentId, semester: curSem, createdAt: now, createdBy: currentUser?.email, createdByName: currentUser?.name };
-        if (s.departureReason) rec.departureReason = s.departureReason;
+        // 新增（含 notfound、mismatch 已處理的）
+        if (e.forceType === 'update_sid' && e.mc && e.sid && e.sid !== e.mc.studentId) {
+          e.mc.studentId = e.sid; sidUpdateCaseIds.push(e.mc.id);
+        }
+        const rec = {
+          id: 'wd_' + Date.now() + '_' + Math.random().toString(36).slice(2),
+          type: 'withdraw', semester: curSem,
+          name: e.name, studentId: e.sid,
+          createdAt: now, createdBy: currentUser?.email, createdByName: currentUser?.name,
+        };
+        if (e.departureReason) rec.departureReason = e.departureReason;
         transferData.push(rec);
       }
     });
     renderTransferPage();
-    const jobId = bgJobAdd(`匯入教務處轉/退學名單（${toImport.length}筆）`);
-    (async () => { try { await saveTransfer(); bgJobDone(jobId); auditLog('匯入教務處轉/退學名單', null, null, `${toImport.length}筆`); } catch(e) { bgJobFail(jobId, e.message); } })();
+    const total = toImport.length;
+    const jobId = bgJobAdd(`匯入教務處轉/退學名單（${total}筆）`);
+    (async () => { try {
+      await saveTransfer();
+      if (sidUpdateCaseIds.length) await saveCasesChunks(...sidUpdateCaseIds);
+      _checkTransferGradTodos();
+      bgJobDone(jobId);
+      auditLog('匯入教務處轉/退學名單', null, null, `${total}筆${sidUpdateCaseIds.length ? `（含 ${sidUpdateCaseIds.length} 筆學號更新）` : ''}`);
+    } catch (e2) { bgJobFail(jobId, e2.message); } })();
   };
 }
 
