@@ -25582,9 +25582,13 @@ function _renderWithdrawTab(allWithdraw) {
     : '';
 
   const deletedRecs = allWithdraw.filter(r => r.semester === semToUse && r.deleted);
-  const isAdmin = currentUser && (configData?.users?.[currentUser.email]?.isAdmin || configData?.users?.[currentUser.email]?.extraRole === '管理者' || configData?.users?.[currentUser.email]?.role === '主任');
-  const deletedSection = (isAdmin && deletedRecs.length > 0) ? (() => {
-    const dRows = deletedRecs.map(r => {
+  const myEmail = currentUser?.email;
+  const isAdmin = currentUser && (configData?.users?.[myEmail]?.isAdmin || configData?.users?.[myEmail]?.extraRole === '管理者' || configData?.users?.[myEmail]?.role === '主任');
+  // 管理者看全部；一般使用者只看自己主責個案被刪的
+  const visibleDeleted = isAdmin ? deletedRecs : deletedRecs.filter(r => { const lc = getLinkedCase(r); return lc && lc.counselorEmail === myEmail; });
+  const deletedSection = visibleDeleted.length > 0 ? (() => {
+    const noteText = isAdmin ? '管理者可見全部・30天後自動清除' : '顯示您的主責個案・30天後自動清除';
+    const dRows = visibleDeleted.map(r => {
       const lc = getLinkedCase(r);
       const dDays = r.deletedAt ? Math.ceil((Date.now() - new Date(r.deletedAt).getTime()) / 86400000) : 0;
       const remainDays = Math.max(0, 30 - dDays);
@@ -25597,13 +25601,13 @@ function _renderWithdrawTab(allWithdraw) {
         <td style="padding:7px 10px;color:${remainDays<=7?'#c53030':'#718096'};">${remainDays} 天</td>
         <td style="padding:7px 10px;">
           <button class="btn btn-secondary btn-sm" onclick="rbRestoreTransfer('${escHtml(r.id)}')">復原</button>
-          <button class="btn btn-danger btn-sm" style="margin-left:4px;" onclick="rbPurgeTransfer('${escHtml(r.id)}')">永久刪除</button>
+          ${isAdmin ? `<button class="btn btn-danger btn-sm" style="margin-left:4px;" onclick="rbPurgeTransfer('${escHtml(r.id)}')">永久刪除</button>` : ''}
         </td>
       </tr>`;
     }).join('');
-    return `<details style="margin-top:14px;border:1px solid #fed7d7;border-radius:8px;overflow:hidden;">
+    return `<details style="margin-bottom:14px;border:1px solid #fed7d7;border-radius:8px;overflow:hidden;">
       <summary style="padding:10px 14px;background:#fff5f5;color:#c53030;font-weight:600;cursor:pointer;font-size:.88rem;list-style:none;display:flex;align-items:center;gap:6px;">
-        ▶ 已刪除記錄（${deletedRecs.length}）<span style="font-size:.78rem;font-weight:400;color:#a0aec0;">— 僅管理者可見，30天後自動清除</span>
+        ▶ 已刪除記錄（${visibleDeleted.length}）<span style="font-size:.78rem;font-weight:400;color:#a0aec0;">— ${noteText}</span>
       </summary>
       <div style="overflow-x:auto;">
         <table style="width:100%;border-collapse:collapse;font-size:.85rem;">
@@ -25622,7 +25626,7 @@ function _renderWithdrawTab(allWithdraw) {
     </details>`;
   })() : '';
 
-  return filterBar + actionBar + `<div id="wd-results-body">${statsBar}${batchBar}${rows || emptyMsg}</div>${deletedSection}`;
+  return filterBar + actionBar + `<div id="wd-results-body">${statsBar}${batchBar}${deletedSection}${rows || emptyMsg}</div>`;
 }
 
 function _openWithdrawManualAdd() {
