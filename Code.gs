@@ -603,20 +603,36 @@ function fetchMentalLeaves_(ctx) {
 
       // ── 解析主旨
       var studentId = '', name = '', department = '', reason = '', semester = '';
-      var m1 = subject.match(/([A-Z0-9a-z]{8,12})[_\s]*([^\s_（(]+)[_\s]*([^\s_（(]+)[_\s]*(.+)?/);
-      var m2 = subject.match(/([^\s（(]+)（([A-Z0-9]{8,12})）/);
-      var m3 = subject.match(/學號[：:]\s*([A-Z0-9]{8,12})/);
-      if (m3) {
-        studentId = m3[1].trim();
-      } else if (m1 && /[A-Z]/.test(m1[1]) && m1[1].length >= 8) {
-        studentId = m1[1].trim(); name = m1[2].trim(); department = m1[3].trim();
-        if (m1[4]) reason = m1[4].trim();
-      } else if (m2) {
-        name = m2[1].trim(); studentId = m2[2].trim();
+      var leaveDate = '', course = '';
+
+      // NPUST 學生線上請假系統格式：
+      // 學號:[ID] [姓名] [班級]學生請身心調適假累計達N日，...因 [reason] ，申請 身心調適假從[date]至[date]
+      var mId = subject.match(/學號[:：]\s*([A-Z0-9]{7,12})/);
+      if (mId) {
+        studentId = mId[1].trim();
+        var mN = subject.match(new RegExp(studentId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s+([^\\s　]+)'));
+        if (mN) name = mN[1].trim();
+        var mDp = subject.match(/([^\s　，,。]+)\s*學生請/);
+        if (mDp) department = mDp[1].trim();
+        var mRs = subject.match(/因\s+(.+?)\s*[，,]\s*申請/);
+        if (mRs) reason = mRs[1].trim();
+        var mDt = subject.match(/身心調適假從\s*([\d\/]+)至\s*([\d\/]+)/);
+        if (mDt) {
+          leaveDate = mDt[1].trim();
+          if (mDt[2] && mDt[2] !== mDt[1]) leaveDate += '~' + mDt[2].trim();
+        }
+      } else {
+        var m1 = subject.match(/([A-Z0-9a-z]{8,12})[_\s]*([^\s_（(]+)[_\s]*([^\s_（(]+)[_\s]*(.+)?/);
+        var m2 = subject.match(/([^\s（(]+)（([A-Z0-9]{8,12})）/);
+        if (m1 && /[A-Z]/.test(m1[1]) && m1[1].length >= 8) {
+          studentId = m1[1].trim(); name = m1[2].trim(); department = m1[3].trim();
+          if (m1[4]) reason = m1[4].trim();
+        } else if (m2) {
+          name = m2[1].trim(); studentId = m2[2].trim();
+        }
       }
 
-      // 從 HTML body 解析欄位
-      var leaveDate = '', course = '';
+      // 從 HTML body 解析欄位（fallback，主旨已有的欄位不覆蓋）
       try {
         var rows = [];
         var tableRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
@@ -654,6 +670,19 @@ function fetchMentalLeaves_(ctx) {
         }
       } catch(parseErr) {
         Logger.log('解析信件 body 失敗：' + msgId + ' / ' + parseErr.message);
+      }
+
+      // 從 body 提取課程名稱（NPUST 明細格式：流水號 課程名稱 請假日 星期 節次）
+      if (!course) {
+        try {
+          var bodyText = plainBody || htmlBody.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
+          var cNames = [], cRe = /\d{4,6}\s+([^\d\s\n][^\n\r]+?)\s+\d{4}\/\d{1,2}\/\d{1,2}/g, cM;
+          while ((cM = cRe.exec(bodyText)) !== null) {
+            var cn = cM[1].trim();
+            if (cn && cNames.indexOf(cn) === -1) cNames.push(cn);
+          }
+          if (cNames.length) course = cNames.join('；');
+        } catch(e2) {}
       }
 
       if (!studentId && !name) return;
