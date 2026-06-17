@@ -27870,19 +27870,24 @@ function initSidebarDrag() {
 function saveSidebarOrder() {
   document.querySelectorAll('.sidebar-section').forEach((section, si) => {
     const ids = [...section.querySelectorAll('.nav-item')].map(n => n.dataset.navId).filter(Boolean);
+    if (!ids.length) return;
     localStorage.setItem('scc_nav_order_' + si, JSON.stringify(ids));
     syncUserPref_({ ['navOrder_' + si]: ids });
+    console.log('[navOrder] saved section', si, ids);
   });
 }
 
 function restoreSidebarOrder() {
   document.querySelectorAll('.sidebar-section').forEach((section, si) => {
-    let ids = _userPref_('navOrder_' + si);
-    if (!ids) {
-      const saved = localStorage.getItem('scc_nav_order_' + si);
-      if (!saved) return;
-      try { ids = JSON.parse(saved); } catch(_) { return; }
-    }
+    // localStorage is the primary source (immediate, always reliable after save)
+    // Drive prefs are secondary (cross-device sync, may lag)
+    const lsRaw = localStorage.getItem('scc_nav_order_' + si);
+    let lsIds = null;
+    if (lsRaw) { try { lsIds = JSON.parse(lsRaw); } catch(_) {} }
+    const driveIds = _userPref_('navOrder_' + si);
+    // Prefer whichever has more items (more complete), fallback to either
+    let ids = (lsIds?.length >= (driveIds?.length || 0)) ? lsIds : (driveIds?.length ? driveIds : lsIds);
+    console.log('[navOrder] restore section', si, 'ls=', lsIds, 'drive=', driveIds, 'using=', ids);
     if (!ids?.length) return;
     const itemMap = {};
     section.querySelectorAll('.nav-item').forEach(n => { if (n.dataset.navId) itemMap[n.dataset.navId] = n; });
