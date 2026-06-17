@@ -20,6 +20,11 @@ function doPost(e) {
     const payload = JSON.parse(e.parameter.payload);
     const { idToken, action, rootFolderId, ...params } = payload;
 
+    // OAuth2 code exchange 不需要 idToken（code 本身即為授權證明）
+    if (action === 'exchangeNpust5OAuthCode') {
+      return jsonResp_(exchangeNpust5OAuthCode_(params));
+    }
+
     const userEmail = verifyIdToken_(idToken);
     if (!userEmail) return jsonResp_({ error: 'Unauthorized' });
 
@@ -57,6 +62,7 @@ function doPost(e) {
       case 'fetchMentalLeaves':    result = fetchMentalLeaves_(ctx); break;
       case 'getNpust5AuthUrl':     result = getAuthUrlNpust5_(); break;
       case 'dumpNpust5Emails':     result = dumpNpust5Emails_(ctx); break;
+      case 'listInboxEmails':      result = listInboxEmails_(ctx); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
     return jsonResp_(result);
@@ -67,6 +73,10 @@ function doPost(e) {
 }
 
 function doGet(e) {
+  // Handle OAuth2 callback for npust5 Gmail
+  if (e && e.parameter && e.parameter.code) {
+    return npust5HandleOAuthCallback_(e);
+  }
   return jsonResp_({ ok: true, service: 'SCC Drive Proxy' });
 }
 
@@ -541,11 +551,10 @@ function runFetchMentalLeaves() {
 
 // 核心解析函式（由 doPost 或觸發器呼叫）
 function fetchMentalLeaves_(ctx) {
-  var service = getNpust5OAuthService_();
-  if (!service.hasAccess()) {
-    return { needsAuth: true, authUrl: service.getAuthorizationUrl() };
+  var token = npust5GetAccessToken_();
+  if (!token) {
+    return { needsAuth: true, authUrl: npust5BuildAuthUrl_() };
   }
-  var token = service.getAccessToken();
 
   // 1. 讀取現有紀錄（用於去重）
   var existingData = { records: [] };
@@ -702,11 +711,10 @@ function fetchMentalLeaves_(ctx) {
 
 // ── 廣域擷取信件供關鍵字分析（dump 至 Drive）
 function dumpNpust5Emails_(ctx) {
-  var service = getNpust5OAuthService_();
-  if (!service.hasAccess()) {
-    return { needsAuth: true, authUrl: service.getAuthorizationUrl() };
+  var token = npust5GetAccessToken_();
+  if (!token) {
+    return { needsAuth: true, authUrl: npust5BuildAuthUrl_() };
   }
-  var token = service.getAccessToken();
 
   var query = '(subject:請假 OR subject:身心調適 OR subject:缺課 OR subject:假單 OR subject:假條) newer_than:365d';
   var searchData = gmailApi_(token, '/messages?q=' + encodeURIComponent(query) + '&maxResults=100');
@@ -747,53 +755,182 @@ function dumpNpust5Emails_(ctx) {
   return { count: emails.length };
 }
 
-// ══════════════════════════════════════════════
-//  npust5 Gmail OAuth2
-// ══════════════════════════════════════════════
-
-// 初次設定：在 GAS Project Settings → Script Properties 加入：
-//   NPUST5_CLIENT_ID     = <OAuth2 client ID>
-//   NPUST5_CLIENT_SECRET = <OAuth2 client secret>
-
-function getNpust5OAuthService_() {
-  var props = PropertiesService.getScriptProperties();
-  var cid = props.getProperty('NPUST5_CLIENT_ID');
-  var cs  = props.getProperty('NPUST5_CLIENT_SECRET');
-  if (!cid || !cs) throw new Error('請先在 Script Properties 設定 NPUST5_CLIENT_ID 與 NPUST5_CLIENT_SECRET');
-  return OAuth2.createService('npust5Gmail')
-    .setAuthorizationBaseUrl('https://accounts.google.com/o/oauth2/auth')
-    .setTokenUrl('https://oauth2.googleapis.com/token')
-    .setClientId(cid)
-    .setClientSecret(cs)
-    .setCallbackFunction('authCallbackNpust5_')
-    .setPropertyStore(PropertiesService.getScriptProperties())
-    .setScope('https://www.googleapis.com/auth/gmail.modify')
-    .setParam('login_hint', 'heartnpust5@gmail.com')
-    .setParam('access_type', 'offline')
-    .setParam('prompt', 'consent');
+// ── 可直接在 GAS 編輯器執行的 wrapper（寫到 dev 資料夾）
+function runDumpNpust5Emails() {
+  var ctx = { rootFolderId: '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' };
+  var result = dumpNpust5Emails_(ctx);
+  Logger.log('dump 完成，共 ' + result.count + ' 封信，已寫入 ml_email_dump.json');
 }
 
-// 取得授權 URL（由 doPost 'getNpust5AuthUrl' 呼叫，也可直接在 GAS console 執行）
+// ── 列出 inbox 最近 50 封信（不過濾主旨），doPost action 版
+function listInboxEmails_(ctx) {
+  var token = npust5GetAccessToken_();
+  if (!token) return { needsAuth: true, authUrl: npust5BuildAuthUrl_() };
+  var searchData = gmailApi_(token, '/messages?maxResults=50&labelIds=INBOX');
+  var messages = searchData.messages || [];
+  var emails = [];
+  messages.forEach(function(m) {
+    try {
+      var msg = gmailApi_(token, '/messages/' + m.id + '?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date');
+      var subject = '', from = '', date = '';
+      (msg.payload.headers || []).forEach(function(h) {
+        if (h.name === 'Subject') subject = h.value;
+        else if (h.name === 'From') from = h.value;
+        else if (h.name === 'Date') date = h.value;
+      });
+      emails.push({ id: m.id, subject: subject, from: from, date: date, snippet: msg.snippet || '' });
+    } catch(e) { emails.push({ id: m.id, error: e.message }); }
+  });
+  var dump = { dumpedAt: new Date().toISOString(), count: emails.length, emails: emails };
+  try {
+    updateJson_({ path: 'ml_inbox_list.json', content: dump }, ctx);
+  } catch(e) {
+    var pi = resolvePathToParentAndName_('ml_inbox_list.json', ctx);
+    driveUpload_('ml_inbox_list.json', dump, pi.parentId);
+  }
+  return { count: emails.length, emails: emails };
+}
+
+// ── 列出 inbox 最近 50 封信（不過濾主旨），診斷用（GAS 編輯器直接執行）
+function runListRecentEmails() {
+  var token = npust5GetAccessToken_();
+  if (!token) { Logger.log('尚未授權'); return; }
+  var ctx = { root: '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx', configOverride: null };
+  var searchData = gmailApi_(token, '/messages?maxResults=50&labelIds=INBOX');
+  var messages = searchData.messages || [];
+  Logger.log('inbox 共 ' + messages.length + ' 封（最多50）');
+  var emails = [];
+  messages.forEach(function(m) {
+    try {
+      var msg = gmailApi_(token, '/messages/' + m.id + '?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date');
+      var subject = '', from = '', date = '';
+      (msg.payload.headers || []).forEach(function(h) {
+        if (h.name === 'Subject') subject = h.value;
+        else if (h.name === 'From') from = h.value;
+        else if (h.name === 'Date') date = h.value;
+      });
+      emails.push({ id: m.id, subject: subject, from: from, date: date, snippet: msg.snippet || '' });
+      Logger.log('[' + date + '] ' + subject + ' | from: ' + from);
+    } catch(e) { Logger.log('error: ' + e.message); }
+  });
+  var dump = { dumpedAt: new Date().toISOString(), count: emails.length, emails: emails };
+  try {
+    updateJson_({ path: 'ml_inbox_list.json', content: dump }, ctx);
+  } catch(e) {
+    var pi = resolvePathToParentAndName_('ml_inbox_list.json', ctx);
+    driveUpload_('ml_inbox_list.json', dump, pi.parentId);
+  }
+  Logger.log('已寫入 ml_inbox_list.json');
+}
+
+// ══════════════════════════════════════════════
+//  npust5 Gmail OAuth2（手動實作）
+// ══════════════════════════════════════════════
+
+var NPUST5_REDIR_  = 'https://npustscc.github.io/scc-infosys/dev/oauth-callback.html';
+
+// 憑證存放於 Script Properties（不寫死在原始碼）：
+//   NPUST5_CID — OAuth2 Client ID for heartnpust5@gmail.com
+//   NPUST5_CS  — OAuth2 Client Secret
+function npust5Cid_() { return PropertiesService.getScriptProperties().getProperty('NPUST5_CID') || ''; }
+function npust5Cs_()  { return PropertiesService.getScriptProperties().getProperty('NPUST5_CS')  || ''; }
+
+function npust5BuildAuthUrl_() {
+  var state = Utilities.getUuid();
+  PropertiesService.getScriptProperties().setProperty('NPUST5_OAUTH_STATE', state);
+  return 'https://accounts.google.com/o/oauth2/auth?' + [
+    'client_id='    + encodeURIComponent(npust5Cid_()),
+    'redirect_uri=' + encodeURIComponent(NPUST5_REDIR_),
+    'response_type=code',
+    'scope='        + encodeURIComponent('https://www.googleapis.com/auth/gmail.modify'),
+    'access_type=offline', 'prompt=select_account%20consent',
+    'login_hint='   + encodeURIComponent('heartnpust5@gmail.com'),
+    'state='        + state
+  ].join('&');
+}
+
+function npust5HandleOAuthCallback_(e) {
+  var code = e.parameter.code;
+  if (!code) return HtmlService.createHtmlOutput('❌ 授權失敗：缺少 code');
+  try {
+    var r = UrlFetchApp.fetch('https://oauth2.googleapis.com/token', {
+      method: 'post',
+      payload: { code: code, client_id: npust5Cid_(), client_secret: npust5Cs_(),
+                 redirect_uri: NPUST5_REDIR_, grant_type: 'authorization_code' },
+      muteHttpExceptions: true
+    });
+    var t = JSON.parse(r.getContentText());
+    if (t.access_token) {
+      var p = PropertiesService.getScriptProperties();
+      p.setProperty('NPUST5_ACCESS_TOKEN', t.access_token);
+      p.setProperty('NPUST5_EXPIRY', String(Date.now() + (t.expires_in || 3600) * 1000));
+      if (t.refresh_token) p.setProperty('NPUST5_REFRESH_TOKEN', t.refresh_token);
+      return HtmlService.createHtmlOutput('<h3 style="font-family:sans-serif;color:#059669;">✅ npust5 Gmail 授權成功，可關閉此視窗。</h3>');
+    }
+    return HtmlService.createHtmlOutput('❌ 授權失敗：' + JSON.stringify(t));
+  } catch(err) {
+    return HtmlService.createHtmlOutput('❌ 錯誤：' + err.message);
+  }
+}
+
+function npust5GetAccessToken_() {
+  var p = PropertiesService.getScriptProperties();
+  var tok = p.getProperty('NPUST5_ACCESS_TOKEN');
+  var exp = parseInt(p.getProperty('NPUST5_EXPIRY') || '0');
+  if (tok && Date.now() < exp - 300000) return tok;
+  var rt = p.getProperty('NPUST5_REFRESH_TOKEN');
+  if (!rt) return null;
+  try {
+    var r = UrlFetchApp.fetch('https://oauth2.googleapis.com/token', {
+      method: 'post',
+      payload: { refresh_token: rt, client_id: npust5Cid_(), client_secret: npust5Cs_(), grant_type: 'refresh_token' },
+      muteHttpExceptions: true
+    });
+    var t = JSON.parse(r.getContentText());
+    if (t.access_token) {
+      p.setProperty('NPUST5_ACCESS_TOKEN', t.access_token);
+      p.setProperty('NPUST5_EXPIRY', String(Date.now() + (t.expires_in || 3600) * 1000));
+      return t.access_token;
+    }
+    p.deleteProperty('NPUST5_ACCESS_TOKEN'); p.deleteProperty('NPUST5_REFRESH_TOKEN');
+    return null;
+  } catch(e) { return null; }
+}
+
+// 由 doPost 'exchangeNpust5OAuthCode' 呼叫（不需 idToken）
+function exchangeNpust5OAuthCode_(params) {
+  var code = params.code;
+  if (!code) return { ok: false, error: '缺少 code' };
+  try {
+    var r = UrlFetchApp.fetch('https://oauth2.googleapis.com/token', {
+      method: 'post',
+      payload: { code: code, client_id: npust5Cid_(), client_secret: npust5Cs_(),
+                 redirect_uri: NPUST5_REDIR_, grant_type: 'authorization_code' },
+      muteHttpExceptions: true
+    });
+    var t = JSON.parse(r.getContentText());
+    if (t.access_token) {
+      var p = PropertiesService.getScriptProperties();
+      p.setProperty('NPUST5_ACCESS_TOKEN', t.access_token);
+      p.setProperty('NPUST5_EXPIRY', String(Date.now() + (t.expires_in || 3600) * 1000));
+      if (t.refresh_token) p.setProperty('NPUST5_REFRESH_TOKEN', t.refresh_token);
+      return { ok: true };
+    }
+    return { ok: false, error: t.error_description || t.error || JSON.stringify(t) };
+  } catch(err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+// 由 doPost 'getNpust5AuthUrl' 呼叫
 function getAuthUrlNpust5_() {
-  var service = getNpust5OAuthService_();
-  if (service.hasAccess()) return { authorized: true };
-  var url = service.getAuthorizationUrl();
-  Logger.log('授權網址：' + url);
-  return { authorized: false, authUrl: url };
-}
-
-// OAuth2 callback（GAS 自動路由至此）
-function authCallbackNpust5_(request) {
-  var service = getNpust5OAuthService_();
-  var ok = service.handleCallback(request);
-  return HtmlService.createHtmlOutput(
-    ok ? '<h3 style="font-family:sans-serif;color:#059669;">✅ npust5 Gmail 授權成功，可關閉此視窗。</h3>'
-       : '<h3 style="font-family:sans-serif;color:#dc2626;">❌ 授權失敗，請重試。</h3>'
-  );
+  if (npust5GetAccessToken_()) return { authorized: true };
+  return { authorized: false, authUrl: npust5BuildAuthUrl_() };
 }
 
 function revokeNpust5Auth_() {
-  getNpust5OAuthService_().reset();
+  var p = PropertiesService.getScriptProperties();
+  ['NPUST5_ACCESS_TOKEN','NPUST5_REFRESH_TOKEN','NPUST5_EXPIRY','NPUST5_OAUTH_STATE'].forEach(function(k){ p.deleteProperty(k); });
   Logger.log('npust5 授權已撤銷。');
 }
 
