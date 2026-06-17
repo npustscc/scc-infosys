@@ -63,6 +63,7 @@ function doPost(e) {
       case 'getNpust5AuthUrl':     result = getAuthUrlNpust5_(); break;
       case 'dumpNpust5Emails':     result = dumpNpust5Emails_(ctx); break;
       case 'listInboxEmails':      result = listInboxEmails_(ctx); break;
+      case 'clearMentalLeaves':    result = clearMentalLeaves_(ctx); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
     return jsonResp_(result);
@@ -753,6 +754,31 @@ function dumpNpust5Emails_(ctx) {
     } catch(e2) { Logger.log('dump 寫入失敗: ' + e2.message); }
   }
   return { count: emails.length };
+}
+
+// ── 清空身心調適假資料（僅限測試版，由前端確認後呼叫）
+function clearMentalLeaves_(ctx) {
+  var token = npust5GetAccessToken_();
+  var removedLabels = 0;
+  if (token) {
+    try {
+      var labelData = gmailApi_(token, '/labels');
+      var processed = (labelData.labels || []).filter(function(l) { return l.name === 'ml-processed'; })[0];
+      if (processed) {
+        var tagged = gmailApi_(token, '/messages?labelIds=' + processed.id + '&maxResults=500');
+        (tagged.messages || []).forEach(function(m) {
+          try { gmailApi_(token, '/messages/' + m.id + '/modify', 'post', { removeLabelIds: [processed.id] }); removedLabels++; } catch(e) {}
+        });
+      }
+    } catch(e) { Logger.log('移除 ml-processed label 失敗: ' + e.message); }
+  }
+  try {
+    updateJson_({ path: 'mental_leaves.json', content: { records: [] } }, ctx);
+  } catch(e) {
+    var pi = resolvePathToParentAndName_('mental_leaves.json', ctx);
+    driveUpload_('mental_leaves.json', { records: [] }, pi.parentId);
+  }
+  return { ok: true, removedLabels: removedLabels };
 }
 
 // ── 可直接在 GAS 編輯器執行的 wrapper（寫到 dev 資料夾）
