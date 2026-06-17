@@ -54,6 +54,9 @@ function doPost(e) {
       case 'listCalendarEvents':   result = listCalendarEvents_(params, ctx); break;
       case 'uploadFile':           result = uploadFile_(params); break;
       case 'downloadFileBase64':   result = downloadFileBase64_(params); break;
+      case 'fetchMentalLeaves':    result = fetchMentalLeaves_(ctx); break;
+      case 'getNpust5AuthUrl':     result = getAuthUrlNpust5_(); break;
+      case 'dumpNpust5Emails':     result = dumpNpust5Emails_(ctx); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
     return jsonResp_(result);
@@ -508,4 +511,357 @@ function listCalendarEvents_({ startDate, endDate }, ctx) {
     description:  e.getDescription() || '',
     lastModified: e.getLastUpdated().toISOString(),
   }));
+}
+
+// ══════════════════════════════════════════════
+//  身心調適假：信箱解析與關鍵字比對
+//
+//  【前置設定說明】
+//  本函式使用 GmailApp 存取腳本擁有者的 Gmail 信箱。
+//  若請假信件送至 heartnpust5@gmail.com，請擇一完成下列設定後再使用：
+//    方法 A：在 heartnpust5@gmail.com 設定「自動轉寄」至本腳本擁有者信箱
+//    方法 B：在 Gmail 設定中授予本腳本擁有者「委託存取」(Grant access) 權限
+//    方法 C：將本 Apps Script 專案搬移至 heartnpust5@gmail.com 帳號執行
+//
+//  時間觸發器設定（每小時自動執行一次）：
+//    在 Apps Script「觸發器」頁面，新增 runFetchMentalLeaves 函式，選擇「時間驅動 > 小時計時器」
+// ══════════════════════════════════════════════
+
+// 時間觸發器入口（無需 idToken，直接呼叫所有已允許的根目錄）
+function runFetchMentalLeaves() {
+  Object.keys(ALLOWED_ROOTS).forEach(function(rootId) {
+    try {
+      var ctx = { root: rootId, configOverride: ALLOWED_ROOTS[rootId].configOverride };
+      fetchMentalLeaves_(ctx);
+    } catch(e) {
+      Logger.log('fetchMentalLeaves 失敗 [' + rootId + ']: ' + e.message);
+    }
+  });
+}
+
+// 核心解析函式（由 doPost 或觸發器呼叫）
+function fetchMentalLeaves_(ctx) {
+  var service = getNpust5OAuthService_();
+  if (!service.hasAccess()) {
+    return { needsAuth: true, authUrl: service.getAuthorizationUrl() };
+  }
+  var token = service.getAccessToken();
+
+  // 1. 讀取現有紀錄（用於去重）
+  var existingData = { records: [] };
+  try {
+    var mlFileId = resolvePathToId_('mental_leaves.json', ctx);
+    var mlRes = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + mlFileId + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (mlRes.getResponseCode() === 200) {
+      existingData = JSON.parse(mlRes.getContentText());
+      if (!Array.isArray(existingData.records)) existingData.records = [];
+    }
+  } catch(e) {}
+
+  // 2. 讀取關鍵字庫
+  var keywords = loadMlKeywords_(ctx);
+
+  // 3. 搜尋未處理的請假信件（Gmail REST API）
+  var processedLabelId = gmailGetOrCreateLabel_(token, 'ml-processed');
+  var query = 'subject:(請假 OR 身心調適假 OR 缺課) -label:ml-processed';
+  var searchData = gmailApi_(token, '/messages?q=' + encodeURIComponent(query) + '&maxResults=50');
+  var messages = searchData.messages || [];
+
+  var newRecords = [];
+  var existingSet = {};
+  existingData.records.forEach(function(r) { if (r.emailId) existingSet[r.emailId] = true; });
+
+  messages.forEach(function(m) {
+    try {
+      var msgId = m.id;
+      if (existingSet[msgId]) return;
+
+      var msg = gmailApi_(token, '/messages/' + msgId + '?format=full');
+      var subject = '', fromHdr = '';
+      (msg.payload.headers || []).forEach(function(h) {
+        var n = h.name.toLowerCase();
+        if (n === 'subject') subject = h.value || '';
+        else if (n === 'from') fromHdr = h.value || '';
+      });
+
+      var bodies = gmailDecodeBody_(msg.payload);
+      var plainBody = bodies.text || '';
+      var htmlBody  = bodies.html || '';
+
+      // ── 解析主旨
+      var studentId = '', name = '', department = '', reason = '', semester = '';
+      var m1 = subject.match(/([A-Z0-9a-z]{8,12})[_\s]*([^\s_（(]+)[_\s]*([^\s_（(]+)[_\s]*(.+)?/);
+      var m2 = subject.match(/([^\s（(]+)（([A-Z0-9]{8,12})）/);
+      var m3 = subject.match(/學號[：:]\s*([A-Z0-9]{8,12})/);
+      if (m3) {
+        studentId = m3[1].trim();
+      } else if (m1 && /[A-Z]/.test(m1[1]) && m1[1].length >= 8) {
+        studentId = m1[1].trim(); name = m1[2].trim(); department = m1[3].trim();
+        if (m1[4]) reason = m1[4].trim();
+      } else if (m2) {
+        name = m2[1].trim(); studentId = m2[2].trim();
+      }
+
+      // 從 HTML body 解析欄位
+      var leaveDate = '', course = '';
+      try {
+        var rows = [];
+        var tableRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+        var trMatch;
+        while ((trMatch = tableRe.exec(htmlBody)) !== null) {
+          var cells = [];
+          var cellRe = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
+          var tdMatch;
+          while ((tdMatch = cellRe.exec(trMatch[1])) !== null) {
+            cells.push(tdMatch[1].replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&lt;/g,'<').replace(/&gt;/g,'>').trim());
+          }
+          if (cells.length >= 2) rows.push(cells);
+        }
+        rows.forEach(function(cells) {
+          var label = cells[0] || '', val = cells[1] || '';
+          if (!studentId  && /學號/.test(label))       studentId  = val.trim();
+          if (!name       && /姓名/.test(label))        name       = val.trim();
+          if (!department && /系所|科系|班級/.test(label)) department = val.trim();
+          if (!reason     && /原因|緣由|事由/.test(label)) reason     = val.trim();
+          if (!leaveDate  && /日期|請假日/.test(label))  leaveDate  = val.trim();
+          if (!course     && /課程|科目/.test(label))   course     = val.trim();
+          if (!semester   && /學期/.test(label))        semester   = val.trim();
+        });
+        if (!studentId) {
+          var sidMatch = (plainBody + htmlBody.replace(/<[^>]+>/g, '')).match(/學號[：:\s]*([A-Z0-9]{8,12})/);
+          if (sidMatch) studentId = sidMatch[1].trim();
+        }
+        if (!name) {
+          var nameMatch = plainBody.match(/姓名[：:\s]*([^\s\n\r,，、]{2,6})/);
+          if (nameMatch) name = nameMatch[1].trim();
+        }
+        if (!reason) {
+          var rMatch = plainBody.match(/(?:原因|緣由|事由)[：:\s]*([^\n\r]{2,80})/);
+          if (rMatch) reason = rMatch[1].trim();
+        }
+      } catch(parseErr) {
+        Logger.log('解析信件 body 失敗：' + msgId + ' / ' + parseErr.message);
+      }
+
+      if (!studentId && !name) return;
+
+      // ── 關鍵字比對（含主旨 + 原因 + 正文）
+      var matchedKeywords = [];
+      var maxLevel = 0;
+      var fullText = subject + ' ' + reason + ' ' + plainBody;
+      keywords.forEach(function(k) {
+        if (fullText.indexOf(k.kw) !== -1) {
+          matchedKeywords.push({ kw: k.kw, level: k.level });
+          if (k.level > maxLevel) maxLevel = k.level;
+        }
+      });
+
+      // ── 學期推算
+      if (!semester) {
+        var rd = msg.internalDate ? new Date(parseInt(msg.internalDate)) : new Date();
+        var rocY = rd.getFullYear() - 1911;
+        var mon  = rd.getMonth() + 1;
+        semester = mon >= 8 ? rocY + '1' : (mon === 1 ? (rocY-1) + '1' : (rocY-1) + '2');
+      }
+
+      var receivedAt = msg.internalDate ? new Date(parseInt(msg.internalDate)).toISOString() : new Date().toISOString();
+      newRecords.push({
+        id: 'ml_' + msgId, emailId: msgId,
+        studentId: studentId, name: name, department: department,
+        reason: reason, leaveDate: leaveDate, course: course,
+        semester: String(semester), matchedKeywords: matchedKeywords,
+        riskLevel: maxLevel, receivedAt: receivedAt, parsedAt: new Date().toISOString(),
+      });
+      existingSet[msgId] = true;
+
+      // 標記為已處理
+      if (processedLabelId) {
+        try { gmailApi_(token, '/messages/' + msgId + '/modify', 'post', { addLabelIds: [processedLabelId] }); } catch(e) {}
+      }
+    } catch(msgErr) {
+      Logger.log('處理信件失敗：' + msgErr.message);
+    }
+  });
+
+  // 4. 寫回 Drive
+  if (newRecords.length) {
+    existingData.records = existingData.records.concat(newRecords);
+    try {
+      updateJson_({ path: 'mental_leaves.json', content: existingData }, ctx);
+    } catch(e) {
+      var parentInfo = resolvePathToParentAndName_('mental_leaves.json', ctx);
+      driveUpload_('mental_leaves.json', existingData, parentInfo.parentId);
+    }
+  }
+
+  return { newCount: newRecords.length, totalCount: existingData.records.length };
+}
+
+// ── 廣域擷取信件供關鍵字分析（dump 至 Drive）
+function dumpNpust5Emails_(ctx) {
+  var service = getNpust5OAuthService_();
+  if (!service.hasAccess()) {
+    return { needsAuth: true, authUrl: service.getAuthorizationUrl() };
+  }
+  var token = service.getAccessToken();
+
+  var query = '(subject:請假 OR subject:身心調適 OR subject:缺課 OR subject:假單 OR subject:假條) newer_than:365d';
+  var searchData = gmailApi_(token, '/messages?q=' + encodeURIComponent(query) + '&maxResults=100');
+  var messages = searchData.messages || [];
+
+  var emails = [];
+  messages.forEach(function(m) {
+    try {
+      var msg = gmailApi_(token, '/messages/' + m.id + '?format=full');
+      var subject = '', fromHdr = '', dateStr = '';
+      (msg.payload.headers || []).forEach(function(h) {
+        var n = h.name.toLowerCase();
+        if (n === 'subject') subject = h.value;
+        else if (n === 'from') fromHdr = h.value;
+        else if (n === 'date') dateStr = h.value;
+      });
+      var bodies = gmailDecodeBody_(msg.payload);
+      var plain = (bodies.text || bodies.html.replace(/<[^>]+>/g, '') || '').slice(0, 1500);
+      emails.push({
+        id: m.id, subject: subject, from: fromHdr,
+        date: msg.internalDate ? new Date(parseInt(msg.internalDate)).toISOString() : dateStr,
+        snippet: msg.snippet || '', body: plain
+      });
+    } catch(e) {
+      emails.push({ id: m.id, error: e.message });
+    }
+  });
+
+  var dump = { dumpedAt: new Date().toISOString(), count: emails.length, emails: emails };
+  try {
+    updateJson_({ path: 'ml_email_dump.json', content: dump }, ctx);
+  } catch(e) {
+    try {
+      var pi = resolvePathToParentAndName_('ml_email_dump.json', ctx);
+      driveUpload_('ml_email_dump.json', dump, pi.parentId);
+    } catch(e2) { Logger.log('dump 寫入失敗: ' + e2.message); }
+  }
+  return { count: emails.length };
+}
+
+// ══════════════════════════════════════════════
+//  npust5 Gmail OAuth2
+// ══════════════════════════════════════════════
+
+// 初次設定：在 GAS Project Settings → Script Properties 加入：
+//   NPUST5_CLIENT_ID     = <OAuth2 client ID>
+//   NPUST5_CLIENT_SECRET = <OAuth2 client secret>
+
+function getNpust5OAuthService_() {
+  var props = PropertiesService.getScriptProperties();
+  var cid = props.getProperty('NPUST5_CLIENT_ID');
+  var cs  = props.getProperty('NPUST5_CLIENT_SECRET');
+  if (!cid || !cs) throw new Error('請先在 Script Properties 設定 NPUST5_CLIENT_ID 與 NPUST5_CLIENT_SECRET');
+  return OAuth2.createService('npust5Gmail')
+    .setAuthorizationBaseUrl('https://accounts.google.com/o/oauth2/auth')
+    .setTokenUrl('https://oauth2.googleapis.com/token')
+    .setClientId(cid)
+    .setClientSecret(cs)
+    .setCallbackFunction('authCallbackNpust5_')
+    .setPropertyStore(PropertiesService.getScriptProperties())
+    .setScope('https://www.googleapis.com/auth/gmail.modify')
+    .setParam('login_hint', 'heartnpust5@gmail.com')
+    .setParam('access_type', 'offline')
+    .setParam('prompt', 'consent');
+}
+
+// 取得授權 URL（由 doPost 'getNpust5AuthUrl' 呼叫，也可直接在 GAS console 執行）
+function getAuthUrlNpust5_() {
+  var service = getNpust5OAuthService_();
+  if (service.hasAccess()) return { authorized: true };
+  var url = service.getAuthorizationUrl();
+  Logger.log('授權網址：' + url);
+  return { authorized: false, authUrl: url };
+}
+
+// OAuth2 callback（GAS 自動路由至此）
+function authCallbackNpust5_(request) {
+  var service = getNpust5OAuthService_();
+  var ok = service.handleCallback(request);
+  return HtmlService.createHtmlOutput(
+    ok ? '<h3 style="font-family:sans-serif;color:#059669;">✅ npust5 Gmail 授權成功，可關閉此視窗。</h3>'
+       : '<h3 style="font-family:sans-serif;color:#dc2626;">❌ 授權失敗，請重試。</h3>'
+  );
+}
+
+function revokeNpust5Auth_() {
+  getNpust5OAuthService_().reset();
+  Logger.log('npust5 授權已撤銷。');
+}
+
+// ── Gmail REST API helpers ──────────────────────────────────────────────────
+
+function gmailApi_(token, path, method, body) {
+  var opts = {
+    method: method || 'get',
+    headers: { 'Authorization': 'Bearer ' + token },
+    muteHttpExceptions: true
+  };
+  if (body) { opts.payload = JSON.stringify(body); opts.contentType = 'application/json'; }
+  return JSON.parse(
+    UrlFetchApp.fetch('https://gmail.googleapis.com/gmail/v1/users/me' + path, opts).getContentText()
+  );
+}
+
+function gmailDecodeBody_(payload) {
+  if (!payload) return { text: '', html: '' };
+  if (payload.body && payload.body.data) {
+    try {
+      var d = Utilities.newBlob(Utilities.base64DecodeWebSafe(payload.body.data)).getDataAsString();
+      return (payload.mimeType || '').indexOf('html') >= 0 ? { text: '', html: d } : { text: d, html: '' };
+    } catch(e) { return { text: '', html: '' }; }
+  }
+  var result = { text: '', html: '' };
+  (payload.parts || []).forEach(function(p) {
+    if (p.parts) {
+      var sub = gmailDecodeBody_(p);
+      if (!result.text && sub.text) result.text = sub.text;
+      if (!result.html && sub.html) result.html = sub.html;
+    }
+    if (!p.body || !p.body.data) return;
+    try {
+      var d = Utilities.newBlob(Utilities.base64DecodeWebSafe(p.body.data)).getDataAsString();
+      if (p.mimeType === 'text/plain' && !result.text) result.text = d;
+      else if (p.mimeType === 'text/html'  && !result.html) result.html = d;
+    } catch(e) {}
+  });
+  return result;
+}
+
+function gmailGetOrCreateLabel_(token, labelName) {
+  try {
+    var data = gmailApi_(token, '/labels');
+    var existing = (data.labels || []).filter(function(l) { return l.name === labelName; })[0];
+    if (existing) return existing.id;
+    return gmailApi_(token, '/labels', 'post', { name: labelName }).id || null;
+  } catch(e) { return null; }
+}
+
+function loadMlKeywords_(ctx) {
+  var keywords = [];
+  try {
+    var cfgId = ctx.configOverride || resolvePathToId_('config.json', ctx);
+    var cfgRes = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + cfgId + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (cfgRes.getResponseCode() === 200) {
+      var cfg = JSON.parse(cfgRes.getContentText());
+      if (Array.isArray(cfg.mentalLeaveKeywords) && cfg.mentalLeaveKeywords.length) keywords = cfg.mentalLeaveKeywords;
+    }
+  } catch(e) {}
+  if (!keywords.length) {
+    '死,結束生命,不想活,自傷,自殘,自殺,跳,崩潰,喘不過氣,恐慌,解離,幻覺,車禍,意外,喪,暴力,性平,性騷,家暴'.split(',').forEach(function(kw) { keywords.push({ kw: kw, level: 3 }); });
+    '身心科,精神科,急診,住院,看診,回診,諮商,藥物副作用,換藥,斷藥,戒斷,憂鬱,焦慮,躁鬱,失眠,厭食,暴食'.split(',').forEach(function(kw) { keywords.push({ kw: kw, level: 2 }); });
+    '分手,感情問題,排擠,霸凌,期中,期末,退學,休學,擋修,家庭衝突,經濟壓力'.split(',').forEach(function(kw) { keywords.push({ kw: kw, level: 1 }); });
+  }
+  return keywords;
 }
