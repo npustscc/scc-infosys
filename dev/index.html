@@ -3081,6 +3081,7 @@
           <option value="transfer_grad_counselor">轉銜：主責轉出學生</option>
           <option value="transfer_grad_coord">轉銜管理（協調員）</option>
           <option value="transfer_withdraw_coord">教務處名單（協調員）</option>
+          <option value="transfer_withdraw_mismatch">教務處名單（姓名/學號不符驗證）</option>
           <option value="transfer_closure_reminder">轉銜結案追蹤</option>
         </select>
         <select class="field-select" id="todos-filter-status" onchange="renderTodosPage()" style="max-width:130px;">
@@ -4905,6 +4906,7 @@ async function afterLogin() {
       _checkPastSemUnclosedForDirectors();
       _cleanupDeletedEvals();
       _checkTransferGradTodos();
+      _checkWithdrawMismatchTodos();
     }).catch(() => {}); // loadCases 內部已處理並顯示錯誤
   } catch (err) {
     hideLoading();
@@ -16048,7 +16050,7 @@ function renderTodosPage() {
     return;
   }
 
-  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（協調員）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）' };
+  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（協調員）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）', transfer_withdraw_coord: '教務處名單（協調員）', transfer_withdraw_mismatch: '教務處名單（姓名/學號不符）' };
 
   body.innerHTML = filtered.map(t => {
     const tLabel = typeLabels[t.type] || t.type;
@@ -16062,18 +16064,30 @@ function renderTodosPage() {
     const checkBoxHtml = readOnly
       ? `<div style="width:16px;flex-shrink:0;"></div>`
       : `<input type="checkbox" class="todo-select-cb" data-id="${t.id}" onchange="_updateTodoBatchBtn()" style="margin-top:3px;flex-shrink:0;">`;
-    const _isTransferTodo = ['transfer_grad_counselor','transfer_grad_coord','transfer_closure_reminder'].includes(t.type);
+    const _isTransferTodo = ['transfer_grad_counselor','transfer_grad_coord','transfer_closure_reminder','transfer_withdraw_coord'].includes(t.type);
+    const _isMismatchTodo = t.type === 'transfer_withdraw_mismatch';
     const _isAdminUserTodo = t.type === 'admin_verify_new_user';
     const _continueBtnLabel = _isTransferTodo ? '前往轉銜管理' : (_isAdminUserTodo ? '前往設定' : '繼續編輯');
-    const continueBtn = !readOnly && !t.done ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">${_continueBtnLabel}</button>` : '';
+    const continueBtn = !readOnly && !t.done && !_isMismatchTodo ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">${_continueBtnLabel}</button>` : '';
     const doneBtn = !readOnly
       ? (!t.done
         ? (t.type === 'transfer_closure_reminder'
           ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_markTransferClosureDone('${t.id}','${t.transferRecId||''}')">已完成結案會議</button>`
+          : _isMismatchTodo ? '' // mismatch uses special confirm/ignore buttons
           : `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoDone('${t.id}')">完成</button>`)
         : `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoUndone('${t.id}')">恢復</button>`)
       : '';
     const deleteBtn = (!readOnly && !_isLocked) ? `<button class="btn btn-sm" style="font-size:.78rem;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_deleteTodo('${t.id}')">刪除</button>` : '';
+    const mismatchDetailHtml = _isMismatchTodo && !t.done ? `
+      <div style="margin-top:8px;background:#fff8e1;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;font-size:.82rem;">
+        <div style="color:#92400e;margin-bottom:4px;">⚠ 請確認以下匯入資料是否正確連結至系統個案：</div>
+        <div style="color:#4a5568;">${escHtml(t.detail||'')}</div>
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+          <button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_resolveWithdrawMismatch('${escHtml(t.mismatchId||'')}','confirm')">✅ 確認連結（以學號覆寫）</button>
+          <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_resolveWithdrawMismatch('${escHtml(t.mismatchId||'')}','ignore')">略過（保持現狀）</button>
+          ${t.caseId ? `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="showCaseDetail('${escHtml(t.caseId)}')">查閱個案</button>` : ''}
+        </div>
+      </div>` : '';
 
     return `<div class="todo-item" data-id="${t.id}" style="background:${bgColor};border:1px solid ${borderColor};border-radius:8px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:flex-start;gap:10px;">
       ${checkBoxHtml}
@@ -16089,6 +16103,7 @@ function renderTodosPage() {
         ${t.caseLabel ? `<div style="font-size:.82rem;color:#718096;margin-bottom:4px;">個案：${escHtml(t.caseLabel)}</div>` : ''}
         ${t.done && t.type === 'case_assignment' && t.assignedCounselorName ? `<div style="font-size:.82rem;color:#276749;margin-bottom:4px;">已派案給：${escHtml(t.assignedCounselorName)}</div>` : ''}
         <div style="font-size:.78rem;color:#a0aec0;">${createdAt}${t.done && doneAt ? `　完成：${doneAt}` : ''}</div>
+        ${mismatchDetailHtml}
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;align-items:center;">
         ${continueBtn}${doneBtn}${deleteBtn}
@@ -22642,11 +22657,16 @@ function renderRecycleBin() {
   });
   const deletedIi = casesData.filter(c => c.initialInterview?.deleted).map(c => ({ caseId:c.id, caseName:c.name||'—', caseAlsoDeleted:!!c.deleted, ii:c.initialInterview }));
 
+  // 轉銜管理軟刪除
+  const _trTypeLabel = { withdraw:'教務處轉退學', graduation:'本學期預作畢業', outgoing:'轉出', incoming:'轉入' };
+  const deletedTransfer = (transferData||[]).filter(r => r.deleted && _trTypeLabel[r.type]);
+
   const tab = window._recycleTab || 'cases';
   const expiredCount = deletedCases.filter(c => daysLeft(c.deletedAt) <= 0).length
     + deletedRecs.filter(({record}) => daysLeft(record.deletedAt) <= 0).length
     + deletedPsy.filter(({record}) => daysLeft(record.deletedAt) <= 0).length
-    + deletedIi.filter(({ii}) => daysLeft(ii.deletedAt) <= 0).length;
+    + deletedIi.filter(({ii}) => daysLeft(ii.deletedAt) <= 0).length
+    + deletedTransfer.filter(r => daysLeft(r.deletedAt) <= 0).length;
 
   const daysBadge = (d) => d <= 0
     ? '<span style="color:#c53030;font-size:.78rem;font-weight:700;">已逾期</span>'
@@ -22725,6 +22745,25 @@ function renderRecycleBin() {
     </tr>`;
   }).join('') || `<tr><td colspan="7" style="text-align:center;padding:20px;color:#a0aec0;">（無已刪除初次晤談表）</td></tr>`;
 
+  const transferRows = deletedTransfer.map(r => {
+    const d = daysLeft(r.deletedAt);
+    const tabTag = _trTypeLabel[r.type] || r.type;
+    return `<tr class="rb-row" data-search="${escHtml((r.name||'')+' '+(r.studentId||'')+' '+tabTag)}" style="${d<=0?'background:#fff5f5;':''}">
+      ${chkTd(r.id, '')}
+      <td style="padding:6px 10px;font-size:.8rem;"><span style="background:#e9d8fd;color:#553c9a;border-radius:4px;padding:1px 6px;font-size:.75rem;">${escHtml(tabTag)}</span></td>
+      <td style="padding:6px 10px;font-size:.85rem;font-weight:600;">${escHtml(r.name||'—')}</td>
+      <td style="padding:6px 10px;font-size:.8rem;font-family:monospace;">${escHtml(r.studentId||'—')}</td>
+      <td style="padding:6px 10px;font-size:.8rem;color:#718096;">${escHtml(semesterLabel(r.semester)||r.semester||'—')}</td>
+      <td style="padding:6px 10px;font-size:.8rem;color:#718096;">${escHtml(r.deletedByName||r.deletedBy||'—')}</td>
+      <td style="padding:6px 10px;font-size:.8rem;color:#718096;white-space:nowrap;">${escHtml(fmt(r.deletedAt))}</td>
+      <td style="padding:6px 10px;text-align:center;">${daysBadge(d)}</td>
+      <td style="padding:6px 10px;text-align:center;white-space:nowrap;">
+        ${d>0?`<button class="btn btn-secondary btn-sm" style="margin-right:4px;" onclick="rbRestoreTransfer('${escHtml(r.id)}')">復原</button>`:''}
+        <button class="btn btn-danger btn-sm" onclick="rbPurgeTransfer('${escHtml(r.id)}')">立即永久刪除</button>
+      </td>
+    </tr>`;
+  }).join('') || `<tr><td colspan="9" style="text-align:center;padding:20px;color:#a0aec0;">（無已刪除轉銜管理資料）</td></tr>`;
+
   const tableForTab = {
     cases: `<table style="width:100%;border-collapse:collapse;">
       <thead><tr style="background:#edf2f7;text-align:left;">
@@ -22760,6 +22799,17 @@ function renderRecycleBin() {
         <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">剩餘天數</th>
         <th style="padding:7px 10px;font-size:.8rem;text-align:center;">操作</th>
       </tr></thead><tbody>${iiRows}</tbody></table>`,
+    transfer: `<table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="background:#edf2f7;text-align:left;">
+        ${chkTh}<th style="padding:7px 10px;font-size:.8rem;">類型（分頁）</th>
+        <th style="padding:7px 10px;font-size:.8rem;">姓名</th>
+        <th style="padding:7px 10px;font-size:.8rem;">學號</th>
+        <th style="padding:7px 10px;font-size:.8rem;">學期</th>
+        <th style="padding:7px 10px;font-size:.8rem;">刪除者</th>
+        <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">刪除時間</th>
+        <th style="padding:7px 10px;font-size:.8rem;white-space:nowrap;">剩餘天數</th>
+        <th style="padding:7px 10px;font-size:.8rem;text-align:center;">操作</th>
+      </tr></thead><tbody>${transferRows}</tbody></table>`,
   };
 
   document.getElementById('recycle-body').innerHTML = `
@@ -22775,6 +22825,7 @@ function renderRecycleBin() {
       ${tabBtn('records', `晤談記錄（${deletedRecs.length}）`)}
       ${tabBtn('psy', `精神科評估（${deletedPsy.length}）`)}
       ${tabBtn('ii', `初次晤談表（${deletedIi.length}）`)}
+      ${tabBtn('transfer', `轉銜管理（${deletedTransfer.length}）`)}
     </div>
     <div style="background:#fff8e1;border:1px solid #f6d860;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:.83rem;color:#7d4e00;">
       刪除的項目保留 <strong>30 天</strong>後永久刪除，期間可復原。點「立即永久刪除」可提前清除單一項目。
@@ -23018,10 +23069,41 @@ async function rbPurgeAll() {
       casesData = casesData.filter(c => !c.deleted || !c.deletedAt || c.deletedAt > threshold);
       await driveSaveJsonInCases('manifest.json', casesManifest);
     }
+    const expiredTransfer = (transferData||[]).filter(r => r.deleted && r.deletedAt && r.deletedAt <= threshold);
+    if (expiredTransfer.length > 0) {
+      transferData = transferData.filter(r => !r.deleted || !r.deletedAt || r.deletedAt > threshold);
+      await saveTransfer();
+    }
     await migrateToChunks();
     auditLog('清除逾期刪除項目');
-    hideLoading(); renderRecycleBin(); renderCases();
+    hideLoading(); renderRecycleBin(); renderCases(); if (window._transferTab) renderTransferPage();
   } catch(e) { hideLoading(); alert('清除失敗：' + e.message); }
+}
+
+async function rbRestoreTransfer(recId) {
+  const r = (transferData||[]).find(t => t.id === recId);
+  if (!r || !r.deleted) return;
+  delete r.deleted; delete r.deletedAt; delete r.deletedBy; delete r.deletedByName;
+  renderRecycleBin();
+  renderTransferPage();
+  const jobId = bgJobAdd(`復原轉銜管理：${r.name||r.studentId||recId}`);
+  try { await saveTransfer(); bgJobDone(jobId); auditLog('復原轉銜管理紀錄', null, null, `${r.name||''} ${r.studentId||''} type:${r.type}`); }
+  catch(e) {
+    r.deleted = true; bgJobFail(jobId, e.message);
+    renderRecycleBin();
+  }
+}
+
+async function rbPurgeTransfer(recId) {
+  if (!confirm('確定永久刪除此轉銜管理紀錄？此操作不可復原。')) return;
+  const idx = (transferData||[]).findIndex(t => t.id === recId);
+  if (idx < 0) return;
+  const removed = transferData.splice(idx, 1)[0];
+  renderRecycleBin();
+  renderTransferPage();
+  const jobId = bgJobAdd(`永久刪除轉銜管理：${removed.name||removed.studentId||recId}`);
+  try { await saveTransfer(); bgJobDone(jobId); auditLog('永久刪除轉銜管理紀錄', null, null, `${removed.name||''} ${removed.studentId||''} type:${removed.type}`); }
+  catch(e) { transferData.splice(idx, 0, removed); bgJobFail(jobId, e.message); renderRecycleBin(); }
 }
 
 // ══════════════════════════════════════════════
@@ -23376,6 +23458,55 @@ function _checkWithdrawTodos() {
     detail: detail || undefined,
     semester: curSem, done: false, notifRead: false, createdAt: new Date().toISOString(),
   });
+}
+
+// 生成「主責需驗證的姓名/學號不符」待辦 (state-derived，每次登入後重算)
+function _checkWithdrawMismatchTodos() {
+  const myEmail = currentUser?.email;
+  todosData = todosData.filter(t => t.type !== 'transfer_withdraw_mismatch');
+  if (!myEmail) return;
+  const mismatches = (transferData || []).filter(r =>
+    r.type === 'withdraw_mismatch_pending' && !r.resolved && r.matchedCaseCounselor === myEmail
+  );
+  mismatches.forEach(m => {
+    const typeLabel = m.matchType === 'sid_only' ? '學號相符、姓名不符' : '姓名相符、學號不符';
+    _putTodoItem({
+      id: `withdraw_mismatch_${m.id}`,
+      type: 'transfer_withdraw_mismatch',
+      label: `教務處名單匯入：姓名/學號不符（${m.importedName || m.originalName}）`,
+      detail: `類型：${typeLabel}。匯入資料：${m.importedName}（${m.importedSid}）；系統個案：${m.matchedCaseName}（${m.matchedCaseCounselor}）`,
+      mismatchId: m.id,
+      wdRecordId: m.wdRecordId,
+      caseId: m.matchedCaseId,
+      caseLabel: `${m.matchedCaseName}（${m.matchedCaseId}）`,
+      semester: m.semester,
+      done: false, notifRead: false,
+      createdAt: m.importedAt || new Date().toISOString(),
+    });
+  });
+  _syncTodoBadge();
+}
+
+async function _resolveWithdrawMismatch(mismatchId, action) {
+  const m = (transferData || []).find(r => r.type === 'withdraw_mismatch_pending' && r.id === mismatchId);
+  if (!m) return;
+  m.resolved = true; m.resolvedAt = new Date().toISOString(); m.resolvedAction = action;
+  if (action === 'confirm') {
+    // 將 withdraw record 的 studentId 連結到 matched case 的 studentId
+    const wdRec = (transferData || []).find(r => r.id === m.wdRecordId);
+    if (wdRec && m.matchedCaseCounselor) {
+      const mc = casesData.find(c => c.id === m.matchedCaseId);
+      if (mc) wdRec.studentId = mc.studentId || wdRec.studentId;
+    }
+  }
+  const todoId = `withdraw_mismatch_${m.id}`;
+  const t = todosData.find(x => x.id === todoId);
+  if (t) { t.done = true; t.doneAt = new Date().toISOString(); }
+  _checkWithdrawMismatchTodos();
+  renderTodosPage();
+  const jobId = bgJobAdd('處理教務處名單姓名/學號不符驗證');
+  try { await saveTransfer(); bgJobDone(jobId); }
+  catch(e) { bgJobFail(jobId, e.message); }
 }
 
 async function _markTransferClosureDone(todoId, transferRecId) {
@@ -25450,7 +25581,48 @@ function _renderWithdrawTab(allWithdraw) {
     ? `<div style="text-align:center;padding:24px;color:#a0aec0;font-size:.9rem;">無符合條件的記錄${!F.showResolved && withDec > 0 ? `（${withDec} 位已決議已隱藏，可勾選「顯示已決議」）` : ''}</div>`
     : '';
 
-  return filterBar + actionBar + `<div id="wd-results-body">${statsBar}${batchBar}${rows || emptyMsg}</div>`;
+  const deletedRecs = allWithdraw.filter(r => r.semester === semToUse && r.deleted);
+  const isAdmin = currentUser && (configData?.users?.[currentUser.email]?.isAdmin || configData?.users?.[currentUser.email]?.extraRole === '管理者' || configData?.users?.[currentUser.email]?.role === '主任');
+  const deletedSection = (isAdmin && deletedRecs.length > 0) ? (() => {
+    const dRows = deletedRecs.map(r => {
+      const lc = getLinkedCase(r);
+      const dDays = r.deletedAt ? Math.ceil((Date.now() - new Date(r.deletedAt).getTime()) / 86400000) : 0;
+      const remainDays = Math.max(0, 30 - dDays);
+      return `<tr>
+        <td style="padding:7px 10px;">${escHtml(r.name||'—')}</td>
+        <td style="padding:7px 10px;color:#718096;">${escHtml(r.studentId||'—')}</td>
+        <td style="padding:7px 10px;color:#718096;">${lc ? `<a href="#" onclick="showCaseDetail('${escHtml(lc.id)}');return false;" style="color:#3182ce;">${escHtml(lc.id)}</a>` : '—'}</td>
+        <td style="padding:7px 10px;color:#718096;">${escHtml(r.deletedByName||r.deletedBy||'—')}</td>
+        <td style="padding:7px 10px;color:#718096;">${r.deletedAt ? r.deletedAt.slice(0,10) : '—'}</td>
+        <td style="padding:7px 10px;color:${remainDays<=7?'#c53030':'#718096'};">${remainDays} 天</td>
+        <td style="padding:7px 10px;">
+          <button class="btn btn-secondary btn-sm" onclick="rbRestoreTransfer('${escHtml(r.id)}')">復原</button>
+          <button class="btn btn-danger btn-sm" style="margin-left:4px;" onclick="rbPurgeTransfer('${escHtml(r.id)}')">永久刪除</button>
+        </td>
+      </tr>`;
+    }).join('');
+    return `<details style="margin-top:14px;border:1px solid #fed7d7;border-radius:8px;overflow:hidden;">
+      <summary style="padding:10px 14px;background:#fff5f5;color:#c53030;font-weight:600;cursor:pointer;font-size:.88rem;list-style:none;display:flex;align-items:center;gap:6px;">
+        ▶ 已刪除記錄（${deletedRecs.length}）<span style="font-size:.78rem;font-weight:400;color:#a0aec0;">— 僅管理者可見，30天後自動清除</span>
+      </summary>
+      <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:.85rem;">
+          <thead><tr style="background:#fff5f5;color:#c53030;">
+            <th style="padding:7px 10px;text-align:left;font-weight:600;">姓名</th>
+            <th style="padding:7px 10px;text-align:left;font-weight:600;">學號</th>
+            <th style="padding:7px 10px;text-align:left;font-weight:600;">個案</th>
+            <th style="padding:7px 10px;text-align:left;font-weight:600;">刪除者</th>
+            <th style="padding:7px 10px;text-align:left;font-weight:600;">刪除日期</th>
+            <th style="padding:7px 10px;text-align:left;font-weight:600;">剩餘天數</th>
+            <th style="padding:7px 10px;text-align:left;font-weight:600;">操作</th>
+          </tr></thead>
+          <tbody>${dRows}</tbody>
+        </table>
+      </div>
+    </details>`;
+  })() : '';
+
+  return filterBar + actionBar + `<div id="wd-results-body">${statsBar}${batchBar}${rows || emptyMsg}</div>${deletedSection}`;
 }
 
 function _openWithdrawManualAdd() {
@@ -25788,10 +25960,12 @@ async function showWithdrawImportPreview(rows) {
   };
 
   // ── 動作按鈕 callback ──
-  window._wdForceLink    = (i) => { entries[i].forceType = 'direct';     sel.add(i);    _wdRender(); };
-  window._wdUpdateSid    = (i) => { entries[i].forceType = 'update_sid'; sel.add(i);    _wdRender(); };
-  window._wdStartRelink  = (i) => { window._wdRow[i]._relinking = true;                 _wdRender(); };
-  window._wdRelinkPick   = (i, cid) => {
+  window._wdForceLink      = (i) => { entries[i].forceType = 'direct';           sel.add(i); _wdRender(); };
+  window._wdUpdateSid      = (i) => { entries[i].forceType = 'update_sid';        sel.add(i); _wdRender(); };
+  window._wdLinkByName     = (i) => { entries[i].forceType = 'link_by_name';      sel.add(i); _wdRender(); };
+  window._wdDeferCounselor = (i) => { entries[i].forceType = 'defer_counselor';   sel.add(i); _wdRender(); };
+  window._wdStartRelink    = (i) => { window._wdRow[i]._relinking = true; _wdRender(); };
+  window._wdRelinkPick     = (i, cid) => {
     const mc = casesData.find(c => c.id === cid);
     if (!mc) return;
     const e = window._wdRow[i];
@@ -25837,8 +26011,15 @@ async function showWithdrawImportPreview(rows) {
       `<button onclick="${onclick}" style="margin-top:3px;font-size:.72rem;padding:2px 7px;border:1px solid ${color};background:${bg};color:${color};border-radius:4px;cursor:pointer;white-space:nowrap;">${label}</button>`;
     let actionBtns = '';
     if (!e.isDuplicate && !forceAccepted && !e._relinking) {
-      if      (e.matchType === 'sid_only')  actionBtns = _btn(`window._wdForceLink(${i})`, '直接匯入（以學號連結）', '#059669', '#ecfdf5') + _btn(`window._wdStartRelink(${i})`, '重新連結', '#718096', '#f7fafc');
-      else if (e.matchType === 'name_only') actionBtns = _btn(`window._wdUpdateSid(${i})`, '更新個案學號', '#2b6cb0', '#ebf8ff') + _btn(`window._wdStartRelink(${i})`, '重新連結', '#718096', '#f7fafc');
+      const _mcCounselor = e.mc ? (formatCounselorLabel(e.mc.counselorEmail) || e.mc.counselorName || '主責') : null;
+      const _deferLabel = _mcCounselor ? `交由主責${_mcCounselor}驗證` : '交由主責驗證';
+      if      (e.matchType === 'sid_only')  actionBtns =
+        _btn(`window._wdForceLink(${i})`,      '直接匯入（以學號連結）', '#059669', '#ecfdf5') +
+        (_mcCounselor ? _btn(`window._wdDeferCounselor(${i})`, _deferLabel, '#9b2c2c', '#fff5f5') : '');
+      else if (e.matchType === 'name_only') actionBtns =
+        _btn(`window._wdUpdateSid(${i})`,      '更新個案學號',          '#2b6cb0', '#ebf8ff') +
+        _btn(`window._wdLinkByName(${i})`,     '與姓名連結',            '#6b21a8', '#faf5ff') +
+        (_mcCounselor ? _btn(`window._wdDeferCounselor(${i})`, _deferLabel, '#9b2c2c', '#fff5f5') : '');
       else if (e.matchType === 'none')      actionBtns = _btn(`window._wdStartRelink(${i})`, '手動連結個案', '#718096', '#f7fafc');
     }
     const relinkUI = e._relinking
@@ -25850,7 +26031,7 @@ async function showWithdrawImportPreview(rows) {
            <button onclick="window._wdCancelRelink(${i})" style="font-size:.72rem;padding:1px 6px;border:1px solid #cbd5e0;background:#fff;color:#718096;border-radius:4px;cursor:pointer;width:fit-content;">取消</button>
          </div>`
       : '';
-    const forceLabelMap = { direct: '直接匯入（以學號連結）', update_sid: '更新個案學號後連結', relink: '重新連結至' };
+    const forceLabelMap = { direct: '直接匯入（以學號連結）', update_sid: '更新個案學號後連結', link_by_name: '與姓名連結', relink: '重新連結至', defer_counselor: '已排程交由主責驗證' };
     const statusContent = e._relinking
       ? relinkUI
       : forceAccepted
@@ -25976,25 +26157,44 @@ async function showWithdrawImportPreview(rows) {
         if (e.forceType === 'update_sid' && e.mc && e.sid && e.sid !== e.mc.studentId) {
           e.mc.studentId = e.sid; sidUpdateCaseIds.push(e.mc.id);
         }
+        const recId = 'wd_' + Date.now() + '_' + Math.random().toString(36).slice(2);
         const rec = {
-          id: 'wd_' + Date.now() + '_' + Math.random().toString(36).slice(2),
-          type: 'withdraw', semester: curSem,
+          id: recId, type: 'withdraw', semester: curSem,
           name: e.name, studentId: e.sid,
           createdAt: now, createdBy: currentUser?.email, createdByName: currentUser?.name,
         };
         if (e.departureReason) rec.departureReason = e.departureReason;
         transferData.push(rec);
+        // 交由主責驗證：在 transferData 新增一筆待審紀錄
+        if (e.forceType === 'defer_counselor' && e.mc) {
+          transferData.push({
+            id: 'wdm_' + Date.now() + '_' + Math.random().toString(36).slice(2),
+            type: 'withdraw_mismatch_pending',
+            semester: curSem,
+            wdRecordId: recId,
+            matchedCaseId: e.mc.id,
+            matchedCaseName: e.mc.name,
+            matchedCaseCounselor: e.mc.counselorEmail,
+            originalName: e.originalName, originalSid: e.originalSid,
+            importedName: e.name, importedSid: e.sid,
+            matchType: e.matchType,
+            importedAt: now, importedBy: currentUser?.email,
+            resolved: false,
+          });
+        }
       }
     });
     renderTransferPage();
     const total = toImport.length;
+    const deferCount = toImport.filter(e => e.forceType === 'defer_counselor').length;
     const jobId = bgJobAdd(`匯入教務處轉/退學名單（${total}筆）`);
     (async () => { try {
       await saveTransfer();
       if (sidUpdateCaseIds.length) await saveCasesChunks(...sidUpdateCaseIds);
       _checkTransferGradTodos();
+      _checkWithdrawMismatchTodos();
       bgJobDone(jobId);
-      auditLog('匯入教務處轉/退學名單', null, null, `${total}筆${sidUpdateCaseIds.length ? `（含 ${sidUpdateCaseIds.length} 筆學號更新）` : ''}`);
+      auditLog('匯入教務處轉/退學名單', null, null, `${total}筆${deferCount ? `（含 ${deferCount} 筆交由主責驗證）` : ''}${sidUpdateCaseIds.length ? `（含 ${sidUpdateCaseIds.length} 筆學號更新）` : ''}`);
     } catch (e2) { bgJobFail(jobId, e2.message); } })();
   };
 }
