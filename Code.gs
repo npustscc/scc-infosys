@@ -842,6 +842,67 @@ function runListRecentEmails() {
   Logger.log('已寫入 ml_inbox_list.json');
 }
 
+// ── clasp run 連線測試
+function ping() { return 'pong ' + new Date().toISOString(); }
+
+// ── 完整診斷：確認授權帳號 + inbox + all mail（GAS 編輯器直接執行）
+function runDiagInboxEmails() {
+  var token = npust5GetAccessToken_();
+  if (!token) { Logger.log('❌ 尚未授權，請先執行 OAuth 流程'); return; }
+
+  // 1. 確認授權帳號
+  var profile = gmailApi_(token, '/profile');
+  var authedEmail = profile.emailAddress || '(unknown)';
+  Logger.log('✅ 授權帳號：' + authedEmail);
+
+  // 2. INBOX 信件數
+  var inboxData = gmailApi_(token, '/messages?maxResults=50&labelIds=INBOX');
+  var inboxCount = (inboxData.messages || []).length;
+  Logger.log('📬 INBOX 信件數：' + inboxCount);
+
+  // 3. All mail 信件數（不限 label）
+  var allData = gmailApi_(token, '/messages?maxResults=50');
+  var allCount = (allData.messages || []).length;
+  Logger.log('📂 All mail 信件數：' + allCount);
+
+  // 4. 取前 20 封的主旨
+  var messages = (inboxData.messages && inboxData.messages.length)
+    ? inboxData.messages
+    : (allData.messages || []);
+  var emails = [];
+  messages.slice(0, 20).forEach(function(m) {
+    try {
+      var msg = gmailApi_(token, '/messages/' + m.id + '?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date');
+      var subject = '', from = '', date = '';
+      (msg.payload.headers || []).forEach(function(h) {
+        if (h.name === 'Subject') subject = h.value;
+        else if (h.name === 'From') from = h.value;
+        else if (h.name === 'Date') date = h.value;
+      });
+      emails.push({ id: m.id, subject: subject, from: from, date: date, snippet: msg.snippet || '' });
+      Logger.log('[' + date + '] ' + subject + ' | from: ' + from);
+    } catch(e) { Logger.log('error: ' + m.id + ' ' + e.message); }
+  });
+
+  // 5. 寫入 Drive
+  var ctx = { root: '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx', configOverride: null };
+  var dump = {
+    dumpedAt: new Date().toISOString(),
+    authedEmail: authedEmail,
+    inboxCount: inboxCount,
+    allCount: allCount,
+    count: emails.length,
+    emails: emails
+  };
+  try {
+    updateJson_({ path: 'ml_inbox_list.json', content: dump }, ctx);
+  } catch(e) {
+    var pi = resolvePathToParentAndName_('ml_inbox_list.json', ctx);
+    driveUpload_('ml_inbox_list.json', dump, pi.parentId);
+  }
+  Logger.log('✅ 已寫入 ml_inbox_list.json（授權帳號：' + authedEmail + '，inbox：' + inboxCount + '，all mail：' + allCount + '）');
+}
+
 // ══════════════════════════════════════════════
 //  npust5 Gmail OAuth2（手動實作）
 // ══════════════════════════════════════════════
