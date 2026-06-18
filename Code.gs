@@ -583,7 +583,7 @@ function fetchMentalLeaves_(ctx, opts) {
   var query = force
     ? 'subject:(請假 OR 身心調適假 OR 缺課)'
     : 'subject:(請假 OR 身心調適假 OR 缺課) -label:' + labelName;
-  var searchData = gmailApi_(token, '/messages?q=' + encodeURIComponent(query) + '&maxResults=50');
+  var searchData = gmailApi_(token, '/messages?q=' + encodeURIComponent(query) + '&maxResults=' + (force ? 500 : 50));
   var messages = searchData.messages || [];
 
   var newRecords = [];
