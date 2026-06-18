@@ -20414,7 +20414,10 @@ function _mlRenderRecordsTab(el) {
       </select>
       <button class="btn btn-primary" onclick="window._mlFetch()" style="white-space:nowrap;">📥 從信箱擷取</button>
       ${isAdmin ? `<button class="btn btn-secondary" onclick="window._mlFetch(true)" style="white-space:nowrap;" title="忽略已處理標記，重新讀取所有信件（供 AI 關鍵字分析用）">🔄 全量擷取</button>` : ''}
-      ${DRIVE_FOLDER_ID === '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' ? `<button class="btn btn-danger" onclick="window._mlClearAll()" style="white-space:nowrap;margin-left:auto;" title="清空所有測試資料（並移除 Gmail ml-processed 標籤）">🗑️ 清空測試資料</button>` : ''}
+      ${DRIVE_FOLDER_ID === '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' ? `
+        <button class="btn btn-secondary" onclick="window._mlDumpView()" style="white-space:nowrap;" title="廣撒網列出信箱中所有請假相關信件，供診斷用">📋 診斷信件</button>
+        <button class="btn btn-danger" onclick="window._mlClearAll()" style="white-space:nowrap;margin-left:auto;" title="清空所有測試資料（並移除 Gmail ml-processed 標籤）">🗑️ 清空測試資料</button>
+      ` : ''}
     </div>
     <div style="overflow-x:auto;">
       <table id="ml-records-table" style="width:100%;border-collapse:collapse;font-size:.875rem;">
@@ -20503,6 +20506,51 @@ window._mlClearAll = async () => {
     alert('清空失敗：' + e.message);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '🗑️ 清空測試資料'; }
+  }
+};
+
+window._mlDumpView = async () => {
+  const jobId = bgJobAdd('廣撒網擷取信件清單');
+  try {
+    await proxyCall('dumpNpust5Emails');
+    bgJobDone(jobId);
+    const dump = await driveReadJson('ml_email_dump.json');
+    const emails = dump?.emails || [];
+    const rows = emails.map((e, i) => {
+      const hasNpustFormat = /學號[:：]/.test(e.subject || '');
+      const isFromNpust = /npuststudapply|npust\.edu\.tw/.test(e.from || '');
+      const tag = hasNpustFormat ? '<span style="background:#c6f6d5;color:#276749;border-radius:4px;padding:1px 5px;font-size:.72rem;">✓ NPUST格式</span>'
+                : isFromNpust   ? '<span style="background:#bee3f8;color:#2c5282;border-radius:4px;padding:1px 5px;font-size:.72rem;">npust寄件</span>'
+                : '';
+      const date = e.date ? new Date(e.date).toLocaleString('zh-TW', {dateStyle:'short',timeStyle:'short'}) : '';
+      return `<tr style="background:${i%2?'#f7fafc':'#fff'};">
+        <td style="padding:5px 8px;font-size:.75rem;color:#718096;white-space:nowrap;">${date}</td>
+        <td style="padding:5px 8px;font-size:.78rem;color:#4a5568;font-size:.72rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(e.from||'')}">${escHtml((e.from||'').replace(/<[^>]+>/g,''))}</td>
+        <td style="padding:5px 8px;font-size:.82rem;color:#2d3748;">${escHtml(e.subject||'')} ${tag}</td>
+      </tr>`;
+    }).join('');
+    const m = document.createElement('div');
+    m.id = 'ml-dump-modal';
+    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:32px 16px;overflow-y:auto;';
+    m.innerHTML = `<div style="background:#fff;border-radius:14px;padding:24px;width:100%;max-width:820px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <h3 style="margin:0;font-size:1rem;">信箱廣撒網結果（共 ${emails.length} 封）</h3>
+        <button onclick="document.getElementById('ml-dump-modal')?.remove()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:#718096;">&times;</button>
+      </div>
+      <div style="font-size:.82rem;color:#718096;margin-bottom:10px;">搜尋條件：subject:請假 OR 身心調適 OR 缺課 OR 假單 OR 假條，最近365天，最多100封</div>
+      <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">
+        <thead><tr style="background:#f7fafc;font-size:.75rem;color:#718096;">
+          <th style="padding:5px 8px;text-align:left;white-space:nowrap;">日期</th>
+          <th style="padding:5px 8px;text-align:left;">寄件人</th>
+          <th style="padding:5px 8px;text-align:left;">主旨</th>
+        </tr></thead><tbody>${rows}</tbody>
+      </table></div>
+    </div>`;
+    document.body.appendChild(m);
+    m.addEventListener('click', e => { if (e.target === m) m.remove(); });
+  } catch(e) {
+    bgJobFail(jobId, e.message);
+    alert('診斷失敗：' + e.message);
   }
 };
 
