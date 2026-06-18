@@ -20308,6 +20308,8 @@ function _mlRenderCourseStatsTab(el) {
 
 // 主頁面渲染
 let _mlTab = 'records';
+let _mlPage = 1;
+let _mlPageSize = 100;
 function renderMentalLeavePage() {
   const el = document.getElementById('mental-leave-body');
   if (!el) return;
@@ -20316,7 +20318,7 @@ function renderMentalLeavePage() {
   if (!canManage) { el.innerHTML = '<div style="padding:20px;color:#718096;">您沒有此頁面的存取權限。</div>'; return; }
   el.innerHTML = `
     <div style="display:flex;gap:2px;border-bottom:2px solid #e2e8f0;margin-bottom:20px;">
-      ${_mlTabBtn('records','📋 請假紀錄列表')}
+      ${_mlTabBtn('records','📋 身心調適假通知資料庫')}
       ${_mlTabBtn('courses','📊 課程統計')}
       ${_mlTabBtn('keywords','🔑 關鍵字設定')}
     </div>
@@ -20328,6 +20330,7 @@ function _mlTabBtn(id, label) {
   return `<button onclick="window._mlSwitchTab('${id}')" style="padding:8px 18px;border:none;cursor:pointer;background:none;font-size:.9rem;font-weight:${active?700:400};border-bottom:${active?'2.5px solid #2d6a4f':'2px solid transparent'};color:${active?'#2d6a4f':'#718096'};margin-bottom:-2px;">${label}</button>`;
 }
 window._mlSwitchTab = (id) => { _mlTab = id; renderMentalLeavePage(); };
+window._mlFilterChange = () => { _mlPage = 1; renderMentalLeavePage(); };
 function _mlRenderTab() {
   const el = document.getElementById('ml-tab-content');
   if (!el) return;
@@ -20417,11 +20420,17 @@ function _mlRenderRecordsTab(el) {
   });
   filtered.sort((a, b) => (b.leaveDate||'').localeCompare(a.leaveDate||''));
 
+  const totalFiltered = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(totalFiltered / _mlPageSize));
+  if (_mlPage > totalPages) _mlPage = totalPages;
+  const pageStart = (_mlPage - 1) * _mlPageSize;
+  const pageRecords = filtered.slice(pageStart, pageStart + _mlPageSize);
+
   const sems = [...new Set(records.map(l => l.semester).filter(Boolean))].sort().reverse();
   const semOpts = sems.map(s => `<option value="${escHtml(s)}"${semF===s?' selected':''}>${escHtml(semesterLabel(s)||s)}</option>`).join('');
-  const allChecked = filtered.length > 0 && filtered.every(l => _mlCheckedIds.has(l.id));
+  const allChecked = pageRecords.length > 0 && pageRecords.every(l => _mlCheckedIds.has(l.id));
 
-  const rowsHtml = filtered.length ? filtered.map(l => {
+  const rowsHtml = pageRecords.length ? pageRecords.map(l => {
     const { matchedKeywords, maxLevel } = _mlMatchKeywords(l.reason);
     const kwChips = matchedKeywords.slice(0, 4).map(k =>
       `<span style="font-size:.7rem;background:${maxLevel===3?'#fed7d7':maxLevel===2?'#fef9c3':'#dbeafe'};color:${maxLevel===3?'#9b2c2c':maxLevel===2?'#854d0e':'#1e40af'};border-radius:4px;padding:0 5px;margin-right:2px;">${escHtml(k.kw)}</span>`
@@ -20474,25 +20483,28 @@ function _mlRenderRecordsTab(el) {
       <div class="info-card" style="min-width:110px;background:#fff5f5;"><div class="num" style="color:#e53e3e;">${pendingCount}</div><div class="lbl">待處理</div></div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
-      <input type="text" id="ml-q" class="field-input" placeholder="搜尋姓名、學號、緣由…" value="${escHtml(q)}" oninput="renderMentalLeavePage()" style="max-width:200px;">
-      <select id="ml-risk" class="field-input" onchange="renderMentalLeavePage()" style="width:auto;">
+      <input type="text" id="ml-q" class="field-input" placeholder="搜尋姓名、學號、緣由…" value="${escHtml(q)}" oninput="window._mlFilterChange()" style="max-width:200px;">
+      <select id="ml-risk" class="field-input" onchange="window._mlFilterChange()" style="width:auto;">
         <option value="">所有風險等級</option>
         <option value="3"${riskF==='3'?' selected':''}>🔴 紅燈（危機）</option>
         <option value="2"${riskF==='2'?' selected':''}>🟡 黃燈（醫療）</option>
         <option value="1"${riskF==='1'?' selected':''}>🔵 關注</option>
         <option value="0"${riskF==='0'?' selected':''}>無命中</option>
       </select>
-      <select id="ml-handling" class="field-input" onchange="renderMentalLeavePage()" style="width:auto;">
+      <select id="ml-handling" class="field-input" onchange="window._mlFilterChange()" style="width:auto;">
         <option value="">所有受理情況</option>
         ${ML_HANDLING_OPTS.map(o=>`<option value="${o}"${hF===o?' selected':''}>${o}</option>`).join('')}
       </select>
-      <select id="ml-sem" class="field-input" onchange="renderMentalLeavePage()" style="width:auto;">
+      <select id="ml-sem" class="field-input" onchange="window._mlFilterChange()" style="width:auto;">
         <option value="">所有學期</option>${semOpts}
       </select>
+      <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;">每頁
+        <select id="ml-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;" onchange="_mlPageSize=parseInt(this.value);_mlPage=1;renderMentalLeavePage();">
+          ${[100,200,300].map(n=>`<option value="${n}"${_mlPageSize===n?' selected':''}>${n}</option>`).join('')}
+        </select>筆
+      </label>
       <button class="btn btn-primary" onclick="window._mlFetch()" style="white-space:nowrap;">📥 從信箱擷取</button>
-      ${isAdmin ? `<button class="btn btn-secondary" onclick="window._mlFetch(true)" style="white-space:nowrap;" title="每次擷取最多300封歷史信件，可重複點選繼續往回擷取">📦 擷取300封信</button>` : ''}
       ${DRIVE_FOLDER_ID === '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' ? `
-        <button class="btn btn-secondary" onclick="window._mlDumpView()" style="white-space:nowrap;">📋 診斷信件</button>
         <button class="btn btn-danger" onclick="window._mlClearAll()" style="white-space:nowrap;margin-left:auto;">🗑️ 清空測試資料</button>
       ` : ''}
     </div>
@@ -20533,7 +20545,15 @@ function _mlRenderRecordsTab(el) {
         </tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
-    </div>`;
+    </div>
+    ${totalPages > 1 ? `
+    <div style="display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-top:10px;font-size:.85rem;">
+      <span style="color:#718096;">共 ${totalFiltered} 筆，第 ${_mlPage} / ${totalPages} 頁</span>
+      <button class="btn btn-secondary btn-sm" ${_mlPage<=1?'disabled':''} onclick="_mlPage=1;renderMentalLeavePage()">«</button>
+      <button class="btn btn-secondary btn-sm" ${_mlPage<=1?'disabled':''} onclick="_mlPage--;renderMentalLeavePage()">‹</button>
+      <button class="btn btn-secondary btn-sm" ${_mlPage>=totalPages?'disabled':''} onclick="_mlPage++;renderMentalLeavePage()">›</button>
+      <button class="btn btn-secondary btn-sm" ${_mlPage>=totalPages?'disabled':''} onclick="_mlPage=${totalPages};renderMentalLeavePage()">»</button>
+    </div>` : (totalFiltered > 0 ? `<div style="text-align:right;font-size:.82rem;color:#a0aec0;margin-top:6px;">共 ${totalFiltered} 筆</div>` : '')}`;
   _makeTableResizable({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,9] : [1,2,3,4,5,6,7,8], prefKey: 'mlColWidths2', skipCols: isAdmin ? new Set([9]) : new Set() });
 }
 
@@ -20587,33 +20607,25 @@ window._mlCreateFetchWin = (totalY) => {
   return win;
 };
 
-window._mlFetch = async (force = false) => {
-  const sel = force ? '[onclick="window._mlFetch(true)"]' : '[onclick="window._mlFetch()"]';
-  const btn = document.querySelector(sel);
-  const jobLabel = force ? '擷取300封歷史身心調適假信件' : '從信箱擷取身心調適假';
-  const jobId = bgJobAdd(jobLabel);
+window._mlFetch = async () => {
+  const btn = document.querySelector('[onclick="window._mlFetch()"]');
+  const jobId = bgJobAdd('從信箱擷取身心調適假');
 
   const _restoreBtn = () => {
     if (!btn) return;
     btn.disabled = false;
     btn.style.cssText = '';
     btn.innerHTML = '';
-    btn.textContent = force ? '📦 擷取300封信' : '📥 從信箱擷取';
+    btn.textContent = '📥 從信箱擷取';
   };
 
-  if (force && btn) {
-    btn.disabled = true;
-    btn.style.cssText = 'position:relative;overflow:hidden;min-width:160px;white-space:nowrap;';
-    btn.innerHTML = `
-      <div id="ml-fetch-bg" style="position:absolute;left:0;top:0;height:100%;background:rgba(49,130,206,.28);width:0%;transition:width .4s ease;pointer-events:none;"></div>
-      <span id="ml-fetch-label" style="position:relative;z-index:1;">擷取中... 0/300</span>`;
-  } else if (btn) {
+  if (btn) {
     btn.disabled = true;
     btn.textContent = '擷取中…';
   }
 
   try {
-    if (!force) {
+    {
       // 一般擷取：先掃描總數，再分批擷取最多 200 封，進度浮動視窗
       const win = _mlCreateFetchWin(null);
       const _winStatus = t => { const el = win.querySelector('#ml-fw-status'); if (el) el.textContent = t; };
@@ -20671,43 +20683,6 @@ window._mlFetch = async (force = false) => {
       }
       return;
     }
-
-    // force 模式：分批擷取，每批 20 封，最多 15 批（共 300 封）
-    const BATCH_SIZE = 20, MAX_TOTAL = 300;
-    let processed = 0, totalNew = 0, totalCount = 0;
-    let pageToken = undefined; // 第一批用 Drive 存的 token
-    let hasMore = true;
-
-    const _updateProgress = () => {
-      const pct = Math.min(100, Math.round(processed / MAX_TOTAL * 100));
-      const bg = document.getElementById('ml-fetch-bg');
-      const lbl = document.getElementById('ml-fetch-label');
-      if (bg) bg.style.width = pct + '%';
-      if (lbl) lbl.textContent = `擷取中... ${processed}/${MAX_TOTAL}`;
-    };
-
-    while (processed < MAX_TOTAL && hasMore) {
-      const params = { force: true, batchSize: BATCH_SIZE };
-      if (pageToken !== undefined) params.pageToken = pageToken;
-      const result = await proxyCall('fetchMentalLeaves', params);
-      if (result?.needsAuth) { bgJobFail(jobId, '需要 Gmail 授權'); _mlShowAuthModal(result.authUrl); return; }
-      processed += (result.batchCount ?? BATCH_SIZE);
-      totalNew += (result.newCount ?? 0);
-      totalCount = result.totalCount ?? totalCount;
-      hasMore = !!result.hasMore;
-      pageToken = result.nextPageToken ?? null;
-      _updateProgress();
-      await loadMentalLeaves();
-      renderMentalLeavePage();
-      if (!hasMore) break;
-    }
-    bgJobDone(jobId);
-    const auditDetail = `擷取300封，新增 ${totalNew} 筆（累計 ${totalCount} 筆）${hasMore ? '，尚有更多' : '，已到底'}`;
-    auditLog('從信箱擷取身心調適假', null, null, auditDetail);
-    const toastMsg = hasMore
-      ? `新增 ${totalNew} 筆（累計 ${totalCount} 筆），尚有更多歷史信件，可再按一次繼續`
-      : `新增 ${totalNew} 筆（累計 ${totalCount} 筆），已到底`;
-    showToast(toastMsg, hasMore ? 6000 : 3000);
   } catch(e) {
     bgJobFail(jobId, e.message);
     alert('從信箱擷取失敗：' + e.message);
@@ -20733,51 +20708,6 @@ window._mlClearAll = async () => {
     alert('清空失敗：' + e.message);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '🗑️ 清空測試資料'; }
-  }
-};
-
-window._mlDumpView = async () => {
-  const jobId = bgJobAdd('廣撒網擷取信件清單');
-  try {
-    await proxyCall('dumpNpust5Emails');
-    bgJobDone(jobId);
-    const dump = await driveReadJson('ml_email_dump.json');
-    const emails = dump?.emails || [];
-    const rows = emails.map((e, i) => {
-      const hasNpustFormat = /學號[:：]/.test(e.subject || '');
-      const isFromNpust = /npuststudapply|npust\.edu\.tw/.test(e.from || '');
-      const tag = hasNpustFormat ? '<span style="background:#c6f6d5;color:#276749;border-radius:4px;padding:1px 5px;font-size:.72rem;">✓ NPUST格式</span>'
-                : isFromNpust   ? '<span style="background:#bee3f8;color:#2c5282;border-radius:4px;padding:1px 5px;font-size:.72rem;">npust寄件</span>'
-                : '';
-      const date = e.date ? new Date(e.date).toLocaleString('zh-TW', {dateStyle:'short',timeStyle:'short'}) : '';
-      return `<tr style="background:${i%2?'#f7fafc':'#fff'};">
-        <td style="padding:5px 8px;font-size:.75rem;color:#718096;white-space:nowrap;">${date}</td>
-        <td style="padding:5px 8px;font-size:.78rem;color:#4a5568;font-size:.72rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(e.from||'')}">${escHtml((e.from||'').replace(/<[^>]+>/g,''))}</td>
-        <td style="padding:5px 8px;font-size:.82rem;color:#2d3748;">${escHtml(e.subject||'')} ${tag}</td>
-      </tr>`;
-    }).join('');
-    const m = document.createElement('div');
-    m.id = 'ml-dump-modal';
-    m.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:10000;display:flex;align-items:flex-start;justify-content:center;padding:32px 16px;overflow-y:auto;';
-    m.innerHTML = `<div style="background:#fff;border-radius:14px;padding:24px;width:100%;max-width:820px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-        <h3 style="margin:0;font-size:1rem;">信箱廣撒網結果（共 ${emails.length} 封）</h3>
-        <button onclick="document.getElementById('ml-dump-modal')?.remove()" style="background:none;border:none;font-size:1.3rem;cursor:pointer;color:#718096;">&times;</button>
-      </div>
-      <div style="font-size:.82rem;color:#718096;margin-bottom:10px;">搜尋條件：subject:請假 OR 身心調適 OR 缺課 OR 假單 OR 假條，最近365天，最多100封</div>
-      <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">
-        <thead><tr style="background:#f7fafc;font-size:.75rem;color:#718096;">
-          <th style="padding:5px 8px;text-align:left;white-space:nowrap;">日期</th>
-          <th style="padding:5px 8px;text-align:left;">寄件人</th>
-          <th style="padding:5px 8px;text-align:left;">主旨</th>
-        </tr></thead><tbody>${rows}</tbody>
-      </table></div>
-    </div>`;
-    document.body.appendChild(m);
-    m.addEventListener('click', e => { if (e.target === m) m.remove(); });
-  } catch(e) {
-    bgJobFail(jobId, e.message);
-    alert('診斷失敗：' + e.message);
   }
 };
 
