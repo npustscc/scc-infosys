@@ -19728,14 +19728,16 @@ function _bkNextSerial() {
 let transferData    = [];  // loaded from transfer.json
 let psychTestDB     = {};  // loaded from psych_test_db.json
 let mentalLeavesData = []; // loaded from mental_leaves.json
+let _mlCheckedIds = new Set(); // 批次勾選狀態（跨 re-render 持續）
 
 const ML_DEFAULT_KEYWORDS = [
   // Level 3 危機/紅燈
-  ...'死,結束生命,不想活,自傷,自殘,自殺,跳,崩潰,喘不過氣,恐慌,解離,幻覺,車禍,意外,喪,暴力,性平,性騷,家暴'.split(',').map(kw=>({kw,level:3})),
-  // Level 2 醫療/黃燈
-  ...'身心科,精神科,急診,住院,看診,回診,諮商,藥物副作用,換藥,斷藥,戒斷,憂鬱,焦慮,躁鬱,失眠,厭食,暴食'.split(',').map(kw=>({kw,level:2})),
+  ...'死,結束生命,不想活,自傷,自殘,自殺,跳,崩潰,喘不過氣,恐慌,解離,幻覺,車禍,意外,喪,暴力,性平,性騷,家暴,輕生,消失'.split(',').map(kw=>({kw,level:3})),
+  // Level 2 醫療/黃燈（諮商僅比對緣由欄位 scope:'reason'）
+  ...'身心科,精神科,急診,住院,看診,回診,藥物副作用,換藥,斷藥,戒斷,憂鬱,焦慮,躁鬱,失眠,厭食,暴食,哭,壓力大,情緒'.split(',').map(kw=>({kw,level:2})),
+  { kw: '諮商', level: 2, scope: 'reason' },
   // Level 1 壓力/關注
-  ...'分手,感情問題,排擠,霸凌,期中,期末,退學,休學,擋修,家庭衝突,經濟壓力'.split(',').map(kw=>({kw,level:1})),
+  ...'分手,感情問題,排擠,霸凌,期中,期末,退學,休學,擋修,家庭衝突,經濟壓力,身心調適,休息調適,個人因素,照顧家人'.split(',').map(kw=>({kw,level:1})),
 ];
 let _bkDaySpan = parseInt(localStorage.getItem('scc_bk_span') || '1') || 1;
 let _bkListView = false;
@@ -20334,13 +20336,67 @@ function _mlRenderTab() {
   else _mlRenderRecordsTab(el);
 }
 
+const ML_HANDLING_OPTS = ['待處理', '非危機', '已致電關懷', '已簡訊關懷'];
+const ML_HANDLING_STYLE = {
+  '待處理':   { bg: '#fff5f5', color: '#c53030', border: '#fc8181' },
+  '非危機':   { bg: '#f0fff4', color: '#276749', border: '#9ae6b4' },
+  '已致電關懷': { bg: '#ebf8ff', color: '#2b6cb0', border: '#90cdf4' },
+  '已簡訊關懷': { bg: '#ebf8ff', color: '#2b6cb0', border: '#90cdf4' },
+};
+
+window._mlSetHandling = async (id, val) => {
+  const r = mentalLeavesData.find(l => l.id === id);
+  if (!r) return;
+  const old = r.handlingStatus;
+  r.handlingStatus = val;
+  const jobId = bgJobAdd(`更新受理情況：${r.name||r.studentId}`);
+  try {
+    await saveMentalLeaves(); bgJobDone(jobId);
+    auditLog('更新身心調適假受理情況', null, null, `${r.name} ${r.studentId}：${old||'(未設)'}→${val}`);
+  } catch(e) { r.handlingStatus = old; bgJobFail(jobId, e.message); }
+};
+
+window._mlToggleCheck = (id, checked) => {
+  if (checked) _mlCheckedIds.add(id); else _mlCheckedIds.delete(id);
+  const bar = document.getElementById('ml-batch-bar');
+  const cnt = document.getElementById('ml-batch-cnt');
+  if (bar) bar.style.display = _mlCheckedIds.size > 0 ? 'flex' : 'none';
+  if (cnt) cnt.textContent = `已選 ${_mlCheckedIds.size} 筆`;
+};
+
+window._mlCheckAll = (checked) => {
+  document.querySelectorAll('.ml-row-chk').forEach(cb => {
+    cb.checked = checked;
+    if (checked) _mlCheckedIds.add(cb.dataset.id); else _mlCheckedIds.delete(cb.dataset.id);
+  });
+  const bar = document.getElementById('ml-batch-bar');
+  const cnt = document.getElementById('ml-batch-cnt');
+  if (bar) bar.style.display = _mlCheckedIds.size > 0 ? 'flex' : 'none';
+  if (cnt) cnt.textContent = `已選 ${_mlCheckedIds.size} 筆`;
+};
+
+window._mlBatchHandling = async () => {
+  const val = document.getElementById('ml-batch-status')?.value;
+  if (!val) { alert('請選擇受理情況'); return; }
+  if (!_mlCheckedIds.size) { alert('請先勾選要批次填寫的紀錄'); return; }
+  const ids = [..._mlCheckedIds];
+  let updated = 0;
+  ids.forEach(id => { const r = mentalLeavesData.find(l => l.id === id); if (r) { r.handlingStatus = val; updated++; } });
+  _mlCheckedIds.clear();
+  renderMentalLeavePage();
+  const jobId = bgJobAdd(`批次填寫受理情況：${val}（${updated} 筆）`);
+  try { await saveMentalLeaves(); bgJobDone(jobId); auditLog('批次填寫身心調適假受理情況', null, null, `${val}，${updated} 筆`); }
+  catch(e) { bgJobFail(jobId, e.message); }
+};
+
 // ── 請假紀錄列表 Tab ─────────────────────────────────────
 function _mlRenderRecordsTab(el) {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   const records = mentalLeavesData.filter(l => !l.deleted);
-  const q = (document.getElementById('ml-q')?.value || '').trim().toLowerCase();
-  const riskF = document.getElementById('ml-risk')?.value || '';
-  const semF  = document.getElementById('ml-sem')?.value  || '';
+  const q      = (document.getElementById('ml-q')?.value        || '').trim().toLowerCase();
+  const riskF  =  document.getElementById('ml-risk')?.value     || '';
+  const semF   =  document.getElementById('ml-sem')?.value      || '';
+  const hF     =  document.getElementById('ml-handling')?.value || '';
 
   let filtered = records.filter(l => {
     if (q && !((l.name||'').toLowerCase().includes(q) || (l.studentId||'').toLowerCase().includes(q) || (l.reason||'').toLowerCase().includes(q))) return false;
@@ -20352,12 +20408,18 @@ function _mlRenderRecordsTab(el) {
       if (riskF === '1' && maxLevel < 1) return false;
       if (riskF === '0' && maxLevel !== 0) return false;
     }
+    if (hF) {
+      const { maxLevel } = _mlMatchKeywords(l.reason);
+      const eff = l.handlingStatus || (maxLevel >= 3 ? '待處理' : '非危機');
+      if (eff !== hF) return false;
+    }
     return true;
   });
   filtered.sort((a, b) => (b.leaveDate||'').localeCompare(a.leaveDate||''));
 
   const sems = [...new Set(records.map(l => l.semester).filter(Boolean))].sort().reverse();
   const semOpts = sems.map(s => `<option value="${escHtml(s)}"${semF===s?' selected':''}>${escHtml(semesterLabel(s)||s)}</option>`).join('');
+  const allChecked = filtered.length > 0 && filtered.every(l => _mlCheckedIds.has(l.id));
 
   const rowsHtml = filtered.length ? filtered.map(l => {
     const { matchedKeywords, maxLevel } = _mlMatchKeywords(l.reason);
@@ -20373,25 +20435,35 @@ function _mlRenderRecordsTab(el) {
     const courseBtn = cCount
       ? `<button onclick="window._mlToggleCourse('${escHtml(l.id)}')" style="border:1px solid #c6f6d5;background:#f0fff4;color:#276749;border-radius:12px;padding:1px 8px;font-size:.75rem;cursor:pointer;white-space:nowrap;">▶ ${cCount} 節課</button>`
       : `<span style="color:#cbd5e0;font-size:.75rem;">—</span>`;
+    const hVal = l.handlingStatus || (maxLevel >= 3 ? '待處理' : '非危機');
+    const hs = ML_HANDLING_STYLE[hVal] || { bg: '#f7fafc', color: '#718096', border: '#e2e8f0' };
+    const handlingSel = `<select onchange="window._mlSetHandling('${escHtml(l.id)}',this.value)" style="font-size:.78rem;border:1px solid ${escHtml(hs.border)};border-radius:4px;padding:2px 4px;background:${escHtml(hs.bg)};color:${escHtml(hs.color)};cursor:pointer;max-width:90px;">
+      ${ML_HANDLING_OPTS.map(o=>`<option value="${o}"${hVal===o?' selected':''}>${o}</option>`).join('')}
+    </select>`;
+    const isChecked = _mlCheckedIds.has(l.id);
     return `<tr style="background:${rowBg};">
+      <td style="padding:5px 6px;text-align:center;width:28px;"><input type="checkbox" class="ml-row-chk" data-id="${escHtml(l.id)}" ${isChecked?'checked':''} onchange="window._mlToggleCheck('${escHtml(l.id)}',this.checked)"></td>
       <td style="padding:7px 10px;">${nameLink}</td>
       <td style="padding:7px 10px;font-family:monospace;">${escHtml(l.studentId||'—')}</td>
       <td style="padding:7px 10px;">${escHtml(l.leaveDate||'—')}</td>
       <td style="padding:7px 10px;font-size:.8rem;">${escHtml(l.reason||'—')}</td>
       <td style="padding:7px 10px;">${_mlRiskBadge(maxLevel, true)}${kwChips ? `<div style="margin-top:3px;">${kwChips}</div>` : ''}</td>
+      <td style="padding:7px 8px;">${handlingSel}</td>
       <td style="padding:7px 10px;">${courseBtn}</td>
       <td style="padding:7px 10px;font-size:.8rem;color:#718096;">${escHtml(l.semester||'—')}</td>
       ${isAdmin ? `<td style="padding:7px 10px;"><button class="btn btn-danger btn-sm" onclick="window._mlDeleteRecord('${escHtml(l.id)}')">刪除</button></td>` : ''}
     </tr>
     <tr id="ml-course-${escHtml(l.id)}" style="display:none;background:#f7fffe;">
-      <td colspan="99" style="padding:8px 20px 12px;">
-        ${_mlCourseDetailHtml(l)}
-      </td>
+      <td colspan="99" style="padding:8px 20px 12px;">${_mlCourseDetailHtml(l)}</td>
     </tr>`;
   }).join('')
     : `<tr><td colspan="99" style="text-align:center;padding:24px;color:#a0aec0;">尚無紀錄</td></tr>`;
 
   const riskCount = (lv) => records.filter(l => _mlMatchKeywords(l.reason).maxLevel === lv).length;
+  const pendingCount = records.filter(l => {
+    const { maxLevel } = _mlMatchKeywords(l.reason);
+    return (l.handlingStatus || (maxLevel >= 3 ? '待處理' : '非危機')) === '待處理';
+  }).length;
 
   el.innerHTML = `
     <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
@@ -20399,9 +20471,10 @@ function _mlRenderRecordsTab(el) {
       <div class="info-card" style="min-width:110px;background:#fff5f5;"><div class="num" style="color:#c53030;">${riskCount(3)}</div><div class="lbl">紅燈（危機）</div></div>
       <div class="info-card" style="min-width:110px;background:#fffbeb;"><div class="num" style="color:#d97706;">${riskCount(2)}</div><div class="lbl">黃燈（醫療）</div></div>
       <div class="info-card" style="min-width:110px;background:#eff6ff;"><div class="num" style="color:#2b6cb0;">${riskCount(1)}</div><div class="lbl">藍燈（關注）</div></div>
+      <div class="info-card" style="min-width:110px;background:#fff5f5;"><div class="num" style="color:#e53e3e;">${pendingCount}</div><div class="lbl">待處理</div></div>
     </div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
-      <input type="text" id="ml-q" class="field-input" placeholder="搜尋姓名、學號、緣由…" value="${escHtml(q)}" oninput="renderMentalLeavePage()" style="max-width:220px;">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+      <input type="text" id="ml-q" class="field-input" placeholder="搜尋姓名、學號、緣由…" value="${escHtml(q)}" oninput="renderMentalLeavePage()" style="max-width:200px;">
       <select id="ml-risk" class="field-input" onchange="renderMentalLeavePage()" style="width:auto;">
         <option value="">所有風險等級</option>
         <option value="3"${riskF==='3'?' selected':''}>🔴 紅燈（危機）</option>
@@ -20409,42 +20482,59 @@ function _mlRenderRecordsTab(el) {
         <option value="1"${riskF==='1'?' selected':''}>🔵 關注</option>
         <option value="0"${riskF==='0'?' selected':''}>無命中</option>
       </select>
+      <select id="ml-handling" class="field-input" onchange="renderMentalLeavePage()" style="width:auto;">
+        <option value="">所有受理情況</option>
+        ${ML_HANDLING_OPTS.map(o=>`<option value="${o}"${hF===o?' selected':''}>${o}</option>`).join('')}
+      </select>
       <select id="ml-sem" class="field-input" onchange="renderMentalLeavePage()" style="width:auto;">
         <option value="">所有學期</option>${semOpts}
       </select>
       <button class="btn btn-primary" onclick="window._mlFetch()" style="white-space:nowrap;">📥 從信箱擷取</button>
       ${isAdmin ? `<button class="btn btn-secondary" onclick="window._mlFetch(true)" style="white-space:nowrap;" title="每次擷取最多300封歷史信件，可重複點選繼續往回擷取">📦 擷取300封信</button>` : ''}
       ${DRIVE_FOLDER_ID === '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' ? `
-        <button class="btn btn-secondary" onclick="window._mlDumpView()" style="white-space:nowrap;" title="廣撒網列出信箱中所有請假相關信件，供診斷用">📋 診斷信件</button>
-        <button class="btn btn-danger" onclick="window._mlClearAll()" style="white-space:nowrap;margin-left:auto;" title="清空所有測試資料（並移除 Gmail ml-processed 標籤）">🗑️ 清空測試資料</button>
+        <button class="btn btn-secondary" onclick="window._mlDumpView()" style="white-space:nowrap;">📋 診斷信件</button>
+        <button class="btn btn-danger" onclick="window._mlClearAll()" style="white-space:nowrap;margin-left:auto;">🗑️ 清空測試資料</button>
       ` : ''}
+    </div>
+    <div id="ml-batch-bar" style="display:${_mlCheckedIds.size>0?'flex':'none'};background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;padding:8px 12px;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+      <span id="ml-batch-cnt" style="font-size:.85rem;font-weight:600;color:#2b6cb0;">已選 ${_mlCheckedIds.size} 筆</span>
+      <select id="ml-batch-status" class="field-input" style="width:auto;">
+        <option value="">選擇受理情況…</option>
+        ${ML_HANDLING_OPTS.map(o=>`<option value="${o}">${o}</option>`).join('')}
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="window._mlBatchHandling()">套用</button>
+      <button class="btn btn-secondary btn-sm" onclick="_mlCheckedIds.clear();renderMentalLeavePage()">取消全選</button>
     </div>
     <div style="overflow-x:auto;">
       <table id="ml-records-table" style="width:100%;border-collapse:collapse;font-size:.875rem;">
         <colgroup>
+          <col style="width:28px;">
           <col id="ml-col-1" style="min-width:70px;">
           <col id="ml-col-2" style="min-width:90px;">
           <col id="ml-col-3" style="min-width:80px;">
           <col id="ml-col-4" style="min-width:120px;">
           <col id="ml-col-5" style="min-width:80px;">
-          <col id="ml-col-6" style="min-width:60px;">
+          <col id="ml-col-6" style="min-width:90px;">
           <col id="ml-col-7" style="min-width:60px;">
-          ${isAdmin ? '<col id="ml-col-8" style="min-width:50px;">' : ''}
+          <col id="ml-col-8" style="min-width:60px;">
+          ${isAdmin ? '<col id="ml-col-9" style="min-width:50px;">' : ''}
         </colgroup>
         <thead><tr style="background:#f7fafc;text-align:left;">
+          <th style="padding:8px 6px;text-align:center;width:28px;"><input type="checkbox" ${allChecked?'checked':''} onchange="window._mlCheckAll(this.checked)" title="全選/取消"></th>
           <th style="padding:8px 10px;" data-col="1">姓名</th>
           <th style="padding:8px 10px;" data-col="2">學號</th>
           <th style="padding:8px 10px;" data-col="3">請假日期</th>
           <th style="padding:8px 10px;min-width:120px;" data-col="4">請假緣由</th>
           <th style="padding:8px 10px;" data-col="5">風險 / 關鍵字</th>
-          <th style="padding:8px 10px;" data-col="6">課程</th>
-          <th style="padding:8px 10px;" data-col="7">學期</th>
-          ${isAdmin ? '<th style="padding:8px 10px;" data-col="8"></th>' : ''}
+          <th style="padding:8px 10px;" data-col="6">受理情況</th>
+          <th style="padding:8px 10px;" data-col="7">課程</th>
+          <th style="padding:8px 10px;" data-col="8">學期</th>
+          ${isAdmin ? '<th style="padding:8px 10px;" data-col="9"></th>' : ''}
         </tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
     </div>`;
-  _makeTableResizable({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8] : [1,2,3,4,5,6,7], prefKey: 'mlColWidths', skipCols: isAdmin ? new Set([8]) : new Set() });
+  _makeTableResizable({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,9] : [1,2,3,4,5,6,7,8], prefKey: 'mlColWidths2', skipCols: isAdmin ? new Set([9]) : new Set() });
 }
 
 window._mlDeleteRecord = async (id) => {
@@ -20757,6 +20847,14 @@ function _mlRenderKeywordsTab(el) {
       </td>
     </tr>`).join('');
 
+  const analysisLogs = Array.isArray(configData?.mlAnalysisLogs) ? configData.mlAnalysisLogs : [];
+  const logsHtml = analysisLogs.length ? analysisLogs.map((lg, i) => `
+    <div style="border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-bottom:10px;position:relative;">
+      <div style="font-size:.78rem;color:#718096;margin-bottom:4px;">${escHtml(lg.date||'')} · ${escHtml(lg.analyst||'')}</div>
+      <div style="font-size:.87rem;color:#2d3748;white-space:pre-wrap;">${escHtml(lg.note||'')}</div>
+      <button onclick="window._mlDeleteAnalysisLog(${i})" style="position:absolute;top:8px;right:8px;background:none;border:none;cursor:pointer;color:#e53e3e;font-size:.8rem;">✕</button>
+    </div>`).join('') : `<div style="color:#a0aec0;font-size:.85rem;padding:8px 0;">尚無分析備忘記錄</div>`;
+
   el.innerHTML = `
     ${usingDefault ? '<div style="background:#fffbeb;border:1px solid #f6d860;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:.84rem;color:#744210;">⚠ 目前使用<strong>系統預設關鍵字庫</strong>。新增或刪除任何關鍵字後，設定將獨立儲存至本系統設定檔。</div>' : ''}
     <div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin-bottom:20px;">
@@ -20781,7 +20879,25 @@ function _mlRenderKeywordsTab(el) {
         <tbody>${tableRows}</tbody>
       </table>
     </div>
-    ${usingDefault ? '' : `<div style="margin-top:14px;"><button class="btn btn-secondary btn-sm" onclick="window._mlResetKw()">還原預設關鍵字庫</button></div>`}`;
+    ${usingDefault ? '' : `<div style="margin-top:14px;"><button class="btn btn-secondary btn-sm" onclick="window._mlResetKw()">還原預設關鍵字庫</button></div>`}
+    <div style="margin-top:28px;">
+      <h4 style="margin:0 0 12px;font-size:.92rem;color:#2d3748;display:flex;align-items:center;gap:10px;">
+        📊 AI 分析備忘記錄
+        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('ml-al-form').style.display=document.getElementById('ml-al-form').style.display==='none'?'block':'none'">+ 新增備忘</button>
+      </h4>
+      <div id="ml-al-form" style="display:none;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:14px;margin-bottom:14px;">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+          <label style="font-size:.84rem;color:#4a5568;">分析日期：</label>
+          <input type="date" id="ml-al-date" class="field-input" value="${new Date().toISOString().slice(0,10)}" style="width:auto;">
+        </div>
+        <textarea id="ml-al-note" class="field-input" rows="5" placeholder="分析內容、關鍵字變更原因、命中率、建議…" style="width:100%;resize:vertical;font-family:inherit;"></textarea>
+        <div style="margin-top:8px;display:flex;gap:8px;">
+          <button class="btn btn-primary btn-sm" onclick="window._mlSaveAnalysisLog()">儲存備忘</button>
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('ml-al-form').style.display='none'">取消</button>
+        </div>
+      </div>
+      ${logsHtml}
+    </div>`;
 }
 
 window._mlAddKw = async () => {
@@ -20821,6 +20937,29 @@ window._mlResetKw = async () => {
   renderMentalLeavePage();
   const jobId = bgJobAdd('還原預設關鍵字庫');
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); auditLog('還原身心調適假預設關鍵字庫'); }
+  catch(e) { bgJobFail(jobId, e.message); }
+};
+
+window._mlSaveAnalysisLog = async () => {
+  const date = document.getElementById('ml-al-date')?.value || new Date().toISOString().slice(0,10);
+  const note = document.getElementById('ml-al-note')?.value.trim();
+  if (!note) { alert('請輸入分析備忘內容'); return; }
+  if (!configData) configData = {};
+  if (!Array.isArray(configData.mlAnalysisLogs)) configData.mlAnalysisLogs = [];
+  configData.mlAnalysisLogs.unshift({ date, analyst: currentUser?.email || '未知', note, savedAt: new Date().toISOString() });
+  renderMentalLeavePage();
+  const jobId = bgJobAdd('儲存分析備忘');
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); auditLog('新增身心調適假分析備忘', null, null, date); }
+  catch(e) { bgJobFail(jobId, e.message); }
+};
+
+window._mlDeleteAnalysisLog = async (i) => {
+  if (!confirm('確定刪除此筆分析備忘？')) return;
+  if (!Array.isArray(configData?.mlAnalysisLogs)) return;
+  configData.mlAnalysisLogs.splice(i, 1);
+  renderMentalLeavePage();
+  const jobId = bgJobAdd('刪除分析備忘');
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); }
   catch(e) { bgJobFail(jobId, e.message); }
 };
 function _upsertPsychTestDB(sid, sem, result) {

@@ -710,12 +710,13 @@ function fetchMentalLeaves_(ctx, opts) {
 
       if (!studentId && !name) return;
 
-      // ── 關鍵字比對（含主旨 + 原因 + 正文）
+      // ── 關鍵字比對（scope:'reason' 只比對緣由，其餘比對全文）
       var matchedKeywords = [];
       var maxLevel = 0;
       var fullText = subject + ' ' + reason + ' ' + plainBody;
       keywords.forEach(function(k) {
-        if (fullText.indexOf(k.kw) !== -1) {
+        var matchText = (k.scope === 'reason') ? reason : fullText;
+        if (matchText.indexOf(k.kw) !== -1) {
           matchedKeywords.push({ kw: k.kw, level: k.level });
           if (k.level > maxLevel) maxLevel = k.level;
         }
@@ -737,7 +738,9 @@ function fetchMentalLeaves_(ctx, opts) {
         course: course,       // 課程名稱字串（向下相容）
         courses: coursesArr,  // 結構化課程陣列 [{name, date, weekday, period}]
         semester: String(semester), matchedKeywords: matchedKeywords,
-        riskLevel: maxLevel, receivedAt: receivedAt, parsedAt: new Date().toISOString(),
+        riskLevel: maxLevel,
+        handlingStatus: maxLevel >= 3 ? '待處理' : '非危機',
+        receivedAt: receivedAt, parsedAt: new Date().toISOString(),
       });
       existingSet[msgId] = true;
 
@@ -1182,9 +1185,13 @@ function loadMlKeywords_(ctx) {
     }
   } catch(e) {}
   if (!keywords.length) {
-    '死,結束生命,不想活,自傷,自殘,自殺,跳,崩潰,喘不過氣,恐慌,解離,幻覺,車禍,意外,喪,暴力,性平,性騷,家暴'.split(',').forEach(function(kw) { keywords.push({ kw: kw, level: 3 }); });
-    '身心科,精神科,急診,住院,看診,回診,諮商,藥物副作用,換藥,斷藥,戒斷,憂鬱,焦慮,躁鬱,失眠,厭食,暴食'.split(',').forEach(function(kw) { keywords.push({ kw: kw, level: 2 }); });
-    '分手,感情問題,排擠,霸凌,期中,期末,退學,休學,擋修,家庭衝突,經濟壓力'.split(',').forEach(function(kw) { keywords.push({ kw: kw, level: 1 }); });
+    // Level 3 危機/紅燈（2026-06-18 AI分析更新：移除「諮商」假陽性，補充輕生/消失）
+    '死,結束生命,不想活,自傷,自殘,自殺,跳,崩潰,喘不過氣,恐慌,解離,幻覺,車禍,意外,喪,暴力,性平,性騷,家暴,輕生,消失'.split(',').forEach(function(kw) { keywords.push({ kw: kw, level: 3 }); });
+    // Level 2 醫療/黃燈（「諮商」改為 scope:'reason' 只比對緣由欄位，避免主旨假陽性）
+    '身心科,精神科,急診,住院,看診,回診,藥物副作用,換藥,斷藥,戒斷,憂鬱,焦慮,躁鬱,失眠,厭食,暴食,哭,壓力大,情緒'.split(',').forEach(function(kw) { keywords.push({ kw: kw, level: 2 }); });
+    keywords.push({ kw: '諮商', level: 2, scope: 'reason' }); // 僅比對緣由，避免主旨「學生諮商中心」假陽性
+    // Level 1 壓力/關注（補充身心調適/個人因素常見緣由）
+    '分手,感情問題,排擠,霸凌,期中,期末,退學,休學,擋修,家庭衝突,經濟壓力,身心調適,休息調適,個人因素,照顧家人'.split(',').forEach(function(kw) { keywords.push({ kw: kw, level: 1 }); });
   }
   return keywords;
 }
