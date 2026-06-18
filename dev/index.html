@@ -3094,6 +3094,7 @@
         <label id="todos-select-all-label" style="font-size:.85rem;cursor:pointer;user-select:none;"><input type="checkbox" id="todos-select-all" onchange="_toggleTodosSelectAll(this)"> 全選</label>
         <button class="btn btn-sm" id="todos-batch-delete-btn" style="display:none;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_batchDeleteTodos()">刪除選取</button>
       </div>
+      <div id="todos-ml-notif-section"></div>
       <div id="todos-assignment-section"></div>
       <div id="todos-unclosed-summary"></div>
       <div id="todos-body"></div>
@@ -5790,7 +5791,8 @@ function _syncBellBadge() {
   const failed  = _bgJobs.filter(j => j.state === 'failed').length;
   const running = _bgJobs.filter(j => j.state === 'running').length;
   const autosaveUnread = todosData.filter(t => !t.notifRead && !t.done).length;
-  const total   = unread + failed + autosaveUnread;
+  const mlUnread = _mlUnacknowledgedForMe().length;
+  const total   = unread + failed + autosaveUnread + mlUnread;
   badge.textContent = total > 99 ? '99+' : (total || '');
   badge.style.display = (total > 0 || running > 0) ? 'flex' : 'none';
   badge.style.background = failed > 0 ? '#c53030' : running > 0 ? '#2b6cb0' : '#e53e3e';
@@ -5891,11 +5893,26 @@ function renderNotifList() {
       <div style="font-size:.875rem;color:#2d3748;line-height:1.5;">⚡ 系統已更新，建議重新整理頁面以取得最新版本</div>
       <button onclick="location.reload()" style="margin-top:6px;padding:4px 14px;background:#dd6b20;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.8rem;">立即重新整理</button>
     </div>` : '';
-  if (!notifs.length && !_updateAvailable) {
+  const mlItems = _mlUnacknowledgedForMe();
+  const mlBanner = mlItems.length ? mlItems.map(l => {
+    const mc = (casesData || []).find(c => !c.deleted && c.studentId === l.studentId);
+    const dateStr = (l.receivedAt || '').slice(0, 10);
+    return `<div class="notif-item notif-unread" style="border-left:4px solid #276749;background:#f0fff4;cursor:default;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:.8rem;font-weight:700;color:#276749;margin-bottom:3px;">🌿 身心調適假通知</div>
+        <div style="font-size:.875rem;color:#2d3748;line-height:1.5;">${escHtml(l.name||l.studentId)} ${dateStr ? `（${dateStr}）` : ''} — ${escHtml((l.reason||'').slice(0,30))}${(l.reason||'').length>30?'…':''}</div>
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+          ${mc ? `<button onclick="showCaseDetail('${escHtml(mc.id)}')" style="padding:3px 12px;background:#2b6cb0;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;">前往個案</button>` : ''}
+          <button onclick="window._mlAcknowledge('${escHtml(l.id)}')" style="padding:3px 12px;background:#276749;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;">收到</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('') : '';
+  if (!notifs.length && !_updateAvailable && !mlItems.length) {
     list.innerHTML = '<div style="padding:24px;text-align:center;color:#718096;font-size:.875rem;">目前沒有通知</div>';
     return;
   }
-  list.innerHTML = updateBanner + notifs.map(n => `
+  list.innerHTML = updateBanner + mlBanner + notifs.map(n => `
     <div class="notif-item ${n.read ? 'notif-read' : 'notif-unread'}" style="display:flex;gap:8px;align-items:flex-start;"
       onclick="notifClick('${escHtml(n.id)}','${escHtml(n.caseId || '')}')">
       <div style="flex:1;min-width:0;">
@@ -5905,6 +5922,19 @@ function renderNotifList() {
       ${!n.read ? `<button onclick="event.stopPropagation();notifDismiss('${escHtml(n.id)}')" style="flex-shrink:0;background:none;border:none;color:#a0aec0;cursor:pointer;font-size:1rem;padding:0 2px;line-height:1;" title="已讀（不跳轉）">×</button>` : ''}
     </div>`).join('');
 }
+
+window._mlAcknowledge = async (id) => {
+  const r = mentalLeavesData.find(l => l.id === id);
+  if (!r || !currentUser?.email) return;
+  if (!Array.isArray(r.acknowledgedBy)) r.acknowledgedBy = [];
+  if (r.acknowledgedBy.includes(currentUser.email)) return;
+  r.acknowledgedBy.push(currentUser.email);
+  _syncTodoBadge();
+  if (document.getElementById('notif-panel')?.style.display !== 'none') renderNotifList();
+  if (document.getElementById('page-todos')?.classList.contains('active')) renderTodosPage();
+  const jobId = bgJobAdd(`身心調適假已確認：${r.name || r.studentId}`);
+  try { await saveMentalLeaves(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); }
+};
 
 async function notifDismiss(notifId) {
   const me = configData?.users?.[currentUser?.email];
@@ -15971,8 +16001,36 @@ async function _confirmCaseAssignment(todoId) {
   }
 }
 
+function _renderMlNotifSection() {
+  const section = document.getElementById('todos-ml-notif-section');
+  if (!section) return;
+  const items = _mlUnacknowledgedForMe();
+  if (!items.length) { section.innerHTML = ''; return; }
+  section.innerHTML = `
+    <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:14px 16px;margin-bottom:16px;">
+      <div style="font-weight:700;color:#276749;margin-bottom:10px;font-size:.95rem;">🌿 身心調適假待確認（${items.length} 筆）</div>
+      ${items.map(l => {
+        const mc = (casesData || []).find(c => !c.deleted && c.studentId === l.studentId);
+        const dateStr = (l.receivedAt || '').slice(0, 10);
+        return `<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid #c6f6d5;">
+          <div style="flex:1;min-width:0;">
+            <span style="font-weight:600;color:#2d3748;">${escHtml(l.name||l.studentId)}</span>
+            <span style="font-size:.78rem;color:#718096;margin-left:6px;">${escHtml(l.studentId||'')}</span>
+            ${dateStr ? `<span style="font-size:.78rem;color:#718096;margin-left:4px;">${dateStr}</span>` : ''}
+            <div style="font-size:.82rem;color:#4a5568;margin-top:2px;">${escHtml((l.reason||'').slice(0,60))}${(l.reason||'').length>60?'…':''}</div>
+          </div>
+          <div style="display:flex;gap:6px;flex-shrink:0;">
+            ${mc ? `<button onclick="showCaseDetail('${escHtml(mc.id)}')" style="padding:3px 10px;background:#2b6cb0;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;">前往個案</button>` : ''}
+            <button onclick="window._mlAcknowledge('${escHtml(l.id)}')" style="padding:3px 10px;background:#276749;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;">收到</button>
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
 function renderTodosPage() {
   _renderAssignmentTodos();
+  _renderMlNotifSection();
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
 
   // ── 管理者：初始化人員篩選下拉 ──
@@ -20166,6 +20224,7 @@ async function loadMentalLeaves() {
     const data = await driveReadJson(MENTAL_LEAVES_FILE);
     mentalLeavesData = Array.isArray(data?.records) ? data.records : [];
   } catch(e) { mentalLeavesData = []; }
+  _syncTodoBadge();
 }
 
 async function saveMentalLeaves() {
@@ -20358,9 +20417,7 @@ function _mlTabBtn(id, label) {
 }
 window._mlSwitchTab = (id) => { _mlTab = id; renderMentalLeavePage(); };
 window._mlFilterChange = () => { _mlPage = 1; renderMentalLeavePage(); };
-function _getMyStudentIds() {
-  const isAdmin = currentRole === '主任' || extraRole === '管理者';
-  if (isAdmin || isMentalLeaveContact) return null; // 窗口/管理者看全部
+function _getMyCaseStudentIds() {
   const myAllowedIds = new Set(configData?.users?.[currentUser?.email]?.allowedCases || []);
   const result = new Set();
   (casesData || []).filter(c => !c.deleted).forEach(c => {
@@ -20369,6 +20426,25 @@ function _getMyStudentIds() {
     }
   });
   return result;
+}
+
+function _getMyStudentIds() {
+  const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  if (isAdmin || isMentalLeaveContact) return null; // 窗口/管理者看全部
+  return _getMyCaseStudentIds();
+}
+
+function _mlUnacknowledgedForMe() {
+  if (!currentUser?.email || !mentalLeavesData.length) return [];
+  const myStudentIds = _getMyCaseStudentIds();
+  if (!myStudentIds.size) return [];
+  const thirtyDaysAgo = Date.now() - 30 * 86400000;
+  return mentalLeavesData.filter(l => {
+    if (l.deleted) return false;
+    if (!l.receivedAt || new Date(l.receivedAt).getTime() < thirtyDaysAgo) return false;
+    if (!myStudentIds.has(l.studentId)) return false;
+    return !(l.acknowledgedBy || []).includes(currentUser.email);
+  });
 }
 
 function _mlRenderTab() {
