@@ -1864,6 +1864,9 @@
       <!-- 所有學期轉銜評估卡片 -->
       <div id="detail-transfer-evals"></div>
 
+      <!-- 身心調適假紀錄卡片 -->
+      <div id="detail-ml-leaves"></div>
+
       <!-- 學生學期導覽（跨案件） -->
       <div id="detail-student-sem-nav" style="display:none;"></div>
 
@@ -5590,9 +5593,19 @@ function renderCases() {
         }).join('')}</div>`
       : '';
     const archivedBadge = c.archived ? ' <span style="display:inline-block;background:#e2e8f0;color:#4a5568;border-radius:4px;padding:1px 6px;font-size:.75rem;font-weight:600;">封存</span>' : '';
+    const mlRecentBadge = (() => {
+      if (!c.studentId || !mentalLeavesData.length) return '';
+      const thirtyAgo = Date.now() - 30 * 86400000;
+      const recent = mentalLeavesData.filter(l => !l.deleted && l.studentId === c.studentId && l.receivedAt && new Date(l.receivedAt).getTime() >= thirtyAgo);
+      if (!recent.length) return '';
+      const dates = recent.map(l => l.leaveDate || '').filter(Boolean).sort();
+      const fmt = d => d.slice(5).replace('-', '/');
+      const range = dates.length >= 2 ? `${fmt(dates[0])}–${fmt(dates[dates.length-1])}` : dates[0] ? fmt(dates[0]) : '';
+      return `<div style="margin-top:3px;"><span style="display:inline-block;background:#e9d8fd;color:#553c9a;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;" title="近30天有身心調適假紀錄">身心調適假 ${escHtml(range)}</span></div>`;
+    })();
     const statusCell = c.deleted
       ? `<span class="badge-case-deleted">已刪除</span>`
-      : statusBadge(c.status) + archivedBadge + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '');
+      : statusBadge(c.status) + archivedBadge + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '') + mlRecentBadge;
     const rowBg = !c.deleted && pastUnclosedSems.length ? 'background:#fffbeb;' : '';
     const canCheckCase = !c.deleted && !c.archived;
     return `
@@ -7707,6 +7720,8 @@ function showCaseDetail(caseId) {
   const transferEvalHtml = '';
   const _teAllDiv = document.getElementById('detail-transfer-evals');
   if (_teAllDiv) _teAllDiv.innerHTML = _renderAllTransferEvalsCard(c, cid);
+  const _mlLeavesDiv = document.getElementById('detail-ml-leaves');
+  if (_mlLeavesDiv) _mlLeavesDiv.innerHTML = _renderCaseMlCard(c);
 
   if (_caseDetailMode === 'psychtest') {
     document.getElementById('detail-body').innerHTML = _renderPsychTestReport(c, _caseDetailPsychIdx);
@@ -20528,6 +20543,35 @@ function _mlConsecutive3DayIds(records) {
 }
 
 // ── 身心調適假通知資料庫 Tab ──────────────────────────────
+function _mlGroupAndSort(records) {
+  const byStudent = {};
+  records.forEach(l => {
+    const key = l.studentId || l.id;
+    if (!byStudent[key]) byStudent[key] = [];
+    byStudent[key].push(l);
+  });
+  const groups = [];
+  Object.values(byStudent).forEach(recs => {
+    const sorted = [...recs].sort((a, b) => (a.leaveDate||'').localeCompare(b.leaveDate||''));
+    let i = 0;
+    while (i < sorted.length) {
+      let j = i;
+      while (j + 1 < sorted.length) {
+        const diff = Math.round((new Date(sorted[j+1].leaveDate) - new Date(sorted[j].leaveDate)) / 86400000);
+        if (diff === 1) j++; else break;
+      }
+      const run = sorted.slice(i, j + 1);
+      const dates = run.map(r => r.leaveDate || '').filter(Boolean);
+      const fmt = d => d.slice(5).replace('-', '/');
+      const dateRange = dates.length >= 2 ? `${fmt(dates[0])} – ${fmt(dates[dates.length-1])}` : dates[0] ? fmt(dates[0]) : '';
+      groups.push({ records: run, isConsec3: run.length >= 3, isRun: run.length >= 2, dateRange, latestDate: dates[dates.length-1] || '' });
+      i = j + 1;
+    }
+  });
+  groups.sort((a, b) => b.latestDate.localeCompare(a.latestDate));
+  return groups;
+}
+
 function _mlRenderRecordsTab(el, studentIdFilter = null) {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   const canFullAccess = isAdmin || isMentalLeaveContact;
@@ -20557,13 +20601,18 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     }
     return true;
   });
-  filtered.sort((a, b) => (b.leaveDate||'').localeCompare(a.leaveDate||''));
+  const _mlGroups = _mlGroupAndSort(filtered);
+  const allSorted = _mlGroups.flatMap(g => g.records);
+  const _runInfoMap = {};
+  _mlGroups.forEach(g => g.records.forEach((r, idx) => {
+    _runInfoMap[r.id] = { isConsec3: g.isConsec3, isRun: g.isRun, dateRange: g.dateRange, isFirst: idx === 0 };
+  }));
 
-  const totalFiltered = filtered.length;
+  const totalFiltered = allSorted.length;
   const totalPages = Math.max(1, Math.ceil(totalFiltered / _mlPageSize));
   if (_mlPage > totalPages) _mlPage = totalPages;
   const pageStart = (_mlPage - 1) * _mlPageSize;
-  const pageRecords = filtered.slice(pageStart, pageStart + _mlPageSize);
+  const pageRecords = allSorted.slice(pageStart, pageStart + _mlPageSize);
 
   const sems = [...new Set(records.map(l => l.semester).filter(Boolean))].sort().reverse();
   const semOpts = sems.map(s => `<option value="${escHtml(s)}"${semF===s?' selected':''}>${escHtml(semesterLabel(s)||s)}</option>`).join('');
@@ -20578,7 +20627,19 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     const nameLink = mc
       ? `<button onclick="showCaseDetail('${escHtml(mc.id)}')" style="border:none;background:none;cursor:pointer;color:#2b6cb0;font-weight:600;padding:0;font-size:inherit;">${escHtml(l.name||'—')}</button>`
       : `<span>${escHtml(l.name||'—')}</span>`;
+    const runInfo = _runInfoMap[l.id] || {};
     const rowBg = maxLevel===3?'#fff5f5':maxLevel===2?'#fffdf0':'';
+    const leftBorder = mc ? 'border-left:3px solid #3182ce;' : '';
+    const groupHeader = (runInfo.isRun && runInfo.isFirst)
+      ? `<tr style="background:#eff6ff;"><td colspan="99" style="padding:2px 12px 2px 36px;font-size:.78rem;color:#1e40af;border-top:2px solid #bfdbfe;font-weight:600;">📅 ${escHtml(l.name||l.studentId||'—')}&ensp;${escHtml(runInfo.dateRange)}${runInfo.isConsec3?`&ensp;<span style="background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 6px;font-size:.72rem;">連請三天</span>`:''}</td></tr>`
+      : '';
+    const dateBadge = runInfo.isConsec3
+      ? `<div style="margin-top:2px;"><span style="background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 5px;font-size:.7rem;font-weight:600;">連請三天</span></div>`
+      : runInfo.isRun ? `<div style="margin-top:2px;"><span style="background:#e8f4fd;color:#1e40af;border-radius:4px;padding:0 5px;font-size:.7rem;">連假</span></div>`
+      : '';
+    const studentIdCell = mc
+      ? `<div style="font-family:monospace;">${escHtml(l.studentId||'—')}</div><div style="margin-top:2px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;"><span style="font-size:.75rem;color:#2b6cb0;font-family:monospace;">${escHtml(mc.id)}</span><button onclick="event.stopPropagation();showCaseDetail('${escHtml(mc.id)}')" style="border:none;background:#ebf8ff;color:#2b6cb0;cursor:pointer;border-radius:3px;padding:0 5px;font-size:.7rem;line-height:1.6;">前往個案</button></div>`
+      : `<span style="font-family:monospace;">${escHtml(l.studentId||'—')}</span>`;
     const cCount = _mlCourseCount(l);
     const courseBtn = cCount
       ? `<button onclick="window._mlToggleCourse('${escHtml(l.id)}')" style="border:1px solid #c6f6d5;background:#f0fff4;color:#276749;border-radius:12px;padding:1px 8px;font-size:.75rem;cursor:pointer;white-space:nowrap;">▶ ${cCount} 節課</button>`
@@ -20589,11 +20650,11 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       ${ML_HANDLING_OPTS.map(o=>`<option value="${o}"${hVal===o?' selected':''}>${o}</option>`).join('')}
     </select>`;
     const isChecked = _mlCheckedIds.has(l.id);
-    return `<tr style="background:${rowBg};">
+    return `${groupHeader}<tr style="background:${rowBg};${leftBorder}">
       <td style="padding:5px 6px;text-align:center;width:28px;"><input type="checkbox" class="ml-row-chk" data-id="${escHtml(l.id)}" ${isChecked?'checked':''} onchange="window._mlToggleCheck('${escHtml(l.id)}',this.checked)"></td>
       <td style="padding:7px 10px;">${nameLink}</td>
-      <td style="padding:7px 10px;font-family:monospace;">${escHtml(l.studentId||'—')}</td>
-      <td style="padding:7px 10px;">${escHtml(l.leaveDate||'—')}</td>
+      <td style="padding:7px 10px;">${studentIdCell}</td>
+      <td style="padding:7px 10px;">${escHtml(l.leaveDate||'—')}${dateBadge}</td>
       <td style="padding:7px 10px;font-size:.8rem;">${escHtml(l.reason||'—')}</td>
       <td style="padding:7px 10px;">${_mlRiskBadge(maxLevel, true)}${kwChips ? `<div style="margin-top:3px;">${kwChips}</div>` : ''}</td>
       <td style="padding:7px 8px;">${handlingSel}</td>
@@ -24336,6 +24397,39 @@ function _buildTECardBody(ev) {
 }
 
 // ── 所有學期轉銜評估卡片（個案詳細頁，不限學期） ──
+function _renderCaseMlCard(c) {
+  if (!c.studentId) return '';
+  const recs = mentalLeavesData.filter(l => !l.deleted && l.studentId === c.studentId);
+  if (!recs.length) return '';
+  const sorted = [...recs].sort((a, b) => (b.leaveDate||'').localeCompare(a.leaveDate||''));
+  const rows = sorted.map(l => {
+    const { maxLevel } = _mlMatchKeywords(l.reason);
+    const bg = maxLevel===3?'#fff5f5':maxLevel===2?'#fffdf0':'';
+    const hVal = l.handlingStatus || (maxLevel >= 3 ? '待處理' : '非危機');
+    const hs = ML_HANDLING_STYLE[hVal] || {};
+    return `<tr style="background:${bg};">
+      <td style="padding:4px 8px;white-space:nowrap;font-size:.82rem;">${escHtml(l.leaveDate||'—')}</td>
+      <td style="padding:4px 8px;font-size:.78rem;color:#718096;">${escHtml(l.semester||'—')}</td>
+      <td style="padding:4px 8px;font-size:.82rem;max-width:220px;">${escHtml(l.reason||'—')}</td>
+      <td style="padding:4px 8px;">${_mlRiskBadge(maxLevel, true)}</td>
+      <td style="padding:4px 8px;font-size:.78rem;"><span style="background:${hs.bg||'#f7fafc'};color:${hs.color||'#718096'};border:1px solid ${hs.border||'#e2e8f0'};border-radius:4px;padding:0 5px;">${escHtml(hVal)}</span></td>
+    </tr>`;
+  }).join('');
+  return `<div style="margin-top:14px;padding:14px;background:#faf5ff;border-radius:8px;border:1px solid #d6bcfa;">
+    <div style="font-weight:600;color:#553c9a;margin-bottom:8px;font-size:.9rem;">身心調適假紀錄（共 ${recs.length} 筆）</div>
+    <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="background:#e9d8fd;color:#44337a;font-size:.8rem;">
+        <th style="padding:4px 8px;text-align:left;font-weight:600;">請假日期</th>
+        <th style="padding:4px 8px;text-align:left;font-weight:600;">學期</th>
+        <th style="padding:4px 8px;text-align:left;font-weight:600;">緣由</th>
+        <th style="padding:4px 8px;text-align:left;font-weight:600;">風險</th>
+        <th style="padding:4px 8px;text-align:left;font-weight:600;">受理情況</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+  </div>`;
+}
+
 function _renderAllTransferEvalsCard(c, cid) {
   const allEvals = (c.transferEvaluations || [])
     .sort((a, b) => {
