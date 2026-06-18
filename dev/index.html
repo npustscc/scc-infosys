@@ -20310,6 +20310,9 @@ function _mlRenderCourseStatsTab(el) {
 let _mlTab = 'records';
 let _mlPage = 1;
 let _mlPageSize = 100;
+let _mlFetchAborted = false;
+let _mlSemFilter = localStorage.getItem('ml_sem_pref') || currentSemesterPrefix();
+let _mlConsec3Filter = false;
 function renderMentalLeavePage() {
   const el = document.getElementById('mental-leave-body');
   if (!el) return;
@@ -20392,18 +20395,38 @@ window._mlBatchHandling = async () => {
   catch(e) { bgJobFail(jobId, e.message); }
 };
 
-// ── 請假紀錄列表 Tab ─────────────────────────────────────
+function _mlConsecutive3DayIds(records) {
+  const byStudent = {};
+  records.forEach(l => {
+    if (!l.studentId || !l.leaveDate) return;
+    if (!byStudent[l.studentId]) byStudent[l.studentId] = new Set();
+    byStudent[l.studentId].add(l.leaveDate);
+  });
+  const result = new Set();
+  Object.entries(byStudent).forEach(([sid, dateSet]) => {
+    const sorted = [...dateSet].sort();
+    for (let i = 0; i + 2 < sorted.length; i++) {
+      const d0 = new Date(sorted[i]), d1 = new Date(sorted[i+1]), d2 = new Date(sorted[i+2]);
+      if ((d1 - d0) === 86400000 && (d2 - d1) === 86400000) { result.add(sid); break; }
+    }
+  });
+  return result;
+}
+
+// ── 身心調適假通知資料庫 Tab ──────────────────────────────
 function _mlRenderRecordsTab(el) {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   const records = mentalLeavesData.filter(l => !l.deleted);
   const q      = (document.getElementById('ml-q')?.value        || '').trim().toLowerCase();
   const riskF  =  document.getElementById('ml-risk')?.value     || '';
-  const semF   =  document.getElementById('ml-sem')?.value      || '';
+  const semF   =  _mlSemFilter;
   const hF     =  document.getElementById('ml-handling')?.value || '';
+  const consec3Ids = _mlConsec3Filter ? _mlConsecutive3DayIds(records) : null;
 
   let filtered = records.filter(l => {
     if (q && !((l.name||'').toLowerCase().includes(q) || (l.studentId||'').toLowerCase().includes(q) || (l.reason||'').toLowerCase().includes(q))) return false;
     if (semF && l.semester !== semF) return false;
+    if (consec3Ids && !consec3Ids.has(l.studentId)) return false;
     if (riskF) {
       const { maxLevel } = _mlMatchKeywords(l.reason);
       if (riskF === '3' && maxLevel !== 3) return false;
@@ -20495,9 +20518,13 @@ function _mlRenderRecordsTab(el) {
         <option value="">所有受理情況</option>
         ${ML_HANDLING_OPTS.map(o=>`<option value="${o}"${hF===o?' selected':''}>${o}</option>`).join('')}
       </select>
-      <select id="ml-sem" class="field-input" onchange="window._mlFilterChange()" style="width:auto;">
+      <select id="ml-sem" class="field-input" onchange="_mlSemFilter=this.value;localStorage.setItem('ml_sem_pref',this.value);_mlPage=1;renderMentalLeavePage();" style="width:auto;">
         <option value="">所有學期</option>${semOpts}
       </select>
+      <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;">
+        <input type="checkbox" ${_mlConsec3Filter?'checked':''} onchange="_mlConsec3Filter=this.checked;_mlPage=1;renderMentalLeavePage();" style="margin:0;">
+        連請三天
+      </label>
       <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;">每頁
         <select id="ml-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;" onchange="_mlPageSize=parseInt(this.value);_mlPage=1;renderMentalLeavePage();">
           ${[100,200,300].map(n=>`<option value="${n}"${_mlPageSize===n?' selected':''}>${n}</option>`).join('')}
@@ -20586,7 +20613,10 @@ window._mlCreateFetchWin = (totalY) => {
       <div id="ml-fw-count" style="font-size:15px;font-weight:700;color:#2d3748;margin-bottom:4px;">0 / ${totalY ?? '?'}</div>
       <div id="ml-fw-new" style="font-size:12px;color:#2f855a;"></div>
       <div id="ml-fw-hint" style="font-size:11px;color:#e53e3e;margin-top:6px;display:none;line-height:1.5;"></div>
-      <button id="ml-fw-done" style="margin-top:10px;width:100%;padding:6px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;font-size:13px;opacity:.5;" disabled onclick="document.getElementById('ml-fetch-win').remove()">完成</button>
+      <div style="display:flex;gap:6px;margin-top:10px;">
+        <button id="ml-fw-abort" style="flex:1;padding:6px;background:#fff5f5;border:1px solid #fc8181;border-radius:4px;cursor:pointer;font-size:13px;color:#c53030;" onclick="window._mlAbortFetch()">中斷</button>
+        <button id="ml-fw-done" style="flex:1;padding:6px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;font-size:13px;opacity:.5;" disabled onclick="document.getElementById('ml-fetch-win').remove()">完成</button>
+      </div>
     </div>`;
   document.body.appendChild(win);
   const header = win.querySelector('#ml-fw-header');
@@ -20607,7 +20637,14 @@ window._mlCreateFetchWin = (totalY) => {
   return win;
 };
 
+window._mlAbortFetch = () => {
+  _mlFetchAborted = true;
+  const ab = document.getElementById('ml-fw-abort');
+  if (ab) { ab.disabled = true; ab.textContent = '中斷中…'; }
+};
+
 window._mlFetch = async () => {
+  _mlFetchAborted = false;
   const btn = document.querySelector('[onclick="window._mlFetch()"]');
   const jobId = bgJobAdd('從信箱擷取身心調適假');
 
@@ -20648,6 +20685,7 @@ window._mlFetch = async () => {
         const BATCH_SIZE = 20, MAX_TOTAL = 200;
         let processed = 0, totalNew = 0, lastBatch = 0;
         while (processed < MAX_TOTAL) {
+          if (_mlFetchAborted) break;
           const result = await proxyCall('fetchMentalLeaves', { batchSize: BATCH_SIZE });
           if (result?.needsAuth) {
             bgJobFail(jobId, '需要 Gmail 授權'); _mlShowAuthModal(result.authUrl);
@@ -20663,17 +20701,25 @@ window._mlFetch = async () => {
           if (lastBatch < BATCH_SIZE) break; // 信件已耗盡
         }
 
-        const stillMore = processed >= MAX_TOTAL && lastBatch >= BATCH_SIZE;
-        bgJobDone(jobId);
-        auditLog('從信箱擷取身心調適假', null, null,
-          `擷取 ${processed} 封，新增 ${totalNew} 筆${stillMore ? '，尚有更多' : ''}`);
-        _winPct(100);
-        if (stillMore) {
-          _winStatus('首批 200 封已完成');
-          const hint = win.querySelector('#ml-fw-hint');
-          if (hint) { hint.textContent = '尚有更多未擷取信件，請再點選「從信箱擷取」繼續'; hint.style.display = 'block'; }
+        if (_mlFetchAborted) {
+          bgJobDone(jobId);
+          auditLog('從信箱擷取身心調適假（中斷）', null, null, `已擷取 ${processed} 封，新增 ${totalNew} 筆`);
+          _winStatus(`已中斷，擷取 ${processed} / ${displayY} 封（新增 ${totalNew} 筆）`);
+          const ab = document.getElementById('ml-fw-abort');
+          if (ab) { ab.disabled = true; ab.textContent = '已中斷'; }
         } else {
-          _winStatus('擷取完成');
+          const stillMore = processed >= MAX_TOTAL && lastBatch >= BATCH_SIZE;
+          bgJobDone(jobId);
+          auditLog('從信箱擷取身心調適假', null, null,
+            `擷取 ${processed} 封，新增 ${totalNew} 筆${stillMore ? '，尚有更多' : ''}`);
+          _winPct(100);
+          if (stillMore) {
+            _winStatus('首批 200 封已完成');
+            const hint = win.querySelector('#ml-fw-hint');
+            if (hint) { hint.textContent = '尚有更多未擷取信件，請再點選「從信箱擷取」繼續'; hint.style.display = 'block'; }
+          } else {
+            _winStatus('擷取完成');
+          }
         }
         _winDone();
       } catch(e2) {
