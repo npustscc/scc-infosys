@@ -5600,22 +5600,33 @@ function renderCases() {
   }).join('');
 
   wrap.innerHTML = `
-    <table>
+    <table id="cases-main-table">
+      <colgroup>
+        <col id="cases-col-1" style="width:36px;">
+        <col id="cases-col-2" style="min-width:70px;">
+        <col id="cases-col-3" style="min-width:80px;">
+        <col id="cases-col-4" style="min-width:90px;">
+        <col id="cases-col-5" style="min-width:80px;">
+        <col id="cases-col-6" style="min-width:80px;">
+        <col id="cases-col-7" style="min-width:60px;">
+        <col id="cases-col-8" style="min-width:80px;">
+        <col id="cases-col-9" style="min-width:80px;">
+      </colgroup>
       <thead>
         <tr>
-          <th style="width:36px;text-align:center;">
+          <th style="width:36px;text-align:center;" data-col="1">
             <input type="checkbox" id="cases-select-all" title="全選當頁未封存個案"
               ${allCasesChecked && visibleIds.size > 0 ? 'checked' : ''}
               onchange="_casesSelectAll(this.checked)">
           </th>
-          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('id')">案號 ${sortArrow('id')}</th>
-          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('name')">個案姓名 ${sortArrow('name')}</th>
-          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('studentId')">學號 ${sortArrow('studentId')}</th>
-          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('counselorName')">主責人員 ${sortArrow('counselorName')}</th>
-          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('status')">狀態 ${sortArrow('status')}</th>
-          <th style="text-align:center;white-space:nowrap;">服務次數</th>
-          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('updatedAt')">更新日期 ${sortArrow('updatedAt')}</th>
-          <th>操作</th>
+          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('id')" data-col="2">案號 ${sortArrow('id')}</th>
+          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('name')" data-col="3">個案姓名 ${sortArrow('name')}</th>
+          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('studentId')" data-col="4">學號 ${sortArrow('studentId')}</th>
+          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('counselorName')" data-col="5">主責人員 ${sortArrow('counselorName')}</th>
+          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('status')" data-col="6">狀態 ${sortArrow('status')}</th>
+          <th style="text-align:center;white-space:nowrap;" data-col="7">服務次數</th>
+          <th style="cursor:pointer;user-select:none;white-space:nowrap;" onclick="setCaseSort('updatedAt')" data-col="8">更新日期 ${sortArrow('updatedAt')}</th>
+          <th data-col="9">操作</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -5623,6 +5634,7 @@ function renderCases() {
   const csa = document.getElementById('cases-select-all');
   if (csa) csa.indeterminate = !allCasesChecked && _casesSelected.size > 0;
   _syncCasesBatchBar();
+  _makeTableResizable({ table: document.getElementById('cases-main-table'), colPrefix: 'cases-col-', colNums: [1,2,3,4,5,6,7,8,9], prefKey: 'casesColWidths', skipCols: new Set([1,9]) });
 }
 
 function _caseChkChange(el) {
@@ -6566,14 +6578,17 @@ async function deleteUser(key) {
   if (!confirm(`確定要刪除使用者「${label}」嗎？此操作無法復原。`)) return;
 
   showLoading('刪除使用者…');
+  const jobId = bgJobAdd(`刪除使用者：${label}`);
   try {
     delete configData.users[key];
     await driveUpdateJsonFile(CONFIG_FILE, configData);
+    bgJobDone(jobId);
     auditLog('刪除使用者', null, null, label);
     hideLoading();
     setAlert('admin-alert', 'info', `使用者 ${escHtml(label)} 已刪除。`);
     renderAdminUsers();
   } catch (err) {
+    bgJobFail(jobId, err.message);
     hideLoading();
     setAlert('admin-alert', 'error', '刪除失敗：' + err.message);
   }
@@ -6820,11 +6835,15 @@ async function deletePsychTestResult(caseId, idx) {
   const label = t.testSemester ? semesterLabel(t.testSemester) : '（未知學期）';
   if (!confirm(`確定要刪除「${label}」的心理測驗結果？此操作將記錄於稽核日誌。`)) return;
   c.psychTestResults.splice(idx, 1);
-  auditLog('刪除心理測驗結果', caseId, null, `學期：${label}`);
-  await migrateToChunks();
-  showToast('已刪除測驗結果', 'success');
-  _caseDetailPsychIdx = Math.max(0, idx - 1);
-  showCaseDetail(caseId);
+  const jobId = bgJobAdd(`刪除心理測驗結果：${label}`);
+  try {
+    await migrateToChunks();
+    bgJobDone(jobId);
+    auditLog('刪除心理測驗結果', caseId, null, `學期：${label}`);
+    showToast('已刪除測驗結果', 'success');
+    _caseDetailPsychIdx = Math.max(0, idx - 1);
+    showCaseDetail(caseId);
+  } catch(e) { bgJobFail(jobId, e.message); }
 }
 
 async function reuploadPsychTestResult(caseId, idx, input) {
@@ -7898,13 +7917,16 @@ async function addCaseManager(caseId) {
   const caseName = casesData.find(c => c.id === caseId)?.name || caseId;
   addNotificationToUser(email, 'assigned_manager', caseId, caseName);
   showLoading('儲存個案管理員…');
+  const jobId = bgJobAdd(`新增個案管理員：${email}`);
   try {
     await driveUpdateJsonFile(CONFIG_FILE, configData);
+    bgJobDone(jobId);
     renderNotifBell();
     auditLog(`新增個案管理員 ${email}`, caseId);
     hideLoading();
     showCaseDetail(caseId);
   } catch (err) {
+    bgJobFail(jobId, err.message);
     hideLoading();
     alert('儲存失敗：' + err.message);
   }
@@ -7924,12 +7946,15 @@ async function removeCaseManager(caseId, email) {
   const removedCaseName = casesData.find(c => c.id === caseId)?.name || caseId;
   addNotificationToUser(email, 'removed_manager', caseId, removedCaseName);
   showLoading('移除個案管理員…');
+  const jobId = bgJobAdd(`移除個案管理員：${email}`);
   try {
     await driveUpdateJsonFile(CONFIG_FILE, configData);
+    bgJobDone(jobId);
     auditLog(`移除個案管理員 ${email}`, caseId);
     hideLoading();
     showCaseDetail(caseId);
   } catch (err) {
+    bgJobFail(jobId, err.message);
     hideLoading();
     alert('移除失敗：' + err.message);
   }
@@ -7974,13 +7999,16 @@ async function addCaseManagerInDetail(caseId) {
   const caseName = casesData.find(c => c.id === caseId)?.name || caseId;
   addNotificationToUser(email, 'assigned_manager', caseId, caseName);
   showLoading('儲存個案管理員…');
+  const jobId = bgJobAdd(`新增個案管理員：${email}`);
   try {
     await driveUpdateJsonFile(CONFIG_FILE, configData);
+    bgJobDone(jobId);
     renderNotifBell();
     auditLog(`新增個案管理員 ${email}`, caseId);
     hideLoading();
     showCaseDetail(caseId);
   } catch (err) {
+    bgJobFail(jobId, err.message);
     hideLoading();
     alert('儲存失敗：' + err.message);
   }
@@ -8058,12 +8086,15 @@ async function purgeRecord(caseId, recordId) {
   const removed = casesData[cidx].records.splice(ridx, 1)[0];
   casesData[cidx].updatedAt = new Date().toISOString();
   showLoading('徹底移除…');
+  const jobId = bgJobAdd('徹底移除晤談紀錄');
   try {
     await saveCasesChunks(caseId);
+    bgJobDone(jobId);
     auditLog('徹底移除晤談紀錄', caseId, recordId);
     hideLoading();
     showCaseDetail(caseId);
   } catch (err) {
+    bgJobFail(jobId, err.message);
     casesData[cidx].records.splice(ridx, 0, removed);
     hideLoading();
     alert('操作失敗：' + err.message);
@@ -8083,12 +8114,15 @@ async function restoreRecord(caseId, recordId) {
   casesData[cidx].updatedAt = new Date().toISOString();
 
   showLoading('復原紀錄…');
+  const jobId = bgJobAdd('復原晤談紀錄');
   try {
     await saveCasesChunks(caseId);
+    bgJobDone(jobId);
     auditLog('復原晤談紀錄', caseId, recordId);
     hideLoading();
     showCaseDetail(caseId);
   } catch (err) {
+    bgJobFail(jobId, err.message);
     Object.assign(rec, prev);
     hideLoading();
     alert('操作失敗：' + err.message);
@@ -10600,10 +10634,13 @@ async function deleteCase(caseId) {
   casesData[idx].updatedAt     = new Date().toISOString();
   backToCaseList();
   renderCases();
+  const jobId = bgJobAdd(`刪除個案：${c.name}`);
   saveCasesChunks(caseId).then(() => {
+    bgJobDone(jobId);
     auditLog('刪除個案', caseId);
     showToast('個案已刪除');
   }).catch(err => {
+    bgJobFail(jobId, err.message);
     Object.assign(casesData[idx], prev);
     if (!prev.deleted) { delete casesData[idx].deleted; delete casesData[idx].deletedBy; delete casesData[idx].deletedByName; delete casesData[idx].deletedAt; }
     renderCases();
@@ -10628,13 +10665,16 @@ async function restoreCaseAdmin(caseId) {
   delete casesData[idx].deletedAt;
   casesData[idx].updatedAt = new Date().toISOString();
   showLoading('復原個案…');
+  const jobId = bgJobAdd(`復原個案：${c.name}`);
   try {
     await saveCasesChunks(caseId);
+    bgJobDone(jobId);
     auditLog('復原個案', caseId);
     hideLoading();
     showCaseDetail(caseId);
     renderCases();
   } catch (err) {
+    bgJobFail(jobId, err.message);
     Object.assign(casesData[idx], prev);
     hideLoading();
     alert('復原失敗：' + err.message);
@@ -14007,10 +14047,13 @@ async function deleteInitialInterview(caseId) {
   ii.deletedBy = currentUser?.email;
   ii.deletedByName = configData?.users?.[currentUser?.email]?.name || currentUser?.name;
   showCaseDetail(caseId);
+  const jobId = bgJobAdd('刪除初次晤談表');
   saveCasesChunks(caseId).then(() => {
+    bgJobDone(jobId);
     auditLog('刪除初次晤談表', caseId);
     showToast('初次晤談表已刪除');
   }).catch(e => {
+    bgJobFail(jobId, e.message);
     Object.assign(ii, prev);
     showCaseDetail(caseId);
     showToast('刪除失敗：' + e.message, 'error');
@@ -16150,7 +16193,9 @@ function _batchDeleteTodos() {
     _removeTodoItem(id);
   });
   const _batchDelJobId = bgJobAdd(`批次刪除 ${ids.length} 個草稿 / 待辦`);
-  saveUserTodos().then(() => bgJobDone(_batchDelJobId)).catch(err => bgJobFail(_batchDelJobId, err?.message || '儲存失敗'));
+  saveUserTodos()
+    .then(() => { bgJobDone(_batchDelJobId); auditLog('批次刪除待辦事項', null, null, `${ids.length} 個`); })
+    .catch(err => bgJobFail(_batchDelJobId, err?.message || '儲存失敗'));
   showToast(`已刪除 ${ids.length} 個待辦事項`, 'success', 2500);
   renderTodosPage();
 }
@@ -16164,7 +16209,9 @@ function _deleteTodo(id) {
   _removeTodoItem(id);
   const _delJobLabel = t.caseLabel ? `刪除「${t.label}」（${t.caseLabel}）` : `刪除「${t.label}」`;
   const _delJobId = bgJobAdd(_delJobLabel);
-  saveUserTodos().then(() => bgJobDone(_delJobId)).catch(err => bgJobFail(_delJobId, err?.message || '儲存失敗'));
+  saveUserTodos()
+    .then(() => { bgJobDone(_delJobId); auditLog('刪除待辦事項', null, null, t.label); })
+    .catch(err => bgJobFail(_delJobId, err?.message || '儲存失敗'));
   showToast('待辦事項已刪除', 'success', 2500);
   renderTodosPage();
 }
@@ -17686,6 +17733,9 @@ const AUDIT_PAGE_CATEGORIES = {
   '精神科評估':   a => a.includes('精神科'),
   '系統管理':     a => ['搬移至共用','整合學年','重組 cases','清除逾期','整併主責','連結主責'].some(k => a.includes(k)),
   '身心調適假':   a => a.includes('身心調適假'),
+  '待辦事項':     a => a.includes('待辦事項'),
+  '心理測驗':     a => a.includes('心理測驗'),
+  '個案管理員':   a => a.includes('個案管理員'),
 };
 
 function _auditActionColor(a) {
@@ -20362,20 +20412,31 @@ function _mlRenderRecordsTab(el) {
       ${DRIVE_FOLDER_ID === '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' ? `<button class="btn btn-danger" onclick="window._mlClearAll()" style="white-space:nowrap;margin-left:auto;" title="清空所有測試資料（並移除 Gmail ml-processed 標籤）">🗑️ 清空測試資料</button>` : ''}
     </div>
     <div style="overflow-x:auto;">
-      <table style="width:100%;border-collapse:collapse;font-size:.875rem;">
+      <table id="ml-records-table" style="width:100%;border-collapse:collapse;font-size:.875rem;">
+        <colgroup>
+          <col id="ml-col-1" style="min-width:70px;">
+          <col id="ml-col-2" style="min-width:90px;">
+          <col id="ml-col-3" style="min-width:80px;">
+          <col id="ml-col-4" style="min-width:120px;">
+          <col id="ml-col-5" style="min-width:80px;">
+          <col id="ml-col-6" style="min-width:60px;">
+          <col id="ml-col-7" style="min-width:60px;">
+          ${isAdmin ? '<col id="ml-col-8" style="min-width:50px;">' : ''}
+        </colgroup>
         <thead><tr style="background:#f7fafc;text-align:left;">
-          <th style="padding:8px 10px;">姓名</th>
-          <th style="padding:8px 10px;">學號</th>
-          <th style="padding:8px 10px;">請假日期</th>
-          <th style="padding:8px 10px;min-width:160px;">請假緣由</th>
-          <th style="padding:8px 10px;">風險 / 關鍵字</th>
-          <th style="padding:8px 10px;">課程</th>
-          <th style="padding:8px 10px;">學期</th>
-          ${isAdmin ? '<th style="padding:8px 10px;"></th>' : ''}
+          <th style="padding:8px 10px;" data-col="1">姓名</th>
+          <th style="padding:8px 10px;" data-col="2">學號</th>
+          <th style="padding:8px 10px;" data-col="3">請假日期</th>
+          <th style="padding:8px 10px;min-width:120px;" data-col="4">請假緣由</th>
+          <th style="padding:8px 10px;" data-col="5">風險 / 關鍵字</th>
+          <th style="padding:8px 10px;" data-col="6">課程</th>
+          <th style="padding:8px 10px;" data-col="7">學期</th>
+          ${isAdmin ? '<th style="padding:8px 10px;" data-col="8"></th>' : ''}
         </tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
     </div>`;
+  _makeTableResizable({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8] : [1,2,3,4,5,6,7], prefKey: 'mlColWidths', skipCols: isAdmin ? new Set([8]) : new Set() });
 }
 
 window._mlDeleteRecord = async (id) => {
@@ -20621,18 +20682,30 @@ function renderPsychTestDBPage() {
   const renderRows = (rows) => {
     if (!rows.length) return '<div style="padding:28px;text-align:center;color:#a0aec0;font-size:.875rem;">沒有符合的資料</div>';
     return `<div style="overflow-x:auto;">
-      <table style="width:100%;border-collapse:collapse;font-size:.85rem;">
+      <table id="psych-db-table" style="width:100%;border-collapse:collapse;font-size:.85rem;">
+        <colgroup>
+          <col id="pdb-col-1" style="min-width:90px;">
+          <col id="pdb-col-2" style="min-width:70px;">
+          <col id="pdb-col-3" style="min-width:80px;">
+          <col id="pdb-col-4" style="min-width:70px;">
+          <col id="pdb-col-5" style="min-width:60px;">
+          <col id="pdb-col-6" style="min-width:45px;">
+          <col id="pdb-col-7" style="min-width:45px;">
+          <col id="pdb-col-8" style="min-width:45px;">
+          <col id="pdb-col-9" style="min-width:80px;">
+          <col id="pdb-col-10" style="min-width:50px;">
+        </colgroup>
         <thead><tr style="background:#edf2f7;text-align:left;">
-          <th style="padding:7px 10px;white-space:nowrap;">學號</th>
-          <th style="padding:7px 10px;white-space:nowrap;">案號</th>
-          <th style="padding:7px 10px;white-space:nowrap;">班級</th>
-          <th style="padding:7px 10px;white-space:nowrap;">學期</th>
-          <th style="padding:7px 10px;white-space:nowrap;">高關懷</th>
-          <th style="padding:7px 10px;text-align:center;white-space:nowrap;" title="整體量表結果">AL</th>
-          <th style="padding:7px 10px;text-align:center;white-space:nowrap;" title="外部情境向度">D1</th>
-          <th style="padding:7px 10px;text-align:center;white-space:nowrap;" title="內在個人向度">D2</th>
-          <th style="padding:7px 10px;white-space:nowrap;">匯入時間</th>
-          <th style="padding:7px 10px;"></th>
+          <th style="padding:7px 10px;white-space:nowrap;" data-col="1">學號</th>
+          <th style="padding:7px 10px;white-space:nowrap;" data-col="2">案號</th>
+          <th style="padding:7px 10px;white-space:nowrap;" data-col="3">班級</th>
+          <th style="padding:7px 10px;white-space:nowrap;" data-col="4">學期</th>
+          <th style="padding:7px 10px;white-space:nowrap;" data-col="5">高關懷</th>
+          <th style="padding:7px 10px;text-align:center;white-space:nowrap;" title="整體量表結果" data-col="6">AL</th>
+          <th style="padding:7px 10px;text-align:center;white-space:nowrap;" title="外部情境向度" data-col="7">D1</th>
+          <th style="padding:7px 10px;text-align:center;white-space:nowrap;" title="內在個人向度" data-col="8">D2</th>
+          <th style="padding:7px 10px;white-space:nowrap;" data-col="9">匯入時間</th>
+          <th style="padding:7px 10px;" data-col="10"></th>
         </tr></thead>
         <tbody>${rows.map(r => {
           const highColor = (r.highConcern === '是' || r.highConcern === true) ? '#c53030' : '#a0aec0';
@@ -20682,6 +20755,7 @@ function renderPsychTestDBPage() {
     if (q)   rows = rows.filter(r => r.sid.toLowerCase().includes(q) || (r.caseId||'').toLowerCase().includes(q));
     document.getElementById('ptdb-table').innerHTML = renderRows(rows);
     document.getElementById('ptdb-count').textContent = `${rows.length} 筆`;
+    _makeTableResizable({ table: document.getElementById('psych-db-table'), colPrefix: 'pdb-col-', colNums: [1,2,3,4,5,6,7,8,9,10], prefKey: 'psychDbColWidths', skipCols: new Set([10]) });
   };
 }
 
@@ -20825,13 +20899,14 @@ async function deletePsychTestDBEntry(sid, sem) {
   } else {
     delete psychTestDB[sid];
   }
+  const jobId = bgJobAdd(`刪除心理測驗資料庫：${sid}${sem ? ' ' + sem : ''}`);
   try {
-    showToast('刪除中…');
     await savePsychTestDB();
+    bgJobDone(jobId);
     auditLog(`刪除心理測驗資料庫 ${sid}${sem ? ' ' + sem : ''}`);
     showToast('已刪除');
     renderPsychTestDBPage();
-  } catch(e) { alert('刪除失敗：' + e.message); }
+  } catch(e) { bgJobFail(jobId, e.message); alert('刪除失敗：' + e.message); }
 }
 
 async function saveTransfer() {
@@ -22038,15 +22113,19 @@ async function _doDeleteBookings(idsToDelete, primaryB) {
   calEventIds.forEach(evId => proxyCall('deleteCalendarEvent', { eventId: evId }).catch(() => {}));
   showLoading('刪除中…');
   const _suffix = idsToDelete.length > 1 ? ` (共${idsToDelete.length}筆)` : '';
+  const jobId = bgJobAdd(`刪除空間預約：${_delDetail}`);
   try {
     await saveBookings();
+    bgJobDone(jobId);
     auditLog('刪除空間預約', primaryB.caseId || null, null, _delDetail + _suffix);
   } catch (e) {
     setTimeout(async () => {
       try {
         await saveBookings();
+        bgJobDone(jobId);
         auditLog('刪除空間預約', primaryB.caseId || null, null, _delDetail + _suffix);
       } catch (_) {
+        bgJobFail(jobId, '雲端儲存暫時失敗');
         setAlert('bookings-alert', 'warn', '預約已從畫面移除，但雲端儲存暫時失敗，將於下次同步自動修正。若持續出現請手動重新整理。');
       }
     }, 5000);
@@ -27243,10 +27322,13 @@ async function deletePsychiatristRecord(caseId, recordId, onSuccess) {
   pr.deletedByName = configData?.users?.[currentUser?.email]?.name || currentUser?.name;
   if (typeof onSuccess === 'function') onSuccess();
   else showCaseDetail(caseId);
+  const jobId = bgJobAdd('刪除精神科評估');
   saveCasesChunks(caseId).then(() => {
+    bgJobDone(jobId);
     auditLog('刪除精神科評估', caseId, recordId);
     showToast('精神科評估已刪除');
   }).catch(e => {
+    bgJobFail(jobId, e.message);
     Object.assign(pr, prev);
     if (typeof onSuccess === 'function') onSuccess();
     else showCaseDetail(caseId);
