@@ -3138,6 +3138,10 @@
         <input type="checkbox" id="modal-is-transfer-contact" />
         轉銜窗口（可存取轉銜管理頁面）
       </label>
+      <label class="form-check" style="margin-top:6px;">
+        <input type="checkbox" id="modal-is-ml-contact" />
+        身心調適假窗口（可存取身心調適假資料庫與關鍵字設定）
+      </label>
     </div>
 
     <div id="modal-error" class="alert alert-error"></div>
@@ -3472,7 +3476,8 @@ let gIdToken     = null;   // Google ID token（傳給 Apps Script 驗證用）
 let currentUser  = null;   // { email, name, picture }
 let currentRole  = null;   // 從 config.json 讀來
 let extraRole    = null;   // 管理者 / 個案管理員 / null
-let isTransferContact = false; // 轉銜窗口
+let isTransferContact = false;    // 轉銜窗口
+let isMentalLeaveContact = false; // 身心調適假窗口
 let configData   = null;   // 完整 config.json 內容
 let casesData    = [];
 let casesManifest = { chunks: [] };
@@ -4941,6 +4946,7 @@ function resolveUserRole() {
   currentRole = null;
   extraRole   = null;
   isTransferContact = false;
+  isMentalLeaveContact = false;
 
   if (configData && configData.users && configData.users[currentUser.email]) {
     const entry = configData.users[currentUser.email];
@@ -4949,6 +4955,7 @@ function resolveUserRole() {
     if (entry.isAdmin === true || entry.extraRole === '管理者') extraRole = '管理者';
     else if (entry.extraRole === '個案管理員') extraRole = '個案管理員';
     if (entry.isTransferContact === true) isTransferContact = true;
+    if (entry.isMentalLeaveContact === true) isMentalLeaveContact = true;
   }
   // 備援：BOOTSTRAP_ADMIN_EMAIL 永遠擁有管理者身分（防止 config 遺失時鎖死）
   if (currentUser?.email === BOOTSTRAP_ADMIN_EMAIL) {
@@ -4966,9 +4973,10 @@ function resolveUserRole() {
   // 管理者才顯示使用者管理頁
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   document.getElementById('nav-admin-section').style.display = isAdmin ? '' : 'none';
-  // 轉銜管理 & 身心調適假管理 顯示給管理者與轉銜窗口
+  // 轉銜管理：管理者與轉銜窗口
   document.getElementById('nav-transfer-item').style.display = (isAdmin || isTransferContact) ? '' : 'none';
-  document.getElementById('nav-mental-leave-item').style.display = (isAdmin || isTransferContact) ? '' : 'none';
+  // 身心調適假管理：所有有角色的人（受輔生 tab 對所有諮商師開放）
+  document.getElementById('nav-mental-leave-item').style.display = !!currentRole ? '' : 'none';
 
   // 填充管理員頁使用者列表
   if (isAdmin && configData && configData.users) { renderAdminUsers(); renderAdminDegreeMapping(); }
@@ -5550,6 +5558,14 @@ function renderCases() {
       actionBtn = mainBtn + archiveBtn;
     }
     const sessCount = (c.records||[]).filter(r => !r.deleted && r.status !== 'pending' && (!_semMs || _semMs.includes((r.date||'').slice(0,7)))).length;
+    const _latestAbType = (() => {
+      const sems = (Array.isArray(c.semesters) && c.semesters.length ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean)).sort().reverse();
+      for (const s of sems) { const snap = c.basicInfoSnapshots?.[s]; if (snap?.abType) return snap.abType; }
+      return c.abType || '';
+    })();
+    const abBadge = _latestAbType === 'A案' ? '<span style="display:inline-block;background:#dbeafe;color:#1e40af;border-radius:4px;padding:0 5px;font-size:.7rem;font-weight:600;margin-top:2px;">A案</span>'
+                  : _latestAbType === 'B案' ? '<span style="display:inline-block;background:#fef3c7;color:#92400e;border-radius:4px;padding:0 5px;font-size:.7rem;font-weight:600;margin-top:2px;">B案</span>'
+                  : '';
     const transferBadge = (c.isTransferCase || transferCaseIds.has(c.id)) ? ' <span class="badge badge-teal">轉銜個案</span>' : '';
     const newCounselorBadge = (() => {
       if (!c.newCounselorAlert?.date) return '';
@@ -5581,7 +5597,7 @@ function renderCases() {
     return `
     <tr class="${c.deleted ? 'case-deleted-row' : ''}" style="cursor:pointer;${rowBg}" onclick="showCaseDetail('${cid}')">
       <td style="width:36px;text-align:center;" onclick="event.stopPropagation()">${canCheckCase ? `<input type="checkbox" class="case-row-chk" data-id="${cid}" ${_casesSelected.has(c.id)?'checked':''} onchange="_caseChkChange(this)">` : ''}</td>
-      <td>${escHtml(c.id    || '—')}</td>
+      <td>${escHtml(c.id || '—')}${abBadge ? `<br>${abBadge}` : ''}</td>
       <td>${escHtml(c.name  || '—')}</td>
       <td>${escHtml(c.studentId || '—')}</td>
       <td>${escHtml(c.counselorName || '—')}${
@@ -6484,6 +6500,7 @@ function openUserModal(key) {
     sel.value = info.role || '';
     document.getElementById('modal-is-admin').checked = info.isAdmin === true || info.extraRole === '管理者';
     document.getElementById('modal-is-transfer-contact').checked = info.isTransferContact === true;
+    document.getElementById('modal-is-ml-contact').checked = info.isMentalLeaveContact === true;
   } else {
     document.getElementById('modal-title').textContent = '新增使用者';
     emailEl.value    = '';
@@ -6494,6 +6511,7 @@ function openUserModal(key) {
     sel.value = '';
     document.getElementById('modal-is-admin').checked = false;
     document.getElementById('modal-is-transfer-contact').checked = false;
+    document.getElementById('modal-is-ml-contact').checked = false;
   }
 
   document.getElementById('modal-error').style.display = 'none';
@@ -6512,6 +6530,7 @@ async function saveUser() {
   const role     = document.getElementById('modal-role').value;
   const isAdmin  = document.getElementById('modal-is-admin').checked;
   const isTC     = document.getElementById('modal-is-transfer-contact').checked;
+  const isML     = document.getElementById('modal-is-ml-contact').checked;
   const errEl    = document.getElementById('modal-error');
   errEl.style.display = 'none';
 
@@ -6541,6 +6560,7 @@ async function saveUser() {
     const merged = { ...(configData.users[oldKey] || {}), name, role };
     if (isAdmin) merged.isAdmin = true; else delete merged.isAdmin;
     if (isTC) merged.isTransferContact = true; else delete merged.isTransferContact;
+    if (isML) merged.isMentalLeaveContact = true; else delete merged.isMentalLeaveContact;
     configData.users[newKey] = merged;
     delete configData.users[oldKey];
   } else {
@@ -6548,6 +6568,7 @@ async function saveUser() {
     entry.name = name; entry.role = role;
     if (isAdmin) entry.isAdmin = true; else delete entry.isAdmin;
     if (isTC) entry.isTransferContact = true; else delete entry.isTransferContact;
+    if (isML) entry.isMentalLeaveContact = true; else delete entry.isMentalLeaveContact;
     configData.users[newKey] = entry;
   }
 
@@ -20316,14 +20337,17 @@ let _mlConsec3Filter = false;
 function renderMentalLeavePage() {
   const el = document.getElementById('mental-leave-body');
   if (!el) return;
+  if (!currentRole) { el.innerHTML = '<div style="padding:20px;color:#718096;">您沒有此頁面的存取權限。</div>'; return; }
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
-  const canManage = isAdmin || isTransferContact;
-  if (!canManage) { el.innerHTML = '<div style="padding:20px;color:#718096;">您沒有此頁面的存取權限。</div>'; return; }
+  const canFullAccess = isAdmin || isMentalLeaveContact;
+  // 若目前 tab 無權限，自動回到受輔生
+  if (!canFullAccess && (_mlTab === 'records' || _mlTab === 'courses' || _mlTab === 'keywords')) _mlTab = 'my';
   el.innerHTML = `
     <div style="display:flex;gap:2px;border-bottom:2px solid #e2e8f0;margin-bottom:20px;">
-      ${_mlTabBtn('records','📋 身心調適假通知資料庫')}
-      ${_mlTabBtn('courses','📊 課程統計')}
-      ${_mlTabBtn('keywords','🔑 關鍵字設定')}
+      ${_mlTabBtn('my','🙋 受輔生')}
+      ${canFullAccess ? _mlTabBtn('records','📋 資料庫') : ''}
+      ${canFullAccess ? _mlTabBtn('courses','📊 課程統計') : ''}
+      ${canFullAccess ? _mlTabBtn('keywords','🔑 關鍵字設定') : ''}
     </div>
     <div id="ml-tab-content"></div>`;
   _mlRenderTab();
@@ -20334,12 +20358,26 @@ function _mlTabBtn(id, label) {
 }
 window._mlSwitchTab = (id) => { _mlTab = id; renderMentalLeavePage(); };
 window._mlFilterChange = () => { _mlPage = 1; renderMentalLeavePage(); };
+function _getMyStudentIds() {
+  const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  if (isAdmin || isMentalLeaveContact) return null; // 窗口/管理者看全部
+  const myAllowedIds = new Set(configData?.users?.[currentUser?.email]?.allowedCases || []);
+  const result = new Set();
+  (casesData || []).filter(c => !c.deleted).forEach(c => {
+    if (c.counselorEmail === currentUser?.email || myAllowedIds.has(c.id)) {
+      if (c.studentId) result.add(c.studentId);
+    }
+  });
+  return result;
+}
+
 function _mlRenderTab() {
   const el = document.getElementById('ml-tab-content');
   if (!el) return;
   if (_mlTab === 'keywords') _mlRenderKeywordsTab(el);
   else if (_mlTab === 'courses') _mlRenderCourseStatsTab(el);
-  else _mlRenderRecordsTab(el);
+  else if (_mlTab === 'my') _mlRenderRecordsTab(el, _getMyStudentIds());
+  else _mlRenderRecordsTab(el, null);
 }
 
 const ML_HANDLING_OPTS = ['待處理', '非危機', '已致電關懷', '已簡訊關懷'];
@@ -20414,8 +20452,9 @@ function _mlConsecutive3DayIds(records) {
 }
 
 // ── 身心調適假通知資料庫 Tab ──────────────────────────────
-function _mlRenderRecordsTab(el) {
+function _mlRenderRecordsTab(el, studentIdFilter = null) {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  const canFullAccess = isAdmin || isMentalLeaveContact;
   const records = mentalLeavesData.filter(l => !l.deleted);
   const q      = (document.getElementById('ml-q')?.value        || '').trim().toLowerCase();
   const riskF  =  document.getElementById('ml-risk')?.value     || '';
@@ -20424,6 +20463,7 @@ function _mlRenderRecordsTab(el) {
   const consec3Ids = _mlConsec3Filter ? _mlConsecutive3DayIds(records) : null;
 
   let filtered = records.filter(l => {
+    if (studentIdFilter && !studentIdFilter.has(l.studentId)) return false;
     if (q && !((l.name||'').toLowerCase().includes(q) || (l.studentId||'').toLowerCase().includes(q) || (l.reason||'').toLowerCase().includes(q))) return false;
     if (semF && l.semester !== semF) return false;
     if (consec3Ids && !consec3Ids.has(l.studentId)) return false;
@@ -20530,8 +20570,8 @@ function _mlRenderRecordsTab(el) {
           ${[100,200,300].map(n=>`<option value="${n}"${_mlPageSize===n?' selected':''}>${n}</option>`).join('')}
         </select>筆
       </label>
-      <button class="btn btn-primary" onclick="window._mlFetch()" style="white-space:nowrap;">📥 從信箱擷取</button>
-      ${DRIVE_FOLDER_ID === '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' ? `
+      ${canFullAccess ? `<button class="btn btn-primary" onclick="window._mlFetch()" style="white-space:nowrap;">📥 從信箱擷取</button>` : ''}
+      ${canFullAccess && DRIVE_FOLDER_ID === '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' ? `
         <button class="btn btn-danger" onclick="window._mlClearAll()" style="white-space:nowrap;margin-left:auto;">🗑️ 清空測試資料</button>
       ` : ''}
     </div>
