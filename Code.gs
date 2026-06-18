@@ -9,8 +9,8 @@ const CONFIG_FILE_ID_OVERRIDE = '1CKXefjjiB-PrIFZa-DBQ7Q2ASs-TQroj';
 
 // 白名單：前端可傳入的 rootFolderId → configOverride（null = 從該 root 路徑查找 config.json）
 const ALLOWED_ROOTS = {
-  '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP': { configOverride: '1CKXefjjiB-PrIFZa-DBQ7Q2ASs-TQroj', calendarName: 'SCC 空間預約' },       // 正式版
-  '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx': { configOverride: null,                                  calendarName: '[DEV] SCC 空間預約' }, // 測試版
+  '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP': { configOverride: '1CKXefjjiB-PrIFZa-DBQ7Q2ASs-TQroj', calendarName: 'SCC 空間預約',        gmailLabel: 'ml-processed' },     // 正式版
+  '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx': { configOverride: null,                                  calendarName: '[DEV] SCC 空間預約',  gmailLabel: 'ml-processed-dev' }, // 測試版
 };
 
 // ── 進入點 ────────────────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ function doPost(e) {
     if (rootFolderId) {
       if (!ALLOWED_ROOTS[rootFolderId]) return jsonResp_({ error: 'Unauthorized rootFolderId' });
       const rootCfg = ALLOWED_ROOTS[rootFolderId];
-      ctx = { root: rootFolderId, configOverride: rootCfg.configOverride, calendarName: rootCfg.calendarName || CALENDAR_NAME };
+      ctx = { root: rootFolderId, configOverride: rootCfg.configOverride, calendarName: rootCfg.calendarName || CALENDAR_NAME, gmailLabel: rootCfg.gmailLabel || 'ml-processed' };
     }
 
     let result;
@@ -59,7 +59,7 @@ function doPost(e) {
       case 'listCalendarEvents':   result = listCalendarEvents_(params, ctx); break;
       case 'uploadFile':           result = uploadFile_(params); break;
       case 'downloadFileBase64':   result = downloadFileBase64_(params); break;
-      case 'fetchMentalLeaves':    result = fetchMentalLeaves_(ctx); break;
+      case 'fetchMentalLeaves':    result = fetchMentalLeaves_(ctx, params); break;
       case 'getNpust5AuthUrl':     result = getAuthUrlNpust5_(); break;
       case 'dumpNpust5Emails':     result = dumpNpust5Emails_(ctx); break;
       case 'listInboxEmails':      result = listInboxEmails_(ctx); break;
@@ -551,11 +551,15 @@ function runFetchMentalLeaves() {
 }
 
 // 核心解析函式（由 doPost 或觸發器呼叫）
-function fetchMentalLeaves_(ctx) {
+function fetchMentalLeaves_(ctx, opts) {
+  var force = opts && opts.force;
   var token = npust5GetAccessToken_();
   if (!token) {
     return { needsAuth: true, authUrl: npust5BuildAuthUrl_() };
   }
+
+  // 環境隔離：dev/prod 使用各自的 Gmail 標籤，互不干擾
+  var labelName = ctx.gmailLabel || 'ml-processed';
 
   // 1. 讀取現有紀錄（用於去重）
   var existingData = { records: [] };
@@ -575,8 +579,10 @@ function fetchMentalLeaves_(ctx) {
   var keywords = loadMlKeywords_(ctx);
 
   // 3. 搜尋未處理的請假信件（Gmail REST API）
-  var processedLabelId = gmailGetOrCreateLabel_(token, 'ml-processed');
-  var query = 'subject:(請假 OR 身心調適假 OR 缺課) -label:ml-processed';
+  var processedLabelId = force ? gmailGetOrCreateLabel_(token, labelName) : gmailGetOrCreateLabel_(token, labelName);
+  var query = force
+    ? 'subject:(請假 OR 身心調適假 OR 缺課)'
+    : 'subject:(請假 OR 身心調適假 OR 缺課) -label:' + labelName;
   var searchData = gmailApi_(token, '/messages?q=' + encodeURIComponent(query) + '&maxResults=50');
   var messages = searchData.messages || [];
 
@@ -672,18 +678,29 @@ function fetchMentalLeaves_(ctx) {
         Logger.log('解析信件 body 失敗：' + msgId + ' / ' + parseErr.message);
       }
 
-      // 從 body 提取課程名稱（NPUST 明細格式：流水號 課程名稱 請假日 星期 節次）
-      if (!course) {
-        try {
-          var bodyText = plainBody || htmlBody.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
-          var cNames = [], cRe = /\d{4,6}\s+([^\d\s\n][^\n\r]+?)\s+\d{4}\/\d{1,2}\/\d{1,2}/g, cM;
-          while ((cM = cRe.exec(bodyText)) !== null) {
+      // 從 body 提取課程明細（NPUST 格式：流水號 課程名稱 請假日 星期 節次）
+      var coursesArr = [];
+      try {
+        var bodyText = plainBody || htmlBody.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
+        // 嘗試完整五欄解析
+        var fullCRe = /\d{4,6}\s+([^\d\s\n][^\n\r]{2,40}?)\s+(\d{4}\/\d{1,2}\/\d{1,2})\s+([一二三四五六日])\s+([\d,、]+)/g, cM;
+        while ((cM = fullCRe.exec(bodyText)) !== null) {
+          coursesArr.push({ name: cM[1].trim(), date: cM[2].trim(), weekday: cM[3].trim(), period: cM[4].trim() });
+        }
+        if (!coursesArr.length) {
+          // fallback：只抓課程名稱（舊格式）
+          var cRe2 = /\d{4,6}\s+([^\d\s\n][^\n\r]+?)\s+\d{4}\/\d{1,2}\/\d{1,2}/g;
+          while ((cM = cRe2.exec(bodyText)) !== null) {
             var cn = cM[1].trim();
-            if (cn && cNames.indexOf(cn) === -1) cNames.push(cn);
+            if (cn) coursesArr.push({ name: cn });
           }
-          if (cNames.length) course = cNames.join('；');
-        } catch(e2) {}
-      }
+        }
+        if (!course && coursesArr.length) {
+          var seen = {}, uniq = [];
+          coursesArr.forEach(function(c) { if (!seen[c.name]) { seen[c.name] = true; uniq.push(c.name); } });
+          course = uniq.join('；');
+        }
+      } catch(e2) {}
 
       if (!studentId && !name) return;
 
@@ -710,7 +727,9 @@ function fetchMentalLeaves_(ctx) {
       newRecords.push({
         id: 'ml_' + msgId, emailId: msgId,
         studentId: studentId, name: name, department: department,
-        reason: reason, leaveDate: leaveDate, course: course,
+        reason: reason, leaveDate: leaveDate,
+        course: course,       // 課程名稱字串（向下相容）
+        courses: coursesArr,  // 結構化課程陣列 [{name, date, weekday, period}]
         semester: String(semester), matchedKeywords: matchedKeywords,
         riskLevel: maxLevel, receivedAt: receivedAt, parsedAt: new Date().toISOString(),
       });
@@ -789,10 +808,11 @@ function dumpNpust5Emails_(ctx) {
 function clearMentalLeaves_(ctx) {
   var token = npust5GetAccessToken_();
   var removedLabels = 0;
+  var labelName = ctx.gmailLabel || 'ml-processed';
   if (token) {
     try {
       var labelData = gmailApi_(token, '/labels');
-      var processed = (labelData.labels || []).filter(function(l) { return l.name === 'ml-processed'; })[0];
+      var processed = (labelData.labels || []).filter(function(l) { return l.name === labelName; })[0];
       if (processed) {
         var tagged = gmailApi_(token, '/messages?labelIds=' + processed.id + '&maxResults=500');
         (tagged.messages || []).forEach(function(m) {

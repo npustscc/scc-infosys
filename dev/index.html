@@ -20141,10 +20141,10 @@ function _buildMentalLeaveDetailCard(c) {
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
         <span style="font-weight:600;font-size:.88rem;">${escHtml(l.leaveDate||'—')}</span>
         ${_mlRiskBadge(maxLevel, true)}
-        ${l.course ? `<span style="font-size:.8rem;color:#718096;">${escHtml(l.course)}</span>` : ''}
       </div>
       ${l.reason ? `<div style="font-size:.84rem;color:#4a5568;margin-bottom:4px;">緣由：${escHtml(l.reason)}</div>` : ''}
       ${kwChips ? `<div style="margin-top:4px;">命中關鍵字：${kwChips}</div>` : ''}
+      ${_mlCourseCount(l) ? `<div style="margin-top:6px;">${_mlCourseDetailHtml(l)}</div>` : ''}
     </div>`;
   }).join('');
   const cardId = `ml-case-card-${escHtml(c.id)}`;
@@ -20155,6 +20155,98 @@ function _buildMentalLeaveDetailCard(c) {
     </div>
     <div id="${cardId}" style="display:none;padding:12px 16px;">${cards}</div>
   </div>`;
+}
+
+// 課程相關 helpers
+function _mlCourseCount(l) {
+  if (Array.isArray(l.courses) && l.courses.length) return l.courses.length;
+  if (l.course) return l.course.split('；').filter(Boolean).length;
+  return 0;
+}
+function _mlCourseDetailHtml(l) {
+  const courses = Array.isArray(l.courses) && l.courses.length
+    ? l.courses
+    : (l.course ? l.course.split('；').filter(Boolean).map(n => ({ name: n })) : []);
+  if (!courses.length) return '';
+  const hasDetail = courses.some(c => c.date);
+  return `<table style="font-size:.78rem;border-collapse:collapse;width:100%;">
+    <thead><tr style="background:#f0fff4;color:#276749;">
+      <th style="padding:3px 8px;text-align:left;font-weight:600;">課程名稱</th>
+      ${hasDetail ? '<th style="padding:3px 8px;text-align:left;font-weight:600;">請假日</th><th style="padding:3px 8px;text-align:left;font-weight:600;">星期</th><th style="padding:3px 8px;text-align:left;font-weight:600;">節次</th>' : ''}
+    </tr></thead>
+    <tbody>${courses.map(c => `<tr style="border-bottom:1px solid #e2e8f0;">
+      <td style="padding:3px 8px;">${escHtml(c.name||'—')}</td>
+      ${hasDetail ? `<td style="padding:3px 8px;color:#718096;">${escHtml(c.date||'—')}</td><td style="padding:3px 8px;color:#718096;">${escHtml(c.weekday||'—')}</td><td style="padding:3px 8px;color:#718096;">${escHtml(c.period||'—')}</td>` : ''}
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+window._mlToggleCourse = (id) => {
+  const row = document.getElementById('ml-course-' + id);
+  if (!row) return;
+  const btn = document.querySelector(`[onclick="window._mlToggleCourse('${id}')"]`);
+  const opening = row.style.display === 'none';
+  row.style.display = opening ? '' : 'none';
+  if (btn) btn.textContent = btn.textContent.replace(opening ? '▶' : '▼', opening ? '▼' : '▶');
+};
+
+// 課程統計 Tab
+function _mlRenderCourseStatsTab(el) {
+  const records = mentalLeavesData.filter(l => !l.deleted);
+  const semF = document.getElementById('ml-cs-sem')?.value || '';
+  const sems = [...new Set(records.map(l => l.semester).filter(Boolean))].sort().reverse();
+  const semOpts = sems.map(s => `<option value="${escHtml(s)}"${semF===s?' selected':''}>${escHtml(semesterLabel(s)||s)}</option>`).join('');
+
+  const courseCounts = {};
+  records.filter(l => !semF || l.semester === semF).forEach(l => {
+    const courses = Array.isArray(l.courses) && l.courses.length
+      ? l.courses
+      : (l.course ? l.course.split('；').filter(Boolean).map(n => ({ name: n })) : []);
+    courses.forEach(c => {
+      const name = (c.name || '').trim();
+      if (!name) return;
+      if (!courseCounts[name]) courseCounts[name] = { name, count: 0, students: new Set() };
+      courseCounts[name].count++;
+      if (l.studentId) courseCounts[name].students.add(l.studentId);
+    });
+  });
+
+  const sorted = Object.values(courseCounts).sort((a, b) => b.count - a.count);
+  const total = sorted.reduce((s, c) => s + c.count, 0);
+
+  el.innerHTML = `
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
+      <select id="ml-cs-sem" class="field-input" onchange="_mlRenderCourseStatsTab(document.getElementById('ml-tab-content'))" style="width:auto;">
+        <option value="">所有學期</option>${semOpts}
+      </select>
+      <span style="font-size:.85rem;color:#718096;">共 ${total} 節請假課程紀錄，${sorted.length} 門不同課程</span>
+    </div>
+    ${sorted.length ? `<div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;font-size:.875rem;">
+        <thead><tr style="background:#f7fafc;text-align:left;">
+          <th style="padding:8px 10px;">排名</th>
+          <th style="padding:8px 10px;">課程名稱</th>
+          <th style="padding:8px 10px;text-align:center;">請假節次</th>
+          <th style="padding:8px 10px;text-align:center;">不同學生數</th>
+          <th style="padding:8px 10px;min-width:120px;">佔比</th>
+        </tr></thead>
+        <tbody>${sorted.map((c, i) => {
+          const pct = total ? Math.round(c.count / total * 100) : 0;
+          const barW = Math.max(Math.round(c.count / sorted[0].count * 100), 4);
+          return `<tr style="border-bottom:1px solid #e2e8f0;">
+            <td style="padding:7px 10px;color:#a0aec0;font-size:.8rem;">${i+1}</td>
+            <td style="padding:7px 10px;font-weight:${i<3?'600':'400'};">${escHtml(c.name)}</td>
+            <td style="padding:7px 10px;text-align:center;font-weight:600;color:#2d6a4f;">${c.count}</td>
+            <td style="padding:7px 10px;text-align:center;color:#718096;">${c.students.size}</td>
+            <td style="padding:7px 10px;">
+              <div style="display:flex;align-items:center;gap:6px;">
+                <div style="background:#9ae6b4;border-radius:3px;height:7px;width:${barW}px;max-width:100px;"></div>
+                <span style="font-size:.8rem;color:#718096;">${pct}%</span>
+              </div>
+            </td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>` : '<div style="padding:24px;text-align:center;color:#a0aec0;">尚無課程紀錄</div>'}`;
 }
 
 // 主頁面渲染
@@ -20168,6 +20260,7 @@ function renderMentalLeavePage() {
   el.innerHTML = `
     <div style="display:flex;gap:2px;border-bottom:2px solid #e2e8f0;margin-bottom:20px;">
       ${_mlTabBtn('records','📋 請假紀錄列表')}
+      ${_mlTabBtn('courses','📊 課程統計')}
       ${_mlTabBtn('keywords','🔑 關鍵字設定')}
     </div>
     <div id="ml-tab-content"></div>`;
@@ -20182,6 +20275,7 @@ function _mlRenderTab() {
   const el = document.getElementById('ml-tab-content');
   if (!el) return;
   if (_mlTab === 'keywords') _mlRenderKeywordsTab(el);
+  else if (_mlTab === 'courses') _mlRenderCourseStatsTab(el);
   else _mlRenderRecordsTab(el);
 }
 
@@ -20220,14 +20314,24 @@ function _mlRenderRecordsTab(el) {
       ? `<button onclick="showCaseDetail('${escHtml(mc.id)}')" style="border:none;background:none;cursor:pointer;color:#2b6cb0;font-weight:600;padding:0;font-size:inherit;">${escHtml(l.name||'—')}</button>`
       : `<span>${escHtml(l.name||'—')}</span>`;
     const rowBg = maxLevel===3?'#fff5f5':maxLevel===2?'#fffdf0':'';
+    const cCount = _mlCourseCount(l);
+    const courseBtn = cCount
+      ? `<button onclick="window._mlToggleCourse('${escHtml(l.id)}')" style="border:1px solid #c6f6d5;background:#f0fff4;color:#276749;border-radius:12px;padding:1px 8px;font-size:.75rem;cursor:pointer;white-space:nowrap;">▶ ${cCount} 節課</button>`
+      : `<span style="color:#cbd5e0;font-size:.75rem;">—</span>`;
     return `<tr style="background:${rowBg};">
       <td style="padding:7px 10px;">${nameLink}</td>
       <td style="padding:7px 10px;font-family:monospace;">${escHtml(l.studentId||'—')}</td>
       <td style="padding:7px 10px;">${escHtml(l.leaveDate||'—')}</td>
       <td style="padding:7px 10px;font-size:.8rem;">${escHtml(l.reason||'—')}</td>
       <td style="padding:7px 10px;">${_mlRiskBadge(maxLevel, true)}${kwChips ? `<div style="margin-top:3px;">${kwChips}</div>` : ''}</td>
+      <td style="padding:7px 10px;">${courseBtn}</td>
       <td style="padding:7px 10px;font-size:.8rem;color:#718096;">${escHtml(l.semester||'—')}</td>
       ${isAdmin ? `<td style="padding:7px 10px;"><button class="btn btn-danger btn-sm" onclick="window._mlDeleteRecord('${escHtml(l.id)}')">刪除</button></td>` : ''}
+    </tr>
+    <tr id="ml-course-${escHtml(l.id)}" style="display:none;background:#f7fffe;">
+      <td colspan="99" style="padding:8px 20px 12px;">
+        ${_mlCourseDetailHtml(l)}
+      </td>
     </tr>`;
   }).join('')
     : `<tr><td colspan="99" style="text-align:center;padding:24px;color:#a0aec0;">尚無紀錄</td></tr>`;
@@ -20254,6 +20358,7 @@ function _mlRenderRecordsTab(el) {
         <option value="">所有學期</option>${semOpts}
       </select>
       <button class="btn btn-primary" onclick="window._mlFetch()" style="white-space:nowrap;">📥 從信箱擷取</button>
+      ${isAdmin ? `<button class="btn btn-secondary" onclick="window._mlFetch(true)" style="white-space:nowrap;" title="忽略已處理標記，重新讀取所有信件（供 AI 關鍵字分析用）">🔄 全量擷取</button>` : ''}
       ${DRIVE_FOLDER_ID === '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' ? `<button class="btn btn-danger" onclick="window._mlClearAll()" style="white-space:nowrap;margin-left:auto;" title="清空所有測試資料（並移除 Gmail ml-processed 標籤）">🗑️ 清空測試資料</button>` : ''}
     </div>
     <div style="overflow-x:auto;">
@@ -20264,6 +20369,7 @@ function _mlRenderRecordsTab(el) {
           <th style="padding:8px 10px;">請假日期</th>
           <th style="padding:8px 10px;min-width:160px;">請假緣由</th>
           <th style="padding:8px 10px;">風險 / 關鍵字</th>
+          <th style="padding:8px 10px;">課程</th>
           <th style="padding:8px 10px;">學期</th>
           ${isAdmin ? '<th style="padding:8px 10px;"></th>' : ''}
         </tr></thead>
@@ -20283,12 +20389,14 @@ window._mlDeleteRecord = async (id) => {
   catch(e) { delete r.deleted; delete r.deletedAt; delete r.deletedBy; bgJobFail(jobId, e.message); }
 };
 
-window._mlFetch = async () => {
-  const btn = document.querySelector('[onclick="window._mlFetch()"]');
-  if (btn) { btn.disabled = true; btn.textContent = '擷取中…'; }
-  const jobId = bgJobAdd('從信箱擷取身心調適假');
+window._mlFetch = async (force = false) => {
+  const sel = force ? '[onclick="window._mlFetch(true)"]' : '[onclick="window._mlFetch()"]';
+  const btn = document.querySelector(sel);
+  if (btn) { btn.disabled = true; btn.textContent = force ? '全量擷取中…' : '擷取中…'; }
+  const jobLabel = force ? '全量擷取身心調適假（忽略已處理標記）' : '從信箱擷取身心調適假';
+  const jobId = bgJobAdd(jobLabel);
   try {
-    const result = await proxyCall('fetchMentalLeaves');
+    const result = await proxyCall('fetchMentalLeaves', force ? { force: true } : {});
     if (result?.needsAuth) {
       bgJobFail(jobId, '需要 Gmail 授權');
       _mlShowAuthModal(result.authUrl);
@@ -20298,8 +20406,9 @@ window._mlFetch = async () => {
       await loadMentalLeaves();
       renderMentalLeavePage();
       bgJobDone(jobId);
-      auditLog('從信箱擷取身心調適假', null, null, `新增 ${result.newCount} 筆`);
-      showToast(`擷取完成，新增 ${result.newCount} 筆請假紀錄`);
+      const auditDetail = force ? `全量擷取，新增 ${result.newCount} 筆（總計 ${result.totalCount} 筆）` : `新增 ${result.newCount} 筆`;
+      auditLog('從信箱擷取身心調適假', null, null, auditDetail);
+      showToast(force ? `全量擷取完成，新增 ${result.newCount} 筆` : `擷取完成，新增 ${result.newCount} 筆請假紀錄`);
     } else {
       bgJobDone(jobId);
     }
@@ -20307,7 +20416,7 @@ window._mlFetch = async () => {
     bgJobFail(jobId, e.message);
     alert('從信箱擷取失敗：' + e.message);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '📥 從信箱擷取'; }
+    if (btn) { btn.disabled = false; btn.textContent = force ? '🔄 全量擷取' : '📥 從信箱擷取'; }
   }
 };
 
