@@ -63,7 +63,8 @@ function doPost(e) {
       case 'getNpust5AuthUrl':     result = getAuthUrlNpust5_(); break;
       case 'dumpNpust5Emails':     result = dumpNpust5Emails_(ctx); break;
       case 'listInboxEmails':      result = listInboxEmails_(ctx); break;
-      case 'clearMentalLeaves':    result = clearMentalLeaves_(ctx); break;
+      case 'clearMentalLeaves':              result = clearMentalLeaves_(ctx); break;
+      case 'countMentalLeavesUnprocessed':   result = countMentalLeavesUnprocessed_(ctx); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
     return jsonResp_(result);
@@ -847,6 +848,17 @@ function clearMentalLeaves_(ctx) {
     driveUpload_('mental_leaves.json', { records: [] }, pi.parentId);
   }
   return { ok: true, removedLabels: removedLabels };
+}
+
+// ── 掃描未處理的請假信件數量（用於前端顯示 X/Y 進度）
+function countMentalLeavesUnprocessed_(ctx) {
+  var token = npust5GetAccessToken_();
+  if (!token) return { needsAuth: true, authUrl: npust5BuildAuthUrl_() };
+  var labelName = ctx.gmailLabel || 'ml-processed';
+  var query = 'subject:(請假 OR 身心調適假 OR 缺課) -label:' + labelName;
+  var searchData = gmailApi_(token, '/messages?q=' + encodeURIComponent(query) + '&maxResults=500');
+  var messages = searchData.messages || [];
+  return { count: messages.length, hasMore: !!searchData.nextPageToken };
 }
 
 // ── 可直接在 GAS 編輯器執行的 wrapper（寫到 dev 資料夾）

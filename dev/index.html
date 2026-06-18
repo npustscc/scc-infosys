@@ -20458,6 +20458,45 @@ window._mlDeleteRecord = async (id) => {
   catch(e) { delete r.deleted; delete r.deletedAt; delete r.deletedBy; bgJobFail(jobId, e.message); }
 };
 
+window._mlCreateFetchWin = (totalY) => {
+  const old = document.getElementById('ml-fetch-win');
+  if (old) old.remove();
+  const win = document.createElement('div');
+  win.id = 'ml-fetch-win';
+  win.style.cssText = 'position:fixed;right:24px;top:80px;width:288px;background:#fff;border:1px solid #cbd5e0;border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,.16);z-index:9999;user-select:none;font-family:inherit;';
+  win.innerHTML = `
+    <div id="ml-fw-header" style="background:#2b6cb0;color:#fff;padding:8px 12px;border-radius:7px 7px 0 0;cursor:move;font-size:13px;font-weight:600;">
+      📥 從信箱擷取身心調適假
+    </div>
+    <div style="padding:12px 14px;">
+      <div id="ml-fw-status" style="font-size:12px;color:#4a5568;margin-bottom:6px;">掃描未讀信件數量…</div>
+      <div style="background:#e2e8f0;border-radius:4px;height:10px;overflow:hidden;margin-bottom:8px;">
+        <div id="ml-fw-bar" style="height:100%;background:#3182ce;width:0%;transition:width .4s ease;"></div>
+      </div>
+      <div id="ml-fw-count" style="font-size:15px;font-weight:700;color:#2d3748;margin-bottom:4px;">0 / ${totalY ?? '?'}</div>
+      <div id="ml-fw-new" style="font-size:12px;color:#2f855a;"></div>
+      <div id="ml-fw-hint" style="font-size:11px;color:#e53e3e;margin-top:6px;display:none;line-height:1.5;"></div>
+      <button id="ml-fw-done" style="margin-top:10px;width:100%;padding:6px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;font-size:13px;opacity:.5;" disabled onclick="document.getElementById('ml-fetch-win').remove()">完成</button>
+    </div>`;
+  document.body.appendChild(win);
+  const header = win.querySelector('#ml-fw-header');
+  let ox = 0, oy = 0, dragging = false;
+  header.addEventListener('pointerdown', e => {
+    dragging = true;
+    const r = win.getBoundingClientRect();
+    ox = e.clientX - r.left; oy = e.clientY - r.top;
+    header.setPointerCapture(e.pointerId);
+  });
+  header.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    win.style.left = (e.clientX - ox) + 'px';
+    win.style.top  = (e.clientY - oy) + 'px';
+    win.style.right = 'auto';
+  });
+  header.addEventListener('pointerup', () => { dragging = false; });
+  return win;
+};
+
 window._mlFetch = async (force = false) => {
   const sel = force ? '[onclick="window._mlFetch(true)"]' : '[onclick="window._mlFetch()"]';
   const btn = document.querySelector(sel);
@@ -20485,14 +20524,61 @@ window._mlFetch = async (force = false) => {
 
   try {
     if (!force) {
-      // 一般擷取：單次 call
-      const result = await proxyCall('fetchMentalLeaves', {});
-      if (result?.needsAuth) { bgJobFail(jobId, '需要 Gmail 授權'); _mlShowAuthModal(result.authUrl); return; }
-      if (result?.newCount !== undefined) {
-        await loadMentalLeaves(); renderMentalLeavePage(); bgJobDone(jobId);
-        auditLog('從信箱擷取身心調適假', null, null, `新增 ${result.newCount} 筆`);
-        showToast(`擷取完成，新增 ${result.newCount} 筆請假紀錄`);
-      } else { bgJobDone(jobId); }
+      // 一般擷取：先掃描總數，再分批擷取最多 200 封，進度浮動視窗
+      const win = _mlCreateFetchWin(null);
+      const _winStatus = t => { const el = win.querySelector('#ml-fw-status'); if (el) el.textContent = t; };
+      const _winCount  = t => { const el = win.querySelector('#ml-fw-count');  if (el) el.textContent = t; };
+      const _winNew    = t => { const el = win.querySelector('#ml-fw-new');    if (el) el.textContent = t; };
+      const _winPct    = p => { const el = win.querySelector('#ml-fw-bar');    if (el) el.style.width = p + '%'; };
+      const _winDone   = ()=> { const el = win.querySelector('#ml-fw-done');   if (el) { el.disabled = false; el.style.opacity = '1'; } };
+      try {
+        // 掃描未處理信件數
+        const countResult = await proxyCall('countMentalLeavesUnprocessed');
+        if (countResult?.needsAuth) {
+          bgJobFail(jobId, '需要 Gmail 授權'); _mlShowAuthModal(countResult.authUrl);
+          _winStatus('需要重新授權'); _winDone(); return;
+        }
+        const rawCount = countResult.count ?? 0;
+        const displayY = countResult.hasMore ? rawCount + '+' : String(rawCount);
+        _winCount(`0 / ${displayY}`);
+        _winStatus('擷取中…');
+
+        const BATCH_SIZE = 20, MAX_TOTAL = 200;
+        let processed = 0, totalNew = 0, lastBatch = 0;
+        while (processed < MAX_TOTAL) {
+          const result = await proxyCall('fetchMentalLeaves', { batchSize: BATCH_SIZE });
+          if (result?.needsAuth) {
+            bgJobFail(jobId, '需要 Gmail 授權'); _mlShowAuthModal(result.authUrl);
+            _winStatus('需要重新授權'); _winDone(); return;
+          }
+          lastBatch = result.batchCount ?? 0;
+          processed += lastBatch;
+          totalNew  += result.newCount ?? 0;
+          _winPct(Math.min(100, Math.round(processed / MAX_TOTAL * 100)));
+          _winCount(`${processed} / ${displayY}`);
+          _winNew(`本次新增：${totalNew} 筆`);
+          await loadMentalLeaves(); renderMentalLeavePage();
+          if (lastBatch < BATCH_SIZE) break; // 信件已耗盡
+        }
+
+        const stillMore = processed >= MAX_TOTAL && lastBatch >= BATCH_SIZE;
+        bgJobDone(jobId);
+        auditLog('從信箱擷取身心調適假', null, null,
+          `擷取 ${processed} 封，新增 ${totalNew} 筆${stillMore ? '，尚有更多' : ''}`);
+        _winPct(100);
+        if (stillMore) {
+          _winStatus('首批 200 封已完成');
+          const hint = win.querySelector('#ml-fw-hint');
+          if (hint) { hint.textContent = '尚有更多未擷取信件，請再點選「從信箱擷取」繼續'; hint.style.display = 'block'; }
+        } else {
+          _winStatus('擷取完成');
+        }
+        _winDone();
+      } catch(e2) {
+        bgJobFail(jobId, e2.message);
+        _winStatus('擷取失敗：' + e2.message); _winDone();
+        alert('從信箱擷取失敗：' + e2.message);
+      }
       return;
     }
 
