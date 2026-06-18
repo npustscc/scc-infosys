@@ -17685,6 +17685,7 @@ const AUDIT_PAGE_CATEGORIES = {
   '轉銜管理':     a => a.includes('轉銜'),
   '精神科評估':   a => a.includes('精神科'),
   '系統管理':     a => ['搬移至共用','整合學年','重組 cases','清除逾期','整併主責','連結主責'].some(k => a.includes(k)),
+  '身心調適假':   a => a.includes('身心調適假'),
 };
 
 function _auditActionColor(a) {
@@ -20285,18 +20286,25 @@ window._mlDeleteRecord = async (id) => {
 window._mlFetch = async () => {
   const btn = document.querySelector('[onclick="window._mlFetch()"]');
   if (btn) { btn.disabled = true; btn.textContent = '擷取中…'; }
+  const jobId = bgJobAdd('從信箱擷取身心調適假');
   try {
     const result = await proxyCall('fetchMentalLeaves');
     if (result?.needsAuth) {
+      bgJobFail(jobId, '需要 Gmail 授權');
       _mlShowAuthModal(result.authUrl);
       return;
     }
     if (result?.newCount !== undefined) {
       await loadMentalLeaves();
       renderMentalLeavePage();
+      bgJobDone(jobId);
+      auditLog('從信箱擷取身心調適假', null, null, `新增 ${result.newCount} 筆`);
       showToast(`擷取完成，新增 ${result.newCount} 筆請假紀錄`);
+    } else {
+      bgJobDone(jobId);
     }
   } catch(e) {
+    bgJobFail(jobId, e.message);
     alert('從信箱擷取失敗：' + e.message);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '📥 從信箱擷取'; }
@@ -20307,12 +20315,16 @@ window._mlClearAll = async () => {
   if (!confirm('確定清空所有身心調適假測試資料？\n（Drive 的 mental_leaves.json 會被清空，Gmail 的 ml-processed 標籤也會移除，讓信件下次重新擷取。）')) return;
   const btn = document.querySelector('[onclick="window._mlClearAll()"]');
   if (btn) { btn.disabled = true; btn.textContent = '清空中…'; }
+  const jobId = bgJobAdd('清空身心調適假測試資料');
   try {
     const result = await proxyCall('clearMentalLeaves');
     mentalLeavesData = [];
     renderMentalLeavePage();
+    bgJobDone(jobId);
+    auditLog('清空身心調適假測試資料', null, null, `移除 ${result.removedLabels ?? 0} 個 ml-processed 標籤`);
     showToast(`已清空（移除 ${result.removedLabels ?? 0} 個 ml-processed 標籤）`);
   } catch(e) {
+    bgJobFail(jobId, e.message);
     alert('清空失敗：' + e.message);
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '🗑️ 清空測試資料'; }
@@ -20424,20 +20436,22 @@ window._mlAddKw = async () => {
   configData.mentalLeaveKeywords = kws;
   if (kwEl) kwEl.value = '';
   renderMentalLeavePage();
-  const jobId = bgJobAdd('儲存關鍵字設定');
-  try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); }
+  const levelLabel = { 3: '紅燈', 2: '黃燈', 1: '藍燈' };
+  const jobId = bgJobAdd(`新增關鍵字：${kw}`);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); auditLog('新增身心調適假關鍵字', null, null, `${kw}（${levelLabel[level] || level}）`); }
   catch(e) { bgJobFail(jobId, e.message); }
 };
 
 window._mlDeleteKw = async (i) => {
   const kws = [..._mlKeywords()];
   if (!kws[i] || !confirm(`確定刪除關鍵字「${kws[i].kw}」？`)) return;
+  const deleted = kws[i];
   kws.splice(i, 1);
   if (!configData) configData = {};
   configData.mentalLeaveKeywords = kws;
   renderMentalLeavePage();
-  const jobId = bgJobAdd('儲存關鍵字設定');
-  try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); }
+  const jobId = bgJobAdd(`刪除關鍵字：${deleted.kw}`);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); auditLog('刪除身心調適假關鍵字', null, null, deleted.kw); }
   catch(e) { bgJobFail(jobId, e.message); }
 };
 
@@ -20446,7 +20460,7 @@ window._mlResetKw = async () => {
   if (configData) delete configData.mentalLeaveKeywords;
   renderMentalLeavePage();
   const jobId = bgJobAdd('還原預設關鍵字庫');
-  try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); }
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); auditLog('還原身心調適假預設關鍵字庫'); }
   catch(e) { bgJobFail(jobId, e.message); }
 };
 function _upsertPsychTestDB(sid, sem, result) {
