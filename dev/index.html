@@ -20413,7 +20413,7 @@ function _mlRenderRecordsTab(el) {
         <option value="">所有學期</option>${semOpts}
       </select>
       <button class="btn btn-primary" onclick="window._mlFetch()" style="white-space:nowrap;">📥 從信箱擷取</button>
-      ${isAdmin ? `<button class="btn btn-secondary" onclick="window._mlFetch(true)" style="white-space:nowrap;" title="忽略已處理標記，重新讀取所有信件（供 AI 關鍵字分析用）">🔄 全量擷取</button>` : ''}
+      ${isAdmin ? `<button class="btn btn-secondary" onclick="window._mlFetch(true)" style="white-space:nowrap;" title="每次擷取最多300封歷史信件，可重複點選繼續往回擷取">📦 擷取300封信</button>` : ''}
       ${DRIVE_FOLDER_ID === '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' ? `
         <button class="btn btn-secondary" onclick="window._mlDumpView()" style="white-space:nowrap;" title="廣撒網列出信箱中所有請假相關信件，供診斷用">📋 診斷信件</button>
         <button class="btn btn-danger" onclick="window._mlClearAll()" style="white-space:nowrap;margin-left:auto;" title="清空所有測試資料（並移除 Gmail ml-processed 標籤）">🗑️ 清空測試資料</button>
@@ -20461,8 +20461,8 @@ window._mlDeleteRecord = async (id) => {
 window._mlFetch = async (force = false) => {
   const sel = force ? '[onclick="window._mlFetch(true)"]' : '[onclick="window._mlFetch()"]';
   const btn = document.querySelector(sel);
-  if (btn) { btn.disabled = true; btn.textContent = force ? '全量擷取中…' : '擷取中…'; }
-  const jobLabel = force ? '全量擷取身心調適假（忽略已處理標記）' : '從信箱擷取身心調適假';
+  if (btn) { btn.disabled = true; btn.textContent = force ? '擷取中…' : '擷取中…'; }
+  const jobLabel = force ? '擷取300封歷史身心調適假信件' : '從信箱擷取身心調適假';
   const jobId = bgJobAdd(jobLabel);
   try {
     const result = await proxyCall('fetchMentalLeaves', force ? { force: true } : {});
@@ -20475,9 +20475,16 @@ window._mlFetch = async (force = false) => {
       await loadMentalLeaves();
       renderMentalLeavePage();
       bgJobDone(jobId);
-      const auditDetail = force ? `全量擷取，新增 ${result.newCount} 筆（總計 ${result.totalCount} 筆）` : `新增 ${result.newCount} 筆`;
+      const auditDetail = force
+        ? `擷取300封，新增 ${result.newCount} 筆（累計 ${result.totalCount} 筆）${result.hasMore ? '，尚有更多' : '，已到底'}`
+        : `新增 ${result.newCount} 筆`;
       auditLog('從信箱擷取身心調適假', null, null, auditDetail);
-      showToast(force ? `全量擷取完成，新增 ${result.newCount} 筆` : `擷取完成，新增 ${result.newCount} 筆請假紀錄`);
+      const toastMsg = force
+        ? (result.hasMore
+            ? `新增 ${result.newCount} 筆（累計 ${result.totalCount} 筆），尚有更多歷史信件，可再按一次繼續`
+            : `新增 ${result.newCount} 筆（累計 ${result.totalCount} 筆），已到底`)
+        : `擷取完成，新增 ${result.newCount} 筆請假紀錄`;
+      showToast(toastMsg, result.hasMore ? 6000 : 3000);
     } else {
       bgJobDone(jobId);
     }
@@ -20485,7 +20492,7 @@ window._mlFetch = async (force = false) => {
     bgJobFail(jobId, e.message);
     alert('從信箱擷取失敗：' + e.message);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = force ? '🔄 全量擷取' : '📥 從信箱擷取'; }
+    if (btn) { btn.disabled = false; btn.textContent = force ? '📦 擷取300封信' : '📥 從信箱擷取'; }
   }
 };
 

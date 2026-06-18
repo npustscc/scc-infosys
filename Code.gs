@@ -583,7 +583,9 @@ function fetchMentalLeaves_(ctx, opts) {
   var query = force
     ? 'subject:(請假 OR 身心調適假 OR 缺課)'
     : 'subject:(請假 OR 身心調適假 OR 缺課) -label:' + labelName;
-  var searchData = gmailApi_(token, '/messages?q=' + encodeURIComponent(query) + '&maxResults=' + (force ? 500 : 50));
+  var apiUrl = '/messages?q=' + encodeURIComponent(query) + '&maxResults=' + (force ? 300 : 50);
+  if (force && existingData.fetchPageToken) apiUrl += '&pageToken=' + encodeURIComponent(existingData.fetchPageToken);
+  var searchData = gmailApi_(token, apiUrl);
   var messages = searchData.messages || [];
 
   var newRecords = [];
@@ -744,8 +746,16 @@ function fetchMentalLeaves_(ctx, opts) {
     }
   });
 
-  // 4. 寫回 Drive
-  if (newRecords.length) {
+  // 4. 更新 pageToken（force 模式）並寫回 Drive
+  if (force) {
+    if (searchData.nextPageToken) {
+      existingData.fetchPageToken = searchData.nextPageToken;
+    } else {
+      delete existingData.fetchPageToken;
+    }
+  }
+
+  if (newRecords.length || force) {
     existingData.records = existingData.records.concat(newRecords);
     try {
       updateJson_({ path: 'mental_leaves.json', content: existingData }, ctx);
@@ -755,7 +765,7 @@ function fetchMentalLeaves_(ctx, opts) {
     }
   }
 
-  return { newCount: newRecords.length, totalCount: existingData.records.length };
+  return { newCount: newRecords.length, totalCount: existingData.records.length, hasMore: !!(force && existingData.fetchPageToken) };
 }
 
 // ── 廣域擷取信件供關鍵字分析（dump 至 Drive）
