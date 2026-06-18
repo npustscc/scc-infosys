@@ -583,8 +583,11 @@ function fetchMentalLeaves_(ctx, opts) {
   var query = force
     ? 'subject:(請假 OR 身心調適假 OR 缺課)'
     : 'subject:(請假 OR 身心調適假 OR 缺課) -label:' + labelName;
-  var apiUrl = '/messages?q=' + encodeURIComponent(query) + '&maxResults=' + (force ? 300 : 50);
-  if (force && existingData.fetchPageToken) apiUrl += '&pageToken=' + encodeURIComponent(existingData.fetchPageToken);
+  var batchSize = (opts && opts.batchSize) ? opts.batchSize : (force ? 300 : 50);
+  var apiUrl = '/messages?q=' + encodeURIComponent(query) + '&maxResults=' + batchSize;
+  // 若 opts 明確帶 pageToken，使用它；否則用 Drive 存的 token
+  var pageTokenToUse = (opts && 'pageToken' in opts) ? opts.pageToken : (force ? (existingData.fetchPageToken || null) : null);
+  if (pageTokenToUse) apiUrl += '&pageToken=' + encodeURIComponent(pageTokenToUse);
   var searchData = gmailApi_(token, apiUrl);
   var messages = searchData.messages || [];
 
@@ -765,7 +768,13 @@ function fetchMentalLeaves_(ctx, opts) {
     }
   }
 
-  return { newCount: newRecords.length, totalCount: existingData.records.length, hasMore: !!(force && existingData.fetchPageToken) };
+  return {
+    newCount: newRecords.length,
+    totalCount: existingData.records.length,
+    batchCount: messages.length,
+    hasMore: !!(force && existingData.fetchPageToken),
+    nextPageToken: (force && existingData.fetchPageToken) || null
+  };
 }
 
 // ── 廣域擷取信件供關鍵字分析（dump 至 Drive）

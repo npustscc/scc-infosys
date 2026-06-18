@@ -20461,38 +20461,83 @@ window._mlDeleteRecord = async (id) => {
 window._mlFetch = async (force = false) => {
   const sel = force ? '[onclick="window._mlFetch(true)"]' : '[onclick="window._mlFetch()"]';
   const btn = document.querySelector(sel);
-  if (btn) { btn.disabled = true; btn.textContent = force ? '擷取中…' : '擷取中…'; }
   const jobLabel = force ? '擷取300封歷史身心調適假信件' : '從信箱擷取身心調適假';
   const jobId = bgJobAdd(jobLabel);
+
+  const _restoreBtn = () => {
+    if (!btn) return;
+    btn.disabled = false;
+    btn.style.cssText = '';
+    btn.innerHTML = '';
+    btn.textContent = force ? '📦 擷取300封信' : '📥 從信箱擷取';
+  };
+
+  if (force && btn) {
+    btn.disabled = true;
+    btn.style.cssText = 'position:relative;overflow:hidden;min-width:160px;white-space:nowrap;';
+    btn.innerHTML = `
+      <div id="ml-fetch-bg" style="position:absolute;left:0;top:0;height:100%;background:rgba(49,130,206,.28);width:0%;transition:width .4s ease;pointer-events:none;"></div>
+      <span id="ml-fetch-label" style="position:relative;z-index:1;">擷取中... 0/300</span>`;
+  } else if (btn) {
+    btn.disabled = true;
+    btn.textContent = '擷取中…';
+  }
+
   try {
-    const result = await proxyCall('fetchMentalLeaves', force ? { force: true } : {});
-    if (result?.needsAuth) {
-      bgJobFail(jobId, '需要 Gmail 授權');
-      _mlShowAuthModal(result.authUrl);
+    if (!force) {
+      // 一般擷取：單次 call
+      const result = await proxyCall('fetchMentalLeaves', {});
+      if (result?.needsAuth) { bgJobFail(jobId, '需要 Gmail 授權'); _mlShowAuthModal(result.authUrl); return; }
+      if (result?.newCount !== undefined) {
+        await loadMentalLeaves(); renderMentalLeavePage(); bgJobDone(jobId);
+        auditLog('從信箱擷取身心調適假', null, null, `新增 ${result.newCount} 筆`);
+        showToast(`擷取完成，新增 ${result.newCount} 筆請假紀錄`);
+      } else { bgJobDone(jobId); }
       return;
     }
-    if (result?.newCount !== undefined) {
-      await loadMentalLeaves();
-      renderMentalLeavePage();
-      bgJobDone(jobId);
-      const auditDetail = force
-        ? `擷取300封，新增 ${result.newCount} 筆（累計 ${result.totalCount} 筆）${result.hasMore ? '，尚有更多' : '，已到底'}`
-        : `新增 ${result.newCount} 筆`;
-      auditLog('從信箱擷取身心調適假', null, null, auditDetail);
-      const toastMsg = force
-        ? (result.hasMore
-            ? `新增 ${result.newCount} 筆（累計 ${result.totalCount} 筆），尚有更多歷史信件，可再按一次繼續`
-            : `新增 ${result.newCount} 筆（累計 ${result.totalCount} 筆），已到底`)
-        : `擷取完成，新增 ${result.newCount} 筆請假紀錄`;
-      showToast(toastMsg, result.hasMore ? 6000 : 3000);
-    } else {
-      bgJobDone(jobId);
+
+    // force 模式：分批擷取，每批 20 封，最多 15 批（共 300 封）
+    const BATCH_SIZE = 20, MAX_TOTAL = 300;
+    let processed = 0, totalNew = 0, totalCount = 0;
+    let pageToken = undefined; // 第一批用 Drive 存的 token
+    let hasMore = true;
+
+    const _updateProgress = () => {
+      const pct = Math.min(100, Math.round(processed / MAX_TOTAL * 100));
+      const bg = document.getElementById('ml-fetch-bg');
+      const lbl = document.getElementById('ml-fetch-label');
+      if (bg) bg.style.width = pct + '%';
+      if (lbl) lbl.textContent = `擷取中... ${processed}/${MAX_TOTAL}`;
+    };
+
+    while (processed < MAX_TOTAL && hasMore) {
+      const params = { force: true, batchSize: BATCH_SIZE };
+      if (pageToken !== undefined) params.pageToken = pageToken;
+      const result = await proxyCall('fetchMentalLeaves', params);
+      if (result?.needsAuth) { bgJobFail(jobId, '需要 Gmail 授權'); _mlShowAuthModal(result.authUrl); return; }
+      processed += (result.batchCount ?? BATCH_SIZE);
+      totalNew += (result.newCount ?? 0);
+      totalCount = result.totalCount ?? totalCount;
+      hasMore = !!result.hasMore;
+      pageToken = result.nextPageToken ?? null;
+      _updateProgress();
+      if (!hasMore) break;
     }
+
+    await loadMentalLeaves();
+    renderMentalLeavePage();
+    bgJobDone(jobId);
+    const auditDetail = `擷取300封，新增 ${totalNew} 筆（累計 ${totalCount} 筆）${hasMore ? '，尚有更多' : '，已到底'}`;
+    auditLog('從信箱擷取身心調適假', null, null, auditDetail);
+    const toastMsg = hasMore
+      ? `新增 ${totalNew} 筆（累計 ${totalCount} 筆），尚有更多歷史信件，可再按一次繼續`
+      : `新增 ${totalNew} 筆（累計 ${totalCount} 筆），已到底`;
+    showToast(toastMsg, hasMore ? 6000 : 3000);
   } catch(e) {
     bgJobFail(jobId, e.message);
     alert('從信箱擷取失敗：' + e.message);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = force ? '📦 擷取300封信' : '📥 從信箱擷取'; }
+    _restoreBtn();
   }
 };
 
