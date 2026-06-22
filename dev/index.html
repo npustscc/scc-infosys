@@ -1224,6 +1224,14 @@
           <input id="cf-date-to" type="date"
             style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
             onchange="caseFilters.dateTo=this.value;renderCases()">
+          <span style="font-size:.82rem;color:#4a5568;font-weight:600;white-space:nowrap;align-self:center;">身心調適假</span>
+          <input id="cf-ml-from" type="date"
+            style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
+            onchange="caseFilters.mlLeaveFrom=this.value;renderCases()">
+          <span style="color:#718096;font-size:.875rem;">至</span>
+          <input id="cf-ml-to" type="date"
+            style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
+            onchange="caseFilters.mlLeaveTo=this.value;renderCases()">
           <button class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="resetCaseFilters()">清除篩選</button>
           <button id="btn-sort-lock" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="toggleSortLock()"></button>
           <button id="btn-cases-compact" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="toggleCasesCompact()" data-tip="切換緊湊顯示模式">緊湊：關</button>
@@ -3066,7 +3074,7 @@
     <div id="page-todos" class="page">
       <div class="page-title">待辦事項</div>
       <div style="background:#ebf8ff;border:1px solid #bee3f8;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:.84rem;color:#2b6cb0;">
-        <strong>使用說明：</strong>待辦事項會隨系統狀態自動更新，不需手動維護。「刪除」僅移除此筆通知項目（標記已讀或不再顯示），<strong>不會刪除</strong>該通知所代表的個案資料、評估記錄或名單。
+        <strong>使用說明：</strong>待辦事項會隨系統狀態自動更新，不需手動維護。「封存」將此待辦事項移至封存列表（可在封存紀錄中查閱），<strong>不會刪除</strong>該通知所代表的個案資料、評估記錄或名單。
       </div>
       <div id="todos-filter-bar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center;">
         <select class="field-select" id="todos-filter-user" onchange="_onTodosUserFilterChange()" style="display:none;max-width:180px;" title="管理者：查看其他人員待辦事項"></select>
@@ -3095,7 +3103,8 @@
         <button class="btn btn-secondary btn-sm" onclick="_resetTodosFilter()">重置</button>
         <div style="flex:1;"></div>
         <label id="todos-select-all-label" style="font-size:.85rem;cursor:pointer;user-select:none;"><input type="checkbox" id="todos-select-all" onchange="_toggleTodosSelectAll(this)"> 全選</label>
-        <button class="btn btn-sm" id="todos-batch-delete-btn" style="display:none;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_batchDeleteTodos()">刪除選取</button>
+        <button class="btn btn-sm" id="todos-batch-delete-btn" style="display:none;" onclick="_batchArchiveTodos()" data-tip="將選取的待辦事項移至封存列表">封存選取</button>
+        <button class="btn btn-sm" id="todos-show-archived-btn" onclick="_toggleTodosArchived()" style="background:#f7fafc;border-color:#cbd5e0;color:#4a5568;" data-tip="查看已封存的待辦事項">📦 封存紀錄</button>
       </div>
       <div id="todos-ml-notif-section"></div>
       <div id="todos-assignment-section"></div>
@@ -3535,7 +3544,8 @@ let caseFilters = {
   q: '', status: '',
   semester: localStorage.getItem('scc_semester_pref') || currentSemesterPrefix(),
   counselor: '', dateFrom: '', dateTo: '',
-  archived: 'unarchived'
+  archived: 'unarchived',
+  mlLeaveFrom: '', mlLeaveTo: ''
 };
 
 // ══════════════════════════════════════════════
@@ -5483,6 +5493,20 @@ function renderCases() {
   });
   if (dateFrom)  visible = visible.filter(c => (c.openDate || '') >= dateFrom);
   if (dateTo)    visible = visible.filter(c => (c.openDate || '') <= dateTo);
+  if (caseFilters.mlLeaveFrom || caseFilters.mlLeaveTo) {
+    const mlFrom = caseFilters.mlLeaveFrom;
+    const mlTo   = caseFilters.mlLeaveTo;
+    visible = visible.filter(c => {
+      if (!c.studentId) return false;
+      return mentalLeavesData.some(l => {
+        if (l.deleted || l.studentId !== c.studentId) return false;
+        const d = l.leaveDate || '';
+        if (mlFrom && d < mlFrom) return false;
+        if (mlTo   && d > mlTo)   return false;
+        return true;
+      });
+    });
+  }
 
   // 統計（排除已刪除）
   const nonDeleted = visible.filter(c => !c.deleted);
@@ -5699,10 +5723,14 @@ function _syncCasesBatchBar() {
 
 function resetCaseFilters() {
   const sem = currentSemesterPrefix();
-  caseFilters = { q: '', status: '', semester: sem, counselor: '', dateFrom: '', dateTo: '', archived: 'unarchived' };
+  caseFilters = { q: '', status: '', semester: sem, counselor: '', dateFrom: '', dateTo: '', archived: 'unarchived', mlLeaveFrom: '', mlLeaveTo: '' };
   caseSort = { col: null, dir: 1 };
   localStorage.setItem('scc_semester_pref', sem);
   syncUserPref_({ semesterPref: sem });
+  const _mlFromEl = document.getElementById('cf-ml-from');
+  const _mlToEl = document.getElementById('cf-ml-to');
+  if (_mlFromEl) _mlFromEl.value = '';
+  if (_mlToEl) _mlToEl.value = '';
   ['cf-q', 'cf-status', 'cf-counselor', 'cf-date-from', 'cf-date-to'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
   });
@@ -11182,7 +11210,7 @@ function _makeTableResizable({ table, colPrefix, colNums, prefKey, skipCols = ne
       startW = (col && parseInt(col.style.width)) || th.offsetWidth;
       const onMove = ev => {
         const delta = ev.pageX - startX;
-        const maxW = document.documentElement.clientWidth;
+        const maxW = table.parentElement?.clientWidth || document.documentElement.clientWidth;
         const minTableW = colNums.length * 30;
         const newTableW = Math.min(maxW, Math.max(minTableW, startTableW + delta));
         const w = Math.max(30, startW + (newTableW - startTableW));
@@ -15263,6 +15291,7 @@ let todosData = [];
 let _todoFileId = null;
 let _suppressedTodoRecordIds = new Set(); // recordIds whose todos were explicitly deleted
 let _todosViewUser = null;    // null=自己, '__all__'=全部, email=特定人員
+let _todosShowArchived = false;
 let _adminTodosCache = {};    // email → todos[]
 let _usersFolderIdCache = null;
 const _USERS_FOLDER_LS_KEY = 'scc_users_folder_id_' + DRIVE_FOLDER_ID;
@@ -16096,6 +16125,8 @@ function renderTodosPage() {
   const statusFilter = statusF === undefined || statusF === null ? '' : statusF;
 
   const filtered = viewData.filter(t => {
+    if (_todosShowArchived) { if (!t.archivedAt) return false; }
+    else { if (t.archivedAt) return false; }
     if (statusFilter === 'pending' && t.done) return false;
     if (statusFilter === 'done' && !t.done) return false;
     if (typeFilter && t.type !== typeFilter) return false;
@@ -16219,7 +16250,11 @@ function renderTodosPage() {
           : `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoDone('${t.id}')">完成</button>`)
         : `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoUndone('${t.id}')">恢復</button>`)
       : '';
-    const deleteBtn = (!readOnly && !_isLocked) ? `<button class="btn btn-sm" style="font-size:.78rem;background:#fff5f5;border-color:#fc8181;color:#c53030;" onclick="_deleteTodo('${t.id}')">刪除</button>` : '';
+    const deleteBtn = (!readOnly && !_isLocked)
+      ? (_todosShowArchived
+        ? `<button class="btn btn-sm" style="font-size:.78rem;" onclick="_unarchiveTodo('${t.id}')" data-tip="取消封存，重新顯示於待辦列表">取消封存</button>`
+        : `<button class="btn btn-sm" style="font-size:.78rem;" onclick="_archiveTodo('${t.id}')" data-tip="封存＝消除此待辦事項，可在「封存紀錄」中查閱">封存</button>`)
+      : '';
     const mismatchDetailHtml = _isMismatchTodo && !t.done ? `
       <div style="margin-top:8px;background:#fff8e1;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;font-size:.82rem;">
         <div style="color:#92400e;margin-bottom:4px;">⚠ 請確認以下匯入資料是否正確連結至系統個案：</div>
@@ -16272,6 +16307,22 @@ function _toggleTodosSelectAll(el) {
   _updateTodoBatchBtn();
 }
 
+function _batchArchiveTodos() {
+  const ids = [...document.querySelectorAll('.todo-select-cb:checked')].map(cb => cb.dataset.id);
+  if (!ids.length) return;
+  ids.forEach(id => {
+    const t = todosData.find(x => x.id === id);
+    if (t) t.archivedAt = new Date().toISOString();
+  });
+  _syncTodoBadge();
+  const _batchJobId = bgJobAdd(`批次封存 ${ids.length} 個待辦`);
+  saveUserTodos()
+    .then(() => { bgJobDone(_batchJobId); auditLog('批次封存待辦事項', null, null, `${ids.length} 個`); })
+    .catch(err => bgJobFail(_batchJobId, err?.message || '儲存失敗'));
+  showToast(`已封存 ${ids.length} 個待辦事項`, 'success', 2500);
+  renderTodosPage();
+}
+
 function _batchDeleteTodos() {
   const ids = [...document.querySelectorAll('.todo-select-cb:checked')].map(cb => cb.dataset.id);
   if (!ids.length) return;
@@ -16291,6 +16342,42 @@ function _batchDeleteTodos() {
     .then(() => { bgJobDone(_batchDelJobId); auditLog('批次刪除待辦事項', null, null, `${ids.length} 個`); })
     .catch(err => bgJobFail(_batchDelJobId, err?.message || '儲存失敗'));
   showToast(`已刪除 ${ids.length} 個待辦事項`, 'success', 2500);
+  renderTodosPage();
+}
+
+function _archiveTodo(id) {
+  const t = todosData.find(x => x.id === id);
+  if (!t) return;
+  t.archivedAt = new Date().toISOString();
+  _syncTodoBadge();
+  const _jobLabel = t.caseLabel ? `封存「${t.label}」（${t.caseLabel}）` : `封存「${t.label}」`;
+  const _jobId = bgJobAdd(_jobLabel);
+  saveUserTodos()
+    .then(() => { bgJobDone(_jobId); auditLog('封存待辦事項', null, null, t.label); })
+    .catch(err => bgJobFail(_jobId, err?.message || '儲存失敗'));
+  showToast('待辦事項已封存', 'success', 2500);
+  renderTodosPage();
+}
+
+function _unarchiveTodo(id) {
+  const t = todosData.find(x => x.id === id);
+  if (!t) return;
+  delete t.archivedAt;
+  _syncTodoBadge();
+  const _jobId = bgJobAdd(`取消封存「${t.label}」`);
+  saveUserTodos()
+    .then(() => { bgJobDone(_jobId); auditLog('取消封存待辦事項', null, null, t.label); })
+    .catch(err => bgJobFail(_jobId, err?.message || '儲存失敗'));
+  showToast('已取消封存', 'success', 2500);
+  renderTodosPage();
+}
+
+function _toggleTodosArchived() {
+  _todosShowArchived = !_todosShowArchived;
+  const btn = document.getElementById('todos-show-archived-btn');
+  if (btn) btn.style.background = _todosShowArchived ? '#ebf8ff' : '#f7fafc';
+  if (btn) btn.style.borderColor = _todosShowArchived ? '#90cdf4' : '#cbd5e0';
+  if (btn) btn.style.color = _todosShowArchived ? '#2b6cb0' : '#4a5568';
   renderTodosPage();
 }
 
@@ -20341,6 +20428,15 @@ window._mlToggleCourse = (id) => {
   if (btn) btn.textContent = btn.textContent.replace(opening ? '▶' : '▼', opening ? '▼' : '▶');
 };
 
+window._toggleDisplay = (bodyId, iconId) => {
+  const el = document.getElementById(bodyId);
+  if (!el) return;
+  const hidden = el.style.display === 'none';
+  el.style.display = hidden ? '' : 'none';
+  const icon = iconId ? document.getElementById(iconId) : null;
+  if (icon) icon.textContent = hidden ? '▼' : '▶';
+};
+
 // 課程統計 Tab
 function _mlRenderCourseStatsTab(el) {
   const records = mentalLeavesData.filter(l => !l.deleted);
@@ -20408,6 +20504,9 @@ let _mlPageSize = 100;
 let _mlFetchAborted = false;
 let _mlSemFilter = localStorage.getItem('ml_sem_pref') || currentSemesterPrefix();
 let _mlConsec3Filter = false;
+let _mlQFilter = '';
+let _mlRiskFilter = '';
+let _mlHandlingFilter = '';
 function renderMentalLeavePage() {
   const el = document.getElementById('mental-leave-body');
   if (!el) return;
@@ -20416,6 +20515,11 @@ function renderMentalLeavePage() {
   const canFullAccess = isAdmin || isMentalLeaveContact;
   // 若目前 tab 無權限，自動回到受輔生
   if (!canFullAccess && (_mlTab === 'records' || _mlTab === 'courses' || _mlTab === 'keywords')) _mlTab = 'my';
+  // Save filter state before destroying DOM
+  _mlQFilter = document.getElementById('ml-q')?.value ?? _mlQFilter;
+  _mlRiskFilter = document.getElementById('ml-risk')?.value ?? _mlRiskFilter;
+  _mlHandlingFilter = document.getElementById('ml-handling')?.value ?? _mlHandlingFilter;
+  const _mlQHadFocus = document.activeElement?.id === 'ml-q';
   el.innerHTML = `
     <div style="display:flex;gap:2px;border-bottom:2px solid #e2e8f0;margin-bottom:20px;">
       ${_mlTabBtn('my','🙋 受輔生')}
@@ -20425,6 +20529,10 @@ function renderMentalLeavePage() {
     </div>
     <div id="ml-tab-content"></div>`;
   _mlRenderTab();
+  if (_mlQHadFocus) {
+    const _qEl = document.getElementById('ml-q');
+    if (_qEl) { _qEl.focus(); const _l = _qEl.value.length; _qEl.setSelectionRange(_l, _l); }
+  }
 }
 function _mlTabBtn(id, label) {
   const active = _mlTab === id;
@@ -20576,10 +20684,10 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   const canFullAccess = isAdmin || isMentalLeaveContact;
   const records = mentalLeavesData.filter(l => !l.deleted);
-  const q      = (document.getElementById('ml-q')?.value        || '').trim().toLowerCase();
-  const riskF  =  document.getElementById('ml-risk')?.value     || '';
+  const q      = (_mlQFilter       || '').trim().toLowerCase();
+  const riskF  =  _mlRiskFilter;
   const semF   =  _mlSemFilter;
-  const hF     =  document.getElementById('ml-handling')?.value || '';
+  const hF     =  _mlHandlingFilter;
   const consec3Ids = _mlConsec3Filter ? _mlConsecutive3DayIds(records) : null;
 
   let filtered = records.filter(l => {
@@ -20605,7 +20713,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
   const allSorted = _mlGroups.flatMap(g => g.records);
   const _runInfoMap = {};
   _mlGroups.forEach(g => g.records.forEach((r, idx) => {
-    _runInfoMap[r.id] = { isConsec3: g.isConsec3, isRun: g.isRun, dateRange: g.dateRange, isFirst: idx === 0 };
+    _runInfoMap[r.id] = { isConsec3: g.isConsec3, isRun: g.isRun, dateRange: g.dateRange, isFirst: idx === 0, isLast: idx === g.records.length - 1 };
   }));
 
   const totalFiltered = allSorted.length;
@@ -20628,10 +20736,16 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       ? `<button onclick="showCaseDetail('${escHtml(mc.id)}')" style="border:none;background:none;cursor:pointer;color:#2b6cb0;font-weight:600;padding:0;font-size:inherit;">${escHtml(l.name||'—')}</button>`
       : `<span>${escHtml(l.name||'—')}</span>`;
     const runInfo = _runInfoMap[l.id] || {};
-    const rowBg = maxLevel===3?'#fff5f5':maxLevel===2?'#fffdf0':'';
-    const leftBorder = mc ? 'border-left:3px solid #3182ce;' : '';
+    const isRunChild = runInfo.isRun;
+    const rowBg = isRunChild
+      ? (maxLevel===3?'#fff5f5':maxLevel===2?'#fffdf0':'#f0f7ff')
+      : (maxLevel===3?'#fff5f5':maxLevel===2?'#fffdf0':'');
+    const leftBorder = isRunChild
+      ? 'border-left:4px solid #3182ce;'
+      : (mc ? 'border-left:3px solid #3182ce;' : '');
+    const bottomBorder = (isRunChild && runInfo.isLast) ? 'border-bottom:2px solid #a0aec0;' : '';
     const groupHeader = (runInfo.isRun && runInfo.isFirst)
-      ? `<tr style="background:#eff6ff;"><td colspan="99" style="padding:2px 12px 2px 36px;font-size:.78rem;color:#1e40af;border-top:2px solid #bfdbfe;font-weight:600;">📅 ${escHtml(l.name||l.studentId||'—')}&ensp;${escHtml(runInfo.dateRange)}${runInfo.isConsec3?`&ensp;<span style="background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 6px;font-size:.72rem;">連請三天</span>`:''}</td></tr>`
+      ? `<tr style="background:#eff6ff;border-left:4px solid #3182ce;"><td colspan="99" style="padding:2px 12px 2px 36px;font-size:.78rem;color:#1e40af;border-top:2px solid #3182ce;font-weight:600;">📅 ${escHtml(l.name||l.studentId||'—')}&ensp;${escHtml(runInfo.dateRange)}${runInfo.isConsec3?`&ensp;<span style="background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 6px;font-size:.72rem;">連請三天</span>`:''}</td></tr>`
       : '';
     const dateBadge = runInfo.isConsec3
       ? `<div style="margin-top:2px;"><span style="background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 5px;font-size:.7rem;font-weight:600;">連請三天</span></div>`
@@ -20650,7 +20764,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       ${ML_HANDLING_OPTS.map(o=>`<option value="${o}"${hVal===o?' selected':''}>${o}</option>`).join('')}
     </select>`;
     const isChecked = _mlCheckedIds.has(l.id);
-    return `${groupHeader}<tr style="background:${rowBg};${leftBorder}">
+    return `${groupHeader}<tr style="background:${rowBg};${leftBorder}${bottomBorder}">
       <td style="padding:5px 6px;text-align:center;width:28px;"><input type="checkbox" class="ml-row-chk" data-id="${escHtml(l.id)}" ${isChecked?'checked':''} onchange="window._mlToggleCheck('${escHtml(l.id)}',this.checked)"></td>
       <td style="padding:7px 10px;">${nameLink}</td>
       <td style="padding:7px 10px;">${studentIdCell}</td>
@@ -20707,6 +20821,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
           ${[100,200,300].map(n=>`<option value="${n}"${_mlPageSize===n?' selected':''}>${n}</option>`).join('')}
         </select>筆
       </label>
+      <button class="btn btn-secondary btn-sm" onclick="window._resetMlColWidths()" data-tip="清除已儲存的欄寬設定，恢復預設比例" style="white-space:nowrap;">重設欄寬</button>
       ${canFullAccess ? `<button class="btn btn-primary" onclick="window._mlFetch()" style="white-space:nowrap;">📥 從信箱擷取</button>` : ''}
       ${canFullAccess && DRIVE_FOLDER_ID === '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' ? `
         <button class="btn btn-danger" onclick="window._mlClearAll()" style="white-space:nowrap;margin-left:auto;">🗑️ 清空測試資料</button>
@@ -20721,6 +20836,14 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       <button class="btn btn-primary btn-sm" onclick="window._mlBatchHandling()">套用</button>
       <button class="btn btn-secondary btn-sm" onclick="_mlCheckedIds.clear();renderMentalLeavePage()">取消全選</button>
     </div>
+    ${totalPages > 1 ? `
+    <div style="display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-bottom:6px;font-size:.85rem;">
+      <span style="color:#718096;">共 ${totalFiltered} 筆，第 ${_mlPage} / ${totalPages} 頁</span>
+      <button class="btn btn-secondary btn-sm" ${_mlPage<=1?'disabled':''} onclick="_mlPage=1;renderMentalLeavePage()">«</button>
+      <button class="btn btn-secondary btn-sm" ${_mlPage<=1?'disabled':''} onclick="_mlPage--;renderMentalLeavePage()">‹</button>
+      <button class="btn btn-secondary btn-sm" ${_mlPage>=totalPages?'disabled':''} onclick="_mlPage++;renderMentalLeavePage()">›</button>
+      <button class="btn btn-secondary btn-sm" ${_mlPage>=totalPages?'disabled':''} onclick="_mlPage=${totalPages};renderMentalLeavePage()">»</button>
+    </div>` : ''}
     <div style="overflow-x:auto;">
       <table id="ml-records-table" style="width:100%;border-collapse:collapse;font-size:.875rem;">
         <colgroup>
@@ -20760,6 +20883,10 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     </div>` : (totalFiltered > 0 ? `<div style="text-align:right;font-size:.82rem;color:#a0aec0;margin-top:6px;">共 ${totalFiltered} 筆</div>` : '')}`;
   _makeTableResizable({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,9] : [1,2,3,4,5,6,7,8], prefKey: 'mlColWidths2', skipCols: isAdmin ? new Set([9]) : new Set() });
 }
+window._resetMlColWidths = () => {
+  const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  _resetTableColWidths({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,9] : [1,2,3,4,5,6,7,8], prefKey: 'mlColWidths2' });
+};
 
 window._mlDeleteRecord = async (id) => {
   if (!confirm('確定刪除此筆請假紀錄？')) return;
@@ -22116,8 +22243,24 @@ function _restoreBkPeriod(startTime, endTime) {
 async function syncBookingToCalendar(id) {
   const b = bookingsData.find(x => x.id === id);
   if (!b || b.calendarEventId) return;
-  const btn = document.querySelector(`[data-sync-id="${CSS.escape(id)}"]`);
-  if (btn) { btn.disabled = true; btn.textContent = '同步中…'; }
+
+  // Show progress modal
+  const modalId = 'bk-cal-sync-modal';
+  let modalEl = document.getElementById(modalId);
+  if (!modalEl) {
+    modalEl = document.createElement('div');
+    modalEl.id = modalId;
+    modalEl.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    document.body.appendChild(modalEl);
+  }
+  modalEl.innerHTML = `<div style="background:#fff;border-radius:10px;padding:28px 32px;min-width:280px;max-width:400px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.2);">
+    <div id="bk-cal-sync-status" style="font-size:1rem;color:#2d3748;margin-bottom:20px;">📅 正在同步至 Google Calendar…</div>
+    <div id="bk-cal-sync-btn" style="display:none;">
+      <button class="btn btn-primary" onclick="document.getElementById('${modalId}').remove();renderBookingsPage();">完成</button>
+    </div>
+  </div>`;
+  modalEl.style.display = 'flex';
+
   try {
     const calParams = { room: b.room, date: b.date, startTime: b.startTime, endTime: b.endTime,
       counselorName: b.counselorName, caseId: b.caseId || '', caseName: b.caseName || '', notes: b.notes || '' };
@@ -22126,11 +22269,18 @@ async function syncBookingToCalendar(id) {
       const idx = bookingsData.findIndex(x => x.id === id);
       if (idx >= 0) bookingsData[idx].calendarEventId = calendarEventId;
       await saveBookings();
+      const statusEl = document.getElementById('bk-cal-sync-status');
+      if (statusEl) statusEl.innerHTML = '✅ <strong>同步完成！</strong>';
+    } else {
+      const statusEl = document.getElementById('bk-cal-sync-status');
+      if (statusEl) statusEl.textContent = '⚠ 同步完成但未取得事件 ID。';
     }
   } catch (e) {
-    alert('同步失敗：' + e.message);
+    const statusEl = document.getElementById('bk-cal-sync-status');
+    if (statusEl) statusEl.textContent = `❌ 同步失敗：${e.message}`;
   }
-  renderBookingsPage();
+  const btnEl = document.getElementById('bk-cal-sync-btn');
+  if (btnEl) btnEl.style.display = '';
 }
 
 function _populateBookingCaseDatalist() {
@@ -24401,32 +24551,63 @@ function _renderCaseMlCard(c) {
   if (!c.studentId) return '';
   const recs = mentalLeavesData.filter(l => !l.deleted && l.studentId === c.studentId);
   if (!recs.length) return '';
-  const sorted = [...recs].sort((a, b) => (b.leaveDate||'').localeCompare(a.leaveDate||''));
-  const rows = sorted.map(l => {
-    const { maxLevel } = _mlMatchKeywords(l.reason);
-    const bg = maxLevel===3?'#fff5f5':maxLevel===2?'#fffdf0':'';
-    const hVal = l.handlingStatus || (maxLevel >= 3 ? '待處理' : '非危機');
-    const hs = ML_HANDLING_STYLE[hVal] || {};
-    return `<tr style="background:${bg};">
-      <td style="padding:4px 8px;white-space:nowrap;font-size:.82rem;">${escHtml(l.leaveDate||'—')}</td>
-      <td style="padding:4px 8px;font-size:.78rem;color:#718096;">${escHtml(l.semester||'—')}</td>
-      <td style="padding:4px 8px;font-size:.82rem;max-width:220px;">${escHtml(l.reason||'—')}</td>
-      <td style="padding:4px 8px;">${_mlRiskBadge(maxLevel, true)}</td>
-      <td style="padding:4px 8px;font-size:.78rem;"><span style="background:${hs.bg||'#f7fafc'};color:${hs.color||'#718096'};border:1px solid ${hs.border||'#e2e8f0'};border-radius:4px;padding:0 5px;">${escHtml(hVal)}</span></td>
-    </tr>`;
+
+  const currentSem = currentSemesterPrefix();
+  const bySem = {};
+  recs.forEach(l => {
+    const s = l.semester || '未知學期';
+    if (!bySem[s]) bySem[s] = [];
+    bySem[s].push(l);
+  });
+  const sems = Object.keys(bySem).sort().reverse();
+
+  const uid = c.id.replace(/[^a-zA-Z0-9]/g, '-');
+  const outerBodyId = `case-ml-outer-${uid}`;
+
+  const semHtml = sems.map(sem => {
+    const semRecs = bySem[sem].sort((a, b) => (b.leaveDate||'').localeCompare(a.leaveDate||''));
+    const isCurrentSem = sem === currentSem;
+    const semCardId = `case-ml-sem-${uid}-${sem.replace(/[^a-zA-Z0-9]/g, '-')}`;
+    const rows = semRecs.map(l => {
+      const { maxLevel } = _mlMatchKeywords(l.reason);
+      const bg = maxLevel===3?'#fff5f5':maxLevel===2?'#fffdf0':'';
+      const hVal = l.handlingStatus || (maxLevel >= 3 ? '待處理' : '非危機');
+      const hs = ML_HANDLING_STYLE[hVal] || {};
+      return `<tr style="background:${bg};">
+        <td style="padding:4px 8px;white-space:nowrap;font-size:.82rem;">${escHtml(l.leaveDate||'—')}</td>
+        <td style="padding:4px 8px;font-size:.82rem;max-width:220px;">${escHtml(l.reason||'—')}</td>
+        <td style="padding:4px 8px;">${_mlRiskBadge(maxLevel, true)}</td>
+        <td style="padding:4px 8px;font-size:.78rem;"><span style="background:${hs.bg||'#f7fafc'};color:${hs.color||'#718096'};border:1px solid ${hs.border||'#e2e8f0'};border-radius:4px;padding:0 5px;">${escHtml(hVal)}</span></td>
+      </tr>`;
+    }).join('');
+    const semLabel = semesterLabel(sem) || sem;
+    return `<div style="margin-bottom:8px;border:1px solid #e9d8fd;border-radius:6px;overflow:hidden;">
+      <div style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:#ede9fe;" onclick="window._toggleDisplay('${semCardId}','${semCardId}-icon')">
+        <span style="font-size:.85rem;font-weight:600;color:#553c9a;">${escHtml(semLabel)}（${semRecs.length} 筆）</span>
+        <span id="${semCardId}-icon">${isCurrentSem?'▼':'▶'}</span>
+      </div>
+      <div id="${semCardId}" style="display:${isCurrentSem?'':'none'};">
+        <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">
+          <thead><tr style="background:#f3e8ff;color:#44337a;font-size:.8rem;">
+            <th style="padding:4px 8px;text-align:left;font-weight:600;">請假日期</th>
+            <th style="padding:4px 8px;text-align:left;font-weight:600;">緣由</th>
+            <th style="padding:4px 8px;text-align:left;font-weight:600;">風險</th>
+            <th style="padding:4px 8px;text-align:left;font-weight:600;">受理情況</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+      </div>
+    </div>`;
   }).join('');
-  return `<div style="margin-top:14px;padding:14px;background:#faf5ff;border-radius:8px;border:1px solid #d6bcfa;">
-    <div style="font-weight:600;color:#553c9a;margin-bottom:8px;font-size:.9rem;">身心調適假紀錄（共 ${recs.length} 筆）</div>
-    <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">
-      <thead><tr style="background:#e9d8fd;color:#44337a;font-size:.8rem;">
-        <th style="padding:4px 8px;text-align:left;font-weight:600;">請假日期</th>
-        <th style="padding:4px 8px;text-align:left;font-weight:600;">學期</th>
-        <th style="padding:4px 8px;text-align:left;font-weight:600;">緣由</th>
-        <th style="padding:4px 8px;text-align:left;font-weight:600;">風險</th>
-        <th style="padding:4px 8px;text-align:left;font-weight:600;">受理情況</th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table></div>
+
+  return `<div style="margin-top:14px;">
+    <div style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#faf5ff;border:1px solid #d6bcfa;border-radius:8px 8px 0 0;" onclick="window._toggleDisplay('${outerBodyId}','${outerBodyId}-icon')">
+      <span style="font-weight:600;color:#553c9a;font-size:.9rem;">身心調適假紀錄（共 ${recs.length} 筆）</span>
+      <span id="${outerBodyId}-icon">▼</span>
+    </div>
+    <div id="${outerBodyId}" style="background:#faf5ff;border:1px solid #d6bcfa;border-top:none;border-radius:0 0 8px 8px;padding:12px 14px;">
+      ${semHtml}
+    </div>
   </div>`;
 }
 
