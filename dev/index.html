@@ -8027,6 +8027,39 @@ function _detailChangeCounselor(caseId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
   if (newEmail === (c.counselorEmail || '')) { showToast('主責未變更。', 'info'); return; }
+  _showCounselorChangeConfirm(caseId, newEmail, c);
+}
+
+function _showCounselorChangeConfirm(caseId, newEmail, c) {
+  const newName = configData?.users?.[newEmail]?.name || newEmail;
+  const caseName = c.name || caseId;
+  const canDirect = currentRole === '主任' || extraRole === '管理者' || extraRole === '個案管理員';
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'counselor-change-confirm-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:440px;">
+      <div class="modal-header"><h3>確認變更主責輔導人員</h3></div>
+      <div class="modal-body" style="padding:12px 0 16px;">
+        <p style="font-size:.88rem;color:#4a5568;margin-bottom:6px;">個案：<strong>${escHtml(caseName)}（${escHtml(caseId)}）</strong></p>
+        <p style="font-size:.88rem;color:#4a5568;margin-bottom:14px;">將主責改為：<strong style="color:#3182ce;">${escHtml(newName)}</strong></p>
+        <div style="background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;padding:10px 12px;font-size:.82rem;color:#2b6cb0;">
+          確定後，系統將在您的待辦事項建立「內部轉案」任務。<br>
+          請至待辦事項頁面確認後執行。
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="document.getElementById('counselor-change-confirm-modal').remove()">取消</button>
+        ${canDirect ? `<button class="btn btn-warning" onclick="document.getElementById('counselor-change-confirm-modal').remove();_directChangeCounselor('${escHtml(caseId)}','${escHtml(newEmail)}')">直接轉派</button>` : ''}
+        <button class="btn btn-primary" onclick="document.getElementById('counselor-change-confirm-modal').remove();_doDetailChangeCounselor('${escHtml(caseId)}','${escHtml(newEmail)}')">確定，建立待辦</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function _doDetailChangeCounselor(caseId, newEmail) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
   const newName = configData?.users?.[newEmail]?.name || newEmail;
   _putTodoItem({
     id: _genTodoId(), type: 'internal_transfer',
@@ -8041,6 +8074,26 @@ function _detailChangeCounselor(caseId) {
   });
   saveUserTodos().catch(() => {});
   showToast('已建立轉案待辦，請至待辦頁確認後執行。', 'success');
+}
+
+async function _directChangeCounselor(caseId, newEmail) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const newName = configData?.users?.[newEmail]?.name || newEmail;
+  const oldName = configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '';
+  c.counselorEmail = newEmail;
+  c.counselorName = newName;
+  const jobId = bgJobAdd(`直接轉派主責 → ${newName}`);
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('變更主責輔導人員（直接轉派）', caseId, null, `${oldName} → ${newName}（${newEmail}）`);
+    bgJobDone(jobId);
+    showToast(`已直接變更主責為 ${newName}`, 'success', 3000);
+    showCaseDetail(caseId);
+  } catch(e) {
+    bgJobFail(jobId, e.message);
+    showToast(`變更失敗：${e.message}`, 'error', 4000);
+  }
 }
 
 function renderCaseManagersBody(c) {
@@ -16003,10 +16056,6 @@ function _renderAssignmentTodos() {
   if (!items.length) { section.innerHTML = ''; return; }
   const unread = items.filter(t => !t.notifRead);
   const read   = items.filter(t => t.notifRead);
-  const counselorOpts = Object.entries(configData?.users || {})
-    .filter(([, u]) => !u.disabled)
-    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}</option>`).join('');
-
   const renderCard = (t) => {
     const isTransfer = t.type === 'internal_transfer';
     const hasAssigned = !!t.assignedCounselor;
@@ -16033,7 +16082,7 @@ function _renderAssignmentTodos() {
         <label style="font-size:.85rem;font-weight:600;">指派主責：</label>
         <select id="assign-sel-${t.id}" class="field-select" style="max-width:200px;">
           <option value="">—請選擇輔導人員—</option>
-          ${counselorOpts}
+          ${buildCounselorOptgroups()}
         </select>
         <button class="btn btn-primary btn-sm" onclick="${confirmFn}('${t.id}')">確認派案</button>
       </div>
@@ -16165,7 +16214,7 @@ function _renderMlNotifSection() {
   section.innerHTML = `
     <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:14px 16px;margin-bottom:16px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${!isCollapsed && displayItems.length ? '4px' : '0'};">
-        <div style="font-weight:700;color:#276749;font-size:.95rem;">${titleText}</div>
+        <div style="font-weight:700;color:#276749;font-size:.95rem;cursor:pointer;" onclick="_mlToggleSection()" data-tip="${isCollapsed?'展開':'收束'}身心調適假區塊">${titleText}</div>
         <div style="display:flex;gap:6px;align-items:center;">
           ${!isCollapsed ? `<label style="font-size:.8rem;color:#276749;cursor:pointer;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="ml-cb-all" onchange="_mlToggleAllCb(this)">全選</label>
           <button id="ml-batch-btn" class="btn btn-sm" style="display:none;font-size:.78rem;background:#276749;color:#fff;border-color:#276749;" onclick="_mlBatchAcknowledge()">批次封存</button>` : ''}
@@ -16418,13 +16467,13 @@ function renderTodosPage() {
     const reassignDetailHtml = _isReassignInitiatorTodo && !t.done && !readOnly ? `
       <div style="margin-top:8px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;padding:8px 12px;font-size:.82rem;">
         <div style="color:#2b6cb0;margin-bottom:6px;">轉派評估者目標（可在此修改）：</div>
-        <select id="reassign-sel-${t.id}" class="field-input" style="padding:4px 8px;font-size:.82rem;width:100%;margin-bottom:8px;">
+        <select id="reassign-sel-${t.id}" class="field-input" style="padding:4px 8px;font-size:.82rem;max-width:220px;margin-bottom:8px;">
           <option value="">（保持目前目標：${escHtml(t.targetName || t.targetEmail || '—')}）</option>
           ${buildCounselorOptgroups()}
         </select>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <button class="btn btn-primary btn-sm" data-reassign-id="${t.id}" style="font-size:.78rem;" onclick="_executeAssessorReassign('${t.id}')">轉派評估者</button>
-          <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_archiveTodo('${t.id}')" data-tip="封存此任務（不進行轉派）">取消不轉派</button>
+          <button class="btn btn-secondary btn-sm" data-reassign-cancel-id="${t.id}" style="font-size:.78rem;" onclick="_archiveTodo('${t.id}')" data-tip="封存此任務（不進行轉派）">取消不轉派</button>
         </div>
       </div>` : '';
 
@@ -25645,6 +25694,7 @@ window._showAssessorChangeConfirm = function(transferType, id1, id2, newEmail, s
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="document.getElementById('assessor-change-confirm-modal').remove()">取消</button>
+        ${_isTransferCoordinator() ? `<button class="btn btn-warning" onclick="_onDirectAssessorReassign()">直接轉派</button>` : ''}
         <button class="btn btn-primary" onclick="_onConfirmAssessorChange()">確定，進入轉派程序</button>
       </div>
     </div>`;
@@ -25657,6 +25707,41 @@ window._onConfirmAssessorChange = function() {
   if (!p) return;
   window._pendingAssessorChange = null;
   _createAssessorReassignTodo(p.transferType, p.id1, p.id2, p.newEmail, p.caseName, p.caseId);
+};
+
+window._onDirectAssessorReassign = async function() {
+  document.getElementById('assessor-change-confirm-modal')?.remove();
+  const p = window._pendingAssessorChange;
+  if (!p) return;
+  window._pendingAssessorChange = null;
+  const { transferType, id1, id2, newEmail, caseName, caseId } = p;
+  const newName = configData?.users?.[newEmail]?.name || newEmail;
+  const myName = configData?.users?.[currentUser?.email]?.name || currentUser?.email || '';
+  const caseLbl = caseId ? `${caseName}（${caseId}）` : caseName;
+  if (transferType === 'grad') {
+    await window._changeGradAssessor(id1, id2, newEmail);
+  } else {
+    await window._changeWithdrawAssessor(id1, id2, newEmail);
+  }
+  addNotificationToUser(newEmail, 'transfer_reassign_assessor_notify', caseId || '', caseLbl,
+    `${myName} 已將「${caseLbl}」的轉銜評估者直接指派給您，請完成評估`);
+  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  const jobId = bgJobAdd(`直接通知轉派 → ${newName}`);
+  try {
+    await _appendTodoToUser(newEmail, {
+      id: _genTodoId(),
+      type: 'transfer_reassign_assessor_notify',
+      label: `您被指派為轉銜評估者：${caseLbl}`,
+      caseId: caseId || null,
+      caseLabel: caseLbl,
+      transferType,
+      fromName: myName,
+      createdAt: new Date().toISOString(),
+      done: false, notifRead: false,
+    });
+    bgJobDone(jobId);
+  } catch(e) { bgJobFail(jobId, e.message); }
+  showToast(`已直接轉派評估者給 ${newName}，對方將收到通知`, 'success', 3500);
 };
 
 function _createAssessorReassignTodo(transferType, id1, id2, newEmail, caseName, caseId) {
@@ -25690,6 +25775,8 @@ async function _executeAssessorReassign(todoId) {
   if (!finalEmail) { showToast('請選擇評估者', 'warn', 2500); return; }
   const btn = document.querySelector(`[data-reassign-id="${todoId}"]`);
   if (btn) { btn.disabled = true; btn.textContent = '轉派中…'; }
+  const cancelBtn = document.querySelector(`[data-reassign-cancel-id="${todoId}"]`);
+  if (cancelBtn) cancelBtn.disabled = true;
   try {
     if (t.transferType === 'grad') {
       await window._changeGradAssessor(t.id1, t.id2, finalEmail);
@@ -29458,6 +29545,7 @@ function initSidebarResize() {
       handle.removeEventListener('pointermove', onMove);
       handle.removeEventListener('pointerup', onUp);
       handle.removeEventListener('pointercancel', cleanup);
+      window.removeEventListener('blur', cleanup);
     };
     const onMove = e2 => {
       const w = Math.max(160, Math.min(400, startW + e2.clientX - startX));
@@ -29472,6 +29560,7 @@ function initSidebarResize() {
     handle.addEventListener('pointermove', onMove);
     handle.addEventListener('pointerup', onUp);
     handle.addEventListener('pointercancel', cleanup);
+    window.addEventListener('blur', cleanup);
     e.preventDefault();
   });
 }
