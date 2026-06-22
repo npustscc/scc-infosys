@@ -3113,6 +3113,8 @@
           <option value="transfer_withdraw_coord">教務處名單（協調員）</option>
           <option value="transfer_withdraw_mismatch">教務處名單（姓名/學號不符驗證）</option>
           <option value="transfer_closure_reminder">轉銜結案追蹤</option>
+          <option value="transfer_reassign_assessor">轉派評估者（待執行）</option>
+          <option value="transfer_reassign_assessor_notify">轉銜評估者通知（被指派）</option>
         </select>
         <select class="field-select" id="todos-filter-status" onchange="renderTodosPage()" style="max-width:130px;">
           <option value="">全部</option>
@@ -3191,7 +3193,7 @@
 // ══════════════════════════════════════════════
 const CLIENT_ID   = '68582831293-fecbka17adht886tm6oh18vrdsdg1hbj.apps.googleusercontent.com';
 const SCOPES      = 'https://www.googleapis.com/auth/drive openid profile email';
-const DRIVE_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP';
+const DRIVE_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP'; // 正式版資料夾
 const BOOTSTRAP_ADMIN_EMAIL = 'linkinlol528101@gmail.com'; // 永久管理者備援帳號
 const CONFIG_FILE     = 'config.json';
 const CASES_INDEX     = 'cases/index.json'; // 舊格式（升級後僅作備份）
@@ -8025,6 +8027,39 @@ function _detailChangeCounselor(caseId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
   if (newEmail === (c.counselorEmail || '')) { showToast('主責未變更。', 'info'); return; }
+  _showCounselorChangeConfirm(caseId, newEmail, c);
+}
+
+function _showCounselorChangeConfirm(caseId, newEmail, c) {
+  const newName = configData?.users?.[newEmail]?.name || newEmail;
+  const caseName = c.name || caseId;
+  const canDirect = currentRole === '主任' || extraRole === '管理者' || extraRole === '個案管理員';
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'counselor-change-confirm-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:440px;">
+      <div class="modal-header"><h3>確認變更主責輔導人員</h3></div>
+      <div class="modal-body" style="padding:12px 0 16px;">
+        <p style="font-size:.88rem;color:#4a5568;margin-bottom:6px;">個案：<strong>${escHtml(caseName)}（${escHtml(caseId)}）</strong></p>
+        <p style="font-size:.88rem;color:#4a5568;margin-bottom:14px;">將主責改為：<strong style="color:#3182ce;">${escHtml(newName)}</strong></p>
+        <div style="background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;padding:10px 12px;font-size:.82rem;color:#2b6cb0;">
+          確定後，系統將在您的待辦事項建立「內部轉案」任務。<br>
+          請至待辦事項頁面確認後執行。
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="document.getElementById('counselor-change-confirm-modal').remove()">取消</button>
+        ${canDirect ? `<button class="btn btn-warning" onclick="document.getElementById('counselor-change-confirm-modal').remove();_directChangeCounselor('${escHtml(caseId)}','${escHtml(newEmail)}')">直接轉派</button>` : ''}
+        <button class="btn btn-primary" onclick="document.getElementById('counselor-change-confirm-modal').remove();_doDetailChangeCounselor('${escHtml(caseId)}','${escHtml(newEmail)}')">確定，建立待辦</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function _doDetailChangeCounselor(caseId, newEmail) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
   const newName = configData?.users?.[newEmail]?.name || newEmail;
   _putTodoItem({
     id: _genTodoId(), type: 'internal_transfer',
@@ -8039,6 +8074,26 @@ function _detailChangeCounselor(caseId) {
   });
   saveUserTodos().catch(() => {});
   showToast('已建立轉案待辦，請至待辦頁確認後執行。', 'success');
+}
+
+async function _directChangeCounselor(caseId, newEmail) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const newName = configData?.users?.[newEmail]?.name || newEmail;
+  const oldName = configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '';
+  c.counselorEmail = newEmail;
+  c.counselorName = newName;
+  const jobId = bgJobAdd(`直接轉派主責 → ${newName}`);
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('變更主責輔導人員（直接轉派）', caseId, null, `${oldName} → ${newName}（${newEmail}）`);
+    bgJobDone(jobId);
+    showToast(`已直接變更主責為 ${newName}`, 'success', 3000);
+    showCaseDetail(caseId);
+  } catch(e) {
+    bgJobFail(jobId, e.message);
+    showToast(`變更失敗：${e.message}`, 'error', 4000);
+  }
 }
 
 function renderCaseManagersBody(c) {
@@ -15457,6 +15512,26 @@ async function saveUserTodos() {
   }
 }
 
+async function _appendTodoToUser(email, newTodo) {
+  const usersId = await getUsersFolderId();
+  const envSuffix = DRIVE_FOLDER_ID.slice(-8);
+  const fileName = `todos_${email}_${envSuffix}.json`;
+  const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
+  const res = await driveQuery(q, 'id');
+  const fileId = res.files?.[0]?.id || null;
+  let todos = [];
+  if (fileId) {
+    try { const raw = await driveReadJsonById(fileId); todos = Array.isArray(raw?.todos) ? raw.todos : []; } catch(_) {}
+  }
+  todos.push(newTodo);
+  const content = { todos, updatedAt: new Date().toISOString() };
+  if (fileId) {
+    await proxyCall('updateContentById', { fileId, content });
+  } else {
+    await driveCreateJsonFile(fileName, content, usersId);
+  }
+}
+
 function _cleanupDeletedEvals() {
   const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
   let changed = false;
@@ -15981,10 +16056,6 @@ function _renderAssignmentTodos() {
   if (!items.length) { section.innerHTML = ''; return; }
   const unread = items.filter(t => !t.notifRead);
   const read   = items.filter(t => t.notifRead);
-  const counselorOpts = Object.entries(configData?.users || {})
-    .filter(([, u]) => !u.disabled)
-    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name || email)}</option>`).join('');
-
   const renderCard = (t) => {
     const isTransfer = t.type === 'internal_transfer';
     const hasAssigned = !!t.assignedCounselor;
@@ -16011,7 +16082,7 @@ function _renderAssignmentTodos() {
         <label style="font-size:.85rem;font-weight:600;">指派主責：</label>
         <select id="assign-sel-${t.id}" class="field-select" style="max-width:200px;">
           <option value="">—請選擇輔導人員—</option>
-          ${counselorOpts}
+          ${buildCounselorOptgroups()}
         </select>
         <button class="btn btn-primary btn-sm" onclick="${confirmFn}('${t.id}')">確認派案</button>
       </div>
@@ -16109,29 +16180,90 @@ async function _confirmCaseAssignment(todoId) {
 function _renderMlNotifSection() {
   const section = document.getElementById('todos-ml-notif-section');
   if (!section) return;
+  const _isAdm = currentRole === '主任' || extraRole === '管理者';
+  const _isContactOnly = isMentalLeaveContact && !_isAdm;
   const items = _mlUnacknowledgedForMe();
   if (!items.length) { section.innerHTML = ''; return; }
+  const isCollapsed = !!window._mlSectionCollapsed;
+  const _renderItem = l => {
+    const mc = (casesData || []).find(c => !c.deleted && c.studentId === l.studentId);
+    const dateStr = (l.receivedAt || '').slice(0, 10);
+    return `<div style="display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-top:1px solid #c6f6d5;">
+      <input type="checkbox" class="ml-notif-cb" data-id="${escHtml(l.id)}" style="margin-top:3px;flex-shrink:0;" onchange="_mlUpdateBatchBtn()">
+      <div style="flex:1;min-width:0;">
+        <span style="font-weight:600;color:#2d3748;">${escHtml(l.name||l.studentId)}</span>
+        <span style="font-size:.78rem;color:#718096;margin-left:6px;">${escHtml(l.studentId||'')}</span>
+        ${dateStr ? `<span style="font-size:.78rem;color:#718096;margin-left:4px;">${dateStr}</span>` : ''}
+        <div style="font-size:.82rem;color:#4a5568;margin-top:2px;">${escHtml((l.reason||'').slice(0,60))}${(l.reason||'').length>60?'…':''}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;">
+        ${mc ? `<button onclick="showCaseDetail('${escHtml(mc.id)}')" style="padding:3px 10px;background:#2b6cb0;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;">前往個案</button>` : ''}
+        <button onclick="window._mlAcknowledge('${escHtml(l.id)}')" style="padding:3px 10px;background:#276749;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;" data-tip="封存此通知，表示已確認此筆身心調適假">封存</button>
+      </div>
+    </div>`;
+  };
+  let displayItems, titleText;
+  if (_isContactOnly) {
+    const myIds = _getMyCaseStudentIds();
+    displayItems = items.filter(l => myIds.has(l.studentId));
+    titleText = `🌿 身心調適假通知 共新增 ${items.length} 名`;
+  } else {
+    displayItems = items;
+    titleText = `🌿 身心調適假待確認（${items.length} 筆）`;
+  }
   section.innerHTML = `
     <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:14px 16px;margin-bottom:16px;">
-      <div style="font-weight:700;color:#276749;margin-bottom:10px;font-size:.95rem;">🌿 身心調適假待確認（${items.length} 筆）</div>
-      ${items.map(l => {
-        const mc = (casesData || []).find(c => !c.deleted && c.studentId === l.studentId);
-        const dateStr = (l.receivedAt || '').slice(0, 10);
-        return `<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid #c6f6d5;">
-          <div style="flex:1;min-width:0;">
-            <span style="font-weight:600;color:#2d3748;">${escHtml(l.name||l.studentId)}</span>
-            <span style="font-size:.78rem;color:#718096;margin-left:6px;">${escHtml(l.studentId||'')}</span>
-            ${dateStr ? `<span style="font-size:.78rem;color:#718096;margin-left:4px;">${dateStr}</span>` : ''}
-            <div style="font-size:.82rem;color:#4a5568;margin-top:2px;">${escHtml((l.reason||'').slice(0,60))}${(l.reason||'').length>60?'…':''}</div>
-          </div>
-          <div style="display:flex;gap:6px;flex-shrink:0;">
-            ${mc ? `<button onclick="showCaseDetail('${escHtml(mc.id)}')" style="padding:3px 10px;background:#2b6cb0;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;">前往個案</button>` : ''}
-            <button onclick="window._mlAcknowledge('${escHtml(l.id)}')" style="padding:3px 10px;background:#276749;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;" data-tip="封存此通知，表示已確認此筆身心調適假">封存</button>
-          </div>
-        </div>`;
-      }).join('')}
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${!isCollapsed && displayItems.length ? '4px' : '0'};cursor:pointer;" onclick="if(!event.target.closest('button,input,label'))_mlToggleSection()" data-tip="${isCollapsed?'展開':'收束'}身心調適假區塊">
+        <div style="font-weight:700;color:#276749;font-size:.95rem;">${titleText}</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          ${!isCollapsed ? `<label style="font-size:.8rem;color:#276749;cursor:pointer;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="ml-cb-all" onchange="_mlToggleAllCb(this)">全選</label>
+          <button id="ml-batch-btn" class="btn btn-sm" style="display:none;font-size:.78rem;background:#276749;color:#fff;border-color:#276749;" onclick="_mlBatchAcknowledge()">批次封存</button>` : ''}
+          <button onclick="_mlToggleSection()" style="background:none;border:none;cursor:pointer;font-size:.88rem;color:#276749;padding:0 2px;" data-tip="${isCollapsed?'展開':'收束'}身心調適假區塊">${isCollapsed?'▶':'▼'}</button>
+        </div>
+      </div>
+      ${!isCollapsed ? `<div id="ml-notif-items">${displayItems.map(_renderItem).join('')}</div>` : ''}
     </div>`;
 }
+
+window._mlToggleSection = function() {
+  window._mlSectionCollapsed = !window._mlSectionCollapsed;
+  _renderMlNotifSection();
+};
+
+function _mlUpdateBatchBtn() {
+  const checked = document.querySelectorAll('.ml-notif-cb:checked').length;
+  const btn = document.getElementById('ml-batch-btn');
+  if (btn) btn.style.display = checked > 0 ? '' : 'none';
+  const allCb = document.getElementById('ml-cb-all');
+  if (allCb) {
+    const total = document.querySelectorAll('.ml-notif-cb').length;
+    allCb.indeterminate = checked > 0 && checked < total;
+    allCb.checked = total > 0 && checked === total;
+  }
+}
+
+window._mlToggleAllCb = function(el) {
+  document.querySelectorAll('.ml-notif-cb').forEach(cb => { cb.checked = el.checked; });
+  _mlUpdateBatchBtn();
+};
+
+window._mlBatchAcknowledge = async function() {
+  const ids = [...document.querySelectorAll('.ml-notif-cb:checked')].map(cb => cb.dataset.id);
+  if (!ids.length) return;
+  let changed = 0;
+  ids.forEach(id => {
+    const r = mentalLeavesData.find(l => l.id === id);
+    if (!r || !currentUser?.email) return;
+    if (!Array.isArray(r.acknowledgedBy)) r.acknowledgedBy = [];
+    if (!r.acknowledgedBy.includes(currentUser.email)) { r.acknowledgedBy.push(currentUser.email); changed++; }
+  });
+  if (!changed) return;
+  _syncTodoBadge();
+  _renderMlNotifSection();
+  if (document.getElementById('notif-panel')?.style.display !== 'none') renderNotifList();
+  const jobId = bgJobAdd(`批次封存 ${changed} 筆身心調適假通知`);
+  try { await saveMentalLeaves(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); }
+};
 
 function renderTodosPage() {
   _renderAssignmentTodos();
@@ -16284,7 +16416,7 @@ function renderTodosPage() {
     return;
   }
 
-  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（協調員）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）', transfer_withdraw_coord: '教務處名單（協調員）', transfer_withdraw_mismatch: '教務處名單（姓名/學號不符）' };
+  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（協調員）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）', transfer_withdraw_coord: '教務處名單（協調員）', transfer_withdraw_mismatch: '教務處名單（姓名/學號不符）', transfer_reassign_assessor: '轉派評估者', transfer_reassign_assessor_notify: '轉銜評估者通知' };
 
   body.innerHTML = filtered.map(t => {
     const tLabel = typeLabels[t.type] || t.type;
@@ -16301,13 +16433,16 @@ function renderTodosPage() {
     const _isTransferTodo = ['transfer_grad_counselor','transfer_grad_coord','transfer_closure_reminder','transfer_withdraw_coord'].includes(t.type);
     const _isMismatchTodo = t.type === 'transfer_withdraw_mismatch';
     const _isAdminUserTodo = t.type === 'admin_verify_new_user';
-    const _continueBtnLabel = _isTransferTodo ? '前往轉銜管理' : (_isAdminUserTodo ? '前往設定' : '繼續編輯');
-    const continueBtn = !readOnly && !t.done && !_isMismatchTodo ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">${_continueBtnLabel}</button>` : '';
+    const _isReassignInitiatorTodo = t.type === 'transfer_reassign_assessor';
+    const _isReassignNotifyTodo = t.type === 'transfer_reassign_assessor_notify';
+    const _continueBtnLabel = (_isTransferTodo || _isReassignNotifyTodo) ? '前往轉銜管理' : (_isAdminUserTodo ? '前往設定' : '繼續編輯');
+    const continueBtn = !readOnly && !t.done && !_isMismatchTodo && !_isReassignInitiatorTodo ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">${_continueBtnLabel}</button>` : '';
     const doneBtn = !readOnly
       ? (!t.done
         ? (t.type === 'transfer_closure_reminder'
           ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_markTransferClosureDone('${t.id}','${t.transferRecId||''}')">已完成結案會議</button>`
           : _isMismatchTodo ? '' // mismatch uses special confirm/ignore buttons
+          : _isReassignInitiatorTodo ? '' // handled by reassignDetailHtml below
           : `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoDone('${t.id}')">完成</button>`)
         : `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoUndone('${t.id}')">恢復</button>`)
       : '';
@@ -16329,6 +16464,18 @@ function renderTodosPage() {
           ${t.caseId ? `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="showCaseDetail('${escHtml(t.caseId)}')">查閱個案</button>` : ''}
         </div>
       </div>` : '';
+    const reassignDetailHtml = _isReassignInitiatorTodo && !t.done && !readOnly ? `
+      <div style="margin-top:8px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;padding:8px 12px;font-size:.82rem;">
+        <div style="color:#2b6cb0;margin-bottom:6px;">轉派評估者目標（可在此修改）：</div>
+        <select id="reassign-sel-${t.id}" class="field-input" style="padding:4px 8px;font-size:.82rem;max-width:220px;margin-bottom:8px;">
+          <option value="">（保持目前目標：${escHtml(t.targetName || t.targetEmail || '—')}）</option>
+          ${buildCounselorOptgroups()}
+        </select>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="btn btn-primary btn-sm" data-reassign-id="${t.id}" style="font-size:.78rem;" onclick="_executeAssessorReassign('${t.id}')">轉派評估者</button>
+          <button class="btn btn-secondary btn-sm" data-reassign-cancel-id="${t.id}" style="font-size:.78rem;" onclick="_archiveTodo('${t.id}')" data-tip="封存此任務（不進行轉派）">取消不轉派</button>
+        </div>
+      </div>` : '';
 
     return `<div class="todo-item" data-id="${t.id}" style="background:${bgColor};border:1px solid ${borderColor};border-radius:8px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:flex-start;gap:10px;">
       ${checkBoxHtml}
@@ -16343,8 +16490,10 @@ function renderTodosPage() {
         </div>
         ${t.caseLabel ? `<div style="font-size:.82rem;color:#718096;margin-bottom:4px;">個案：${escHtml(t.caseLabel)}</div>` : ''}
         ${t.done && t.type === 'case_assignment' && t.assignedCounselorName ? `<div style="font-size:.82rem;color:#276749;margin-bottom:4px;">已派案給：${escHtml(t.assignedCounselorName)}</div>` : ''}
+        ${_isReassignNotifyTodo && t.fromName ? `<div style="font-size:.82rem;color:#276749;margin-bottom:4px;">由 ${escHtml(t.fromName)} 指派</div>` : ''}
         <div style="font-size:.78rem;color:#a0aec0;">${createdAt}${t.done && doneAt ? `　完成：${doneAt}` : ''}</div>
         ${mismatchDetailHtml}
+        ${reassignDetailHtml}
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;align-items:center;">
         ${continueBtn}${doneBtn}${deleteBtn}
@@ -16542,6 +16691,11 @@ function _continueTodo(id) {
     if (t.newUserKey) window._adminHighlightUser = t.newUserKey;
     renderAdminUsers();
     renderAdminDegreeMapping();
+  } else if (t.type === 'transfer_reassign_assessor_notify') {
+    window._transferTab = t.transferType === 'withdraw' ? 'withdraw' : 'graduation';
+    const navEl = document.querySelector('[data-nav-id="page-transfer"]');
+    showPage('page-transfer', navEl);
+    renderTransferPage();
   } else if (t.draftData) {
     // generic autosave with draftData — best-effort restore
     if (t.caseId) openNewRecordPage(t.caseId);
@@ -25465,8 +25619,11 @@ function _buildHistBadgesHtml(semMap, curSem, isExpanded, cardId, toggleFnPrefix
   const visible = histSems.slice(0, 2);
   const extra   = histSems.slice(2);
   const hasExtra = extra.length > 0;
+  const chevHtml = hasExtra
+    ? `<button onclick="event.stopPropagation();${toggleFnPrefix}ToggleHistory('${escHtml(cardId)}')" data-hist-chev="${escHtml(cardId)}" title="展開／收合歷史學期" style="background:none;border:none;cursor:pointer;padding:0 3px 0 0;font-size:.78rem;color:#718096;line-height:1;flex-shrink:0;">${isExpanded?'▲':'▼'}</button>`
+    : '';
   return `<div style="padding:3px 0 5px 30px;display:flex;align-items:center;flex-wrap:wrap;gap:3px;border-top:1px solid #f0f4f8;margin-top:4px;">
-    <span style="font-size:.74rem;color:#a0aec0;flex-shrink:0;margin-right:2px;">歷史：</span>
+    ${chevHtml}<span style="font-size:.74rem;color:#a0aec0;flex-shrink:0;margin-right:2px;">歷史：</span>
     ${visible.map(h => _makeHistChip(h, curSem)).join('')}
     ${hasExtra ? `<span data-hist-extra="${escHtml(cardId)}" style="display:${isExpanded?'contents':'none'};">${extra.map(h => _makeHistChip(h, curSem)).join('')}</span><span data-hist-more="${escHtml(cardId)}" onclick="event.stopPropagation();${toggleFnPrefix}ToggleHistory('${escHtml(cardId)}')" style="display:${isExpanded?'none':'inline-block'};font-size:.76rem;color:#3182ce;cursor:pointer;padding:1px 7px;border-radius:8px;background:#ebf8ff;border:1px solid #bee3f8;" data-tip="顯示全部 ${histSems.length} 個學期">...${extra.length} 筆</span>` : ''}
   </div>`;
@@ -25480,6 +25637,232 @@ function _buildSourceChip(studentId) {
   const src = first.source || '';
   return (sem && src) ? `<span style="display:inline-block;background:#fffbeb;border:1px solid #fbd38d;color:#744210;border-radius:10px;padding:1px 8px;font-size:.74rem;white-space:nowrap;" data-tip="首次進案來源">${escHtml(semesterLabel(sem))}學期，${escHtml(src)}</span>` : '';
 }
+
+// ── 轉銜：改變評估者確認流程 ──
+function _toggleAssessorPopover(btn) {
+  const popover = btn.nextElementSibling;
+  const isOpen = popover.style.display !== 'none';
+  document.querySelectorAll('.assessor-popover').forEach(p => p.style.display = 'none');
+  if (!isOpen) {
+    popover.style.display = 'block';
+    const sel = popover.querySelector('select');
+    if (sel) sel.focus();
+    setTimeout(() => {
+      const handler = e => {
+        if (!btn.closest('.assessor-change-wrap').contains(e.target)) {
+          popover.style.display = 'none';
+          document.removeEventListener('mousedown', handler);
+        }
+      };
+      document.addEventListener('mousedown', handler);
+    }, 0);
+  }
+}
+
+window._showAssessorChangeConfirm = function(transferType, id1, id2, newEmail, selectEl) {
+  if (selectEl) {
+    selectEl.value = '';
+    selectEl.closest('.assessor-popover') && (selectEl.closest('.assessor-popover').style.display = 'none');
+  }
+  const newName = configData?.users?.[newEmail]?.name || newEmail;
+  let contextLabel = '', caseId = null, caseName = '';
+  if (transferType === 'grad') {
+    caseId = id1;
+    const c = casesData.find(x => x.id === caseId);
+    caseName = c?.name || caseId;
+    contextLabel = `${caseName}（${caseId}）`;
+  } else {
+    caseId = id2 || null;
+    const rec = (transferData || []).find(r => r.id === id1);
+    caseName = rec?.name || id1;
+    contextLabel = caseId ? `${caseName}（${caseId}）` : caseName;
+  }
+  window._pendingAssessorChange = { transferType, id1, id2, newEmail, caseName, caseId, contextLabel };
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'assessor-change-confirm-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:440px;">
+      <div class="modal-header"><h3>確認轉派評估者程序</h3></div>
+      <div class="modal-body" style="padding:12px 0 16px;">
+        <p style="font-size:.88rem;color:#4a5568;margin-bottom:6px;">個案：<strong>${escHtml(contextLabel)}</strong></p>
+        <p style="font-size:.88rem;color:#4a5568;margin-bottom:14px;">將轉派評估者為：<strong style="color:#3182ce;">${escHtml(newName)}</strong></p>
+        <div style="background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;padding:10px 12px;font-size:.82rem;color:#2b6cb0;">
+          確定後，系統將在您的待辦事項建立「轉派評估者」任務。<br>
+          請至待辦事項頁面點選「<strong>轉派評估者</strong>」按鈕，才會正式完成轉派並通知對方。
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="document.getElementById('assessor-change-confirm-modal').remove()">取消</button>
+        ${_isTransferCoordinator() ? `<button class="btn btn-warning" onclick="_onDirectAssessorReassign()">直接轉派</button>` : ''}
+        <button class="btn btn-primary" onclick="_onConfirmAssessorChange()">確定，進入轉派程序</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+};
+
+window._onConfirmAssessorChange = function() {
+  document.getElementById('assessor-change-confirm-modal')?.remove();
+  const p = window._pendingAssessorChange;
+  if (!p) return;
+  window._pendingAssessorChange = null;
+  _createAssessorReassignTodo(p.transferType, p.id1, p.id2, p.newEmail, p.caseName, p.caseId);
+};
+
+window._onDirectAssessorReassign = async function() {
+  document.getElementById('assessor-change-confirm-modal')?.remove();
+  const p = window._pendingAssessorChange;
+  if (!p) return;
+  window._pendingAssessorChange = null;
+  const { transferType, id1, id2, newEmail, caseName, caseId } = p;
+  const newName = configData?.users?.[newEmail]?.name || newEmail;
+  const myName = configData?.users?.[currentUser?.email]?.name || currentUser?.email || '';
+  const caseLbl = caseId ? `${caseName}（${caseId}）` : caseName;
+  if (transferType === 'grad') {
+    await window._changeGradAssessor(id1, id2, newEmail);
+  } else {
+    await window._changeWithdrawAssessor(id1, id2, newEmail);
+  }
+  addNotificationToUser(newEmail, 'transfer_reassign_assessor_notify', caseId || '', caseLbl,
+    `${myName} 已將「${caseLbl}」的轉銜評估者直接指派給您，請完成評估`);
+  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  const jobId = bgJobAdd(`直接通知轉派 → ${newName}`);
+  try {
+    await _appendTodoToUser(newEmail, {
+      id: _genTodoId(),
+      type: 'transfer_reassign_assessor_notify',
+      label: `您被指派為轉銜評估者：${caseLbl}`,
+      caseId: caseId || null,
+      caseLabel: caseLbl,
+      transferType,
+      fromName: myName,
+      createdAt: new Date().toISOString(),
+      done: false, notifRead: false,
+    });
+    bgJobDone(jobId);
+  } catch(e) { bgJobFail(jobId, e.message); }
+  showToast(`已直接轉派評估者給 ${newName}，對方將收到通知`, 'success', 3500);
+};
+
+function _createAssessorReassignTodo(transferType, id1, id2, newEmail, caseName, caseId) {
+  const newName = configData?.users?.[newEmail]?.name || newEmail;
+  _putTodoItem({
+    id: _genTodoId(),
+    type: 'transfer_reassign_assessor',
+    label: `轉派評估者 → ${newName}`,
+    caseId: caseId || null,
+    caseLabel: caseId ? `${caseName}（${caseId}）` : caseName,
+    transferType, id1, id2,
+    targetEmail: newEmail, targetName: newName,
+    createdAt: new Date().toISOString(),
+    done: false, notifRead: false,
+  });
+  saveUserTodos().catch(() => {});
+  auditLog('轉銜改變評估者（建立待辦）', caseId || null, null, `→ ${newName}（${newEmail}）`);
+  showToast('已建立待辦：請點選「轉派評估者」按鈕完成轉派', 'info', 4000);
+  const navEl = document.querySelector('[data-nav-id="page-todos"]');
+  showPage('page-todos', navEl);
+  renderTodosPage();
+}
+
+async function _executeAssessorReassign(todoId) {
+  const t = todosData.find(x => x.id === todoId);
+  if (!t || t.done) return;
+  const sel = document.getElementById('reassign-sel-' + todoId);
+  const overrideEmail = sel?.value || '';
+  const finalEmail = overrideEmail || t.targetEmail;
+  const finalName = overrideEmail ? (configData?.users?.[overrideEmail]?.name || overrideEmail) : t.targetName;
+  if (!finalEmail) { showToast('請選擇評估者', 'warn', 2500); return; }
+  const btn = document.querySelector(`[data-reassign-id="${todoId}"]`);
+  if (btn) { btn.disabled = true; btn.textContent = '轉派中…'; }
+  const cancelBtn = document.querySelector(`[data-reassign-cancel-id="${todoId}"]`);
+  if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.style.opacity = '0.35'; cancelBtn.style.cursor = 'not-allowed'; }
+  try {
+    if (t.transferType === 'grad') {
+      await window._changeGradAssessor(t.id1, t.id2, finalEmail);
+    } else {
+      await window._changeWithdrawAssessor(t.id1, t.id2, finalEmail);
+    }
+    t.targetEmail = finalEmail; t.targetName = finalName;
+    t.done = true; t.doneAt = new Date().toISOString();
+    _syncTodoBadge();
+    saveUserTodos().catch(() => {});
+    const myName = configData?.users?.[currentUser?.email]?.name || currentUser?.email || '';
+    const caseLbl = t.caseLabel || '';
+    addNotificationToUser(finalEmail, 'transfer_reassign_assessor_notify', t.caseId || '', caseLbl,
+      `${myName} 已將「${caseLbl}」的轉銜評估者指派給您，請完成評估`);
+    driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    const jobId = bgJobAdd(`通知轉派 → ${finalName}`);
+    try {
+      await _appendTodoToUser(finalEmail, {
+        id: _genTodoId(),
+        type: 'transfer_reassign_assessor_notify',
+        label: `您被指派為轉銜評估者：${caseLbl}`,
+        caseId: t.caseId || null,
+        caseLabel: caseLbl,
+        transferType: t.transferType,
+        fromName: myName,
+        createdAt: new Date().toISOString(),
+        done: false, notifRead: false,
+      });
+      bgJobDone(jobId);
+    } catch(e) { bgJobFail(jobId, e.message); }
+    showToast(`已成功轉派評估者給 ${finalName}，對方將收到通知`, 'success', 3500);
+    renderTodosPage();
+  } catch(e) {
+    if (btn) { btn.disabled = false; btn.textContent = '轉派評估者'; }
+    showToast(`轉派失敗：${e.message}`, 'error', 4000);
+  }
+}
+
+// ── 轉銜：改變評估者 ──
+window._changeGradAssessor = async function(caseId, sem, email) {
+  if (!email || !caseId) return;
+  const cidx = casesData.findIndex(c => c.id === caseId);
+  if (cidx < 0) return;
+  const cname = configData?.users?.[email]?.name || email;
+  casesData[cidx].counselorEmail = email;
+  casesData[cidx].counselorName  = cname;
+  if (casesData[cidx].basicInfoSnapshots?.[sem]) {
+    casesData[cidx].basicInfoSnapshots[sem].counselorEmail = email;
+    casesData[cidx].basicInfoSnapshots[sem].counselorName  = cname;
+  }
+  document.getElementById('transfer-body').innerHTML = _renderGradTransferTab();
+  const jobId = bgJobAdd(`轉銜：改變評估者 → ${cname}`);
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('轉銜改變評估者', caseId, null, `→ ${cname}（${email}）`);
+    bgJobDone(jobId);
+  } catch(e) { bgJobFail(jobId, e.message); }
+};
+
+window._changeWithdrawAssessor = async function(rId, lcId, email) {
+  if (!email) return;
+  const cname = configData?.users?.[email]?.name || email;
+  if (lcId) {
+    const cidx = casesData.findIndex(c => c.id === lcId);
+    if (cidx >= 0) {
+      const F = window._withdrawFilters;
+      const semToUse = (F?.semester && F.semester !== 'all') ? F.semester : currentSemesterPrefix();
+      casesData[cidx].counselorEmail = email;
+      casesData[cidx].counselorName  = cname;
+      if (casesData[cidx].basicInfoSnapshots?.[semToUse]) {
+        casesData[cidx].basicInfoSnapshots[semToUse].counselorEmail = email;
+        casesData[cidx].basicInfoSnapshots[semToUse].counselorName  = cname;
+      }
+    }
+  }
+  const allWithdraw = (transferData || []).filter(r => r.type === 'withdraw');
+  document.getElementById('transfer-body').innerHTML = _renderWithdrawTab(allWithdraw);
+  const jobId = bgJobAdd(`轉銜：改變評估者 → ${cname}`);
+  try {
+    if (lcId) {
+      await saveCasesChunks(lcId);
+      auditLog('轉銜改變評估者', lcId, null, `→ ${cname}（${email}）`);
+    }
+    bgJobDone(jobId);
+  } catch(e) { bgJobFail(jobId, e.message); }
+};
 
 // ── 畢業轉銜總覽分頁 ──
 function _renderGradTransferTab() {
@@ -25666,9 +26049,6 @@ function _renderGradTransferTab() {
     const semMap = _buildCaseSemMap(c.studentId);
     const sourceChip = _buildSourceChip(c.studentId);
     const histBadgesHtml = _buildHistBadgesHtml(semMap, curSem, isExpanded, c.id, '_grad');
-    const chevBtn = Object.keys(semMap).length > 2
-      ? `<button onclick="event.stopPropagation();_gradToggleHistory('${escHtml(c.id)}')" data-hist-chev="${escHtml(c.id)}" title="展開／收合歷史學期" style="background:none;border:1px solid #e2e8f0;border-radius:4px;cursor:pointer;padding:2px 7px;font-size:.8rem;color:#718096;line-height:1.2;flex-shrink:0;">${isExpanded?'▲':'▼'}</button>`
-      : '';
     return `<div class="record-card" style="margin-bottom:8px;${isResolved?'border-left:3px solid '+decColorMap[decStatus]+';opacity:.88;':''}">
       <div class="record-card-header" style="flex-wrap:wrap;gap:6px;">
         <input type="checkbox" class="grad-cb" data-cid="${escHtml(c.id)}" onchange="_gradCbChange()" style="margin-top:3px;flex-shrink:0;">
@@ -25700,7 +26080,16 @@ function _renderGradTransferTab() {
             <option value="untraceable"${decStatus==='untraceable'?' selected':''}>年久不可考</option>
           </select>
           <input type="date" id="gd-date-${escHtml(c.id)}" value="${escHtml(dec?.schoolMeetingDate||'')}" title="校級評估會議日期" style="padding:4px;font-size:.8rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="setGradTransferMeetingDate('${escHtml(c.id)}','${semToUse}',this.value)">
-          ${chevBtn}
+          <div style="position:relative;display:inline-block;" class="assessor-change-wrap">
+            <button class="btn btn-sm" style="padding:3px 8px;font-size:.78rem;" data-tip="改變評估者（目前：${escHtml(c.counselorName||c.counselorEmail||'未指定')}）" onclick="_toggleAssessorPopover(this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/><polyline points="20 8 23 11 20 14"/></svg></button>
+            <div class="assessor-popover" style="display:none;position:absolute;z-index:500;background:#fff;border:1px solid #cbd5e0;border-radius:8px;padding:10px 12px;box-shadow:0 4px 18px rgba(0,0,0,.15);min-width:200px;top:calc(100% + 4px);right:0;">
+              <div style="font-size:.8rem;color:#4a5568;font-weight:600;margin-bottom:6px;">改變評估者</div>
+              <select class="field-input" style="padding:4px 8px;font-size:.82rem;width:100%;" onchange="if(this.value)window._showAssessorChangeConfirm('grad','${escHtml(c.id)}','${semToUse}',this.value,this)">
+                <option value="">請選擇…</option>
+                ${buildCounselorOptgroups()}
+              </select>
+            </div>
+          </div>
         </div>
       </div>
       ${histBadgesHtml}
@@ -26872,9 +27261,6 @@ function _renderWithdrawTab(allWithdraw) {
     const semMap = _buildCaseSemMap(r.studentId);
     const sourceChip = _buildSourceChip(r.studentId);
     const histBadgesHtml = _buildHistBadgesHtml(semMap, curSem, isExpanded, r.id, '_withdraw');
-    const chevBtn = Object.keys(semMap).length > 2
-      ? `<button onclick="event.stopPropagation();_withdrawToggleHistory('${escHtml(r.id)}')" data-hist-chev="${escHtml(r.id)}" title="展開／收合歷史學期" style="background:none;border:1px solid #e2e8f0;border-radius:4px;cursor:pointer;padding:2px 7px;font-size:.8rem;color:#718096;line-height:1.2;flex-shrink:0;">${isExpanded?'▲':'▼'}</button>`
-      : '';
     // 決議/日期 onchange：有連結個案時寫入共用畢業轉銜記錄，否則寫入 withdraw 記錄
     const lcId = lc ? escHtml(lc.id) : '';
     const decOnchange = lc
@@ -26911,8 +27297,17 @@ function _renderWithdrawTab(allWithdraw) {
             <option value="untraceable"${decStatus==='untraceable'?' selected':''}>年久不可考</option>
           </select>
           <input type="date" id="wd-date-${escHtml(r.id)}" value="${escHtml(meetingDate)}" title="校級評估會議日期" style="padding:4px;font-size:.8rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="${dateOnchange}">
+          <div style="position:relative;display:inline-block;" class="assessor-change-wrap">
+            <button class="btn btn-sm" style="padding:3px 8px;font-size:.78rem;" data-tip="改變評估者（目前：${escHtml(lc ? (lc.counselorName||lc.counselorEmail||'未指定') : '未指定')}）" onclick="_toggleAssessorPopover(this)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/><polyline points="20 8 23 11 20 14"/></svg></button>
+            <div class="assessor-popover" style="display:none;position:absolute;z-index:500;background:#fff;border:1px solid #cbd5e0;border-radius:8px;padding:10px 12px;box-shadow:0 4px 18px rgba(0,0,0,.15);min-width:200px;top:calc(100% + 4px);right:0;">
+              <div style="font-size:.8rem;color:#4a5568;font-weight:600;margin-bottom:6px;">改變評估者</div>
+              <select class="field-input" style="padding:4px 8px;font-size:.82rem;width:100%;" onchange="if(this.value)window._showAssessorChangeConfirm('withdraw','${escHtml(r.id)}','${lcId}',this.value,this)">
+                <option value="">請選擇…</option>
+                ${buildCounselorOptgroups()}
+              </select>
+            </div>
+          </div>
           <button class="btn btn-danger btn-sm" onclick="_deleteWithdrawRecord('${escHtml(r.id)}')">刪除</button>
-          ${chevBtn}
         </div>
       </div>
       ${histBadgesHtml}
@@ -29137,12 +29532,25 @@ function initSidebarResize() {
   if (saved) sidebar.style.width = Math.max(160, Math.min(400, parseInt(saved))) + 'px';
   let startX, startW;
   handle.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
     startX = e.clientX;
     startW = sidebar.offsetWidth;
     handle.classList.add('resizing');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
+    let active = true;
+    const cleanup = () => {
+      if (!active) return;
+      active = false;
+      handle.classList.remove('resizing');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove, true);
+      document.removeEventListener('mouseup', onUp, true);
+      window.removeEventListener('blur', cleanup);
+    };
     const onMove = e2 => {
+      if (e2.buttons === 0) { cleanup(); return; }
       const w = Math.max(160, Math.min(400, startW + e2.clientX - startX));
       sidebar.style.width = w + 'px';
     };
@@ -29150,14 +29558,11 @@ function initSidebarResize() {
       const w = Math.max(160, Math.min(400, startW + e2.clientX - startX));
       sidebar.style.width = w + 'px';
       localStorage.setItem(STORAGE_KEY, w);
-      handle.classList.remove('resizing');
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
+      cleanup();
     };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
+    document.addEventListener('mousemove', onMove, true);
+    document.addEventListener('mouseup', onUp, true);
+    window.addEventListener('blur', cleanup);
     e.preventDefault();
   });
 }
