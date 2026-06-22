@@ -1245,6 +1245,10 @@
           <input id="cf-ml-to" type="date"
             style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
             onchange="caseFilters.mlLeaveTo=this.value;renderCases()">
+          <label id="cf-my-only-wrap" style="font-size:.82rem;color:#2b6cb0;white-space:nowrap;display:flex;align-items:center;gap:5px;background:#ebf8ff;border:1px solid #bee3f8;border-radius:5px;padding:4px 9px;cursor:pointer;" data-tip="只顯示您擔任主責諮商師或個案管理員的個案">
+            <input type="checkbox" id="cf-my-only" onchange="_casesMyOnly=this.checked;renderCases();" style="margin:0;">
+            僅主責/個管
+          </label>
           <button class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="resetCaseFilters()">清除篩選</button>
           <button id="btn-sort-lock" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="toggleSortLock()"></button>
           <button id="btn-cases-compact" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="toggleCasesCompact()" data-tip="切換緊湊顯示模式">緊湊：關</button>
@@ -3507,6 +3511,7 @@ let extraRole    = null;   // 管理者 / 個案管理員 / null
 let isTransferContact = false;    // 轉銜窗口
 let isMentalLeaveContact = false; // 身心調適假窗口
 let _mlLastFetchedAt = null;      // mental_leaves.json 上次成功擷取時間（UTC ISO）
+let _mlMyOnly = false;            // 受輔生 tab：privileged 使用者「僅看自己主責個案」
 let configData   = null;   // 完整 config.json 內容
 let casesData    = [];
 let casesManifest = { chunks: [] };
@@ -3553,6 +3558,8 @@ function semesterDateRange(prefix) {
 }
 
 let sortStatusLocked = localStorage.getItem('scc_sort_status_locked') !== 'false';
+let _casesMyOnly = false;      // 個案列表：僅顯示主責/個管個案
+let _mlTabRestored = false;    // 身心調適假 tab：是否已從 config 還原偏好
 let caseSort = { col: null, dir: 1 };
 let _updateAvailable = false;
 let _versionEtag = null;
@@ -4935,11 +4942,13 @@ async function afterLogin() {
     checkPinSetup();
     _mlAutoFetchOnLogin();
     // cases 在背景載入，不阻擋 UI；完成後再跑後續初始化任務
+
     loadCases().then(() => {
       loadPsychTestDB().catch(() => {});
       scanUnassignedRecords().catch(() => {});
       _migrateLocalStorageDrafts();
       _syncPendingRecordsToTodos();
+      _checkMlCumulativeTodos();
       _checkPastSemUnclosedForDirectors();
       _cleanupDeletedEvals();
       _checkTransferGradTodos();
@@ -5448,6 +5457,20 @@ function renderCases() {
   // 非管理者看不到已刪除個案
   if (!isAdmin) visible = visible.filter(c => !c.deleted);
 
+  // ── 僅主責/個管篩選 ──
+  if (_casesMyOnly) {
+    const myAllowed = new Set(configData?.users?.[currentUser?.email]?.allowedCases || []);
+    visible = visible.filter(c => {
+      const lat = _getLatestCounselorEmail(c);
+      return lat === currentUser?.email || myAllowed.has(c.id);
+    });
+  }
+  const _isPrivilegedCases = currentRole === '主任' || extraRole === '管理者';
+  const cfMyOnlyWrap = document.getElementById('cf-my-only-wrap');
+  if (cfMyOnlyWrap) cfMyOnlyWrap.style.display = _isPrivilegedCases ? '' : 'none';
+  const cfMyOnly = document.getElementById('cf-my-only');
+  if (cfMyOnly) cfMyOnly.checked = _casesMyOnly;
+
   // ── 排序鎖定按鈕文字 ──
   const btnSortLock = document.getElementById('btn-sort-lock');
   if (btnSortLock) btnSortLock.textContent = sortStatusLocked ? '結案排後：開' : '結案排後：關';
@@ -5658,12 +5681,21 @@ function renderCases() {
         const rangeStr = rFrom !== rTo ? `${fmt(rFrom)}–${fmt(rTo)}` : fmt(rFrom);
         return `<div style="margin-top:3px;"><span style="display:inline-block;background:#e9d8fd;color:#553c9a;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;" title="${matched.length} 筆符合篩選">身心調適假 ${escHtml(rangeStr)}</span></div>`;
       }
+      const curSem = currentSemesterPrefix();
+      const curSemRecs = mentalLeavesData.filter(l => !l.deleted && l.studentId === c.studentId && l.semester === curSem);
+      const _hasConsec3 = _mlSemHasConsec3(curSemRecs);
+      const _hasCumul3 = !_hasConsec3 && _mlSemTotalDays(curSemRecs) >= 3;
+      const riskBadges = (_hasConsec3 || _hasCumul3)
+        ? `<div style="margin-top:3px;">` +
+          (_hasConsec3 ? `<span style="display:inline-block;background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;margin-right:3px;">連請三天</span>` : '') +
+          (_hasCumul3  ? `<span style="display:inline-block;background:#feebc8;color:#9c4221;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;margin-right:3px;">累計三天</span>` : '') +
+          `</div>` : '';
       const thirtyAgo = Date.now() - 30 * 86400000;
       const recent = mentalLeavesData.filter(l => !l.deleted && l.studentId === c.studentId && l.receivedAt && new Date(l.receivedAt).getTime() >= thirtyAgo);
-      if (!recent.length) return '';
+      if (!recent.length) return riskBadges;
       const dates = recent.map(l => _mlParseDateRange(l).from || l.leaveDate || '').filter(Boolean).sort();
       const range = dates.length >= 2 ? `${fmt(dates[0])}–${fmt(dates[dates.length-1])}` : dates[0] ? fmt(dates[0]) : '';
-      return `<div style="margin-top:3px;"><span style="display:inline-block;background:#e9d8fd;color:#553c9a;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;" title="近30天有身心調適假紀錄">身心調適假 ${escHtml(range)}</span></div>`;
+      return riskBadges + `<div style="margin-top:3px;"><span style="display:inline-block;background:#e9d8fd;color:#553c9a;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;" title="近30天有身心調適假紀錄">身心調適假 ${escHtml(range)}</span></div>`;
     })();
     const statusCell = c.deleted
       ? `<span class="badge-case-deleted">已刪除</span>`
@@ -20583,6 +20615,13 @@ function renderMentalLeavePage() {
   const el = document.getElementById('mental-leave-body');
   if (!el) return;
   if (!currentRole) { el.innerHTML = '<div style="padding:20px;color:#718096;">您沒有此頁面的存取權限。</div>'; return; }
+  // 第一次渲染時從 config 還原最後使用的 tab（跨裝置記憶）
+  if (!_mlTabRestored) {
+    _mlTabRestored = true;
+    const saved = configData?.users?.[currentUser?.email]?.mlTab;
+    const valid = ['my', 'records', 'courses', 'keywords'];
+    if (saved && valid.includes(saved)) _mlTab = saved;
+  }
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   const canFullAccess = isAdmin || isMentalLeaveContact;
   // 若目前 tab 無權限，自動回到受輔生
@@ -20610,7 +20649,7 @@ function _mlTabBtn(id, label) {
   const active = _mlTab === id;
   return `<button onclick="window._mlSwitchTab('${id}')" style="padding:8px 18px;border:none;cursor:pointer;background:none;font-size:.9rem;font-weight:${active?700:400};border-bottom:${active?'2.5px solid #2d6a4f':'2px solid transparent'};color:${active?'#2d6a4f':'#718096'};margin-bottom:-2px;">${label}</button>`;
 }
-window._mlSwitchTab = (id) => { _mlTab = id; renderMentalLeavePage(); };
+window._mlSwitchTab = (id) => { _mlTab = id; syncUserPref_({ mlTab: id }); renderMentalLeavePage(); };
 window._mlFilterChange = () => { if (_mlQComposing) return; _mlPage = 1; renderMentalLeavePage(); };
 function _getMyCaseStudentIds() {
   const myAllowedIds = new Set(configData?.users?.[currentUser?.email]?.allowedCases || []);
@@ -20623,15 +20662,28 @@ function _getMyCaseStudentIds() {
   return result;
 }
 
+function _getAllCaseStudentIds() {
+  const result = new Set();
+  (casesData || []).filter(c => !c.deleted).forEach(c => { if (c.studentId) result.add(c.studentId); });
+  return result;
+}
+
 function _getMyStudentIds() {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
-  if (isAdmin || isMentalLeaveContact) return null; // 窗口/管理者看全部
+  const isPrivileged = isAdmin || isMentalLeaveContact;
+  if (isPrivileged) {
+    // privileged 預設看所有受輔生；勾選「僅看自己」則縮限
+    return _mlMyOnly ? _getMyCaseStudentIds() : _getAllCaseStudentIds();
+  }
   return _getMyCaseStudentIds();
 }
 
 function _mlUnacknowledgedForMe() {
   if (!currentUser?.email || !mentalLeavesData.length) return [];
-  const myStudentIds = _getMyCaseStudentIds();
+  const _isAdm = currentRole === '主任' || extraRole === '管理者';
+  const isPrivileged = _isAdm || isMentalLeaveContact;
+  // privileged 看所有在案受輔生；一般諮商師只看自己主責
+  const myStudentIds = isPrivileged ? _getAllCaseStudentIds() : _getMyCaseStudentIds();
   if (!myStudentIds.size) return [];
   const thirtyDaysAgo = Date.now() - 30 * 86400000;
   return mentalLeavesData.filter(l => {
@@ -20854,9 +20906,14 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       ? `<div style="margin-top:2px;"><span style="background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 5px;font-size:.7rem;font-weight:600;">連請三天</span></div>`
       : runInfo.isRun ? `<div style="margin-top:2px;"><span style="background:#e8f4fd;color:#1e40af;border-radius:4px;padding:0 5px;font-size:.7rem;">連假</span></div>`
       : '';
+    const _mlRecSem = l.semester || '';
+    const _mlHasCase = _mlRecSem ? _hasCaseInSem(l.studentId, _mlRecSem) : null;
+    const _mlCaseBadge = (_mlRecSem && !_mlHasCase)
+      ? `<span style="display:inline-block;background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 5px;font-size:.68rem;margin-top:2px;">未開案</span>`
+      : '';
     const studentIdCell = mc
-      ? `<div style="font-family:monospace;">${escHtml(l.studentId||'—')}</div><div style="margin-top:2px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;"><span style="font-size:.75rem;color:#2b6cb0;font-family:monospace;">${escHtml(mc.id)}</span><button onclick="event.stopPropagation();showCaseDetail('${escHtml(mc.id)}')" style="border:none;background:#ebf8ff;color:#2b6cb0;cursor:pointer;border-radius:3px;padding:0 5px;font-size:.7rem;line-height:1.6;">前往個案</button></div>`
-      : `<span style="font-family:monospace;">${escHtml(l.studentId||'—')}</span>`;
+      ? `<div style="font-family:monospace;">${escHtml(l.studentId||'—')}</div><div style="margin-top:2px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;"><span style="font-size:.75rem;color:#2b6cb0;font-family:monospace;">${escHtml(mc.id)}</span><button onclick="event.stopPropagation();showCaseDetail('${escHtml(mc.id)}')" style="border:none;background:#ebf8ff;color:#2b6cb0;cursor:pointer;border-radius:3px;padding:0 5px;font-size:.7rem;line-height:1.6;">前往個案</button>${_mlCaseBadge}</div>`
+      : `<span style="font-family:monospace;">${escHtml(l.studentId||'—')}</span>${_mlCaseBadge ? `<div>${_mlCaseBadge}</div>` : ''}`;
     const cCount = _mlCourseCount(l);
     const courseBtn = cCount
       ? `<button onclick="window._mlToggleCourse('${escHtml(l.id)}')" style="border:1px solid #c6f6d5;background:#f0fff4;color:#276749;border-radius:12px;padding:1px 8px;font-size:.75rem;cursor:pointer;white-space:nowrap;">▶ ${cCount} 節課</button>`
@@ -20887,20 +20944,31 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
   }).join('')
     : `<tr><td colspan="99" style="text-align:center;padding:24px;color:#a0aec0;">尚無紀錄</td></tr>`;
 
-  const riskCount = (lv) => records.filter(l => _mlMatchKeywords(l.reason).maxLevel === lv).length;
-  const pendingCount = records.filter(l => {
+  // info cards 統計以 studentIdFilter 為基準（不受搜尋/風險等額外篩選影響）
+  const baseRecords = studentIdFilter ? records.filter(l => studentIdFilter.has(l.studentId)) : records;
+  const riskCount = (lv) => baseRecords.filter(l => _mlMatchKeywords(l.reason).maxLevel === lv).length;
+  const pendingCount = baseRecords.filter(l => {
     const { maxLevel } = _mlMatchKeywords(l.reason);
     return (l.handlingStatus || (maxLevel >= 3 ? '待處理' : '非危機')) === '待處理';
   }).length;
 
   el.innerHTML = `
     <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
-      <div class="info-card" style="min-width:110px;"><div class="num">${records.length}</div><div class="lbl">請假總筆數</div></div>
+      <div class="info-card" style="min-width:110px;"><div class="num">${baseRecords.length}</div><div class="lbl">請假總筆數</div></div>
       <div class="info-card" style="min-width:110px;background:#fff5f5;"><div class="num" style="color:#c53030;">${riskCount(3)}</div><div class="lbl">紅燈（危機）</div></div>
       <div class="info-card" style="min-width:110px;background:#fffbeb;"><div class="num" style="color:#d97706;">${riskCount(2)}</div><div class="lbl">黃燈（醫療）</div></div>
       <div class="info-card" style="min-width:110px;background:#eff6ff;"><div class="num" style="color:#2b6cb0;">${riskCount(1)}</div><div class="lbl">藍燈（關注）</div></div>
       <div class="info-card" style="min-width:110px;background:#fff5f5;"><div class="num" style="color:#e53e3e;">${pendingCount}</div><div class="lbl">待處理</div></div>
     </div>
+    ${_mlTab === 'my' && canFullAccess ? `
+    <div style="background:#ebf8ff;border:1px solid #bee3f8;border-radius:6px;padding:8px 14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <label style="font-size:.88rem;color:#2b6cb0;display:flex;align-items:center;gap:6px;cursor:pointer;">
+        <input type="checkbox" ${_mlMyOnly ? 'checked' : ''} onchange="_mlMyOnly=this.checked;_mlPage=1;renderMentalLeavePage();" style="margin:0;">
+        <strong>僅看到自己主責個案</strong>
+      </label>
+      <span style="font-size:.8rem;color:#718096;">${_mlMyOnly ? '目前顯示：您的主責個案' : '目前顯示：所有在案受輔生'}</span>
+    </div>
+    ` : ''}
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
       <input type="text" id="ml-q" class="field-input" placeholder="搜尋姓名、學號、緣由…" value="${escHtml(q)}" oninput="window._mlFilterChange()" oncompositionstart="_mlQComposing=true" oncompositionend="_mlQComposing=false;window._mlFilterChange()" style="max-width:200px;">
       <select id="ml-risk" class="field-input" onchange="window._mlFilterChange()" style="width:auto;">
@@ -21145,6 +21213,7 @@ window._mlFetch = async (isAuto) => {
         while (processed < MAX_TOTAL) {
           if (_mlFetchAborted) break;
           const result = await proxyCall('fetchMentalLeaves', { batchSize: BATCH_SIZE });
+
           if (result?.status === 'locked') {
             if (isAuto) { win.remove(); bgJobDone(jobId); return; }
             _winStatus('另一工作階段正在擷取中，請稍後再試'); _winDone(); return;
@@ -21162,6 +21231,7 @@ window._mlFetch = async (isAuto) => {
           await loadMentalLeaves(); renderMentalLeavePage();
           if (lastBatch < BATCH_SIZE) break; // 信件已耗盡
         }
+        _checkMlCumulativeTodos();
 
         if (_mlFetchAborted) {
           bgJobDone(jobId);
@@ -21178,7 +21248,7 @@ window._mlFetch = async (isAuto) => {
           if (stillMore) {
             _winStatus('首批 200 封已完成');
             const hint = win.querySelector('#ml-fw-hint');
-            if (hint) { hint.textContent = '尚有更多未擷取信件，請再點選「從信箱擷取」繼續'; hint.style.display = 'block'; }
+            if (hint) { hint.innerHTML = '尚有更多未擷取信件，請<button onclick="document.getElementById(\'ml-fetch-win\').remove();window._mlFetch()" style="background:none;border:none;color:#2b6cb0;cursor:pointer;font-size:11px;font-weight:700;padding:0 2px;text-decoration:underline;">📥 點此繼續擷取</button>'; hint.style.display = 'block'; }
           } else {
             _winStatus('擷取完成');
           }
@@ -24764,6 +24834,63 @@ function _buildTECardBody(ev) {
     ${recLabel ? `<div style="margin-top:10px;padding:6px 10px;background:${recBg};border-left:3px solid ${recColor};border-radius:0 4px 4px 0;font-size:.82rem;font-weight:600;color:${recColor};">轉銜評估建議：${escHtml(recLabel)}</div>` : ''}`;
 }
 
+// ── 身心調適假 helper functions ──
+function _mlSemHasConsec3(semRecs) {
+  if (!semRecs.length) return false;
+  const _add1 = s => { const d = new Date(s); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); };
+  const allDays = new Set();
+  semRecs.forEach(l => { const { from, to } = _mlParseDateRange(l); if (!from) return; let c = from; while (c <= (to || from)) { allDays.add(c); c = _add1(c); } });
+  const sorted = [...allDays].sort();
+  for (let i = 0; i + 2 < sorted.length; i++) {
+    if ((new Date(sorted[i+1]) - new Date(sorted[i])) === 86400000 && (new Date(sorted[i+2]) - new Date(sorted[i+1])) === 86400000) return true;
+  }
+  return false;
+}
+function _mlSemTotalDays(semRecs) {
+  const _add1 = s => { const d = new Date(s); d.setDate(d.getDate() + 1); return d.toISOString().slice(0, 10); };
+  const allDays = new Set();
+  semRecs.forEach(l => { const { from, to } = _mlParseDateRange(l); if (!from) return; let c = from; while (c <= (to || from) && allDays.size < 200) { allDays.add(c); c = _add1(c); } });
+  return allDays.size;
+}
+function _hasCaseInSem(studentId, sem) {
+  if (!studentId || !sem) return false;
+  return (casesData || []).some(c => {
+    if (c.deleted || c.studentId !== studentId) return false;
+    const sems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)].filter(Boolean);
+    return sems.includes(sem);
+  });
+}
+function _checkMlCumulativeTodos() {
+  const myStudentIds = _getMyCaseStudentIds();
+  if (!myStudentIds.size || !mentalLeavesData.length) return;
+  const curSem = currentSemesterPrefix();
+  const consec3Ids = _mlConsecutive3DayIds(mentalLeavesData.filter(l => !l.deleted && l.semester === curSem));
+  let changed = false;
+  myStudentIds.forEach(sid => {
+    if (consec3Ids.has(sid)) return; // 已有連請三天，不需累計三天提醒
+    const semRecs = mentalLeavesData.filter(l => !l.deleted && l.studentId === sid && l.semester === curSem);
+    if (_mlSemTotalDays(semRecs) < 3) return;
+    const todoId = `ml_cumul3_${sid}_${curSem}`;
+    if (todosData.some(t => t.id === todoId)) return; // 已存在（任何狀態）
+    const caseItem = (casesData || []).find(c => !c.deleted && c.studentId === sid);
+    const name = caseItem?.name || sid;
+    todosData.push({
+      id: todoId, type: 'ml_cumul3',
+      label: `身心調適假累計三天：${name}（${semesterLabel(curSem)}）`,
+      caseLabel: name, studentId: sid, semester: curSem,
+      caseId: caseItem?.id || null,
+      createdAt: new Date().toISOString(),
+      done: false, notifRead: false,
+    });
+    changed = true;
+  });
+  if (changed) {
+    _syncTodoBadge();
+    saveUserTodos().catch(() => {});
+    if (document.getElementById('page-todos')?.classList.contains('active')) renderTodosPage();
+  }
+}
+
 // ── 所有學期轉銜評估卡片（個案詳細頁，不限學期） ──
 function _renderCaseMlCard(c) {
   if (!c.studentId) return '';
@@ -24801,9 +24928,18 @@ function _renderCaseMlCard(c) {
       </tr>`;
     }).join('');
     const semLabel = semesterLabel(sem) || sem;
+    const _semConsec3 = _mlSemHasConsec3(semRecs);
+    const _semTotalDays = _mlSemTotalDays(semRecs);
+    const _semCumul3 = !_semConsec3 && _semTotalDays >= 3;
+    const _semHasCase = _hasCaseInSem(c.studentId, sem);
+    const _consec3Badge = _semConsec3 ? `<span style="background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 6px;font-size:.72rem;font-weight:600;margin-left:5px;">連請三天</span>` : '';
+    const _cumul3Badge  = _semCumul3  ? `<span style="background:#feebc8;color:#9c4221;border-radius:4px;padding:0 6px;font-size:.72rem;font-weight:600;margin-left:5px;">累計三天</span>` : '';
+    const _caseStatusBadge = _semHasCase
+      ? `<span style="background:#c6f6d5;color:#276749;border-radius:4px;padding:0 6px;font-size:.72rem;margin-left:5px;">有開案</span>`
+      : `<span style="background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 6px;font-size:.72rem;margin-left:5px;">未開案</span>`;
     return `<div style="margin-bottom:8px;border:1px solid #e9d8fd;border-radius:6px;overflow:hidden;">
       <div style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:6px 12px;background:#ede9fe;" onclick="window._toggleDisplay('${semCardId}','${semCardId}-icon')">
-        <span style="font-size:.85rem;font-weight:600;color:#553c9a;">${escHtml(semLabel)}（${semRecs.length} 筆）</span>
+        <span style="font-size:.85rem;font-weight:600;color:#553c9a;display:flex;align-items:center;flex-wrap:wrap;gap:2px;">${escHtml(semLabel)}（${semRecs.length} 筆）${_consec3Badge}${_cumul3Badge}${_caseStatusBadge}</span>
         <span id="${semCardId}-icon">${isCurrentSem?'▼':'▶'}</span>
       </div>
       <div id="${semCardId}" style="display:${isCurrentSem?'':'none'};">
@@ -27219,7 +27355,7 @@ async function showWithdrawImportPreview(rows) {
       e.sid  !== e.originalSid  ? `<div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">(原學號：${escHtml(e.originalSid)})</div>`  : '',
     ].join('');
     const _btn = (onclick, label, color, bg) =>
-      `<button onclick="${onclick}" style="margin-top:3px;font-size:.72rem;padding:2px 7px;border:1px solid ${color};background:${bg};color:${color};border-radius:4px;cursor:pointer;white-space:nowrap;">${label}</button>`;
+      `<button onclick="${onclick}" style="margin-top:3px;font-size:.82rem;padding:4px 10px;border:1px solid ${color};background:${bg};color:${color};border-radius:4px;cursor:pointer;white-space:nowrap;">${label}</button>`;
     let actionBtns = '';
     if (!e.isDuplicate && !forceAccepted && !e._relinking) {
       const _mcCounselor = e.mc ? (formatCounselorLabel(e.mc.counselorEmail) || e.mc.counselorName || '主責') : null;
@@ -27228,7 +27364,7 @@ async function showWithdrawImportPreview(rows) {
         _btn(`window._wdForceLink(${i})`,      '直接匯入（以學號連結）', '#059669', '#ecfdf5') +
         (_mcCounselor ? _btn(`window._wdDeferCounselor(${i})`, _deferLabel, '#9b2c2c', '#fff5f5') : '');
       else if (e.matchType === 'name_only') actionBtns =
-        _btn(`window._wdUpdateSid(${i})`,      '更新個案學號',          '#2b6cb0', '#ebf8ff') +
+        _btn(`window._wdUpdateSid(${i})`,      `更新個案學號為 ${escHtml(e.sid)}`, '#2b6cb0', '#ebf8ff') +
         _btn(`window._wdLinkByName(${i})`,     '與姓名連結',            '#6b21a8', '#faf5ff') +
         (_mcCounselor ? _btn(`window._wdDeferCounselor(${i})`, _deferLabel, '#9b2c2c', '#fff5f5') : '');
       else if (e.matchType === 'none')      actionBtns = _btn(`window._wdStartRelink(${i})`, '手動連結個案', '#718096', '#f7fafc');
@@ -27243,10 +27379,15 @@ async function showWithdrawImportPreview(rows) {
          </div>`
       : '';
     const forceLabelMap = { direct: '直接匯入（以學號連結）', update_sid: '更新個案學號後連結', link_by_name: '與姓名連結', relink: '重新連結至', defer_counselor: '已排程交由主責驗證' };
+    const _resultName = e.mc?.name || '—';
+    const _resultSid  = e.forceType === 'update_sid' ? (e.sid || '—') : (e.mc?.studentId || '—');
+    const _resultMsg  = (e.forceType === 'update_sid' || e.forceType === 'link_by_name')
+      ? `<div style="font-size:.78rem;color:#2b6cb0;margin-top:4px;background:#ebf8ff;border-radius:4px;padding:3px 8px;">因為匯入者的點選，所以個案的姓名、學號將變成：${escHtml(_resultName)}（${escHtml(_resultSid)}）</div>`
+      : '';
     const statusContent = e._relinking
       ? relinkUI
       : forceAccepted
-        ? `<span style="font-size:.78rem;color:#059669;">✅ ${forceLabelMap[e.forceType]||''}</span><div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">對應：${escHtml(e.mc?.name||'—')}（${escHtml(e.mc?.studentId||'—')}）</div><button onclick="window._wdCancelForce(${i})" style="margin-top:4px;font-size:.7rem;padding:1px 6px;border:1px solid #fc8181;background:#fff5f5;color:#c53030;border-radius:4px;cursor:pointer;">↩ 取消</button>`
+        ? `<span style="font-size:.78rem;color:#059669;">✅ ${forceLabelMap[e.forceType]||''}</span><div style="font-size:.7rem;color:#9ca3af;margin-top:2px;">對應：${escHtml(e.mc?.name||'—')}（${escHtml(e.mc?.studentId||'—')}）</div><button onclick="window._wdCancelForce(${i})" style="margin-top:4px;font-size:.7rem;padding:1px 6px;border:1px solid #fc8181;background:#fff5f5;color:#c53030;border-radius:4px;cursor:pointer;">↩ 取消</button>${_resultMsg}`
         : manuallyFixed
           ? `<span style="font-size:.78rem;color:#059669;">✅ 已手動修正對應</span>${auditHtml}`
           : `${decBadge}${warnMsg ? (decBadge ? '<br>' : '') + warnMsg : ''}<div style="display:flex;flex-direction:column;">${actionBtns}</div>${auditHtml}`;
