@@ -9373,18 +9373,13 @@ async function saveRecord() {
             const _calJobId2 = bgJobAdd(_calLabel2);
             (async () => {
               try {
-                const _gcCalId = await proxyCall('createCalendarEvent', {
+                const _gcCalId = await _bkCalModalSync(_editNextBkId, {
                   room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
                   counselorName: myName, notes: '',
                   creatorName: configData?.users?.[currentUser.email]?.name || myName,
                   createdAt: _nbNow, updatedAt: _nbNow, isEdit: false, bkSerial: newBk.bkSerial,
                 });
-                if (_gcCalId) {
-                  newBk.calendarEventId = _gcCalId;
-                  const _bkRef = bookingsData.find(x => x.id === _editNextBkId);
-                  if (_bkRef) _bkRef.calendarEventId = _gcCalId;
-                  await saveBookings().catch(() => {});
-                }
+                if (_gcCalId) newBk.calendarEventId = _gcCalId;
                 bgJobDone(_calJobId2);
               } catch(e) {
                 bgJobFail(_calJobId2, e.message);
@@ -9468,19 +9463,14 @@ async function saveRecord() {
           const _calJobId = bgJobAdd(_calLabel);
           (async () => {
             try {
-              const _gcCalId = await proxyCall('createCalendarEvent', {
+              const _gcCalId = await _bkCalModalSync(_newBkId, {
                 room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
                 counselorName: _newBkObj.counselorName, notes: '',
                 creatorName: configData?.users?.[currentUser.email]?.name || _newBkObj.counselorName,
                 createdAt: _newBkObj.createdAt, updatedAt: _newBkObj.updatedAt,
                 isEdit: false, bkSerial: _newBkObj.bkSerial,
               });
-              if (_gcCalId) {
-                _newBkObj.calendarEventId = _gcCalId;
-                const _bkRef = bookingsData.find(x => x.id === _newBkId);
-                if (_bkRef) _bkRef.calendarEventId = _gcCalId;
-                await saveBookings().catch(() => {});
-              }
+              if (_gcCalId) _newBkObj.calendarEventId = _gcCalId;
               bgJobDone(_calJobId);
             } catch(e) {
               bgJobFail(_calJobId, e.message);
@@ -22323,6 +22313,40 @@ function _restoreBkPeriod(startTime, endTime) {
     customDiv.style.display = startTime ? '' : 'none';
     document.getElementById('bk-start').value = startTime || '';
     document.getElementById('bk-end').value   = endTime   || '';
+  }
+}
+
+async function _bkCalModalSync(bkId, calParams) {
+  const modalId = 'bk-cal-sync-modal';
+  let modalEl = document.getElementById(modalId);
+  if (!modalEl) {
+    modalEl = document.createElement('div');
+    modalEl.id = modalId;
+    modalEl.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    document.body.appendChild(modalEl);
+  }
+  modalEl.innerHTML = `<div style="background:#fff;border-radius:10px;padding:28px 32px;min-width:300px;max-width:400px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.2);">
+    <div id="bk-cal-sync-status" style="font-size:1rem;color:#2d3748;margin-bottom:20px;">📅 正在同步至 Google Calendar…</div>
+    <div id="bk-cal-sync-btn" style="display:none;"><button class="btn btn-primary" onclick="document.getElementById('${modalId}').remove();">完成</button></div>
+  </div>`;
+  modalEl.style.display = 'flex';
+  try {
+    const calendarEventId = await proxyCall('createCalendarEvent', calParams);
+    if (calendarEventId) {
+      const bkRef = bookingsData.find(x => x.id === bkId);
+      if (bkRef) bkRef.calendarEventId = calendarEventId;
+      await saveBookings().catch(() => {});
+    }
+    const statusEl = document.getElementById('bk-cal-sync-status');
+    if (statusEl) statusEl.innerHTML = calendarEventId ? '✅ <strong>同步完成！</strong>' : '⚠ 同步完成但未取得事件 ID。';
+    return calendarEventId;
+  } catch(e) {
+    const statusEl = document.getElementById('bk-cal-sync-status');
+    if (statusEl) statusEl.textContent = `❌ 同步失敗：${e.message}`;
+    return null;
+  } finally {
+    const btnEl = document.getElementById('bk-cal-sync-btn');
+    if (btnEl) btnEl.style.display = '';
   }
 }
 
