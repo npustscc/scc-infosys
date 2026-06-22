@@ -776,14 +776,13 @@ function fetchMentalLeavesInner_(ctx, opts) {
     }
   }
 
-  if (newRecords.length || force) {
-    existingData.records = existingData.records.concat(newRecords);
-    try {
-      updateJson_({ path: 'mental_leaves.json', content: existingData }, ctx);
-    } catch(e) {
-      var parentInfo = resolvePathToParentAndName_('mental_leaves.json', ctx);
-      driveUpload_('mental_leaves.json', existingData, parentInfo.parentId);
-    }
+  existingData.lastFetchedAt = new Date().toISOString();
+  existingData.records = existingData.records.concat(newRecords);
+  try {
+    updateJson_({ path: 'mental_leaves.json', content: existingData }, ctx);
+  } catch(e) {
+    var parentInfo = resolvePathToParentAndName_('mental_leaves.json', ctx);
+    driveUpload_('mental_leaves.json', existingData, parentInfo.parentId);
   }
 
   return {

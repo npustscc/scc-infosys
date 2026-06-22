@@ -1104,7 +1104,7 @@
         <span class="icon">🔄</span> 轉銜管理 <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" id="nav-mental-leave-item" data-nav-id="page-mental-leave" onclick="showPage('page-mental-leave', this); renderMentalLeavePage()" style="display:none;">
-        <span class="icon">🌿</span> 身心調適假管理 <span class="nav-drag-handle">⠿</span>
+        <span class="icon">🌿</span> 身心調適假管理 <span id="nav-ml-fetch-icon" onclick="event.stopPropagation();window._mlFetch()" data-tip="從信箱擷取身心調適假" style="display:none;cursor:pointer;margin-left:4px;font-size:.9rem;padding:1px 4px;border-radius:3px;" title="從信箱擷取">📥</span><span class="nav-drag-handle">⠿</span>
       </div>
     </div>
 
@@ -3066,7 +3066,9 @@
 
     <!-- 身心調適假管理 -->
     <div id="page-mental-leave" class="page">
-      <div class="page-title">身心調適假管理</div>
+      <div class="page-title" style="display:flex;align-items:center;justify-content:space-between;">
+        <span>身心調適假管理</span><span id="ml-title-fetch"></span>
+      </div>
       <div id="mental-leave-body"></div>
     </div>
 
@@ -3491,6 +3493,7 @@ let currentRole  = null;   // 從 config.json 讀來
 let extraRole    = null;   // 管理者 / 個案管理員 / null
 let isTransferContact = false;    // 轉銜窗口
 let isMentalLeaveContact = false; // 身心調適假窗口
+let _mlLastFetchedAt = null;      // mental_leaves.json 上次成功擷取時間（UTC ISO）
 let configData   = null;   // 完整 config.json 內容
 let casesData    = [];
 let casesManifest = { chunks: [] };
@@ -4916,6 +4919,7 @@ async function afterLogin() {
     document.getElementById('main-layout').style.display  = 'flex';
     hideLoading(); // 設定檔已載入，關閉全螢幕 overlay；個案改在背景載入
     checkPinSetup();
+    _mlAutoFetchOnLogin();
     // cases 在背景載入，不阻擋 UI；完成後再跑後續初始化任務
     loadCases().then(() => {
       loadPsychTestDB().catch(() => {});
@@ -4994,6 +4998,8 @@ function resolveUserRole() {
 
   // 填充管理員頁使用者列表
   if (isAdmin && configData && configData.users) { renderAdminUsers(); renderAdminDegreeMapping(); }
+
+  _mlUpdateTitleBtn();
 }
 
 // ══════════════════════════════════════════════
@@ -20352,8 +20358,30 @@ async function loadMentalLeaves() {
   try {
     const data = await driveReadJson(MENTAL_LEAVES_FILE);
     mentalLeavesData = Array.isArray(data?.records) ? data.records : [];
+    _mlLastFetchedAt = data?.lastFetchedAt || null;
   } catch(e) { mentalLeavesData = []; }
   _syncTodoBadge();
+}
+
+function _mlUpdateTitleBtn() {
+  const _isAdmin = currentRole === '主任' || extraRole === '管理者';
+  const _canFetch = _isAdmin || isMentalLeaveContact;
+  const area = document.getElementById('ml-title-fetch');
+  if (area) {
+    area.innerHTML = _canFetch
+      ? `<button class="btn btn-primary btn-sm" onclick="window._mlFetch()" style="white-space:nowrap;font-size:.85rem;padding:4px 12px;">📥 從信箱擷取</button>`
+      : '';
+  }
+  const icon = document.getElementById('nav-ml-fetch-icon');
+  if (icon) icon.style.display = (_canFetch && !!currentRole) ? '' : 'none';
+}
+
+function _mlAutoFetchOnLogin() {
+  const _isAdmin = currentRole === '主任' || extraRole === '管理者';
+  if (!_isAdmin && !isMentalLeaveContact) return;
+  const ONE_HOUR = 3600000;
+  if (_mlLastFetchedAt && (Date.now() - new Date(_mlLastFetchedAt).getTime()) < ONE_HOUR) return;
+  setTimeout(() => window._mlFetch(true), 1500);
 }
 
 async function saveMentalLeaves() {
@@ -20885,8 +20913,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
         </select>筆
       </label>
       <button class="btn btn-secondary btn-sm" onclick="window._resetMlColWidths()" data-tip="清除已儲存的欄寬設定，恢復預設比例" style="white-space:nowrap;">重設欄寬</button>
-      ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="window._mlDeduplicateRecords()" data-tip="掃描並刪除同一封信被重複擷取的紀錄（保留最早一筆）" style="white-space:nowrap;">清除重複</button>` : ''}
-      ${canFullAccess ? `<button class="btn btn-primary" onclick="window._mlFetch()" style="white-space:nowrap;">📥 從信箱擷取</button>` : ''}
+      ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="window._mlDeduplicateRecords()" data-tip="比對姓名、學號、請假日期、緣由、學期等欄位，清除重複內容的紀錄（保留受理情況最進階者，其次保留最早收到的）" style="white-space:nowrap;">清除重複</button>` : ''}
       ${canFullAccess && DRIVE_FOLDER_ID === '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' ? `
         <button class="btn btn-danger" onclick="window._mlClearAll()" style="white-space:nowrap;margin-left:auto;">🗑️ 清空測試資料</button>
       ` : ''}
@@ -20953,29 +20980,40 @@ window._resetMlColWidths = () => {
 };
 
 window._mlDeduplicateRecords = async () => {
-  const seen = {};
-  let removed = 0;
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+  const fp = l => [norm(l.studentId), norm(l.name), norm(l.leaveDate), norm(l.leaveDateTo), norm(l.reason), norm(l.semester)].join('|');
+  const STATUS_RANK = { '已致電關懷': 4, '已簡訊關懷': 3, '待處理': 2, '非危機': 1 };
+  const groups = {};
   mentalLeavesData.forEach(l => {
-    if (!l.emailId || l.deleted) return;
-    if (seen[l.emailId]) {
-      const prev = seen[l.emailId];
-      const later = (l.receivedAt || l.parsedAt || '') >= (prev.receivedAt || prev.parsedAt || '') ? l : prev;
-      if (later === l) { seen[l.emailId] = prev; } // keep earlier
-      later.deleted = true;
-      later.deletedAt = new Date().toISOString();
-      later.deletedBy = '_dedup';
+    if (l.deleted) return;
+    if (!l.studentId && !l.name) return;
+    const k = fp(l);
+    if (!groups[k]) groups[k] = [];
+    groups[k].push(l);
+  });
+  let removed = 0;
+  Object.values(groups).forEach(grp => {
+    if (grp.length <= 1) return;
+    // 優先保留受理情況最進階的，其次最早收到
+    grp.sort((a, b) => {
+      const sd = (STATUS_RANK[b.handlingStatus] || 0) - (STATUS_RANK[a.handlingStatus] || 0);
+      if (sd !== 0) return sd;
+      return (a.receivedAt || a.parsedAt || '') < (b.receivedAt || b.parsedAt || '') ? -1 : 1;
+    });
+    for (let i = 1; i < grp.length; i++) {
+      grp[i].deleted = true;
+      grp[i].deletedAt = new Date().toISOString();
+      grp[i].deletedBy = '_dedup_content';
       removed++;
-    } else {
-      seen[l.emailId] = l;
     }
   });
   if (!removed) { showToast('沒有找到重複紀錄', 'info'); return; }
-  if (!confirm(`找到 ${removed} 筆重複紀錄（同一封信被重複擷取），確定清除？`)) return;
+  if (!confirm(`找到 ${removed} 筆重複紀錄（相同請假內容被重複擷取）。\n\n保留原則：優先保留受理情況較進階的，其次保留最早收到的。\n\n確定清除？`)) return;
   const jobId = bgJobAdd(`清除重複身心調適假紀錄（${removed} 筆）`);
   try {
     await saveMentalLeaves();
     bgJobDone(jobId);
-    auditLog('清除重複身心調適假紀錄', null, null, `${removed} 筆`);
+    auditLog('清除重複身心調適假紀錄', null, null, `${removed} 筆（內容比對）`);
     showToast(`已清除 ${removed} 筆重複紀錄`, 'success');
     renderMentalLeavePage();
   } catch(e) { bgJobFail(jobId, e.message); }
@@ -20992,15 +21030,18 @@ window._mlDeleteRecord = async (id) => {
   catch(e) { delete r.deleted; delete r.deletedAt; delete r.deletedBy; bgJobFail(jobId, e.message); }
 };
 
-window._mlCreateFetchWin = (totalY) => {
+window._mlCreateFetchWin = (totalY, isAuto) => {
   const old = document.getElementById('ml-fetch-win');
   if (old) old.remove();
   const win = document.createElement('div');
   win.id = 'ml-fetch-win';
   win.style.cssText = 'position:fixed;right:24px;top:80px;width:288px;background:#fff;border:1px solid #cbd5e0;border-radius:8px;box-shadow:0 4px 18px rgba(0,0,0,.16);z-index:9999;user-select:none;font-family:inherit;';
+  const headerBg = isAuto ? '#276749' : '#2b6cb0';
+  const headerTitle = isAuto ? '🔄 自動擷取身心調適假' : '📥 從信箱擷取身心調適假';
+  const autoNote = isAuto ? `<div style="font-size:10px;color:#718096;margin-top:4px;">這是自動擷取，關閉此視窗不影響擷取進度</div>` : '';
   win.innerHTML = `
-    <div id="ml-fw-header" style="background:#2b6cb0;color:#fff;padding:8px 12px;border-radius:7px 7px 0 0;cursor:move;font-size:13px;font-weight:600;">
-      📥 從信箱擷取身心調適假
+    <div id="ml-fw-header" style="background:${headerBg};color:#fff;padding:8px 12px;border-radius:7px 7px 0 0;cursor:move;font-size:13px;font-weight:600;">
+      ${headerTitle}
     </div>
     <div style="padding:12px 14px;">
       <div id="ml-fw-status" style="font-size:12px;color:#4a5568;margin-bottom:6px;">掃描未讀信件數量…</div>
@@ -21010,6 +21051,7 @@ window._mlCreateFetchWin = (totalY) => {
       <div id="ml-fw-count" style="font-size:15px;font-weight:700;color:#2d3748;margin-bottom:4px;">0 / ${totalY ?? '?'}</div>
       <div id="ml-fw-new" style="font-size:12px;color:#2f855a;"></div>
       <div id="ml-fw-hint" style="font-size:11px;color:#e53e3e;margin-top:6px;display:none;line-height:1.5;"></div>
+      ${autoNote}
       <div style="display:flex;gap:6px;margin-top:10px;">
         <button id="ml-fw-abort" style="flex:1;padding:6px;background:#fff5f5;border:1px solid #fc8181;border-radius:4px;cursor:pointer;font-size:13px;color:#c53030;" onclick="window._mlAbortFetch()">中斷</button>
         <button id="ml-fw-done" style="flex:1;padding:6px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;font-size:13px;opacity:.5;" disabled onclick="document.getElementById('ml-fetch-win').remove()">完成</button>
@@ -21040,10 +21082,10 @@ window._mlAbortFetch = () => {
   if (ab) { ab.disabled = true; ab.textContent = '中斷中…'; }
 };
 
-window._mlFetch = async () => {
+window._mlFetch = async (isAuto) => {
   _mlFetchAborted = false;
-  const btn = document.querySelector('[onclick="window._mlFetch()"]');
-  const jobId = bgJobAdd('從信箱擷取身心調適假');
+  const btn = isAuto ? null : document.querySelector('[onclick="window._mlFetch()"]');
+  const jobId = bgJobAdd(isAuto ? '自動擷取身心調適假' : '從信箱擷取身心調適假');
 
   const _restoreBtn = () => {
     if (!btn) return;
@@ -21061,7 +21103,7 @@ window._mlFetch = async () => {
   try {
     {
       // 一般擷取：先掃描總數，再分批擷取最多 200 封，進度浮動視窗
-      const win = _mlCreateFetchWin(null);
+      const win = _mlCreateFetchWin(null, isAuto);
       const _winStatus = t => { const el = win.querySelector('#ml-fw-status'); if (el) el.textContent = t; };
       const _winCount  = t => { const el = win.querySelector('#ml-fw-count');  if (el) el.textContent = t; };
       const _winNew    = t => { const el = win.querySelector('#ml-fw-new');    if (el) el.textContent = t; };
@@ -21084,6 +21126,10 @@ window._mlFetch = async () => {
         while (processed < MAX_TOTAL) {
           if (_mlFetchAborted) break;
           const result = await proxyCall('fetchMentalLeaves', { batchSize: BATCH_SIZE });
+          if (result?.status === 'locked') {
+            if (isAuto) { win.remove(); bgJobDone(jobId); return; }
+            _winStatus('另一工作階段正在擷取中，請稍後再試'); _winDone(); return;
+          }
           if (result?.needsAuth) {
             bgJobFail(jobId, '需要 Gmail 授權'); _mlShowAuthModal(result.authUrl);
             _winStatus('需要重新授權'); _winDone(); return;
