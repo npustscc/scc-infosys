@@ -5500,9 +5500,10 @@ function renderCases() {
       if (!c.studentId) return false;
       return mentalLeavesData.some(l => {
         if (l.deleted || l.studentId !== c.studentId) return false;
-        const d = l.leaveDate || '';
-        if (mlFrom && d < mlFrom) return false;
-        if (mlTo   && d > mlTo)   return false;
+        const { from: _lf, to: _lt } = _mlParseDateRange(l);
+        if (!_lf) return false;
+        if (mlFrom && _lt < mlFrom) return false;
+        if (mlTo   && _lf > mlTo)   return false;
         return true;
       });
     });
@@ -20371,14 +20372,16 @@ function _buildMentalLeaveDetailCard(c) {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   if (!isAdmin && !isTransferContact) return '';
   if (!leaves.length) return '';
-  const cards = [...leaves].sort((a, b) => (b.leaveDate||'').localeCompare(a.leaveDate||'')).map(l => {
+  const cards = [...leaves].sort((a, b) => _mlParseDateRange(b).from.localeCompare(_mlParseDateRange(a).from)).map(l => {
     const { matchedKeywords, maxLevel } = _mlMatchKeywords(l.reason);
     const kwChips = matchedKeywords.map(k =>
       `<span style="font-size:.72rem;background:${maxLevel===3?'#fed7d7':maxLevel===2?'#fef9c3':'#dbeafe'};color:${maxLevel===3?'#9b2c2c':maxLevel===2?'#854d0e':'#1e40af'};border-radius:4px;padding:1px 6px;margin-right:3px;">${escHtml(k.kw)}</span>`
     ).join('');
+    const { from: _bFrom, to: _bTo } = _mlParseDateRange(l);
+    const _bDateStr = _bFrom ? (_bFrom !== _bTo ? `${_bFrom.slice(5).replace('-','/')} – ${_bTo.slice(5).replace('-','/')}` : _bFrom.slice(5).replace('-','/')) : (l.leaveDate || '—');
     return `<div style="border:1px solid #e2e8f0;border-radius:6px;padding:8px 12px;margin-bottom:8px;background:${maxLevel>=3?'#fff5f5':maxLevel>=2?'#fffbeb':'#fff'};">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
-        <span style="font-weight:600;font-size:.88rem;">${escHtml(l.leaveDate||'—')}</span>
+        <span style="font-weight:600;font-size:.88rem;">${escHtml(_bDateStr)}</span>
         ${_mlRiskBadge(maxLevel, true)}
       </div>
       ${l.reason ? `<div style="font-size:.84rem;color:#4a5568;margin-bottom:4px;">緣由：${escHtml(l.reason)}</div>` : ''}
@@ -20632,12 +20635,33 @@ window._mlBatchHandling = async () => {
   catch(e) { bgJobFail(jobId, e.message); }
 };
 
+function _mlParseDateRange(l) {
+  const raw = l.leaveDate || '';
+  let from, to;
+  if (raw.includes('~')) {
+    const [f, t] = raw.split('~');
+    from = f.trim().replace(/\//g, '-');
+    to   = t.trim().replace(/\//g, '-');
+  } else if (l.leaveDateTo) {
+    from = raw.replace(/\//g, '-');
+    to   = l.leaveDateTo.replace(/\//g, '-');
+  } else {
+    from = raw.replace(/\//g, '-');
+    to   = from;
+  }
+  return { from, to };
+}
+
 function _mlConsecutive3DayIds(records) {
+  const _addDays = (s, n) => { const d = new Date(s); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
   const byStudent = {};
   records.forEach(l => {
-    if (!l.studentId || !l.leaveDate) return;
+    if (!l.studentId) return;
+    const { from, to } = _mlParseDateRange(l);
+    if (!from) return;
     if (!byStudent[l.studentId]) byStudent[l.studentId] = new Set();
-    byStudent[l.studentId].add(l.leaveDate);
+    let cur = from;
+    while (cur <= to) { byStudent[l.studentId].add(cur); cur = _addDays(cur, 1); }
   });
   const result = new Set();
   Object.entries(byStudent).forEach(([sid, dateSet]) => {
@@ -20652,6 +20676,8 @@ function _mlConsecutive3DayIds(records) {
 
 // ── 身心調適假通知資料庫 Tab ──────────────────────────────
 function _mlGroupAndSort(records) {
+  const _addDays = (s, n) => { const d = new Date(s); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+  const fmt = d => d ? d.slice(5).replace('-', '/') : '';
   const byStudent = {};
   records.forEach(l => {
     const key = l.studentId || l.id;
@@ -20660,19 +20686,27 @@ function _mlGroupAndSort(records) {
   });
   const groups = [];
   Object.values(byStudent).forEach(recs => {
-    const sorted = [...recs].sort((a, b) => (a.leaveDate||'').localeCompare(b.leaveDate||''));
+    const sorted = [...recs].sort((a, b) => _mlParseDateRange(a).from.localeCompare(_mlParseDateRange(b).from));
     let i = 0;
     while (i < sorted.length) {
       let j = i;
       while (j + 1 < sorted.length) {
-        const diff = Math.round((new Date(sorted[j+1].leaveDate) - new Date(sorted[j].leaveDate)) / 86400000);
-        if (diff === 1) j++; else break;
+        const curTo    = _mlParseDateRange(sorted[j]).to;
+        const nextFrom = _mlParseDateRange(sorted[j + 1]).from;
+        if (curTo && nextFrom && _addDays(curTo, 1) === nextFrom) j++; else break;
       }
       const run = sorted.slice(i, j + 1);
-      const dates = run.map(r => r.leaveDate || '').filter(Boolean);
-      const fmt = d => d.slice(5).replace('-', '/');
-      const dateRange = dates.length >= 2 ? `${fmt(dates[0])} – ${fmt(dates[dates.length-1])}` : dates[0] ? fmt(dates[0]) : '';
-      groups.push({ records: run, isConsec3: run.length >= 3, isRun: run.length >= 2, dateRange, latestDate: dates[dates.length-1] || '' });
+      const firstFrom = _mlParseDateRange(run[0]).from;
+      const lastTo    = _mlParseDateRange(run[run.length - 1]).to;
+      const totalDays = (firstFrom && lastTo) ? Math.round((new Date(lastTo) - new Date(firstFrom)) / 86400000) + 1 : run.length;
+      const dateRange = (firstFrom && lastTo && firstFrom !== lastTo) ? `${fmt(firstFrom)} – ${fmt(lastTo)}` : fmt(firstFrom);
+      groups.push({
+        records: run,
+        isConsec3: totalDays >= 3,
+        isRun: run.length >= 2 || (firstFrom !== lastTo),
+        dateRange,
+        latestDate: lastTo || firstFrom || ''
+      });
       i = j + 1;
     }
   });
@@ -20764,11 +20798,13 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       ${ML_HANDLING_OPTS.map(o=>`<option value="${o}"${hVal===o?' selected':''}>${o}</option>`).join('')}
     </select>`;
     const isChecked = _mlCheckedIds.has(l.id);
+    const { from: _mlFrom, to: _mlTo } = _mlParseDateRange(l);
+    const mlDateStr = _mlFrom ? (_mlFrom !== _mlTo ? `${_mlFrom.slice(5).replace('-','/')} – ${_mlTo.slice(5).replace('-','/')}` : _mlFrom.slice(5).replace('-','/')) : (l.leaveDate || '—');
     return `${groupHeader}<tr style="background:${rowBg};${leftBorder}${bottomBorder}">
       <td style="padding:5px 6px;text-align:center;width:28px;"><input type="checkbox" class="ml-row-chk" data-id="${escHtml(l.id)}" ${isChecked?'checked':''} onchange="window._mlToggleCheck('${escHtml(l.id)}',this.checked)"></td>
       <td style="padding:7px 10px;">${nameLink}</td>
       <td style="padding:7px 10px;">${studentIdCell}</td>
-      <td style="padding:7px 10px;">${escHtml(l.leaveDate||'—')}${dateBadge}</td>
+      <td style="padding:7px 10px;">${escHtml(mlDateStr)}${dateBadge}</td>
       <td style="padding:7px 10px;font-size:.8rem;">${escHtml(l.reason||'—')}</td>
       <td style="padding:7px 10px;">${_mlRiskBadge(maxLevel, true)}${kwChips ? `<div style="margin-top:3px;">${kwChips}</div>` : ''}</td>
       <td style="padding:7px 8px;">${handlingSel}</td>
@@ -24565,7 +24601,7 @@ function _renderCaseMlCard(c) {
   const outerBodyId = `case-ml-outer-${uid}`;
 
   const semHtml = sems.map(sem => {
-    const semRecs = bySem[sem].sort((a, b) => (b.leaveDate||'').localeCompare(a.leaveDate||''));
+    const semRecs = bySem[sem].sort((a, b) => _mlParseDateRange(b).from.localeCompare(_mlParseDateRange(a).from));
     const isCurrentSem = sem === currentSem;
     const semCardId = `case-ml-sem-${uid}-${sem.replace(/[^a-zA-Z0-9]/g, '-')}`;
     const rows = semRecs.map(l => {
@@ -24573,8 +24609,10 @@ function _renderCaseMlCard(c) {
       const bg = maxLevel===3?'#fff5f5':maxLevel===2?'#fffdf0':'';
       const hVal = l.handlingStatus || (maxLevel >= 3 ? '待處理' : '非危機');
       const hs = ML_HANDLING_STYLE[hVal] || {};
+      const { from: _rFrom, to: _rTo } = _mlParseDateRange(l);
+      const _rDateStr = _rFrom ? (_rFrom !== _rTo ? `${_rFrom.slice(5).replace('-','/')} – ${_rTo.slice(5).replace('-','/')}` : _rFrom.slice(5).replace('-','/')) : (l.leaveDate || '—');
       return `<tr style="background:${bg};">
-        <td style="padding:4px 8px;white-space:nowrap;font-size:.82rem;">${escHtml(l.leaveDate||'—')}</td>
+        <td style="padding:4px 8px;white-space:nowrap;font-size:.82rem;">${escHtml(_rDateStr)}</td>
         <td style="padding:4px 8px;font-size:.82rem;max-width:220px;">${escHtml(l.reason||'—')}</td>
         <td style="padding:4px 8px;">${_mlRiskBadge(maxLevel, true)}</td>
         <td style="padding:4px 8px;font-size:.78rem;"><span style="background:${hs.bg||'#f7fafc'};color:${hs.color||'#718096'};border:1px solid ${hs.border||'#e2e8f0'};border-radius:4px;padding:0 5px;">${escHtml(hVal)}</span></td>

@@ -615,7 +615,7 @@ function fetchMentalLeaves_(ctx, opts) {
 
       // ── 解析主旨
       var studentId = '', name = '', department = '', reason = '', semester = '';
-      var leaveDate = '', course = '';
+      var leaveDate = '', leaveDateTo = '', course = '';
 
       // NPUST 學生線上請假系統格式：
       // 學號:[ID] [姓名] [班級]學生請身心調適假累計達N日，...因 [reason] ，申請 身心調適假從[date]至[date]
@@ -630,8 +630,9 @@ function fetchMentalLeaves_(ctx, opts) {
         if (mRs) reason = mRs[1].trim();
         var mDt = subject.match(/身心調適假從\s*([\d\/]+)至\s*([\d\/]+)/);
         if (mDt) {
-          leaveDate = mDt[1].trim();
-          if (mDt[2] && mDt[2] !== mDt[1]) leaveDate += '~' + mDt[2].trim();
+          leaveDate = mDt[1].trim().replace(/\//g, '-');
+          var mDtEnd = mDt[2].trim().replace(/\//g, '-');
+          if (mDtEnd && mDtEnd !== leaveDate) leaveDateTo = mDtEnd;
         }
       } else {
         var m1 = subject.match(/([A-Z0-9a-z]{8,12})[_\s]*([^\s_（(]+)[_\s]*([^\s_（(]+)[_\s]*(.+)?/);
@@ -734,7 +735,7 @@ function fetchMentalLeaves_(ctx, opts) {
       newRecords.push({
         id: 'ml_' + msgId, emailId: msgId,
         studentId: studentId, name: name, department: department,
-        reason: reason, leaveDate: leaveDate,
+        reason: reason, leaveDate: leaveDate, leaveDateTo: leaveDateTo,
         course: course,       // 課程名稱字串（向下相容）
         courses: coursesArr,  // 結構化課程陣列 [{name, date, weekday, period}]
         semester: String(semester), matchedKeywords: matchedKeywords,
