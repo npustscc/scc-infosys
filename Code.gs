@@ -553,6 +553,19 @@ function runFetchMentalLeaves() {
 
 // 核心解析函式（由 doPost 或觸發器呼叫）
 function fetchMentalLeaves_(ctx, opts) {
+  var lock = LockService.getScriptLock();
+  var acquired = lock.tryLock(2000);
+  if (!acquired) {
+    return { status: 'locked', message: '另一工作階段正在擷取中，請稍後再試' };
+  }
+  try {
+    return fetchMentalLeavesInner_(ctx, opts);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function fetchMentalLeavesInner_(ctx, opts) {
   var force = opts && opts.force;
   var token = npust5GetAccessToken_();
   if (!token) {

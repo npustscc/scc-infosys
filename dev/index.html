@@ -5632,15 +5632,11 @@ function renderCases() {
           return true;
         });
         if (!matched.length) return '';
-        const chips = matched.map(l => {
-          const { from: lf, to: lt } = _mlParseDateRange(l);
-          const dStr = lf !== lt ? `${fmt(lf)}–${fmt(lt)}` : fmt(lf);
-          const { maxLevel } = _mlMatchKeywords(l.reason);
-          const bg  = maxLevel===3?'#fed7d7':maxLevel===2?'#fef9c3':'#e9d8fd';
-          const col = maxLevel===3?'#9b2c2c':maxLevel===2?'#854d0e':'#553c9a';
-          return `<span style="display:inline-block;background:${bg};color:${col};border-radius:4px;padding:1px 6px;font-size:.7rem;font-weight:600;margin:1px 2px;">${escHtml(dStr)}</span>`;
-        }).join('');
-        return `<div style="margin-top:3px;">${chips}</div>`;
+        const froms = matched.map(l => _mlParseDateRange(l).from).filter(Boolean).sort();
+        const tos   = matched.map(l => _mlParseDateRange(l).to).filter(Boolean).sort();
+        const rFrom = froms[0], rTo = tos[tos.length - 1];
+        const rangeStr = rFrom !== rTo ? `${fmt(rFrom)}–${fmt(rTo)}` : fmt(rFrom);
+        return `<div style="margin-top:3px;"><span style="display:inline-block;background:#e9d8fd;color:#553c9a;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;" title="${matched.length} 筆符合篩選">身心調適假 ${escHtml(rangeStr)}</span></div>`;
       }
       const thirtyAgo = Date.now() - 30 * 86400000;
       const recent = mentalLeavesData.filter(l => !l.deleted && l.studentId === c.studentId && l.receivedAt && new Date(l.receivedAt).getTime() >= thirtyAgo);
@@ -16267,7 +16263,9 @@ function renderTodosPage() {
     const deleteBtn = (!readOnly && !_isLocked)
       ? (_todosShowArchived
         ? `<button class="btn btn-sm" style="font-size:.78rem;" onclick="_unarchiveTodo('${t.id}')" data-tip="取消封存，重新顯示於待辦列表">取消封存</button>`
-        : `<button class="btn btn-sm" style="font-size:.78rem;" onclick="_archiveTodo('${t.id}')" data-tip="${_isDraftTodo?'放棄此草稿，可在「封存紀錄」中復原':'封存＝消除此待辦事項，可在「封存紀錄」中查閱'}">${_isDraftTodo?'放棄草稿':'封存'}</button>`)
+        : (_isDraftTodo
+          ? `<button class="btn btn-sm" style="font-size:.78rem;" onclick="_deleteDraftTodo('${t.id}')" data-tip="放棄此草稿並直接刪除（不可復原）">放棄草稿</button>`
+          : `<button class="btn btn-sm" style="font-size:.78rem;" onclick="_archiveTodo('${t.id}')" data-tip="封存＝消除此待辦事項，可在「封存紀錄」中查閱">封存</button>`))
       : '';
     const mismatchDetailHtml = _isMismatchTodo && !t.done ? `
       <div style="margin-top:8px;background:#fff8e1;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;font-size:.82rem;">
@@ -16392,6 +16390,21 @@ function _toggleTodosArchived() {
   if (btn) btn.style.background = _todosShowArchived ? '#ebf8ff' : '#f7fafc';
   if (btn) btn.style.borderColor = _todosShowArchived ? '#90cdf4' : '#cbd5e0';
   if (btn) btn.style.color = _todosShowArchived ? '#2b6cb0' : '#4a5568';
+  renderTodosPage();
+}
+
+function _deleteDraftTodo(id) {
+  const t = todosData.find(x => x.id === id);
+  if (!t) return;
+  if (t.draftKey) localStorage.removeItem(t.draftKey);
+  if (t.recordId) _suppressedTodoRecordIds.add(t.recordId);
+  _removeTodoItem(id);
+  const _dJobLabel = `放棄草稿：${t.label}${t.caseLabel ? `（${t.caseLabel}）` : ''}`;
+  const _dJobId = bgJobAdd(_dJobLabel);
+  saveUserTodos()
+    .then(() => { bgJobDone(_dJobId); auditLog('放棄草稿', null, null, t.label); })
+    .catch(err => bgJobFail(_dJobId, err?.message || '儲存失敗'));
+  showToast('草稿已放棄', 'success', 2500);
   renderTodosPage();
 }
 
@@ -20872,6 +20885,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
         </select>筆
       </label>
       <button class="btn btn-secondary btn-sm" onclick="window._resetMlColWidths()" data-tip="清除已儲存的欄寬設定，恢復預設比例" style="white-space:nowrap;">重設欄寬</button>
+      ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="window._mlDeduplicateRecords()" data-tip="掃描並刪除同一封信被重複擷取的紀錄（保留最早一筆）" style="white-space:nowrap;">清除重複</button>` : ''}
       ${canFullAccess ? `<button class="btn btn-primary" onclick="window._mlFetch()" style="white-space:nowrap;">📥 從信箱擷取</button>` : ''}
       ${canFullAccess && DRIVE_FOLDER_ID === '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' ? `
         <button class="btn btn-danger" onclick="window._mlClearAll()" style="white-space:nowrap;margin-left:auto;">🗑️ 清空測試資料</button>
@@ -20936,6 +20950,35 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
 window._resetMlColWidths = () => {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   _resetTableColWidths({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,9] : [1,2,3,4,5,6,7,8], prefKey: 'mlColWidths2' });
+};
+
+window._mlDeduplicateRecords = async () => {
+  const seen = {};
+  let removed = 0;
+  mentalLeavesData.forEach(l => {
+    if (!l.emailId || l.deleted) return;
+    if (seen[l.emailId]) {
+      const prev = seen[l.emailId];
+      const later = (l.receivedAt || l.parsedAt || '') >= (prev.receivedAt || prev.parsedAt || '') ? l : prev;
+      if (later === l) { seen[l.emailId] = prev; } // keep earlier
+      later.deleted = true;
+      later.deletedAt = new Date().toISOString();
+      later.deletedBy = '_dedup';
+      removed++;
+    } else {
+      seen[l.emailId] = l;
+    }
+  });
+  if (!removed) { showToast('沒有找到重複紀錄', 'info'); return; }
+  if (!confirm(`找到 ${removed} 筆重複紀錄（同一封信被重複擷取），確定清除？`)) return;
+  const jobId = bgJobAdd(`清除重複身心調適假紀錄（${removed} 筆）`);
+  try {
+    await saveMentalLeaves();
+    bgJobDone(jobId);
+    auditLog('清除重複身心調適假紀錄', null, null, `${removed} 筆`);
+    showToast(`已清除 ${removed} 筆重複紀錄`, 'success');
+    renderMentalLeavePage();
+  } catch(e) { bgJobFail(jobId, e.message); }
 };
 
 window._mlDeleteRecord = async (id) => {
