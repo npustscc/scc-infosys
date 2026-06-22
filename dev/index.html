@@ -179,7 +179,19 @@
       border-right: 1px solid #e2e8f0;
       padding: 20px 0;
       flex-shrink: 0;
+      position: relative;
     }
+    #sidebar-resize-handle {
+      position: absolute;
+      top: 0; right: -3px;
+      width: 6px; height: 100%;
+      cursor: col-resize;
+      z-index: 10;
+      border-radius: 3px;
+      transition: background .15s;
+    }
+    #sidebar-resize-handle:hover, #sidebar-resize-handle.resizing { background: rgba(49,130,206,.3); }
+    #nav-ml-fetch-icon:hover { background: rgba(49,130,206,.18) !important; }
     .sidebar-section { padding: 0 16px; margin-bottom: 8px; }
     .sidebar-section h3 {
       font-size: .7rem;
@@ -1063,6 +1075,7 @@
 
   <!-- Sidebar -->
   <nav id="sidebar">
+    <div id="sidebar-resize-handle" title="拖曳調整側邊欄寬度"></div>
     <div id="sidebar-role-box">
       <div class="role-name" id="sb-role">—</div>
       <div class="extra-role" id="sb-extra"></div>
@@ -1104,7 +1117,7 @@
         <span class="icon">🔄</span> 轉銜管理 <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" id="nav-mental-leave-item" data-nav-id="page-mental-leave" onclick="showPage('page-mental-leave', this); renderMentalLeavePage()" style="display:none;">
-        <span class="icon">🌿</span> 身心調適假管理 <span id="nav-ml-fetch-icon" onclick="event.stopPropagation();window._mlFetch()" data-tip="從信箱擷取身心調適假" style="display:none;cursor:pointer;margin-left:4px;font-size:.9rem;padding:1px 4px;border-radius:3px;" title="從信箱擷取">📥</span><span class="nav-drag-handle">⠿</span>
+        <span class="icon">🌿</span> 身心調適假管理<span id="nav-ml-fetch-icon" onclick="event.stopPropagation();window._mlFetch()" data-tip="從信箱擷取身心調適假" style="display:none;cursor:pointer;margin-left:2px;font-size:.9rem;padding:1px 3px;border-radius:3px;" title="從信箱擷取">📥</span><span class="nav-drag-handle">⠿</span>
       </div>
     </div>
 
@@ -4914,6 +4927,7 @@ async function afterLogin() {
     migrateConfigIfNeeded(); // 背景靜默修復已知損毀
     applyDrivePrefs();
     initSidebarDrag();
+    initSidebarResize();
     renderNotifBell();
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-layout').style.display  = 'flex';
@@ -21053,7 +21067,9 @@ window._mlCreateFetchWin = (totalY, isAuto) => {
       <div id="ml-fw-hint" style="font-size:11px;color:#e53e3e;margin-top:6px;display:none;line-height:1.5;"></div>
       ${autoNote}
       <div style="display:flex;gap:6px;margin-top:10px;">
-        <button id="ml-fw-abort" style="flex:1;padding:6px;background:#fff5f5;border:1px solid #fc8181;border-radius:4px;cursor:pointer;font-size:13px;color:#c53030;" onclick="window._mlAbortFetch()">中斷</button>
+        ${isAuto
+          ? `<button id="ml-fw-abort" disabled style="flex:1;padding:6px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:4px;cursor:not-allowed;font-size:13px;color:#a0aec0;">中斷</button>`
+          : `<button id="ml-fw-abort" style="flex:1;padding:6px;background:#fff5f5;border:1px solid #fc8181;border-radius:4px;cursor:pointer;font-size:13px;color:#c53030;" onclick="window._mlAbortFetch()">中斷</button>`}
         <button id="ml-fw-done" style="flex:1;padding:6px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;font-size:13px;opacity:.5;" disabled onclick="document.getElementById('ml-fetch-win').remove()">完成</button>
       </div>
     </div>`;
@@ -28968,6 +28984,40 @@ function _attachShowPdfModal(fileName, pages, pageRange) {
 // ══════════════════════════════════════════════
 //  側邊欄拖曳排序
 // ══════════════════════════════════════════════
+function initSidebarResize() {
+  const sidebar = document.getElementById('sidebar');
+  const handle  = document.getElementById('sidebar-resize-handle');
+  if (!sidebar || !handle) return;
+  const STORAGE_KEY = 'scc_sidebarWidth';
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) sidebar.style.width = Math.max(160, Math.min(400, parseInt(saved))) + 'px';
+  let startX, startW;
+  handle.addEventListener('mousedown', e => {
+    startX = e.clientX;
+    startW = sidebar.offsetWidth;
+    handle.classList.add('resizing');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    const onMove = e2 => {
+      const w = Math.max(160, Math.min(400, startW + e2.clientX - startX));
+      sidebar.style.width = w + 'px';
+    };
+    const onUp = e2 => {
+      const w = Math.max(160, Math.min(400, startW + e2.clientX - startX));
+      sidebar.style.width = w + 'px';
+      localStorage.setItem(STORAGE_KEY, w);
+      handle.classList.remove('resizing');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    e.preventDefault();
+  });
+}
+
 function initSidebarDrag() {
   restoreSidebarOrder();
   document.querySelectorAll('.sidebar-section').forEach(section => {
