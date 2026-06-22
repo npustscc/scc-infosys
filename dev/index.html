@@ -25494,6 +25494,55 @@ function _buildSourceChip(studentId) {
   return (sem && src) ? `<span style="display:inline-block;background:#fffbeb;border:1px solid #fbd38d;color:#744210;border-radius:10px;padding:1px 8px;font-size:.74rem;white-space:nowrap;" data-tip="首次進案來源">${escHtml(semesterLabel(sem))}學期，${escHtml(src)}</span>` : '';
 }
 
+// ── 轉銜：改變評估者 ──
+window._changeGradAssessor = async function(caseId, sem, email) {
+  if (!email || !caseId) return;
+  const cidx = casesData.findIndex(c => c.id === caseId);
+  if (cidx < 0) return;
+  const cname = configData?.users?.[email]?.name || email;
+  casesData[cidx].counselorEmail = email;
+  casesData[cidx].counselorName  = cname;
+  if (casesData[cidx].basicInfoSnapshots?.[sem]) {
+    casesData[cidx].basicInfoSnapshots[sem].counselorEmail = email;
+    casesData[cidx].basicInfoSnapshots[sem].counselorName  = cname;
+  }
+  document.getElementById('transfer-body').innerHTML = _renderGradTransferTab();
+  const jobId = bgJobAdd(`轉銜：改變評估者 → ${cname}`);
+  try {
+    await saveCasesChunks(caseId);
+    auditLog('轉銜改變評估者', caseId, null, `→ ${cname}（${email}）`);
+    bgJobDone(jobId);
+  } catch(e) { bgJobFail(jobId, e.message); }
+};
+
+window._changeWithdrawAssessor = async function(rId, lcId, email) {
+  if (!email) return;
+  const cname = configData?.users?.[email]?.name || email;
+  if (lcId) {
+    const cidx = casesData.findIndex(c => c.id === lcId);
+    if (cidx >= 0) {
+      const F = window._withdrawFilters;
+      const semToUse = (F?.semester && F.semester !== 'all') ? F.semester : currentSemesterPrefix();
+      casesData[cidx].counselorEmail = email;
+      casesData[cidx].counselorName  = cname;
+      if (casesData[cidx].basicInfoSnapshots?.[semToUse]) {
+        casesData[cidx].basicInfoSnapshots[semToUse].counselorEmail = email;
+        casesData[cidx].basicInfoSnapshots[semToUse].counselorName  = cname;
+      }
+    }
+  }
+  const allWithdraw = (transferData || []).filter(r => r.type === 'withdraw');
+  document.getElementById('transfer-body').innerHTML = _renderWithdrawTab(allWithdraw);
+  const jobId = bgJobAdd(`轉銜：改變評估者 → ${cname}`);
+  try {
+    if (lcId) {
+      await saveCasesChunks(lcId);
+      auditLog('轉銜改變評估者', lcId, null, `→ ${cname}（${email}）`);
+    }
+    bgJobDone(jobId);
+  } catch(e) { bgJobFail(jobId, e.message); }
+};
+
 // ── 畢業轉銜總覽分頁 ──
 function _renderGradTransferTab() {
   const curSem = currentSemesterPrefix();
@@ -25713,6 +25762,10 @@ function _renderGradTransferTab() {
             <option value="untraceable"${decStatus==='untraceable'?' selected':''}>年久不可考</option>
           </select>
           <input type="date" id="gd-date-${escHtml(c.id)}" value="${escHtml(dec?.schoolMeetingDate||'')}" title="校級評估會議日期" style="padding:4px;font-size:.8rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="setGradTransferMeetingDate('${escHtml(c.id)}','${semToUse}',this.value)">
+          <select class="field-input" style="padding:4px 8px;font-size:.82rem;width:auto;max-width:160px;" onchange="if(this.value)window._changeGradAssessor('${escHtml(c.id)}','${semToUse}',this.value)">
+            <option value="">改變評估者（${escHtml(c.counselorName||c.counselorEmail||'未指定')}）▼</option>
+            ${buildCounselorOptgroups()}
+          </select>
           ${chevBtn}
         </div>
       </div>
@@ -26924,6 +26977,10 @@ function _renderWithdrawTab(allWithdraw) {
             <option value="untraceable"${decStatus==='untraceable'?' selected':''}>年久不可考</option>
           </select>
           <input type="date" id="wd-date-${escHtml(r.id)}" value="${escHtml(meetingDate)}" title="校級評估會議日期" style="padding:4px;font-size:.8rem;border:1px solid #e2e8f0;border-radius:4px;" onchange="${dateOnchange}">
+          <select class="field-input" style="padding:4px 8px;font-size:.82rem;width:auto;max-width:160px;" onchange="if(this.value)window._changeWithdrawAssessor('${escHtml(r.id)}','${lcId}',this.value)">
+            <option value="">改變評估者（${escHtml(lc ? (lc.counselorName||lc.counselorEmail||'未指定') : '未指定')}）▼</option>
+            ${buildCounselorOptgroups()}
+          </select>
           <button class="btn btn-danger btn-sm" onclick="_deleteWithdrawRecord('${escHtml(r.id)}')">刪除</button>
           ${chevBtn}
         </div>
