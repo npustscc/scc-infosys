@@ -16135,10 +16135,12 @@ function _renderMlNotifSection() {
   const _isContactOnly = isMentalLeaveContact && !_isAdm;
   const items = _mlUnacknowledgedForMe();
   if (!items.length) { section.innerHTML = ''; return; }
+  const isCollapsed = !!window._mlSectionCollapsed;
   const _renderItem = l => {
     const mc = (casesData || []).find(c => !c.deleted && c.studentId === l.studentId);
     const dateStr = (l.receivedAt || '').slice(0, 10);
-    return `<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid #c6f6d5;">
+    return `<div style="display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-top:1px solid #c6f6d5;">
+      <input type="checkbox" class="ml-notif-cb" data-id="${escHtml(l.id)}" style="margin-top:3px;flex-shrink:0;" onchange="_mlUpdateBatchBtn()">
       <div style="flex:1;min-width:0;">
         <span style="font-weight:600;color:#2d3748;">${escHtml(l.name||l.studentId)}</span>
         <span style="font-size:.78rem;color:#718096;margin-left:6px;">${escHtml(l.studentId||'')}</span>
@@ -16151,22 +16153,68 @@ function _renderMlNotifSection() {
       </div>
     </div>`;
   };
+  let displayItems, titleText;
   if (_isContactOnly) {
     const myIds = _getMyCaseStudentIds();
-    const ownItems = items.filter(l => myIds.has(l.studentId));
-    section.innerHTML = `
-      <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:14px 16px;margin-bottom:16px;">
-        <div style="font-weight:700;color:#276749;font-size:.95rem;margin-bottom:${ownItems.length ? '10px' : '0'};">🌿 身心調適假通知 共新增 ${items.length} 名身心調適假通知</div>
-        ${ownItems.map(_renderItem).join('')}
-      </div>`;
+    displayItems = items.filter(l => myIds.has(l.studentId));
+    titleText = `🌿 身心調適假通知 共新增 ${items.length} 名`;
   } else {
-    section.innerHTML = `
-      <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:14px 16px;margin-bottom:16px;">
-        <div style="font-weight:700;color:#276749;margin-bottom:10px;font-size:.95rem;">🌿 身心調適假待確認（${items.length} 筆）</div>
-        ${items.map(_renderItem).join('')}
-      </div>`;
+    displayItems = items;
+    titleText = `🌿 身心調適假待確認（${items.length} 筆）`;
+  }
+  section.innerHTML = `
+    <div style="background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:14px 16px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${!isCollapsed && displayItems.length ? '4px' : '0'};">
+        <div style="font-weight:700;color:#276749;font-size:.95rem;">${titleText}</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          ${!isCollapsed ? `<label style="font-size:.8rem;color:#276749;cursor:pointer;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="ml-cb-all" onchange="_mlToggleAllCb(this)">全選</label>
+          <button id="ml-batch-btn" class="btn btn-sm" style="display:none;font-size:.78rem;background:#276749;color:#fff;border-color:#276749;" onclick="_mlBatchAcknowledge()">批次封存</button>` : ''}
+          <button onclick="_mlToggleSection()" style="background:none;border:none;cursor:pointer;font-size:.88rem;color:#276749;padding:0 2px;" data-tip="${isCollapsed?'展開':'收束'}身心調適假區塊">${isCollapsed?'▶':'▼'}</button>
+        </div>
+      </div>
+      ${!isCollapsed ? `<div id="ml-notif-items">${displayItems.map(_renderItem).join('')}</div>` : ''}
+    </div>`;
+}
+
+window._mlToggleSection = function() {
+  window._mlSectionCollapsed = !window._mlSectionCollapsed;
+  _renderMlNotifSection();
+};
+
+function _mlUpdateBatchBtn() {
+  const checked = document.querySelectorAll('.ml-notif-cb:checked').length;
+  const btn = document.getElementById('ml-batch-btn');
+  if (btn) btn.style.display = checked > 0 ? '' : 'none';
+  const allCb = document.getElementById('ml-cb-all');
+  if (allCb) {
+    const total = document.querySelectorAll('.ml-notif-cb').length;
+    allCb.indeterminate = checked > 0 && checked < total;
+    allCb.checked = total > 0 && checked === total;
   }
 }
+
+window._mlToggleAllCb = function(el) {
+  document.querySelectorAll('.ml-notif-cb').forEach(cb => { cb.checked = el.checked; });
+  _mlUpdateBatchBtn();
+};
+
+window._mlBatchAcknowledge = async function() {
+  const ids = [...document.querySelectorAll('.ml-notif-cb:checked')].map(cb => cb.dataset.id);
+  if (!ids.length) return;
+  let changed = 0;
+  ids.forEach(id => {
+    const r = mentalLeavesData.find(l => l.id === id);
+    if (!r || !currentUser?.email) return;
+    if (!Array.isArray(r.acknowledgedBy)) r.acknowledgedBy = [];
+    if (!r.acknowledgedBy.includes(currentUser.email)) { r.acknowledgedBy.push(currentUser.email); changed++; }
+  });
+  if (!changed) return;
+  _syncTodoBadge();
+  _renderMlNotifSection();
+  if (document.getElementById('notif-panel')?.style.display !== 'none') renderNotifList();
+  const jobId = bgJobAdd(`批次封存 ${changed} 筆身心調適假通知`);
+  try { await saveMentalLeaves(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); }
+};
 
 function renderTodosPage() {
   _renderAssignmentTodos();
@@ -16369,7 +16417,11 @@ function renderTodosPage() {
       </div>` : '';
     const reassignDetailHtml = _isReassignInitiatorTodo && !t.done && !readOnly ? `
       <div style="margin-top:8px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;padding:8px 12px;font-size:.82rem;">
-        <div style="color:#2b6cb0;margin-bottom:6px;">轉派目標：<strong>${escHtml(t.targetName || t.targetEmail || '—')}</strong>　請點選下方按鈕完成轉派</div>
+        <div style="color:#2b6cb0;margin-bottom:6px;">轉派評估者目標（可在此修改）：</div>
+        <select id="reassign-sel-${t.id}" class="field-input" style="padding:4px 8px;font-size:.82rem;width:100%;margin-bottom:8px;">
+          <option value="">（保持目前目標：${escHtml(t.targetName || t.targetEmail || '—')}）</option>
+          ${buildCounselorOptgroups()}
+        </select>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <button class="btn btn-primary btn-sm" data-reassign-id="${t.id}" style="font-size:.78rem;" onclick="_executeAssessorReassign('${t.id}')">轉派評估者</button>
           <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_archiveTodo('${t.id}')" data-tip="封存此任務（不進行轉派）">取消不轉派</button>
@@ -25518,8 +25570,11 @@ function _buildHistBadgesHtml(semMap, curSem, isExpanded, cardId, toggleFnPrefix
   const visible = histSems.slice(0, 2);
   const extra   = histSems.slice(2);
   const hasExtra = extra.length > 0;
+  const chevHtml = hasExtra
+    ? `<button onclick="event.stopPropagation();${toggleFnPrefix}ToggleHistory('${escHtml(cardId)}')" data-hist-chev="${escHtml(cardId)}" title="展開／收合歷史學期" style="background:none;border:none;cursor:pointer;padding:0 3px 0 0;font-size:.78rem;color:#718096;line-height:1;flex-shrink:0;">${isExpanded?'▲':'▼'}</button>`
+    : '';
   return `<div style="padding:3px 0 5px 30px;display:flex;align-items:center;flex-wrap:wrap;gap:3px;border-top:1px solid #f0f4f8;margin-top:4px;">
-    <span style="font-size:.74rem;color:#a0aec0;flex-shrink:0;margin-right:2px;">歷史：</span>
+    ${chevHtml}<span style="font-size:.74rem;color:#a0aec0;flex-shrink:0;margin-right:2px;">歷史：</span>
     ${visible.map(h => _makeHistChip(h, curSem)).join('')}
     ${hasExtra ? `<span data-hist-extra="${escHtml(cardId)}" style="display:${isExpanded?'contents':'none'};">${extra.map(h => _makeHistChip(h, curSem)).join('')}</span><span data-hist-more="${escHtml(cardId)}" onclick="event.stopPropagation();${toggleFnPrefix}ToggleHistory('${escHtml(cardId)}')" style="display:${isExpanded?'none':'inline-block'};font-size:.76rem;color:#3182ce;cursor:pointer;padding:1px 7px;border-radius:8px;background:#ebf8ff;border:1px solid #bee3f8;" data-tip="顯示全部 ${histSems.length} 個學期">...${extra.length} 筆</span>` : ''}
   </div>`;
@@ -25618,6 +25673,7 @@ function _createAssessorReassignTodo(transferType, id1, id2, newEmail, caseName,
     done: false, notifRead: false,
   });
   saveUserTodos().catch(() => {});
+  auditLog('轉銜改變評估者（建立待辦）', caseId || null, null, `→ ${newName}（${newEmail}）`);
   showToast('已建立待辦：請點選「轉派評估者」按鈕完成轉派', 'info', 4000);
   const navEl = document.querySelector('[data-nav-id="page-todos"]');
   showPage('page-todos', navEl);
@@ -25627,25 +25683,31 @@ function _createAssessorReassignTodo(transferType, id1, id2, newEmail, caseName,
 async function _executeAssessorReassign(todoId) {
   const t = todosData.find(x => x.id === todoId);
   if (!t || t.done) return;
+  const sel = document.getElementById('reassign-sel-' + todoId);
+  const overrideEmail = sel?.value || '';
+  const finalEmail = overrideEmail || t.targetEmail;
+  const finalName = overrideEmail ? (configData?.users?.[overrideEmail]?.name || overrideEmail) : t.targetName;
+  if (!finalEmail) { showToast('請選擇評估者', 'warn', 2500); return; }
   const btn = document.querySelector(`[data-reassign-id="${todoId}"]`);
   if (btn) { btn.disabled = true; btn.textContent = '轉派中…'; }
   try {
     if (t.transferType === 'grad') {
-      await window._changeGradAssessor(t.id1, t.id2, t.targetEmail);
+      await window._changeGradAssessor(t.id1, t.id2, finalEmail);
     } else {
-      await window._changeWithdrawAssessor(t.id1, t.id2, t.targetEmail);
+      await window._changeWithdrawAssessor(t.id1, t.id2, finalEmail);
     }
+    t.targetEmail = finalEmail; t.targetName = finalName;
     t.done = true; t.doneAt = new Date().toISOString();
     _syncTodoBadge();
     saveUserTodos().catch(() => {});
     const myName = configData?.users?.[currentUser?.email]?.name || currentUser?.email || '';
     const caseLbl = t.caseLabel || '';
-    addNotificationToUser(t.targetEmail, 'transfer_reassign_assessor_notify', t.caseId || '', caseLbl,
+    addNotificationToUser(finalEmail, 'transfer_reassign_assessor_notify', t.caseId || '', caseLbl,
       `${myName} 已將「${caseLbl}」的轉銜評估者指派給您，請完成評估`);
     driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
-    const jobId = bgJobAdd(`通知轉派 → ${t.targetName}`);
+    const jobId = bgJobAdd(`通知轉派 → ${finalName}`);
     try {
-      await _appendTodoToUser(t.targetEmail, {
+      await _appendTodoToUser(finalEmail, {
         id: _genTodoId(),
         type: 'transfer_reassign_assessor_notify',
         label: `您被指派為轉銜評估者：${caseLbl}`,
@@ -25658,7 +25720,7 @@ async function _executeAssessorReassign(todoId) {
       });
       bgJobDone(jobId);
     } catch(e) { bgJobFail(jobId, e.message); }
-    showToast(`已成功轉派評估者給 ${t.targetName}，對方將收到通知`, 'success', 3500);
+    showToast(`已成功轉派評估者給 ${finalName}，對方將收到通知`, 'success', 3500);
     renderTodosPage();
   } catch(e) {
     if (btn) { btn.disabled = false; btn.textContent = '轉派評估者'; }
@@ -25900,9 +25962,6 @@ function _renderGradTransferTab() {
     const semMap = _buildCaseSemMap(c.studentId);
     const sourceChip = _buildSourceChip(c.studentId);
     const histBadgesHtml = _buildHistBadgesHtml(semMap, curSem, isExpanded, c.id, '_grad');
-    const chevBtn = Object.keys(semMap).length > 2
-      ? `<button onclick="event.stopPropagation();_gradToggleHistory('${escHtml(c.id)}')" data-hist-chev="${escHtml(c.id)}" title="展開／收合歷史學期" style="background:none;border:1px solid #e2e8f0;border-radius:4px;cursor:pointer;padding:2px 7px;font-size:.8rem;color:#718096;line-height:1.2;flex-shrink:0;">${isExpanded?'▲':'▼'}</button>`
-      : '';
     return `<div class="record-card" style="margin-bottom:8px;${isResolved?'border-left:3px solid '+decColorMap[decStatus]+';opacity:.88;':''}">
       <div class="record-card-header" style="flex-wrap:wrap;gap:6px;">
         <input type="checkbox" class="grad-cb" data-cid="${escHtml(c.id)}" onchange="_gradCbChange()" style="margin-top:3px;flex-shrink:0;">
@@ -25944,7 +26003,6 @@ function _renderGradTransferTab() {
               </select>
             </div>
           </div>
-          ${chevBtn}
         </div>
       </div>
       ${histBadgesHtml}
@@ -27116,9 +27174,6 @@ function _renderWithdrawTab(allWithdraw) {
     const semMap = _buildCaseSemMap(r.studentId);
     const sourceChip = _buildSourceChip(r.studentId);
     const histBadgesHtml = _buildHistBadgesHtml(semMap, curSem, isExpanded, r.id, '_withdraw');
-    const chevBtn = Object.keys(semMap).length > 2
-      ? `<button onclick="event.stopPropagation();_withdrawToggleHistory('${escHtml(r.id)}')" data-hist-chev="${escHtml(r.id)}" title="展開／收合歷史學期" style="background:none;border:1px solid #e2e8f0;border-radius:4px;cursor:pointer;padding:2px 7px;font-size:.8rem;color:#718096;line-height:1.2;flex-shrink:0;">${isExpanded?'▲':'▼'}</button>`
-      : '';
     // 決議/日期 onchange：有連結個案時寫入共用畢業轉銜記錄，否則寫入 withdraw 記錄
     const lcId = lc ? escHtml(lc.id) : '';
     const decOnchange = lc
@@ -27166,7 +27221,6 @@ function _renderWithdrawTab(allWithdraw) {
             </div>
           </div>
           <button class="btn btn-danger btn-sm" onclick="_deleteWithdrawRecord('${escHtml(r.id)}')">刪除</button>
-          ${chevBtn}
         </div>
       </div>
       ${histBadgesHtml}
@@ -29397,6 +29451,14 @@ function initSidebarResize() {
     handle.classList.add('resizing');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
+    const cleanup = () => {
+      handle.classList.remove('resizing');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', cleanup);
+    };
     const onMove = e2 => {
       const w = Math.max(160, Math.min(400, startW + e2.clientX - startX));
       sidebar.style.width = w + 'px';
@@ -29405,14 +29467,11 @@ function initSidebarResize() {
       const w = Math.max(160, Math.min(400, startW + e2.clientX - startX));
       sidebar.style.width = w + 'px';
       localStorage.setItem(STORAGE_KEY, w);
-      handle.classList.remove('resizing');
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      handle.removeEventListener('pointermove', onMove);
-      handle.removeEventListener('pointerup', onUp);
+      cleanup();
     };
     handle.addEventListener('pointermove', onMove);
     handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', cleanup);
     e.preventDefault();
   });
 }
