@@ -1137,7 +1137,12 @@
     <div class="sidebar-section">
       <h3>設定與工具</h3>
       <div class="nav-item" data-nav-id="page-issues" onclick="showPage('page-issues', this); markIssuesSeen(); renderIssuesPage()">
-        <span class="icon">🐛</span> 錯誤回報/許願池 <span id="issues-badge-wrap" style="display:inline-flex;gap:3px;margin-left:2px;vertical-align:middle;"></span><span class="nav-drag-handle">⠿</span>
+        <span class="icon">🐛</span>
+        <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;">
+          <span>錯誤回報/許願池</span>
+          <span id="issues-badge-wrap" style="display:none;gap:3px;flex-wrap:wrap;"></span>
+        </span>
+        <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" data-nav-id="page-pdf-tool" onclick="showPage('page-pdf-tool', this); renderPdfToolPage()">
         <span class="icon">🖼️</span> PDF 轉圖片 <span class="nav-drag-handle">⠿</span>
@@ -18472,6 +18477,9 @@ function auditToggleCol(n) {
 // ══════════════════════════════════════════════
 //  統計分析
 // ══════════════════════════════════════════════
+let _statsTab    = 'overview';
+let _statsSvcSem = null;
+
 function renderStats() {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   const visible = isAdmin
@@ -18537,7 +18545,7 @@ function renderStats() {
     const s = openDateToSemPrefix(r.date || ''); if (s) svcSemPrefixes.add(s);
   }));
   const svcSemList = [...svcSemPrefixes].sort().reverse();
-  const svcDefaultSem = svcSemList[0] || currentSemesterPrefix();
+  const svcDefaultSem = _statsSvcSem || svcSemList[0] || currentSemesterPrefix();
   // Build academic year and calendar year lists from svcSemPrefixes
   const _aYearSet = new Set(), _cYearSet = new Set();
   svcSemPrefixes.forEach(p => {
@@ -18613,7 +18621,7 @@ function renderStats() {
         <tbody>${rows}${totalsRow}</tbody>
       </table></div>`;
   };
-  const svcSemSelect = `<select class="field-select" style="font-size:.85rem;padding:4px 8px;" onchange="const el=document.getElementById('svc-tbl');if(el)el.innerHTML=_renderSvcTable(this.value)">
+  const svcSemSelect = `<select class="field-select" style="font-size:.85rem;padding:4px 8px;" onchange="_statsSvcSem=this.value;const el=document.getElementById('svc-tbl');if(el)el.innerHTML=window._renderSvcTable(this.value)">
     ${svcSemList.length
       ? `<optgroup label="學期">${svcSemList.map(s => `<option value="${escHtml(s)}" ${s===svcDefaultSem?'selected':''}>${semesterLabel(s)} 學期</option>`).join('')}</optgroup>`
         + (aYearList.length ? `<optgroup label="學年">${aYearList.map(a => `<option value="a_${escHtml(a)}">${a} 學年度</option>`).join('')}</optgroup>` : '')
@@ -18735,7 +18743,14 @@ function renderStats() {
       </table></div>`;
   };
 
-  document.getElementById('stats-body').innerHTML = `
+  const _stTabBtn = (id, lbl) => {
+    const act = _statsTab === id;
+    return `<button onclick="_statsTab='${id}';renderStats()" style="padding:8px 18px;border:none;cursor:pointer;background:none;font-size:.9rem;font-weight:${act?700:400};border-bottom:${act?'2.5px solid #2d6a4f':'2px solid transparent'};color:${act?'#2d6a4f':'#718096'};margin-bottom:-2px;">${lbl}</button>`;
+  };
+
+  if (!isAdmin && _statsTab !== 'overview') _statsTab = 'overview';
+
+  const _overviewHtml = `
     <div class="stats-cards">
       <div class="stats-card"><div class="stats-num">${total}</div><div class="stats-lbl">可檢視個案</div></div>
       <div class="stats-card"><div class="stats-num" style="color:#2980b9;">${active}</div><div class="stats-lbl">進行中</div></div>
@@ -18762,19 +18777,39 @@ function renderStats() {
       <div style="padding:16px;">
         ${months.map(m => mkBar(parseInt(m.slice(5)) + ' 月', byMonth[m], monthMax, '#27ae60')).join('')}
       </div>
-    </div>
-    <div class="card" style="margin-bottom:20px;">
+    </div>`;
+
+  let _tabContent;
+  if (_statsTab === 'overview') {
+    _tabContent = _overviewHtml;
+  } else if (_statsTab === 'service') {
+    _tabContent = `<div class="card">
       <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
         <h3 style="margin:0;">服務狀況統計</h3>
         <div>${svcSemSelect}</div>
       </div>
       <div style="padding:16px;" id="svc-tbl">${window._renderSvcTable(svcDefaultSem)}</div>
-    </div>
-    <div class="card">
+    </div>`;
+  } else if (_statsTab === 'mental-leave') {
+    _tabContent = `<div class="card">
       <div class="card-header"><h3>身心調適假統計</h3></div>
       <div style="padding:16px;" id="ml-stats-container"></div>
     </div>`;
-  window._renderMlContainer();
+  } else if (_statsTab === 'courses') {
+    _tabContent = `<div id="stats-courses-container"></div>`;
+  }
+
+  document.getElementById('stats-body').innerHTML = `
+    <div style="display:flex;gap:0;border-bottom:2px solid #e2e8f0;margin-bottom:20px;flex-wrap:wrap;">
+      ${_stTabBtn('overview','📊 個案概況')}
+      ${isAdmin ? _stTabBtn('service','📋 服務狀況') : ''}
+      ${isAdmin ? _stTabBtn('mental-leave','🌿 身心調適假') : ''}
+      ${isAdmin ? _stTabBtn('courses','📚 課程統計') : ''}
+    </div>
+    ${_tabContent}`;
+
+  if (_statsTab === 'mental-leave') window._renderMlContainer();
+  if (_statsTab === 'courses') _mlRenderCourseStatsTab(document.getElementById('stats-courses-container'));
 }
 
 // ══════════════════════════════════════════════
@@ -19040,6 +19075,24 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-06-24', title: '統計分析分頁、@提及強化、身心調適假版面調整', isProd: false, items: [
+      item('新功能', '統計分析：以頁籤方式分類（📊 個案概況 / 📋 服務狀況 / 🌿 身心調適假 / 📚 課程統計），減少捲動'),
+      item('改善', '統計分析：課程統計從身心調適假管理移入統計分析頁籤'),
+      item('改善', '錯誤回報/許願池：@提及下拉最多顯示 8 人；最近提及者優先排序'),
+      item('改善', '錯誤回報/許願池：@提及支援漢語拼音／台語羅馬字首字母關鍵字搜尋'),
+      item('改善', '錯誤回報/許願池：@提及下拉支援鍵盤操作（↑↓ 選擇、Enter/Tab 確認、Esc 關閉）'),
+      item('改善', '錯誤回報/許願池：@提及下拉位置智慧翻轉（空間不足時自動顯示於輸入框上方）'),
+      item('改善', '左側選單：錯誤回報/許願池徽章寬度不足時優先換行，避免文字被擠壓'),
+      item('修復', '身心調適假清單：一般列移除左側藍框，藍框僅保留連假群組；群組底部改為藍色邊框完整圍合'),
+    ]},
+    { date: '2026-06-23', title: '錯誤回報強化、身心調適假統計', isProd: false, items: [
+      item('新功能', '錯誤回報/許願池：篩選（處理狀態 + 日期區間），自動排序'),
+      item('新功能', '錯誤回報/許願池：狀態變更歷程紀錄'),
+      item('新功能', '錯誤回報/許願池：新留言 → 通知創建者 + 建立待辦'),
+      item('新功能', '錯誤回報/許願池：留言 @提及 → 通知 + 待辦；自動補全下拉'),
+      item('改善', '錯誤回報/許願池：dev/prod 共用 issues.json'),
+      item('新功能', '統計分析：身心調適假統計區塊'),
+    ]},
     { date: '2026-06-23', title: '轉銜評估流程調整、通知 UI 強化', isProd: true, items: [
       item('新功能', '轉銜評估：「轉銜類型」與「質性描述」卡片可收束，預設收束'),
       item('新功能', '轉銜評估：選「綠燈結案」或「同意」→ 兩卡片自動收束並切換為非必填；選其他 → 自動展開並恢復必填'),
@@ -21047,9 +21100,10 @@ window._toggleDisplay = (bodyId, iconId) => {
 };
 
 // 課程統計 Tab
+let _courseStatsSem = '';
 function _mlRenderCourseStatsTab(el) {
   const records = mentalLeavesData.filter(l => !l.deleted);
-  const semF = document.getElementById('ml-cs-sem')?.value || '';
+  const semF = _courseStatsSem;
   const sems = [...new Set(records.map(l => l.semester).filter(Boolean))].sort().reverse();
   const semOpts = sems.map(s => `<option value="${escHtml(s)}"${semF===s?' selected':''}>${escHtml(semesterLabel(s)||s)}</option>`).join('');
 
@@ -21071,8 +21125,11 @@ function _mlRenderCourseStatsTab(el) {
   const total = sorted.reduce((s, c) => s + c.count, 0);
 
   el.innerHTML = `
+    <div class="card">
+    <div class="card-header"><h3>課程統計</h3></div>
+    <div style="padding:16px;">
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px;">
-      <select id="ml-cs-sem" class="field-input" onchange="_mlRenderCourseStatsTab(document.getElementById('ml-tab-content'))" style="width:auto;">
+      <select class="field-input" onchange="_courseStatsSem=this.value;_mlRenderCourseStatsTab(document.getElementById('${el.id}'))" style="width:auto;">
         <option value="">所有學期</option>${semOpts}
       </select>
       <span style="font-size:.85rem;color:#718096;">共 ${total} 節請假課程紀錄，${sorted.length} 門不同課程</span>
@@ -21103,7 +21160,8 @@ function _mlRenderCourseStatsTab(el) {
           </tr>`;
         }).join('')}</tbody>
       </table>
-    </div>` : '<div style="padding:24px;text-align:center;color:#a0aec0;">尚無課程紀錄</div>'}`;
+    </div>` : '<div style="padding:24px;text-align:center;color:#a0aec0;">尚無課程紀錄</div>'}
+    </div></div>`;
 }
 
 // 主頁面渲染
@@ -21125,13 +21183,13 @@ function renderMentalLeavePage() {
   if (!_mlTabRestored) {
     _mlTabRestored = true;
     const saved = configData?.users?.[currentUser?.email]?.mlTab;
-    const valid = ['my', 'records', 'courses', 'keywords'];
+    const valid = ['my', 'records', 'keywords'];
     if (saved && valid.includes(saved)) _mlTab = saved;
   }
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   const canFullAccess = isAdmin || isMentalLeaveContact;
   // 若目前 tab 無權限，自動回到受輔生
-  if (!canFullAccess && (_mlTab === 'records' || _mlTab === 'courses' || _mlTab === 'keywords')) _mlTab = 'my';
+  if (!canFullAccess && (_mlTab === 'records' || _mlTab === 'keywords')) _mlTab = 'my';
   // Save filter state before destroying DOM
   _mlQFilter = document.getElementById('ml-q')?.value ?? _mlQFilter;
   _mlRiskFilter = document.getElementById('ml-risk')?.value ?? _mlRiskFilter;
@@ -21141,7 +21199,6 @@ function renderMentalLeavePage() {
     <div style="display:flex;gap:2px;border-bottom:2px solid #e2e8f0;margin-bottom:20px;">
       ${_mlTabBtn('my','🙋 受輔生')}
       ${canFullAccess ? _mlTabBtn('records','📋 資料庫') : ''}
-      ${canFullAccess ? _mlTabBtn('courses','📊 課程統計') : ''}
       ${canFullAccess ? _mlTabBtn('keywords','🔑 關鍵字設定') : ''}
     </div>
     <div id="ml-tab-content"></div>`;
@@ -21204,7 +21261,6 @@ function _mlRenderTab() {
   const el = document.getElementById('ml-tab-content');
   if (!el) return;
   if (_mlTab === 'keywords') _mlRenderKeywordsTab(el);
-  else if (_mlTab === 'courses') _mlRenderCourseStatsTab(el);
   else if (_mlTab === 'my') _mlRenderRecordsTab(el, _getMyStudentIds());
   else _mlRenderRecordsTab(el, null);
 }
@@ -21401,10 +21457,9 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     const rowBg = isRunChild
       ? (maxLevel===3?'#fff5f5':maxLevel===2?'#fffdf0':'#f0f7ff')
       : (maxLevel===3?'#fff5f5':maxLevel===2?'#fffdf0':'');
-    const leftBorder = isRunChild
-      ? 'border-left:4px solid #3182ce;'
-      : (mc ? 'border-left:3px solid #3182ce;' : '');
-    const bottomBorder = (isRunChild && runInfo.isLast) ? 'border-bottom:2px solid #a0aec0;' : '';
+    const leftBorder = isRunChild ? 'border-left:4px solid #3182ce;' : '';
+    const bottomBorder = (isRunChild && runInfo.isLast) ? 'border-bottom:2px solid #3182ce;' : '';
+    const _cbPad = isRunChild ? 'padding:5px 6px;' : 'padding:5px 6px 5px 10px;';
     const groupHeader = (runInfo.isRun && runInfo.isFirst)
       ? `<tr style="background:#eff6ff;border-left:4px solid #3182ce;"><td colspan="99" style="padding:2px 12px 2px 36px;font-size:.78rem;color:#1e40af;border-top:2px solid #3182ce;font-weight:600;">📅 ${escHtml(l.name||l.studentId||'—')}&ensp;${escHtml(runInfo.dateRange)}${runInfo.isConsec3?`&ensp;<span style="background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 6px;font-size:.72rem;">連請三天</span>`:''}</td></tr>`
       : '';
@@ -21433,7 +21488,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     const { from: _mlFrom, to: _mlTo } = _mlParseDateRange(l);
     const mlDateStr = _mlFrom ? (_mlFrom !== _mlTo ? `${_mlFrom.slice(5).replace('-','/')} – ${_mlTo.slice(5).replace('-','/')}` : _mlFrom.slice(5).replace('-','/')) : (l.leaveDate || '—');
     return `${groupHeader}<tr style="background:${rowBg};${leftBorder}${bottomBorder}">
-      <td style="padding:5px 6px;text-align:center;width:28px;"><input type="checkbox" class="ml-row-chk" data-id="${escHtml(l.id)}" ${isChecked?'checked':''} onchange="window._mlToggleCheck('${escHtml(l.id)}',this.checked)"></td>
+      <td style="${_cbPad}text-align:center;width:28px;"><input type="checkbox" class="ml-row-chk" data-id="${escHtml(l.id)}" ${isChecked?'checked':''} onchange="window._mlToggleCheck('${escHtml(l.id)}',this.checked)"></td>
       <td style="padding:7px 10px;">${nameLink}</td>
       <td style="padding:7px 10px;">${studentIdCell}</td>
       <td style="padding:7px 10px;">${escHtml(mlDateStr)}${dateBadge}</td>
@@ -30269,7 +30324,7 @@ function restoreSidebarOrder() {
 <div id="issue-submit-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10000;align-items:center;justify-content:center;padding:20px;">
   <div style="background:#fff;border-radius:12px;max-width:520px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
     <h3 style="margin:0 0 14px;color:#1a5276;font-size:1.05rem;">回報問題或錯誤</h3>
-    <textarea id="issue-desc" rows="5" style="width:100%;padding:10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.88rem;resize:vertical;box-sizing:border-box;" placeholder="請描述問題，例如：在哪個頁面、做了什麼動作、出現了什麼狀況… （輸入 @ 可提及使用者）" oninput="_issueAtInput(this)"></textarea>
+    <textarea id="issue-desc" rows="5" style="width:100%;padding:10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.88rem;resize:vertical;box-sizing:border-box;" placeholder="請描述問題，例如：在哪個頁面、做了什麼動作、出現了什麼狀況… （輸入 @ 可提及使用者）" oninput="_issueAtInput(this)" onkeydown="_issueAtKeydown(event)"></textarea>
     <div id="attachPicker_issue_new" class="attach-picker-wrap"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
       <button class="btn btn-secondary" type="button" onclick="document.getElementById('issue-submit-modal').style.display='none'">取消</button>
@@ -30395,46 +30450,164 @@ async function _notifyIssueEvent(issue, comment, { notifyCreator = false, mentio
 }
 
 // ── @提及 自動完成下拉 ──
+// 姓氏拼音首字母對照（漢語拼音 / 通用拼音 / 台語羅馬字）
+const _SURNAME_INITIALS = {
+  '安':['a'],'艾':['a'],
+  '白':['b'],'鮑':['b'],'包':['b'],'邊':['b'],
+  '陳':['c','t'],'蔡':['c'],'曹':['c'],'程':['c'],'崔':['c'],'柴':['c'],'常':['c'],
+  '丁':['d'],'鄧':['d'],'杜':['d'],'董':['d'],'戴':['d'],'段':['d'],
+  '方':['f'],'馮':['f'],'范':['f'],'傅':['f'],'符':['f'],
+  '高':['g','k'],'顧':['g'],'郭':['g'],'管':['g'],'龔':['g'],
+  '黃':['h','n','ng'],'胡':['h'],'韓':['h'],'侯':['h'],'何':['h'],'洪':['h','a'],'賀':['h'],'霍':['h'],'花':['h'],
+  '金':['j'],'賈':['j'],'江':['j'],'姜':['j'],'蔣':['j'],'焦':['j'],
+  '孔':['k'],'柯':['k'],'康':['k'],
+  '劉':['l'],'李':['l'],'林':['l'],'羅':['l'],'呂':['l'],'雷':['l'],'盧':['l'],'廖':['l'],'梁':['l'],'陸':['l'],'黎':['l'],'龍':['l'],'賴':['l'],'藍':['l'],'連':['l'],'練':['l'],
+  '毛':['m'],'馬':['m'],'孟':['m'],'苗':['m'],
+  '倪':['n'],'寧':['n'],'聶':['n'],
+  '歐':['o','au'],
+  '彭':['p'],'潘':['p'],'龐':['p'],
+  '錢':['q','c'],'秦':['q'],'邱':['q','k'],
+  '任':['r'],
+  '宋':['s'],'孫':['s'],'沈':['s'],'施':['s'],'石':['s'],'史':['s'],'蘇':['s'],'邵':['s'],
+  '唐':['t'],'田':['t'],'譚':['t'],'陶':['t'],'湯':['t'],'滕':['t'],'童':['t'],
+  '王':['w','o'],'吳':['w','g','n'],'魏':['w'],'汪':['w'],'韋':['w'],'翁':['w','o'],'溫':['w'],
+  '徐':['x','s'],'謝':['x','s'],'許':['x','s'],'薛':['x','s'],'蕭':['x','s'],'熊':['x'],
+  '楊':['y'],'葉':['y'],'余':['y'],'于':['y'],'游':['y'],'岳':['y'],'顏':['y'],'嚴':['y'],'袁':['y'],'姚':['y'],'應':['y'],
+  '張':['z','t'],'趙':['z'],'周':['z'],'朱':['z'],'鄭':['z','t'],'鄒':['z'],'曾':['z','c'],'莊':['z'],'鐘':['z'],
+};
+
 let _atSuggestMeta = null;
+let _atSuggestIdx  = -1;
+
+function _atMatchesQuery(user, q) {
+  if (!q) return true;
+  const name  = (user.name  || '').toLowerCase();
+  const email = (user.email || '').toLowerCase();
+  if (name.includes(q)) return true;
+  if (q.length <= 4) {
+    const inits = _SURNAME_INITIALS[user.name?.[0]] || [];
+    if (inits.some(i => i.startsWith(q))) return true;
+  }
+  if (email.includes(q)) return true;
+  return false;
+}
+
+function _atScore(user, q, recentMentioned) {
+  const name  = (user.name  || '').toLowerCase();
+  const email = (user.email || '').toLowerCase();
+  let score = 0;
+  const mi = recentMentioned.indexOf(user.email);
+  if (mi !== -1) score += 1000 - mi * 50;
+  if (!q) return score;
+  if (name.startsWith(q)) score += 200;
+  else if (name.includes(q)) score += 100;
+  const inits = _SURNAME_INITIALS[user.name?.[0]] || [];
+  if (inits.some(i => i === q)) score += 80;
+  else if (inits.some(i => i.startsWith(q))) score += 60;
+  if (email.startsWith(q)) score += 40;
+  else if (email.includes(q)) score += 20;
+  return score;
+}
 
 function _issueAtInput(textarea) {
   const before = textarea.value.slice(0, textarea.selectionStart);
   const m = before.match(/@([^\s@,，。！？\n]*)$/);
   if (!m) { _hideAtSuggest(); return; }
-  const query = (m[1] || '').toLowerCase();
+  const query   = (m[1] || '').toLowerCase();
   const atStart = textarea.selectionStart - m[0].length;
+
+  // 從當前 issue context 取得最近提及名單（留言情境才有）
+  let recentMentioned = [];
+  const idMatch = (textarea.id || '').match(/^issue-comment-(.+)$/);
+  if (idMatch) {
+    const issue = issuesData.find(x => x.id === idMatch[1]);
+    if (issue) {
+      const texts = [issue.description, ...(issue.comments || []).map(c => c.content).reverse()];
+      const seen = new Set();
+      texts.forEach(text => {
+        _parseIssueMentions(text || '').forEach(email => {
+          if (!seen.has(email)) { seen.add(email); recentMentioned.push(email); }
+        });
+      });
+    }
+  }
+
+  const myEmail = currentUser?.email || '';
   const users = Object.entries(configData?.users || {})
     .map(([email, u]) => ({ email, name: u.name || email }))
-    .filter(u => u.email !== (currentUser?.email || ''))
-    .filter(u => !query || u.name.toLowerCase().includes(query) || u.email.toLowerCase().includes(query))
-    .slice(0, 6);
+    .filter(u => u.email !== myEmail)
+    .filter(u => _atMatchesQuery(u, query))
+    .sort((a, b) => _atScore(b, query, recentMentioned) - _atScore(a, query, recentMentioned))
+    .slice(0, 8);
+
   if (!users.length) { _hideAtSuggest(); return; }
   _atSuggestMeta = { textarea, start: atStart, len: m[0].length };
+  _atSuggestIdx  = -1;
+
   let panel = document.getElementById('at-suggest-panel');
   if (!panel) {
     panel = document.createElement('div');
     panel.id = 'at-suggest-panel';
-    panel.style.cssText = 'position:fixed;z-index:9999;background:#fff;border:1px solid #cbd5e0;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);min-width:180px;max-width:280px;overflow:hidden;display:none;';
+    panel.style.cssText = 'position:fixed;z-index:9999;background:#fff;border:1px solid #cbd5e0;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);min-width:160px;max-width:260px;overflow:hidden;display:none;';
     document.body.appendChild(panel);
   }
-  const rect = textarea.getBoundingClientRect();
-  panel.style.top = (rect.bottom + 4) + 'px';
-  panel.style.left = Math.min(rect.left, window.innerWidth - 290) + 'px';
+
+  // 方案 A 智慧翻轉：下方空間不足時改顯示在 textarea 上方
+  const rect       = textarea.getBoundingClientRect();
+  const PANEL_H    = Math.min(users.length * 38 + 8, 320);
+  const spaceBelow = window.innerHeight - rect.bottom - 8;
+  const spaceAbove = rect.top - 8;
+  panel.style.left   = Math.min(rect.left, window.innerWidth - 270) + 'px';
+  panel.style.bottom = '';
+  panel.style.top    = '';
+  if (spaceBelow >= PANEL_H || spaceBelow >= spaceAbove) {
+    panel.style.top = (rect.bottom + 4) + 'px';
+  } else {
+    panel.style.bottom = (window.innerHeight - rect.top + 4) + 'px';
+  }
   panel.style.display = 'block';
-  panel.innerHTML = users.map(u =>
-    `<div style="padding:7px 12px;cursor:pointer;font-size:.86rem;display:flex;gap:8px;align-items:center;"
-      onmousedown="event.preventDefault();_issueAtSelect(${JSON.stringify(u.name)})"
-      onmouseover="this.style.background='#ebf8ff'" onmouseout="this.style.background=''">
-      <span style="font-weight:600;color:#2d3748;">${escHtml(u.name)}</span>
-      <span style="color:#a0aec0;font-size:.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(u.email)}</span>
+
+  panel.innerHTML = users.map((u, idx) =>
+    `<div data-at-idx="" data-name=""
+      style="padding:8px 14px;cursor:pointer;font-size:.86rem;display:flex;align-items:center;"
+      onmousedown="event.preventDefault();_issueAtSelect(this.dataset.name)"
+      onmouseover="this.style.background='#ebf8ff';_atSuggestIdx=;"
+      onmouseout="if(_atSuggestIdx!==)this.style.background=''">
+      <span style="font-weight:600;color:#2d3748;"></span>
     </div>`
   ).join('');
+}
+
+function _issueAtKeydown(e) {
+  const panel = document.getElementById('at-suggest-panel');
+  if (!panel || panel.style.display === 'none') return;
+  if (e.key === 'ArrowDown') {
+    e.preventDefault(); _atSuggestMove(1);
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault(); _atSuggestMove(-1);
+  } else if ((e.key === 'Enter' || e.key === 'Tab') && _atSuggestIdx >= 0) {
+    e.preventDefault();
+    const item = panel.querySelector(`[data-at-idx=""]`);
+    if (item) _issueAtSelect(item.dataset.name);
+  } else if (e.key === 'Escape') {
+    _hideAtSuggest();
+  }
+}
+
+function _atSuggestMove(dir) {
+  const panel = document.getElementById('at-suggest-panel');
+  if (!panel) return;
+  const items = panel.querySelectorAll('[data-at-idx]');
+  if (!items.length) return;
+  _atSuggestIdx = Math.max(0, Math.min(items.length - 1, _atSuggestIdx + dir));
+  items.forEach((el, i) => { el.style.background = i === _atSuggestIdx ? '#ebf8ff' : ''; });
+  items[_atSuggestIdx]?.scrollIntoView({ block: 'nearest' });
 }
 
 function _issueAtSelect(name) {
   if (!_atSuggestMeta) return;
   const { textarea, start, len } = _atSuggestMeta;
-  const insert = '@' + name + ' ';
+  const insert = '@' + name + ' ';
   textarea.value = textarea.value.slice(0, start) + insert + textarea.value.slice(start + len);
   textarea.selectionStart = textarea.selectionEnd = start + insert.length;
   textarea.focus();
@@ -30445,12 +30618,12 @@ function _hideAtSuggest() {
   const p = document.getElementById('at-suggest-panel');
   if (p) p.style.display = 'none';
   _atSuggestMeta = null;
+  _atSuggestIdx  = -1;
 }
 
 document.addEventListener('click', e => {
   if (!document.getElementById('at-suggest-panel')?.contains(e.target)) _hideAtSuggest();
 });
-
 function openIssueModal() {
   document.getElementById('issue-desc').value = '';
   document.getElementById('issue-submit-modal').style.display = 'flex';
@@ -30765,7 +30938,7 @@ function renderIssuesPage() {
     const commentInput = `
       <div style="margin-top:8px;">
         <textarea id="issue-comment-${sid}" rows="2" placeholder="新增留言… （輸入 @ 可提及使用者）"
-          style="width:100%;padding:6px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;resize:vertical;box-sizing:border-box;" oninput="_issueAtInput(this)"></textarea>
+          style="width:100%;padding:6px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;resize:vertical;box-sizing:border-box;" oninput="_issueAtInput(this)" onkeydown="_issueAtKeydown(event)"></textarea>
         <div id="attachPicker_ic_${sid}" class="attach-picker-wrap"></div>
         <div style="display:flex;justify-content:flex-end;margin-top:4px;">
           <button class="btn btn-primary btn-sm" onclick="addIssueComment('${sid}')">送出</button>
@@ -30846,10 +31019,9 @@ function renderIssuesBadge() {
     ? `<span style="display:inline-block;background:${bg};color:#fff;border-radius:10px;font-size:.68rem;font-weight:700;padding:1px 6px;min-width:18px;text-align:center;line-height:1.5;">${count}</span>`
     : '';
 
-  wrap.innerHTML =
-    badge(redCount,    '#e53e3e') +
-    badge(orangeCount, '#dd6b20') +
-    badge(greenCount,  '#38a169');
+  const content = badge(redCount,'#e53e3e') + badge(orangeCount,'#dd6b20') + badge(greenCount,'#38a169');
+  wrap.innerHTML  = content;
+  wrap.style.display = content ? 'flex' : 'none';
 }
 
 // ══════════════════════════════════════════════
