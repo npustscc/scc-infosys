@@ -21579,6 +21579,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       </select>
       <button class="btn btn-primary btn-sm" onclick="window._mlBatchHandling()">套用</button>
       <button class="btn btn-secondary btn-sm" onclick="_mlCheckedIds.clear();renderMentalLeavePage()">取消全選</button>
+      <button class="btn btn-secondary btn-sm" onclick="mlPrintNotices()" style="white-space:nowrap;margin-left:auto;">🖨️ 列印通知單</button>
     </div>
     ${totalPages > 1 ? `
     <div style="display:flex;gap:6px;align-items:center;justify-content:flex-end;margin-bottom:6px;font-size:.85rem;">
@@ -21631,6 +21632,136 @@ window._resetMlColWidths = () => {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   _resetTableColWidths({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,9] : [1,2,3,4,5,6,7,8], prefKey: 'mlColWidths2' });
 };
+
+// ══════════════════════════════════════════════
+//  列印通知單
+// ══════════════════════════════════════════════
+function mlPrintNotices() {
+  if (!_mlCheckedIds.size) { alert('請先勾選要列印的紀錄'); return; }
+  const selectedRecords = mentalLeavesData.filter(l => _mlCheckedIds.has(l.id) && !l.deleted);
+  if (!selectedRecords.length) { alert('無有效紀錄可列印'); return; }
+
+  // 學期 for Title 2
+  const sems = [...new Set(selectedRecords.map(l => l.semester).filter(Boolean))].sort();
+  const semLbl = sems.length === 1 ? semesterLabel(sems[0]) : (sems.length ? sems.map(semesterLabel).join('、') : '');
+  const title2 = semLbl ? `${semLbl} 身心調適假請假狀況通知信` : '身心調適假請假狀況通知信';
+
+  // 列印日期 + 使用者
+  const now = new Date();
+  const pad2 = n => String(n).padStart(2, '0');
+  const printDate = `${now.getFullYear()}/${pad2(now.getMonth()+1)}/${pad2(now.getDate())}`;
+  const userName = configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || currentUser?.email || '';
+
+  // 去識別化：保留姓、尾字，中間全換○
+  function anonName(name) {
+    if (!name) return '—';
+    if (name.length <= 1) return name;
+    if (name.length === 2) return name[0] + '○';
+    return name[0] + '○'.repeat(name.length - 2) + name[name.length - 1];
+  }
+
+  // 累計天數（跨紀錄去重）
+  function totalDays(recs) {
+    const allDates = new Set();
+    const addDay = (s, n) => { const d = new Date(s); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+    recs.forEach(l => {
+      const { from, to } = _mlParseDateRange(l);
+      if (!from) return;
+      let cur = from;
+      while (cur <= (to || from)) { allDates.add(cur); cur = addDay(cur, 1); }
+    });
+    return allDates.size;
+  }
+
+  // 日期字串
+  function dateStr(l) {
+    const { from, to } = _mlParseDateRange(l);
+    if (!from) return l.leaveDate || '—';
+    const fmt = s => s.slice(5).replace('-', '/');
+    return from !== to ? `${fmt(from)}～${fmt(to)}` : fmt(from);
+  }
+
+  // 燈號文字 badge（print-safe）
+  function riskBadge(lv) {
+    if (!lv) return '';
+    const map = { 3: ['🔴 紅燈（危機）','#c53030','#fff5f5','#fc8181'], 2: ['🟡 黃燈（醫療）','#d97706','#fffbeb','#fcd34d'], 1: ['🔵 關注','#2b6cb0','#ebf8ff','#bee3f8'] };
+    const [lbl, c, bg, bd] = map[lv] || [];
+    return lbl ? `<span style="background:${bg};color:${c};border:1px solid ${bd};border-radius:10px;padding:1px 8px;font-size:9pt;font-weight:600;white-space:nowrap;">${lbl}</span>` : '';
+  }
+  function tagBadge(cls, lbl) {
+    const s = { consec:'#fee2e2,#c53030,#fc8181', accum:'#ebf8ff,#2b6cb0,#90cdf4' }[cls].split(',');
+    return `<span style="background:${s[0]};color:${s[1]};border:1px solid ${s[2]};border-radius:10px;padding:1px 8px;font-size:9pt;font-weight:600;white-space:nowrap;">${lbl}</span>`;
+  }
+
+  // 依學生分組，保留原始順序（第一筆 leaveDate 排序）
+  const byStudent = {};
+  const sidOrder = [];
+  selectedRecords.forEach(l => {
+    if (!byStudent[l.studentId]) { byStudent[l.studentId] = []; sidOrder.push(l.studentId); }
+    byStudent[l.studentId].push(l);
+  });
+
+  // 連請三天 studentIds
+  const consec3 = _mlConsecutive3DayIds(selectedRecords);
+
+  const blocks = [...new Set(sidOrder)].map(sid => {
+    const recs = byStudent[sid];
+    const sample = recs[0];
+    const name = sample.name || '—';
+    const mc = casesData.find(c => !c.deleted && c.studentId === sid);
+    const caseNum = mc ? mc.id : '';
+
+    const isConsec = consec3.has(sid);
+    const days = totalDays(recs);
+    const maxRisk = Math.max(0, ...recs.map(l => _mlMatchKeywords(l.reason).maxLevel));
+
+    const tagHtml = isConsec ? tagBadge('consec', '連請三天')
+                  : days >= 3 ? tagBadge('accum', `累計 ${days} 天`)
+                  : '';
+
+    const headerId = caseNum
+      ? `${escHtml(caseNum)}（${escHtml(anonName(name))} / ${escHtml(sid)}）`
+      : `${escHtml(anonName(name))} / ${escHtml(sid)}`;
+
+    const sorted = [...recs].sort((a, b) => (_mlParseDateRange(a).from||'').localeCompare(_mlParseDateRange(b).from||''));
+    const rows = sorted.map(l =>
+      `<div style="padding:1.2mm 2mm;font-size:10.5pt;color:#2d3748;">請假日期：${escHtml(dateStr(l))}　請假原因：${escHtml(l.reason||'（未填）')}</div>`
+    ).join('');
+
+    return `<div style="page-break-inside:avoid;border:1px solid #cbd5e0;border-radius:5px;padding:4.5mm 6mm;margin-bottom:5mm;">
+  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11.5pt;font-weight:700;margin-bottom:2.5mm;padding-bottom:2mm;border-bottom:1px solid #e2e8f0;">
+    <span>${headerId}</span>${tagHtml ? `<span>${tagHtml}</span>` : ''}${maxRisk ? `<span>${riskBadge(maxRisk)}</span>` : ''}
+  </div>
+  ${rows}
+</div>`;
+  }).join('');
+
+  const html = `<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<title>身心調適假通知單</title>
+<style>
+  @page { size: A4 portrait; margin: 20mm 18mm; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Microsoft JhengHei', '微軟正黑體', 'Noto Sans TC', sans-serif; font-size: 11pt; line-height: 1.65; color: #1a202c; margin: 0; padding: 0; }
+</style>
+</head>
+<body>
+<div style="text-align:right;font-size:9pt;color:#718096;margin-bottom:9mm;">列印日期：${escHtml(printDate)}　by ${escHtml(userName)}</div>
+<div style="text-align:center;font-size:18pt;font-weight:900;letter-spacing:.06em;margin-bottom:2.5mm;">國立屏東科技大學 學生諮商中心</div>
+<div style="text-align:center;font-size:14pt;font-weight:700;letter-spacing:.04em;color:#2d3748;margin-bottom:9mm;">${escHtml(title2)}</div>
+${blocks}
+</body>
+</html>`;
+
+  const win = window.open('', '_blank', 'width=820,height=1060');
+  if (!win) { alert('請允許彈出視窗以開啟列印預覽'); return; }
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 700);
+}
 
 window._mlDeduplicateRecords = async () => {
   const norm = s => (s || '').replace(/\s+/g, ' ').trim();
