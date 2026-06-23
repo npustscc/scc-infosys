@@ -18621,6 +18621,120 @@ function renderStats() {
       : `<option value="${escHtml(svcDefaultSem)}">${semesterLabel(svcDefaultSem)} 學期</option>`}
   </select>`;
 
+  // ── 身心調適假統計 ──
+  if (!window._mlStatsF) window._mlStatsF = { mode: 'month', dateFrom: '', dateTo: '' };
+  window._mlActive = mentalLeavesData.filter(l => !l.deleted);
+
+  window._renderMlContainer = () => {
+    const el = document.getElementById('ml-stats-container');
+    if (!el) return;
+    const F = window._mlStatsF;
+    let data = [...window._mlActive];
+    if (F.dateFrom) data = data.filter(l => (l.leaveDate || '') >= F.dateFrom);
+    if (F.dateTo)   data = data.filter(l => (l.leaveDate || '') <= F.dateTo);
+
+    const groups = {};
+    data.forEach(l => {
+      const k = F.mode === 'semester'
+        ? (l.semester || '未知')
+        : ((l.leaveDate || '').slice(0, 7) || '未知');
+      if (!groups[k]) groups[k] = [];
+      groups[k].push(l);
+    });
+    const keys = Object.keys(groups).sort((a, b) => b.localeCompare(a));
+
+    const handleCols = ['待處理', '已致電關懷', '已簡訊關懷', '非危機'];
+    const modeBtn = (m, lbl) => {
+      const act = F.mode === m;
+      return `<button style="padding:4px 12px;font-size:.82rem;border:none;cursor:pointer;background:${act?'#3182ce':'#f7fafc'};color:${act?'#fff':'#4a5568'};"
+        onclick="window._mlStatsF.mode='${m}';window._renderMlContainer()">${lbl}</button>`;
+    };
+    const filterBar = `
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+        <div style="display:flex;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">
+          ${modeBtn('month','月份')}${modeBtn('semester','學期')}
+        </div>
+        <label style="font-size:.82rem;color:#718096;display:flex;gap:4px;align-items:center;">
+          日期
+          <input type="date" value="${escHtml(F.dateFrom)}" style="padding:3px 6px;border:1px solid #e2e8f0;border-radius:5px;font-size:.82rem;"
+            onchange="window._mlStatsF.dateFrom=this.value;window._renderMlContainer()">
+          ～
+          <input type="date" value="${escHtml(F.dateTo)}" style="padding:3px 6px;border:1px solid #e2e8f0;border-radius:5px;font-size:.82rem;"
+            onchange="window._mlStatsF.dateTo=this.value;window._renderMlContainer()">
+        </label>
+        ${(F.dateFrom || F.dateTo) ? `<button class="btn btn-secondary btn-sm" style="padding:2px 8px;" onclick="window._mlStatsF.dateFrom='';window._mlStatsF.dateTo='';window._renderMlContainer()">清除</button>` : ''}
+        <span style="font-size:.8rem;color:#a0aec0;">共 ${data.length} 筆</span>
+      </div>`;
+
+    if (!keys.length) {
+      el.innerHTML = filterBar + '<p style="color:#a0aec0;font-size:.85rem;margin:0;">暫無資料</p>';
+      return;
+    }
+
+    const hdr = `<tr style="background:#edf2f7;">
+      <th style="padding:7px 10px;text-align:left;font-size:.79rem;font-weight:600;min-width:60px;border-bottom:2px solid #e2e8f0;border-right:1px solid #e2e8f0;">${F.mode==='semester'?'學期':'月份'}</th>
+      <th style="padding:7px 8px;text-align:center;font-size:.79rem;font-weight:700;border-bottom:2px solid #e2e8f0;border-left:1px solid #e2e8f0;white-space:nowrap;">筆數</th>
+      <th style="padding:7px 8px;text-align:center;font-size:.79rem;font-weight:600;border-bottom:2px solid #e2e8f0;border-left:1px solid #e2e8f0;white-space:nowrap;">人數</th>
+      <th style="padding:7px 8px;text-align:center;font-size:.79rem;font-weight:600;border-bottom:2px solid #e2e8f0;border-left:2px solid #e2e8f0;white-space:nowrap;background:#fff5f5;color:#c53030;">高風險</th>
+      <th style="padding:7px 8px;text-align:center;font-size:.79rem;font-weight:600;border-bottom:2px solid #e2e8f0;border-left:1px solid #e2e8f0;white-space:nowrap;background:#fffbeb;color:#b7791f;">中風險</th>
+      <th style="padding:7px 8px;text-align:center;font-size:.79rem;font-weight:600;border-bottom:2px solid #e2e8f0;border-left:1px solid #e2e8f0;white-space:nowrap;background:#f0fff4;color:#276749;">低風險</th>
+      <th style="padding:7px 8px;text-align:center;font-size:.79rem;font-weight:600;border-bottom:2px solid #e2e8f0;border-left:1px solid #e2e8f0;white-space:nowrap;">無標記</th>
+      ${handleCols.map(h => `<th style="padding:7px 8px;text-align:center;font-size:.79rem;font-weight:600;border-bottom:2px solid #e2e8f0;border-left:1px solid #e2e8f0;white-space:nowrap;">${escHtml(h)}</th>`).join('')}
+    </tr>`;
+
+    let totN = 0;
+    const totUniq = new Set(), totRisk = {0:0,1:0,2:0,3:0}, totH = {};
+    handleCols.forEach(h => totH[h] = 0);
+
+    const ce = v => v ? String(v) : `<span style="color:#cbd5e0;">—</span>`;
+    const tableRows = keys.map((k, ri) => {
+      const arr = groups[k];
+      const uniq = new Set(arr.map(l => l.studentId));
+      const byRisk = {0:0,1:0,2:0,3:0};
+      const byH = {};
+      handleCols.forEach(h => byH[h] = 0);
+      arr.forEach(l => {
+        byRisk[l.riskLevel ?? 0]++;
+        const hs = l.handlingStatus || '待處理';
+        if (hs in byH) byH[hs]++;
+      });
+      totN += arr.length; arr.forEach(l => totUniq.add(l.studentId));
+      [0,1,2,3].forEach(r => totRisk[r] += byRisk[r]);
+      handleCols.forEach(h => totH[h] += byH[h]);
+      const label = F.mode === 'semester'
+        ? semesterLabel(k) + ' 學期'
+        : (() => { const yr = k.slice(0,4), mo = parseInt(k.slice(5)); return `${yr}/${String(mo).padStart(2,'0')}`; })();
+      const bg = ri % 2 === 0 ? '#fff' : '#f7fafc';
+      return `<tr style="background:${bg};">
+        <td style="padding:6px 10px;font-size:.82rem;font-weight:600;white-space:nowrap;border-right:1px solid #e2e8f0;">${escHtml(label)}</td>
+        <td style="padding:6px 8px;text-align:center;font-size:.8rem;font-weight:700;border-left:1px solid #e2e8f0;">${arr.length}</td>
+        <td style="padding:6px 8px;text-align:center;font-size:.8rem;border-left:1px solid #e2e8f0;">${uniq.size}</td>
+        <td style="padding:6px 8px;text-align:center;font-size:.8rem;border-left:2px solid #e2e8f0;">${ce(byRisk[3])}</td>
+        <td style="padding:6px 8px;text-align:center;font-size:.8rem;border-left:1px solid #e2e8f0;">${ce(byRisk[2])}</td>
+        <td style="padding:6px 8px;text-align:center;font-size:.8rem;border-left:1px solid #e2e8f0;">${ce(byRisk[1])}</td>
+        <td style="padding:6px 8px;text-align:center;font-size:.8rem;border-left:1px solid #e2e8f0;">${ce(byRisk[0])}</td>
+        ${handleCols.map(h => `<td style="padding:6px 8px;text-align:center;font-size:.8rem;border-left:1px solid #e2e8f0;">${ce(byH[h])}</td>`).join('')}
+      </tr>`;
+    }).join('');
+
+    const totalRow = `<tr style="background:#edf2f7;border-top:2px solid #cbd5e0;">
+      <td style="padding:6px 10px;font-size:.82rem;font-weight:700;border-right:1px solid #e2e8f0;">合計</td>
+      <td style="padding:6px 8px;text-align:center;font-size:.8rem;font-weight:700;border-left:1px solid #e2e8f0;">${totN}</td>
+      <td style="padding:6px 8px;text-align:center;font-size:.8rem;font-weight:700;border-left:1px solid #e2e8f0;">${totUniq.size}</td>
+      <td style="padding:6px 8px;text-align:center;font-size:.8rem;font-weight:700;border-left:2px solid #e2e8f0;">${ce(totRisk[3])}</td>
+      <td style="padding:6px 8px;text-align:center;font-size:.8rem;font-weight:700;border-left:1px solid #e2e8f0;">${ce(totRisk[2])}</td>
+      <td style="padding:6px 8px;text-align:center;font-size:.8rem;font-weight:700;border-left:1px solid #e2e8f0;">${ce(totRisk[1])}</td>
+      <td style="padding:6px 8px;text-align:center;font-size:.8rem;font-weight:700;border-left:1px solid #e2e8f0;">${ce(totRisk[0])}</td>
+      ${handleCols.map(h => `<td style="padding:6px 8px;text-align:center;font-size:.8rem;font-weight:700;border-left:1px solid #e2e8f0;">${ce(totH[h])}</td>`).join('')}
+    </tr>`;
+
+    el.innerHTML = filterBar + `<div style="overflow-x:auto;">
+      <table style="width:100%;border-collapse:collapse;min-width:700px;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">
+        <thead>${hdr}</thead>
+        <tbody>${tableRows}${totalRow}</tbody>
+      </table></div>`;
+  };
+
   document.getElementById('stats-body').innerHTML = `
     <div class="stats-cards">
       <div class="stats-card"><div class="stats-num">${total}</div><div class="stats-lbl">可檢視個案</div></div>
@@ -18649,13 +18763,18 @@ function renderStats() {
         ${months.map(m => mkBar(parseInt(m.slice(5)) + ' 月', byMonth[m], monthMax, '#27ae60')).join('')}
       </div>
     </div>
-    <div class="card">
+    <div class="card" style="margin-bottom:20px;">
       <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
         <h3 style="margin:0;">服務狀況統計</h3>
         <div>${svcSemSelect}</div>
       </div>
       <div style="padding:16px;" id="svc-tbl">${window._renderSvcTable(svcDefaultSem)}</div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h3>身心調適假統計</h3></div>
+      <div style="padding:16px;" id="ml-stats-container"></div>
     </div>`;
+  window._renderMlContainer();
 }
 
 // ══════════════════════════════════════════════
