@@ -30150,7 +30150,7 @@ function restoreSidebarOrder() {
 <div id="issue-submit-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10000;align-items:center;justify-content:center;padding:20px;">
   <div style="background:#fff;border-radius:12px;max-width:520px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
     <h3 style="margin:0 0 14px;color:#1a5276;font-size:1.05rem;">回報問題或錯誤</h3>
-    <textarea id="issue-desc" rows="5" style="width:100%;padding:10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.88rem;resize:vertical;box-sizing:border-box;" placeholder="請描述問題，例如：在哪個頁面、做了什麼動作、出現了什麼狀況…"></textarea>
+    <textarea id="issue-desc" rows="5" style="width:100%;padding:10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.88rem;resize:vertical;box-sizing:border-box;" placeholder="請描述問題，例如：在哪個頁面、做了什麼動作、出現了什麼狀況… （輸入 @ 可提及使用者）" oninput="_issueAtInput(this)"></textarea>
     <div id="attachPicker_issue_new" class="attach-picker-wrap"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
       <button class="btn btn-secondary" type="button" onclick="document.getElementById('issue-submit-modal').style.display='none'">取消</button>
@@ -30222,6 +30222,116 @@ async function _saveIssues() {
   }
 }
 
+// ── @提及：解析內文中 @名字，回傳符合的 email 陣列 ──
+function _parseIssueMentions(content) {
+  const tokens = (content.match(/@([^\s@,，。！？\n]+)/g) || []).map(m => m.slice(1));
+  if (!tokens.length) return [];
+  const result = [];
+  Object.entries(configData?.users || {}).forEach(([email, u]) => {
+    const name = (u.name || '').trim();
+    if (tokens.some(t => t === name || t === email)) result.push(email);
+  });
+  return [...new Set(result)];
+}
+
+// ── 統一發送 issue 事件通知（鈴鐺 + 待辦）──
+async function _notifyIssueEvent(issue, comment, { notifyCreator = false, mentioned = [] } = {}) {
+  const myEmail = currentUser?.email || '';
+  const toNotify = new Map(); // email → { isMentioned }
+  if (notifyCreator && issue.submittedBy && issue.submittedBy !== myEmail) {
+    toNotify.set(issue.submittedBy, { isMentioned: false });
+  }
+  (mentioned || []).forEach(email => {
+    if (email !== myEmail) toNotify.set(email, { isMentioned: true });
+  });
+  if (!toNotify.size) return;
+  const issueLabel = `#${String(issue.serial).padStart(3, '0')}`;
+  const snippet = (comment ? comment.content : issue.description).slice(0, 60);
+  const authorName = configData?.users?.[myEmail]?.name || currentUser?.displayName || myEmail;
+  let configChanged = false;
+  for (const [email, { isMentioned }] of toNotify) {
+    const msg = isMentioned
+      ? `${authorName} 在回報 ${issueLabel} 中提及了您：${snippet}`
+      : `${authorName} 在回報 ${issueLabel} 留言：${snippet}`;
+    if (addNotificationToUser(email, 'issue_comment', issue.id, issue.serial, msg)) configChanged = true;
+    const todo = {
+      id: _genTodoId(),
+      type: 'issue_notification',
+      issueId: issue.id,
+      title: isMentioned ? `回報 ${issueLabel} 中提及了您` : `回報 ${issueLabel} 有新留言`,
+      description: msg,
+      done: false,
+      notifRead: false,
+      createdAt: new Date().toISOString(),
+      origin: 'autosave',
+    };
+    if (email === myEmail) {
+      _putTodoItem(todo);
+      saveUserTodos().catch(() => {});
+    } else {
+      _appendTodoToUser(email, todo).catch(() => {});
+    }
+  }
+  if (configChanged) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+}
+
+// ── @提及 自動完成下拉 ──
+let _atSuggestMeta = null;
+
+function _issueAtInput(textarea) {
+  const before = textarea.value.slice(0, textarea.selectionStart);
+  const m = before.match(/@([^\s@,，。！？\n]*)$/);
+  if (!m) { _hideAtSuggest(); return; }
+  const query = (m[1] || '').toLowerCase();
+  const atStart = textarea.selectionStart - m[0].length;
+  const users = Object.entries(configData?.users || {})
+    .map(([email, u]) => ({ email, name: u.name || email }))
+    .filter(u => u.email !== (currentUser?.email || ''))
+    .filter(u => !query || u.name.toLowerCase().includes(query) || u.email.toLowerCase().includes(query))
+    .slice(0, 6);
+  if (!users.length) { _hideAtSuggest(); return; }
+  _atSuggestMeta = { textarea, start: atStart, len: m[0].length };
+  let panel = document.getElementById('at-suggest-panel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'at-suggest-panel';
+    panel.style.cssText = 'position:fixed;z-index:9999;background:#fff;border:1px solid #cbd5e0;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.14);min-width:180px;max-width:280px;overflow:hidden;display:none;';
+    document.body.appendChild(panel);
+  }
+  const rect = textarea.getBoundingClientRect();
+  panel.style.top = (rect.bottom + 4) + 'px';
+  panel.style.left = Math.min(rect.left, window.innerWidth - 290) + 'px';
+  panel.style.display = 'block';
+  panel.innerHTML = users.map(u =>
+    `<div style="padding:7px 12px;cursor:pointer;font-size:.86rem;display:flex;gap:8px;align-items:center;"
+      onmousedown="event.preventDefault();_issueAtSelect(${JSON.stringify(u.name)})"
+      onmouseover="this.style.background='#ebf8ff'" onmouseout="this.style.background=''">
+      <span style="font-weight:600;color:#2d3748;">${escHtml(u.name)}</span>
+      <span style="color:#a0aec0;font-size:.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(u.email)}</span>
+    </div>`
+  ).join('');
+}
+
+function _issueAtSelect(name) {
+  if (!_atSuggestMeta) return;
+  const { textarea, start, len } = _atSuggestMeta;
+  const insert = '@' + name + ' ';
+  textarea.value = textarea.value.slice(0, start) + insert + textarea.value.slice(start + len);
+  textarea.selectionStart = textarea.selectionEnd = start + insert.length;
+  textarea.focus();
+  _hideAtSuggest();
+}
+
+function _hideAtSuggest() {
+  const p = document.getElementById('at-suggest-panel');
+  if (p) p.style.display = 'none';
+  _atSuggestMeta = null;
+}
+
+document.addEventListener('click', e => {
+  if (!document.getElementById('at-suggest-panel')?.contains(e.target)) _hideAtSuggest();
+});
+
 function openIssueModal() {
   document.getElementById('issue-desc').value = '';
   document.getElementById('issue-submit-modal').style.display = 'flex';
@@ -30257,6 +30367,11 @@ async function submitIssue() {
       }
     });
     if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    // @提及通知（排除已收到 new_issue 通知的管理者，避免重複）
+    const _adminEmails = new Set(Object.entries(configData?.users || {})
+      .filter(([, u]) => u.role === '主任' || u.extraRole === '管理者').map(([e]) => e));
+    const _mentioned = _parseIssueMentions(desc).filter(e => !_adminEmails.has(e));
+    if (_mentioned.length) _notifyIssueEvent(issue, null, { mentioned: _mentioned });
     document.getElementById('issue-submit-modal').style.display = 'none';
     renderIssuesPage();
   } catch (e) {
@@ -30400,6 +30515,7 @@ async function addIssueComment(issueId) {
   showLoading('儲存中…');
   try {
     await _saveIssues();
+    _notifyIssueEvent(issue, comment, { notifyCreator: true, mentioned: _parseIssueMentions(content) });
     renderIssuesPage();
   } catch (e) {
     issue.comments.pop();
@@ -30475,8 +30591,8 @@ function renderIssuesPage() {
 
     const commentInput = `
       <div style="margin-top:8px;">
-        <textarea id="issue-comment-${sid}" rows="2" placeholder="新增留言…"
-          style="width:100%;padding:6px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;resize:vertical;box-sizing:border-box;"></textarea>
+        <textarea id="issue-comment-${sid}" rows="2" placeholder="新增留言… （輸入 @ 可提及使用者）"
+          style="width:100%;padding:6px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;resize:vertical;box-sizing:border-box;" oninput="_issueAtInput(this)"></textarea>
         <div id="attachPicker_ic_${sid}" class="attach-picker-wrap"></div>
         <div style="display:flex;justify-content:flex-end;margin-top:4px;">
           <button class="btn btn-primary btn-sm" onclick="addIssueComment('${sid}')">送出</button>
