@@ -3193,7 +3193,7 @@
 // ══════════════════════════════════════════════
 const CLIENT_ID   = '68582831293-fecbka17adht886tm6oh18vrdsdg1hbj.apps.googleusercontent.com';
 const SCOPES      = 'https://www.googleapis.com/auth/drive openid profile email';
-const DRIVE_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP'; // 正式版資料夾
+const DRIVE_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP';
 const BOOTSTRAP_ADMIN_EMAIL = 'linkinlol528101@gmail.com'; // 永久管理者備援帳號
 const CONFIG_FILE     = 'config.json';
 const CASES_INDEX     = 'cases/index.json'; // 舊格式（升級後僅作備份）
@@ -5919,6 +5919,8 @@ function _syncBellBadge() {
     autosaveBadge.textContent = autosaveUnread > 99 ? '99+' : autosaveUnread;
     autosaveBadge.style.display = autosaveUnread > 0 ? 'inline' : 'none';
   }
+  if (!window._basePageTitle) window._basePageTitle = document.title;
+  document.title = total > 0 ? `(${total > 99 ? '99+' : total}) ${window._basePageTitle}` : window._basePageTitle;
 }
 function renderJobList() {
   const el = document.getElementById('notif-job-list');
@@ -6007,7 +6009,11 @@ function renderNotifList() {
       <button onclick="location.reload()" style="margin-top:6px;padding:4px 14px;background:#dd6b20;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.8rem;">立即重新整理</button>
     </div>` : '';
   const mlItems = _mlUnacknowledgedForMe();
-  const mlBanner = mlItems.length ? mlItems.map(l => {
+  const _mlIsPriv = currentRole === '主任' || extraRole === '管理者' || isMentalLeaveContact;
+  const _mlMyIds = _getMyCaseStudentIds();
+  const _mlIndividualItems = _mlIsPriv ? mlItems.filter(l => _mlMyIds.has(l.studentId)) : mlItems;
+  const _mlOtherItems = _mlIsPriv ? mlItems.filter(l => !_mlMyIds.has(l.studentId)) : [];
+  const _mlItemBanner = items => items.map(l => {
     const mc = (casesData || []).find(c => !c.deleted && c.studentId === l.studentId);
     const dateStr = (l.receivedAt || '').slice(0, 10);
     return `<div class="notif-item notif-unread" style="border-left:4px solid #276749;background:#f0fff4;cursor:default;">
@@ -6020,7 +6026,22 @@ function renderNotifList() {
         </div>
       </div>
     </div>`;
-  }).join('') : '';
+  }).join('');
+  const _mlSummaryBanner = _mlOtherItems.length ? (() => {
+    const uniqStudents = new Set(_mlOtherItems.map(l => l.studentId)).size;
+    const idsAttr = escHtml(JSON.stringify(_mlOtherItems.map(l => l.id)));
+    return `<div class="notif-item notif-unread" style="border-left:4px solid #276749;background:#f0fff4;cursor:default;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:.8rem;font-weight:700;color:#276749;margin-bottom:3px;">🌿 身心調適假通知（彙總）</div>
+        <div style="font-size:.875rem;color:#2d3748;line-height:1.5;">已新增 ${_mlOtherItems.length} 個身心調適假通知，已開案個案有 ${uniqStudents} 位</div>
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;">
+          <button onclick="showPage('page-mental-leave',document.getElementById('nav-mental-leave-item'));renderMentalLeavePage();toggleNotifPanel();" style="padding:3px 12px;background:#2b6cb0;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;">前往身心調適假</button>
+          <button data-ml-ids="${idsAttr}" onclick="window._mlAcknowledgeAll(JSON.parse(this.dataset.mlIds))" style="padding:3px 12px;background:#276749;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;">全部收到</button>
+        </div>
+      </div>
+    </div>`;
+  })() : '';
+  const mlBanner = _mlItemBanner(_mlIndividualItems) + _mlSummaryBanner;
   if (!notifs.length && !_updateAvailable && !mlItems.length) {
     list.innerHTML = '<div style="padding:24px;text-align:center;color:#718096;font-size:.875rem;">目前沒有通知</div>';
     return;
@@ -6046,6 +6067,20 @@ window._mlAcknowledge = async (id) => {
   if (document.getElementById('notif-panel')?.style.display !== 'none') renderNotifList();
   if (document.getElementById('page-todos')?.classList.contains('active')) renderTodosPage();
   const jobId = bgJobAdd(`身心調適假已確認：${r.name || r.studentId}`);
+  try { await saveMentalLeaves(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); }
+};
+window._mlAcknowledgeAll = async (ids) => {
+  if (!currentUser?.email || !ids?.length) return;
+  ids.forEach(id => {
+    const r = mentalLeavesData.find(l => l.id === id);
+    if (!r) return;
+    if (!Array.isArray(r.acknowledgedBy)) r.acknowledgedBy = [];
+    if (!r.acknowledgedBy.includes(currentUser.email)) r.acknowledgedBy.push(currentUser.email);
+  });
+  _syncTodoBadge();
+  if (document.getElementById('notif-panel')?.style.display !== 'none') renderNotifList();
+  if (document.getElementById('page-todos')?.classList.contains('active')) renderTodosPage();
+  const jobId = bgJobAdd(`身心調適假已全部確認（${ids.length} 筆）`);
   try { await saveMentalLeaves(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); }
 };
 
