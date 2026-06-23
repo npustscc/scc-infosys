@@ -30386,15 +30386,24 @@ async function updateIssueStatus(issueId, newStatus) {
   const issue = issuesData.find(x => x.id === issueId);
   if (!issue) return;
   const prev = issue.status;
+  if (prev === newStatus) return;
   issue.status = newStatus;
-  const jobId = bgJobAdd(`更新回報狀態（${escHtml(issue.title || issueId).slice(0,20)}）`);
+  if (!issue.statusHistory) issue.statusHistory = [];
+  issue.statusHistory.push({
+    from: prev, to: newStatus,
+    by: currentUser?.email || '',
+    byName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
+    at: new Date().toISOString(),
+  });
+  const jobId = bgJobAdd(`更新回報狀態（#${String(issue.serial).padStart(3,'0')}）`);
   try {
     await _saveIssues();
     bgJobDone(jobId);
-    auditLog('更新回報狀態', null, null, `${issue.title || issueId}：${prev} → ${newStatus}`);
+    auditLog('更新回報狀態', null, null, `#${String(issue.serial).padStart(3,'0')}：${prev} → ${newStatus}`);
     renderIssuesPage();
   } catch (e) {
     issue.status = prev;
+    issue.statusHistory.pop();
     bgJobFail(jobId, e.message);
     alert('儲存失敗：' + e.message);
   }
@@ -30529,17 +30538,49 @@ function renderIssuesPage() {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   const el = document.getElementById('issues-body');
   if (!el) return;
+  if (!window._issueFilters) window._issueFilters = { status: 'all', dateFrom: '', dateTo: '' };
+  const F = window._issueFilters;
 
   const statusBadge = s => {
     if (s === 'resolved')    return '<span class="badge" style="background:#c6f6d5;color:#276749;border:1px solid #9ae6b4;">已解決</span>';
     if (s === 'in_progress') return '<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;">處理中</span>';
     return '<span class="badge" style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;">待處理</span>';
   };
+  const statusOrder = { open: 0, in_progress: 1, resolved: 2 };
+  const statusLabel = { open: '待處理', in_progress: '處理中', resolved: '已解決' };
 
-  const sorted = [...issuesData].sort((a, b) => (b.submittedAt || '') > (a.submittedAt || '') ? 1 : -1);
+  // 篩選
+  let filtered = [...issuesData];
+  if (F.status !== 'all') filtered = filtered.filter(x => x.status === F.status);
+  if (F.dateFrom) filtered = filtered.filter(x => (x.submittedAt || '') >= F.dateFrom);
+  if (F.dateTo)   filtered = filtered.filter(x => (x.submittedAt || '') <= F.dateTo + 'T23:59:59');
+  // 排序：待處理 > 處理中 > 已解決，同狀態內由新到舊
+  const sorted = filtered.sort((a, b) => {
+    const sd = (statusOrder[a.status] ?? 0) - (statusOrder[b.status] ?? 0);
+    if (sd !== 0) return sd;
+    return (b.submittedAt || '') > (a.submittedAt || '') ? 1 : -1;
+  });
+
+  const filterBar = `
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <select style="padding:4px 8px;border:1px solid #e2e8f0;border-radius:5px;font-size:.83rem;" onchange="window._issueFilters.status=this.value;renderIssuesPage()">
+        <option value="all"        ${F.status==='all'?'selected':''}>全部狀態</option>
+        <option value="open"       ${F.status==='open'?'selected':''}>待處理</option>
+        <option value="in_progress"${F.status==='in_progress'?'selected':''}>處理中</option>
+        <option value="resolved"   ${F.status==='resolved'?'selected':''}>已解決</option>
+      </select>
+      <label style="font-size:.82rem;color:#718096;display:flex;gap:4px;align-items:center;">
+        日期
+        <input type="date" value="${escHtml(F.dateFrom)}" style="padding:3px 6px;border:1px solid #e2e8f0;border-radius:5px;font-size:.82rem;" onchange="window._issueFilters.dateFrom=this.value;renderIssuesPage()">
+        ～
+        <input type="date" value="${escHtml(F.dateTo)}" style="padding:3px 6px;border:1px solid #e2e8f0;border-radius:5px;font-size:.82rem;" onchange="window._issueFilters.dateTo=this.value;renderIssuesPage()">
+      </label>
+      <span style="font-size:.8rem;color:#a0aec0;">共 ${sorted.length} 筆</span>
+      ${(F.status !== 'all' || F.dateFrom || F.dateTo) ? `<button class="btn btn-secondary btn-sm" style="padding:2px 8px;" onclick="window._issueFilters={status:'all',dateFrom:'',dateTo:''};renderIssuesPage()">清除篩選</button>` : ''}
+    </div>`;
 
   if (!sorted.length) {
-    el.innerHTML = '<div class="empty-state" style="padding:24px;"><p>尚無回報紀錄</p></div>';
+    el.innerHTML = filterBar + '<div class="empty-state" style="padding:24px;"><p>無符合條件的回報</p></div>';
     return;
   }
 
@@ -30576,6 +30617,19 @@ function renderIssuesPage() {
             ${renderAttachChips(c.attachments)}
           </div>`;
         }).join('')}
+      </div>` : '';
+
+    // 狀態歷程
+    const statusHistoryHtml = (issue.statusHistory || []).length ? `
+      <div style="margin-top:8px;padding-top:8px;border-top:1px dashed #e2e8f0;font-size:.78rem;color:#a0aec0;">
+        ${(issue.statusHistory || []).map(h => {
+          const atStr = h.at ? new Date(h.at).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+          return `<span style="display:inline-flex;gap:3px;align-items:center;margin-right:10px;">
+            <span style="color:#718096;font-weight:600;">${escHtml(h.byName||h.by||'—')}</span>
+            將狀態由 <em>${escHtml(statusLabel[h.from]||h.from)}</em> 改為 <em>${escHtml(statusLabel[h.to]||h.to)}</em>
+            ${atStr ? `<span style="color:#cbd5e0;">・${atStr}</span>` : ''}
+          </span>`;
+        }).join('<br>')}
       </div>` : '';
 
     const adminStatusControl = isAdmin ? `
@@ -30617,10 +30671,12 @@ function renderIssuesPage() {
         <div id="issue-desc-text-${sid}" style="font-size:.88rem;color:#2d3748;white-space:pre-wrap;">${escHtml(issue.description)}</div>
         ${renderAttachChips(issue.attachments)}
         ${commentsHtml}
+        ${statusHistoryHtml}
         ${adminStatusControl}
         ${commentInput}
       </div>`;
   }).join('');
+  el.innerHTML = filterBar + el.innerHTML;
   renderIssuesBadge();
   setTimeout(() => {
     sorted.forEach(issue => { attachInit('ic_' + issue.id, []); });
