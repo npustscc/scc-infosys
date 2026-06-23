@@ -194,12 +194,21 @@
     #nav-ml-fetch-icon:hover { background: rgba(49,130,206,.18) !important; }
     .sidebar-section { padding: 0 16px; margin-bottom: 8px; }
     .sidebar-section h3 {
+      display: flex; align-items: center; cursor: pointer; user-select: none;
       font-size: .7rem;
       text-transform: uppercase;
       letter-spacing: .08em;
       color: #a0aec0;
       padding: 8px 8px 4px;
+      margin: 0;
     }
+    .sidebar-section h3:hover { color: #718096; }
+    .sidebar-section-toggle { margin-left: auto; font-size: .65rem; color: #b0bec5; transition: transform .18s; padding-left: 4px; }
+    .sidebar-section.sec-collapsed .sidebar-section-toggle { transform: rotate(-90deg); }
+    .sidebar-section.sec-collapsed .nav-item:not(.nav-pinned) { display: none; }
+    .nav-pin-btn { flex-shrink: 0; background: none; border: none; cursor: pointer; color: #c8d0d8; font-size: .78rem; opacity: 0; padding: 0 2px; line-height: 1; }
+    .nav-item:hover .nav-pin-btn { opacity: 1; }
+    .nav-item.nav-pinned .nav-pin-btn { opacity: 1; color: #dd6b20; }
     .nav-item {
       display: flex;
       align-items: center;
@@ -1087,8 +1096,8 @@
       </div>
     </div>
 
-    <div class="sidebar-section">
-      <h3>個案管理</h3>
+    <div class="sidebar-section" data-section-id="cases">
+      <h3 onclick="toggleSidebarSection('cases')">個案管理<span class="sidebar-section-toggle">▾</span></h3>
       <div class="nav-item active" data-nav-id="page-cases" onclick="showPage('page-cases', this)">
         <span class="icon">📋</span> 個案列表 <span class="nav-drag-handle">⠿</span>
       </div>
@@ -1121,8 +1130,8 @@
       </div>
     </div>
 
-    <div class="sidebar-section" id="nav-admin-section" style="display:none;">
-      <h3>系統管理</h3>
+    <div class="sidebar-section" id="nav-admin-section" data-section-id="admin" style="display:none;">
+      <h3 onclick="toggleSidebarSection('admin')">系統管理<span class="sidebar-section-toggle">▾</span></h3>
       <div class="nav-item" data-nav-id="page-admin" onclick="showPage('page-admin', this); renderAdminUsers(); renderAdminDegreeMapping()">
         <span class="icon">⚙️</span> 使用者管理 <span class="nav-drag-handle">⠿</span>
       </div>
@@ -1134,8 +1143,8 @@
       </div>
     </div>
 
-    <div class="sidebar-section">
-      <h3>設定與工具</h3>
+    <div class="sidebar-section" data-section-id="tools">
+      <h3 onclick="toggleSidebarSection('tools')">設定與工具<span class="sidebar-section-toggle">▾</span></h3>
       <div class="nav-item" data-nav-id="page-issues" onclick="showPage('page-issues', this); markIssuesSeen(); renderIssuesPage()">
         <span class="icon">🐛</span>
         <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;">
@@ -4962,6 +4971,7 @@ async function afterLogin() {
     applyDrivePrefs();
     initSidebarDrag();
     initSidebarResize();
+    initSidebarCollapsePins();
     renderNotifBell();
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-layout').style.display  = 'flex';
@@ -30120,6 +30130,55 @@ function restoreSidebarOrder() {
     section.querySelectorAll('.nav-item').forEach(n => { if (n.dataset.navId) itemMap[n.dataset.navId] = n; });
     ids.forEach(id => { if (itemMap[id]) section.appendChild(itemMap[id]); });
   });
+}
+
+// ══════════════════════════════════════════════
+//  Sidebar 收束 / 釘選
+// ══════════════════════════════════════════════
+function initSidebarCollapsePins() {
+  document.querySelectorAll('.sidebar-section .nav-item[data-nav-id]').forEach(item => {
+    if (item.querySelector('.nav-pin-btn')) return;
+    const btn = document.createElement('button');
+    btn.className = 'nav-pin-btn';
+    btn.title = '釘選此項目（收束後仍可見）';
+    btn.textContent = '📌';
+    btn.addEventListener('click', e => { e.stopPropagation(); toggleNavPin(item.dataset.navId); });
+    const handle = item.querySelector('.nav-drag-handle');
+    if (handle) item.insertBefore(btn, handle);
+    else item.appendChild(btn);
+  });
+  applySidebarPrefs();
+}
+
+function applySidebarPrefs() {
+  const pinned    = _userPref_('sidebarPinned', []);
+  const collapsed = _userPref_('sidebarCollapsed', []);
+  document.querySelectorAll('.nav-item[data-nav-id]').forEach(el => {
+    el.classList.toggle('nav-pinned', pinned.includes(el.dataset.navId));
+  });
+  document.querySelectorAll('.sidebar-section[data-section-id]').forEach(el => {
+    el.classList.toggle('sec-collapsed', collapsed.includes(el.dataset.sectionId));
+  });
+}
+
+function toggleSidebarSection(sectionId) {
+  const el = document.querySelector(`.sidebar-section[data-section-id="${sectionId}"]`);
+  if (!el) return;
+  const collapsed = new Set(_userPref_('sidebarCollapsed', []));
+  if (collapsed.has(sectionId)) collapsed.delete(sectionId);
+  else collapsed.add(sectionId);
+  el.classList.toggle('sec-collapsed', collapsed.has(sectionId));
+  syncUserPref_({ sidebarCollapsed: [...collapsed] });
+}
+
+function toggleNavPin(navId) {
+  const el = document.querySelector(`.nav-item[data-nav-id="${CSS.escape(navId)}"]`);
+  if (!el) return;
+  const pinned = new Set(_userPref_('sidebarPinned', []));
+  if (pinned.has(navId)) pinned.delete(navId);
+  else pinned.add(navId);
+  el.classList.toggle('nav-pinned', pinned.has(navId));
+  syncUserPref_({ sidebarPinned: [...pinned] });
 }
 </script>
 
