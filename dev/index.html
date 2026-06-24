@@ -195,7 +195,7 @@
     .sidebar-section { padding: 0 16px; margin-bottom: 8px; }
     .sidebar-section h3 {
       display: flex; align-items: center; cursor: pointer; user-select: none;
-      font-size: .7rem;
+      font-size: .82rem;
       text-transform: uppercase;
       letter-spacing: .08em;
       color: #a0aec0;
@@ -203,12 +203,16 @@
       margin: 0;
     }
     .sidebar-section h3:hover { color: #718096; }
-    .sidebar-section-toggle { margin-left: auto; font-size: .65rem; color: #b0bec5; transition: transform .18s; padding-left: 4px; }
+    .sidebar-section-toggle { margin-left: auto; font-size: .9rem; color: #b0bec5; transition: transform .18s; padding-left: 4px; }
     .sidebar-section.sec-collapsed .sidebar-section-toggle { transform: rotate(-90deg); }
     .sidebar-section.sec-collapsed .nav-item:not(.nav-pinned) { display: none; }
-    .nav-pin-btn { flex-shrink: 0; background: none; border: none; cursor: pointer; color: #c8d0d8; font-size: .78rem; opacity: 0; padding: 0 2px; line-height: 1; }
-    .nav-item:hover .nav-pin-btn { opacity: 1; }
-    .nav-item.nav-pinned .nav-pin-btn { opacity: 1; color: #dd6b20; }
+    .nav-pin-bar {
+      position: absolute; left: 3px; top: 4px; bottom: 4px;
+      width: 3px; border-radius: 2px; cursor: pointer;
+      background: transparent; transition: background .15s;
+    }
+    .nav-item:hover .nav-pin-bar { background: #c8d0d8; }
+    .nav-item.nav-pinned .nav-pin-bar { background: #dd6b20; }
     .nav-item {
       display: flex;
       align-items: center;
@@ -219,6 +223,7 @@
       font-size: .9rem;
       color: #4a5568;
       transition: background .15s, color .15s;
+      position: relative;
     }
     .nav-item:hover   { background: #ebf4fb; color: #1a5276; }
     .nav-item.active  { background: #d6eaf8; color: #1a5276; font-weight: 600; }
@@ -5767,7 +5772,7 @@ function renderCases() {
         <col id="cases-col-2" style="min-width:70px;">
         <col id="cases-col-3" style="min-width:80px;">
         <col id="cases-col-4" style="min-width:90px;">
-        <col id="cases-col-5" style="min-width:120px;">
+        <col id="cases-col-5" style="min-width:160px;">
         <col id="cases-col-6" style="min-width:80px;">
         <col id="cases-col-7" style="min-width:60px;">
         <col id="cases-col-8" style="min-width:80px;">
@@ -21641,10 +21646,10 @@ function mlPrintNotices() {
   const selectedRecords = mentalLeavesData.filter(l => _mlCheckedIds.has(l.id) && !l.deleted);
   if (!selectedRecords.length) { alert('無有效紀錄可列印'); return; }
 
-  // 學期 for Title 2
+  // 共用學期標籤
   const sems = [...new Set(selectedRecords.map(l => l.semester).filter(Boolean))].sort();
   const semLbl = sems.length === 1 ? semesterLabel(sems[0]) : (sems.length ? sems.map(semesterLabel).join('、') : '');
-  const title2 = semLbl ? `${semLbl} 身心調適假請假狀況通知信` : '身心調適假請假狀況通知信';
+  const title2txt = semLbl ? `${semLbl} 身心調適假請假狀況通知信` : '身心調適假請假狀況通知信';
 
   // 列印日期 + 使用者
   const now = new Date();
@@ -21652,7 +21657,7 @@ function mlPrintNotices() {
   const printDate = `${now.getFullYear()}/${pad2(now.getMonth()+1)}/${pad2(now.getDate())}`;
   const userName = configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || currentUser?.email || '';
 
-  // 去識別化：保留姓、尾字，中間全換○
+  // 去識別化
   function anonName(name) {
     if (!name) return '—';
     if (name.length <= 1) return name;
@@ -21681,60 +21686,63 @@ function mlPrintNotices() {
     return from !== to ? `${fmt(from)}～${fmt(to)}` : fmt(from);
   }
 
-  // 燈號文字 badge（print-safe）
+  // badge helpers（inline style，print-safe）
   function riskBadge(lv) {
     if (!lv) return '';
-    const map = { 3: ['🔴 紅燈（危機）','#c53030','#fff5f5','#fc8181'], 2: ['🟡 黃燈（醫療）','#d97706','#fffbeb','#fcd34d'], 1: ['🔵 關注','#2b6cb0','#ebf8ff','#bee3f8'] };
-    const [lbl, c, bg, bd] = map[lv] || [];
+    const map = { 3:['🔴 紅燈（危機）','#c53030','#fff5f5','#fc8181'], 2:['🟡 黃燈（醫療）','#d97706','#fffbeb','#fcd34d'], 1:['🔵 關注','#2b6cb0','#ebf8ff','#bee3f8'] };
+    const [lbl,c,bg,bd] = map[lv] || [];
     return lbl ? `<span style="background:${bg};color:${c};border:1px solid ${bd};border-radius:10px;padding:1px 8px;font-size:9pt;font-weight:600;white-space:nowrap;">${lbl}</span>` : '';
   }
   function tagBadge(cls, lbl) {
-    const s = { consec:'#fee2e2,#c53030,#fc8181', accum:'#ebf8ff,#2b6cb0,#90cdf4' }[cls].split(',');
+    const s = {consec:'#fee2e2,#c53030,#fc8181',accum:'#ebf8ff,#2b6cb0,#90cdf4'}[cls].split(',');
     return `<span style="background:${s[0]};color:${s[1]};border:1px solid ${s[2]};border-radius:10px;padding:1px 8px;font-size:9pt;font-weight:600;white-space:nowrap;">${lbl}</span>`;
   }
 
-  // 依學生分組，保留原始順序（第一筆 leaveDate 排序）
+  // 依學生分組
   const byStudent = {};
   const sidOrder = [];
   selectedRecords.forEach(l => {
     if (!byStudent[l.studentId]) { byStudent[l.studentId] = []; sidOrder.push(l.studentId); }
     byStudent[l.studentId].push(l);
   });
-
-  // 連請三天 studentIds
   const consec3 = _mlConsecutive3DayIds(selectedRecords);
 
-  const blocks = [...new Set(sidOrder)].map(sid => {
+  // 剪裁線 HTML
+  const cutLine = `<div style="display:flex;align-items:center;gap:6px;color:#aaa;font-size:9pt;margin:5mm 0;page-break-inside:avoid;">` +
+    `<div style="flex:1;border-top:1px dashed #bbb;"></div><span>✂</span><div style="flex:1;border-top:1px dashed #bbb;"></div></div>`;
+
+  const cardHeader = `<div style="text-align:center;font-size:16pt;font-weight:900;letter-spacing:.06em;margin-bottom:1.5mm;">國立屏東科技大學 學生諮商中心</div>` +
+    `<div style="text-align:center;font-size:12.5pt;font-weight:700;letter-spacing:.04em;color:#2d3748;margin-bottom:1.5mm;">${escHtml(title2txt)}</div>` +
+    `<div style="text-align:right;font-size:8.5pt;color:#718096;margin-bottom:2.5mm;">列印日期：${escHtml(printDate)}　by ${escHtml(userName)}</div>` +
+    `<div style="border-top:1px solid #e2e8f0;margin-bottom:2.5mm;"></div>`;
+
+  const sids = [...new Set(sidOrder)];
+  const blocks = sids.map(sid => {
     const recs = byStudent[sid];
     const sample = recs[0];
     const name = sample.name || '—';
     const mc = casesData.find(c => !c.deleted && c.studentId === sid);
     const caseNum = mc ? mc.id : '';
-
     const isConsec = consec3.has(sid);
     const days = totalDays(recs);
     const maxRisk = Math.max(0, ...recs.map(l => _mlMatchKeywords(l.reason).maxLevel));
-
-    const tagHtml = isConsec ? tagBadge('consec', '連請三天')
-                  : days >= 3 ? tagBadge('accum', `累計 ${days} 天`)
-                  : '';
-
+    const tagHtml = isConsec ? tagBadge('consec','連請三天') : days >= 3 ? tagBadge('accum',`累計 ${days} 天`) : '';
     const headerId = caseNum
       ? `${escHtml(caseNum)}（${escHtml(anonName(name))} / ${escHtml(sid)}）`
       : `${escHtml(anonName(name))} / ${escHtml(sid)}`;
-
-    const sorted = [...recs].sort((a, b) => (_mlParseDateRange(a).from||'').localeCompare(_mlParseDateRange(b).from||''));
+    const sorted = [...recs].sort((a,b) => (_mlParseDateRange(a).from||'').localeCompare(_mlParseDateRange(b).from||''));
     const rows = sorted.map(l =>
-      `<div style="padding:1.2mm 2mm;font-size:10.5pt;color:#2d3748;">請假日期：${escHtml(dateStr(l))}　請假原因：${escHtml(l.reason||'（未填）')}</div>`
+      `<div style="padding:1.5mm 0;font-size:10.5pt;color:#2d3748;border-bottom:1px dotted #edf2f7;">` +
+      `請假日期：${escHtml(dateStr(l))}　請假原因：${escHtml(l.reason||'（未填）')}</div>`
     ).join('');
+    return `<div style="page-break-inside:avoid;border:1px solid #cbd5e0;border-radius:5px;padding:4mm 6mm;">` +
+      cardHeader +
+      `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11pt;font-weight:700;margin-bottom:2mm;">` +
+      `<span>${headerId}</span>${tagHtml?`<span>${tagHtml}</span>`:''}<span>${riskBadge(maxRisk)}</span></div>` +
+      rows + `</div>`;
+  });
 
-    return `<div style="page-break-inside:avoid;border:1px solid #cbd5e0;border-radius:5px;padding:4.5mm 6mm;margin-bottom:5mm;">
-  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11.5pt;font-weight:700;margin-bottom:2.5mm;padding-bottom:2mm;border-bottom:1px solid #e2e8f0;">
-    <span>${headerId}</span>${tagHtml ? `<span>${tagHtml}</span>` : ''}${maxRisk ? `<span>${riskBadge(maxRisk)}</span>` : ''}
-  </div>
-  ${rows}
-</div>`;
-  }).join('');
+  const body = blocks.join(cutLine);
 
   const html = `<!DOCTYPE html>
 <html lang="zh-TW">
@@ -21742,17 +21750,12 @@ function mlPrintNotices() {
 <meta charset="utf-8">
 <title>身心調適假通知單</title>
 <style>
-  @page { size: A4 portrait; margin: 20mm 18mm; }
+  @page { size: A4 portrait; margin: 0; }
   * { box-sizing: border-box; }
-  body { font-family: 'Microsoft JhengHei', '微軟正黑體', 'Noto Sans TC', sans-serif; font-size: 11pt; line-height: 1.65; color: #1a202c; margin: 0; padding: 0; }
+  body { font-family: 'Microsoft JhengHei','微軟正黑體','Noto Sans TC',sans-serif; font-size:11pt; line-height:1.65; color:#1a202c; margin:0; padding:15mm 18mm; }
 </style>
 </head>
-<body>
-<div style="text-align:right;font-size:9pt;color:#718096;margin-bottom:9mm;">列印日期：${escHtml(printDate)}　by ${escHtml(userName)}</div>
-<div style="text-align:center;font-size:18pt;font-weight:900;letter-spacing:.06em;margin-bottom:2.5mm;">國立屏東科技大學 學生諮商中心</div>
-<div style="text-align:center;font-size:14pt;font-weight:700;letter-spacing:.04em;color:#2d3748;margin-bottom:9mm;">${escHtml(title2)}</div>
-${blocks}
-</body>
+<body>${body}</body>
 </html>`;
 
   const win = window.open('', '_blank', 'width=820,height=1060');
@@ -30268,15 +30271,12 @@ function restoreSidebarOrder() {
 // ══════════════════════════════════════════════
 function initSidebarCollapsePins() {
   document.querySelectorAll('.sidebar-section .nav-item[data-nav-id]').forEach(item => {
-    if (item.querySelector('.nav-pin-btn')) return;
-    const btn = document.createElement('button');
-    btn.className = 'nav-pin-btn';
-    btn.title = '釘選此項目（收束後仍可見）';
-    btn.textContent = '📌';
-    btn.addEventListener('click', e => { e.stopPropagation(); toggleNavPin(item.dataset.navId); });
-    const handle = item.querySelector('.nav-drag-handle');
-    if (handle) item.insertBefore(btn, handle);
-    else item.appendChild(btn);
+    if (item.querySelector('.nav-pin-bar')) return;
+    const bar = document.createElement('span');
+    bar.className = 'nav-pin-bar';
+    bar.title = '釘選此項目（收束後仍可見）';
+    bar.addEventListener('click', e => { e.stopPropagation(); toggleNavPin(item.dataset.navId); });
+    item.insertBefore(bar, item.firstChild);
   });
   applySidebarPrefs();
 }
