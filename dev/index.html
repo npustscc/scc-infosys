@@ -21187,7 +21187,7 @@ let _mlFetchAborted = false;
 let _mlSemFilter = localStorage.getItem('ml_sem_pref') || currentSemesterPrefix();
 let _mlConsec3Filter = false;
 let _mlQFilter = '';
-let _mlRiskFilter = '';
+let _mlRiskFilter = new Set();
 let _mlHandlingFilter = '';
 let _mlQComposing = false;
 function renderMentalLeavePage() {
@@ -21207,7 +21207,6 @@ function renderMentalLeavePage() {
   if (!canFullAccess && (_mlTab === 'records' || _mlTab === 'keywords')) _mlTab = 'my';
   // Save filter state before destroying DOM
   _mlQFilter = document.getElementById('ml-q')?.value ?? _mlQFilter;
-  _mlRiskFilter = document.getElementById('ml-risk')?.value ?? _mlRiskFilter;
   _mlHandlingFilter = document.getElementById('ml-handling')?.value ?? _mlHandlingFilter;
   const _mlQHadFocus = document.activeElement?.id === 'ml-q';
   el.innerHTML = `
@@ -21229,6 +21228,7 @@ function _mlTabBtn(id, label) {
 }
 window._mlSwitchTab = (id) => { _mlTab = id; syncUserPref_({ mlTab: id }); renderMentalLeavePage(); };
 window._mlFilterChange = () => { if (_mlQComposing) return; _mlPage = 1; renderMentalLeavePage(); };
+window._mlRiskToggle = (cb) => { if (cb.checked) _mlRiskFilter.add(cb.value); else _mlRiskFilter.delete(cb.value); _mlPage = 1; renderMentalLeavePage(); };
 function _getMyCaseStudentIds() {
   const myAllowedIds = new Set(configData?.users?.[currentUser?.email]?.allowedCases || []);
   const result = new Set();
@@ -21427,12 +21427,9 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     if (q && !((l.name||'').toLowerCase().includes(q) || (l.studentId||'').toLowerCase().includes(q) || (l.reason||'').toLowerCase().includes(q))) return false;
     if (semF && l.semester !== semF) return false;
     if (consec3Ids && !consec3Ids.has(l.studentId)) return false;
-    if (riskF) {
+    if (riskF.size > 0) {
       const { maxLevel } = _mlMatchKeywords(l.reason);
-      if (riskF === '3' && maxLevel !== 3) return false;
-      if (riskF === '2' && maxLevel !== 2) return false;
-      if (riskF === '1' && maxLevel < 1) return false;
-      if (riskF === '0' && maxLevel !== 0) return false;
+      if (!riskF.has(String(maxLevel))) return false;
     }
     if (hF) {
       const { maxLevel } = _mlMatchKeywords(l.reason);
@@ -21547,13 +21544,14 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     ` : ''}
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
       <input type="text" id="ml-q" class="field-input" placeholder="搜尋姓名、學號、緣由…" value="${escHtml(q)}" oninput="window._mlFilterChange()" oncompositionstart="_mlQComposing=true" oncompositionend="_mlQComposing=false;window._mlFilterChange()" style="max-width:200px;">
-      <select id="ml-risk" class="field-input" onchange="window._mlFilterChange()" style="width:auto;">
-        <option value="">所有風險等級</option>
-        <option value="3"${riskF==='3'?' selected':''}>🔴 紅燈（危機）</option>
-        <option value="2"${riskF==='2'?' selected':''}>🟡 黃燈（醫療）</option>
-        <option value="1"${riskF==='1'?' selected':''}>🔵 關注</option>
-        <option value="0"${riskF==='0'?' selected':''}>無命中</option>
-      </select>
+      <div style="display:flex;align-items:center;gap:6px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:5px;padding:3px 8px;flex-wrap:wrap;">
+        <span style="font-size:.78rem;color:#718096;white-space:nowrap;">風險：</span>
+        ${[['3','🔴 紅燈'],['2','🟡 黃燈'],['1','🔵 關注'],['0','無命中']].map(([v,lbl])=>`
+        <label style="display:flex;align-items:center;gap:3px;cursor:pointer;white-space:nowrap;font-size:.83rem;color:#4a5568;">
+          <input type="checkbox" value="${v}" ${riskF.has(v)?'checked':''} onchange="window._mlRiskToggle(this)" style="margin:0;">
+          ${lbl}
+        </label>`).join('')}
+      </div>
       <select id="ml-handling" class="field-input" onchange="window._mlFilterChange()" style="width:auto;">
         <option value="">所有受理情況</option>
         ${ML_HANDLING_OPTS.map(o=>`<option value="${o}"${hF===o?' selected':''}>${o}</option>`).join('')}
