@@ -1463,7 +1463,7 @@
         <div class="card">
           <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;">
             <h3>待審帳號申請</h3>
-            <button class="btn btn-secondary btn-sm" onclick="loadPendingUsers().then(()=>renderPendingUsersTab())">重新整理</button>
+            <button id="pending-apps-refresh-btn" class="btn btn-secondary btn-sm" onclick="_refreshPendingAppsBtn()">重新整理</button>
           </div>
           <div id="admin-apps-wrap" style="padding:16px 20px;">
             <div class="empty-state"><div class="icon">📋</div><p>載入中…</p></div>
@@ -3315,9 +3315,18 @@
     </div>
     <div class="form-row">
       <label for="modal-role">角色</label>
-      <select id="modal-role">
+      <select id="modal-role" onchange="_onRoleChange()">
         <option value="">— 請選擇 —</option>
       </select>
+    </div>
+    <div class="form-row" id="modal-intern-dates-wrap" style="display:none;">
+      <label>在任期間</label>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <input type="date" id="modal-intern-from" class="field-input" style="flex:1;min-width:120px;">
+        <span style="color:#718096;">至</span>
+        <input type="date" id="modal-intern-to" class="field-input" style="flex:1;min-width:120px;">
+      </div>
+      <div style="font-size:.75rem;color:#718096;margin-top:3px;">不填則視為永遠在任</div>
     </div>
     <div class="form-row">
       <label>附加身分</label>
@@ -6624,6 +6633,35 @@ function renderPendingUsersTab() {
     </div>`).join('');
 }
 
+async function _refreshPendingAppsBtn() {
+  const btn = document.getElementById('pending-apps-refresh-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '重新整理中…'; }
+  try {
+    pendingUsersData = await proxyCall('readJson', { path: PENDING_USERS_FILE });
+  } catch (e) {
+    if (btn) {
+      btn.disabled = false; btn.style.color = '#c53030';
+      btn.textContent = '❌ 重新整理失敗（' + e.message + '）';
+      setTimeout(() => { btn.style.color = ''; btn.textContent = '重新整理'; }, 4000);
+    }
+    return;
+  }
+  _updatePendingUsersBadge();
+  renderPendingUsersTab();
+  const count = (pendingUsersData?.applications || []).filter(a => a.status === 'pending').length;
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = `✅ 已更新（${count} 筆待審）`;
+    setTimeout(() => btn.textContent = '重新整理', 3000);
+  }
+}
+
+function _onRoleChange() {
+  const role = document.getElementById('modal-role').value;
+  const wrap = document.getElementById('modal-intern-dates-wrap');
+  if (wrap) wrap.style.display = role === '實習諮商心理師' ? '' : 'none';
+}
+
 function _refreshPendingAppsViews() {
   _updatePendingUsersBadge();
   if (document.getElementById('admin-panel-apps')?.style.display !== 'none') renderPendingUsersTab();
@@ -6932,6 +6970,9 @@ function openUserModal(key) {
     document.getElementById('modal-is-ml-contact').checked        = info.isMentalLeaveContact === true;
     document.getElementById('modal-is-intern-admin-sup').checked  = info.extraRole === '實習生行政督導';
     document.getElementById('modal-is-intern-pro-sup').checked    = info.extraRole === '實習生專業督導';
+    document.getElementById('modal-intern-from').value = info.internFrom || '';
+    document.getElementById('modal-intern-to').value   = info.internTo   || '';
+    _onRoleChange();
   } else {
     document.getElementById('modal-title').textContent = '新增使用者';
     emailEl.value    = '';
@@ -6945,6 +6986,9 @@ function openUserModal(key) {
     document.getElementById('modal-is-ml-contact').checked        = false;
     document.getElementById('modal-is-intern-admin-sup').checked  = false;
     document.getElementById('modal-is-intern-pro-sup').checked    = false;
+    document.getElementById('modal-intern-from').value = '';
+    document.getElementById('modal-intern-to').value   = '';
+    _onRoleChange();
   }
 
   document.getElementById('modal-error').style.display = 'none';
@@ -6991,6 +7035,8 @@ async function saveUser() {
 
   // Apply locally
   configData.users = configData.users || {};
+  const _internFrom = document.getElementById('modal-intern-from').value;
+  const _internTo   = document.getElementById('modal-intern-to').value;
   if (isMigrating) {
     const merged = { ...(configData.users[oldKey] || {}), name, role };
     if (isAdmin) merged.isAdmin = true; else delete merged.isAdmin;
@@ -6999,6 +7045,10 @@ async function saveUser() {
     if (isInternAdminS)    merged.extraRole = '實習生行政督導';
     else if (isInternProS) merged.extraRole = '實習生專業督導';
     else if (!isAdmin)     delete merged.extraRole;
+    if (role === '實習諮商心理師') {
+      if (_internFrom) merged.internFrom = _internFrom; else delete merged.internFrom;
+      if (_internTo)   merged.internTo   = _internTo;   else delete merged.internTo;
+    } else { delete merged.internFrom; delete merged.internTo; }
     configData.users[newKey] = merged;
     delete configData.users[oldKey];
   } else {
@@ -7010,6 +7060,10 @@ async function saveUser() {
     if (isInternAdminS)       entry.extraRole = '實習生行政督導';
     else if (isInternProS)    entry.extraRole = '實習生專業督導';
     else if (!isAdmin)        delete entry.extraRole;
+    if (role === '實習諮商心理師') {
+      if (_internFrom) entry.internFrom = _internFrom; else delete entry.internFrom;
+      if (_internTo)   entry.internTo   = _internTo;   else delete entry.internTo;
+    } else { delete entry.internFrom; delete entry.internTo; }
     configData.users[newKey] = entry;
   }
 
@@ -18479,12 +18533,20 @@ function renderClockPage() {
             ? '<div style="color:#a0aec0;font-size:.9rem;text-align:center;padding:8px 0;">尚無紀錄</div>'
             : myRecords.map(r => {
                 const { icon, text } = _punchLabel(r, allRecords);
+                const locTag = r.lat
+                  ? `<span style="font-size:.75rem;color:${r.locationUpdated?'#3182ce':r.accuracyLow?'#c05621':'#a0aec0'};cursor:pointer;" onclick="_showClockMap(${r.lat},${r.lng})">📍 ${_isNearCampus(r.lat,r.lng)?'校區內':'校區外'}${r.accuracyLow&&!r.locationUpdated?' ⚠️':''}${r.locationUpdated?' ✏️':''}</span>`
+                  : `<span style="font-size:.75rem;color:#a0aec0;">📍 無定位</span>`;
+                const updBtn = r.locationUpdated ? '' : `<button class="btn btn-secondary btn-sm" style="font-size:.72rem;padding:2px 8px;" onclick="updateAttendanceLoc('${r.id}')">更新定位</button>`;
+                const hint = r.accuracyLow && !r.locationUpdated ? `<div style="font-size:.72rem;color:#c05621;margin-top:2px;padding-left:4px;">⚠️ 定位精度不足（可能為電腦 IP 定位），建議手機重新打卡或點「更新定位」</div>` : '';
+                const origHint = r.locationUpdated && r.origLat != null ? `<div style="font-size:.72rem;color:#a0aec0;margin-top:2px;padding-left:4px;">原始：📍 ${_isNearCampus(r.origLat,r.origLng)?'校區內':'校區外'}${r.origAccuracy?`（誤差 ${r.origAccuracy}m）`:''}</div>` : '';
                 return `
-                <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #f7fafc;">
-                  <span style="font-size:1.1rem;">${icon}</span>
-                  <span style="font-weight:600;color:#2d3748;min-width:36px;">${text}</span>
-                  <span style="color:#4a5568;font-size:.9rem;">${_fmtTime(r.timestamp)}</span>
-                  ${r.lat ? `<span style="font-size:.75rem;color:#a0aec0;margin-left:auto;cursor:pointer;" onclick="_showClockMap(${r.lat},${r.lng})">📍 ${_isNearCampus(r.lat, r.lng) ? '校區內' : '校區外'}</span>` : ''}
+                <div style="padding:8px 0;border-bottom:1px solid #f7fafc;">
+                  <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span style="font-size:1.1rem;">${icon}</span>
+                    <span style="font-weight:600;color:#2d3748;min-width:36px;">${text}</span>
+                    <span style="color:#4a5568;font-size:.9rem;">${_fmtTime(r.timestamp)}</span>
+                    <span style="margin-left:auto;display:flex;align-items:center;gap:6px;">${locTag}${updBtn}</span>
+                  </div>${hint}${origHint}
                 </div>`;
               }).join('')
           }
@@ -18548,7 +18610,7 @@ async function clockAction() {
     type: 'punch',
     timestamp: now.toISOString(),
     date: _fmtDate(now),
-    ...(lat !== null ? { lat, lng, accuracy } : {}),
+    ...(lat !== null ? { lat, lng, accuracy, accuracyLow: accuracy > 200 } : {}),
   };
 
   if (!attendanceData) attendanceData = { records: [] };
@@ -18566,6 +18628,44 @@ async function clockAction() {
     msgEl.style.display = '';
     document.getElementById('clock-geo-status').textContent = '';
     if (btn) btn.disabled = false;
+  }
+}
+
+async function updateAttendanceLoc(recordId) {
+  const rec = (attendanceData?.records || []).find(r => r.id === recordId);
+  if (!rec) return;
+  const statusEl = document.getElementById('clock-geo-status');
+  if (statusEl) statusEl.textContent = '正在取得定位…';
+  let lat, lng, accuracy;
+  try {
+    const pos = await new Promise((res, rej) =>
+      navigator.geolocation.getCurrentPosition(res, rej, { timeout: 12000, maximumAge: 0 })
+    );
+    lat = pos.coords.latitude; lng = pos.coords.longitude;
+    accuracy = Math.round(pos.coords.accuracy);
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '⚠️ 無法取得定位：' + (e.message || '位置存取被拒絕');
+    return;
+  }
+  // 保留原始位置
+  if (!rec.locationUpdated) {
+    rec.origLat = rec.lat ?? null; rec.origLng = rec.lng ?? null;
+    rec.origAccuracy = rec.accuracy ?? null;
+  }
+  rec.lat = lat; rec.lng = lng; rec.accuracy = accuracy;
+  rec.accuracyLow = accuracy > 200;
+  rec.locationUpdated = true;
+  rec.locationUpdatedAt = new Date().toISOString();
+  try {
+    await saveAttendance();
+    if (statusEl) statusEl.textContent = `✅ 定位已更新（誤差約 ${accuracy} 公尺）`;
+    renderClockPage();
+  } catch (e) {
+    // 回滾
+    rec.locationUpdated = false; rec.lat = rec.origLat; rec.lng = rec.origLng;
+    rec.accuracy = rec.origAccuracy; delete rec.origLat; delete rec.origLng;
+    delete rec.origAccuracy; delete rec.locationUpdatedAt;
+    if (statusEl) statusEl.textContent = '❌ 儲存失敗：' + e.message;
   }
 }
 
@@ -18607,19 +18707,43 @@ function _fmtTime(iso) {
   return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
 }
 
+// ── 實習生在任狀態判斷 ──
+function _isInternActive(info, today) {
+  if (info.disabled) return false;
+  const from = info.internFrom, to = info.internTo;
+  if (!from && !to) return true;
+  if (from && today < from) return false;
+  if (to   && today > to)   return false;
+  return true;
+}
+
 // ── 差勤管理後台 ──
 function renderAttendancePage() {
   const records = attendanceData?.records || [];
   const apps = (pendingUsersData?.applications || []).filter(a => a.status === 'pending');
 
   const users = configData?.users || {};
-  const interns = Object.entries(users)
-    .filter(([, u]) => u.role === '實習諮商心理師')
-    .map(([email, u]) => ({ email, name: u.name || email }));
-
   const today = _fmtDate(new Date());
-  const filterEmail = document.getElementById('att-filter-email')?.value || '';
+  const filterEmailVal = document.getElementById('att-filter-email')?.value || '';
+  const filterEmail = filterEmailVal;
   const filterDate  = document.getElementById('att-filter-date')?.value  || today;
+  const allInterns = Object.entries(users)
+    .filter(([, u]) => u.role === '實習諮商心理師')
+    .map(([email, u]) => ({ email, name: u.name || email, active: _isInternActive(u, today), disabled: !!u.disabled }));
+
+  // 依在任→非在任→停用分組，組內按姓名排序
+  const _ig = (cat) => allInterns.filter(i => i.cat === cat).sort((a,b) => a.name.localeCompare(b.name,'zh-TW'));
+  allInterns.forEach(i => { i.cat = i.disabled ? 2 : i.active ? 0 : 1; });
+  const activeInterns   = _ig(0);
+  const inactiveInterns = _ig(1);
+  const disabledInterns = _ig(2);
+  const interns = [...activeInterns, ...inactiveInterns, ...disabledInterns];
+  const _opt = i => `<option value="${i.email}" ${filterEmailVal===i.email?'selected':''}>${i.name}${i.cat===1?' (非在任)':i.cat===2?' (停用)':''}</option>`;
+  const internSelectHtml = [
+    ...(activeInterns.length   ? [`<optgroup label="在任實習生">`,   ...activeInterns.map(_opt),   `</optgroup>`] : []),
+    ...(inactiveInterns.length ? [`<optgroup label="非在任實習生">`, ...inactiveInterns.map(_opt), `</optgroup>`] : []),
+    ...(disabledInterns.length ? [`<optgroup label="已停用">`,       ...disabledInterns.map(_opt), `</optgroup>`] : []),
+  ].join('');
 
   const filtered = records.filter(r =>
     (!filterEmail || r.email === filterEmail) &&
@@ -18659,9 +18783,9 @@ function renderAttendancePage() {
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:20px;">
       <div>
         <label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">實習生</label>
-        <select id="att-filter-email" class="field-select" onchange="renderAttendancePage()" style="min-width:140px;">
+        <select id="att-filter-email" class="field-select" onchange="renderAttendancePage()" style="min-width:160px;">
           <option value="">全部</option>
-          ${interns.map(i => `<option value="${i.email}" ${filterEmail===i.email?'selected':''}>${i.name}</option>`).join('')}
+          ${internSelectHtml}
         </select>
       </div>
       <div>
@@ -18685,7 +18809,7 @@ function renderAttendancePage() {
                 <td>${r.name || r.email}</td>
                 <td><span style="font-weight:600;color:${color}">${icon} ${text}</span></td>
                 <td>${new Date(r.timestamp).toLocaleString('zh-TW')}</td>
-                <td>${r.lat ? `<button class="btn btn-secondary btn-sm" onclick="renderAttendanceMapPoint(${r.lat},${r.lng})">📍</button> ${_isNearCampus(r.lat,r.lng)?'<span style="color:#276749">校區內</span>':'<span style="color:#c53030">校區外</span>'}` : '—'}</td>
+                <td>${r.lat ? `<button class="btn btn-secondary btn-sm" onclick="renderAttendanceMapPoint(${r.lat},${r.lng})">📍</button> ${_isNearCampus(r.lat,r.lng)?'<span style="color:#276749">校區內</span>':'<span style="color:#c53030">校區外</span>'}${r.accuracyLow&&!r.locationUpdated?' <span style="color:#c05621" title="定位精度不足">⚠️</span>':''}${r.locationUpdated?` <span style="font-size:.72rem;color:#3182ce;">✏️已更新</span>`:''}${r.locationUpdated&&r.origLat!=null?`<br><span style="font-size:.72rem;color:#a0aec0;">原: ${_isNearCampus(r.origLat,r.origLng)?'校區內':'校區外'}</span>`:''}` : '—'}</td>
               </tr>`;}).join('')}
         </tbody>
       </table>
@@ -18884,6 +19008,8 @@ async function _doApproveUser() {
     app.approvedAt = new Date().toISOString();
     app.approvedBy = currentUser.email;
     await driveUpdateJsonFile(PENDING_USERS_FILE, pendingUsersData);
+    const _approvedRole = action === 'new' ? document.getElementById('approve-role').value : '（連結現有使用者）';
+    auditLog('審核通過帳號申請', null, null, `${app.name}（${app.email}）→ ${_approvedRole}`);
     document.getElementById('approve-modal').remove();
     _refreshPendingAppsViews();
   } catch (e) {
@@ -18900,6 +19026,7 @@ async function rejectUserApp(appId) {
   app.rejectedAt = new Date().toISOString();
   app.rejectedBy = currentUser.email;
   await driveUpdateJsonFile(PENDING_USERS_FILE, pendingUsersData);
+  auditLog('拒絕帳號申請', null, null, `${app.name}（${app.email}）`);
   _refreshPendingAppsViews();
 }
 
