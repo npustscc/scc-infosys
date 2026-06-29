@@ -1201,8 +1201,8 @@
 
     <div class="sidebar-section" id="nav-admin-section" data-section-id="admin" style="display:none;">
       <h3 onclick="toggleSidebarSection('admin')">系統管理<span class="sidebar-section-toggle">▾</span></h3>
-      <div class="nav-item" data-nav-id="page-admin" onclick="showPage('page-admin', this); renderAdminUsers(); renderAdminDegreeMapping()">
-        <span class="icon">⚙️</span> 使用者管理 <span class="nav-drag-handle">⠿</span>
+      <div class="nav-item" data-nav-id="page-admin" onclick="showPage('page-admin', this); _adminActiveTab='users'; renderAdminPage()">
+        <span class="icon">⚙️</span> 使用者管理 <span id="nav-admin-apps-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 4px;font-size:.72rem;margin-left:2px;"></span> <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" data-nav-id="page-recycle" onclick="showPage('page-recycle', this); renderRecycleBin()">
         <span class="icon">🗑️</span> 資源回收桶 <span class="nav-drag-handle">⠿</span>
@@ -1362,6 +1362,10 @@
     <div id="page-admin" class="page">
       <div class="page-title">使用者管理</div>
       <div id="admin-alert"></div>
+      <!-- Tab bar -->
+      <div id="admin-tab-bar" style="display:flex;gap:0;border-bottom:2px solid #e2e8f0;margin-bottom:20px;"></div>
+      <!-- Panel: 使用者列表 -->
+      <div id="admin-panel-users">
       <div class="card">
         <div class="card-header">
           <h3>目前已設定使用者</h3>
@@ -1451,6 +1455,16 @@
         <div style="padding:16px 20px;">
           <p style="font-size:.88rem;color:#718096;margin-bottom:14px;">設定學號英文前綴與學制的對應關係。此設定影響畢業轉銜偵測（延畢生／預作畢業生判斷）及 Excel 匯入時的學制識別。設定儲存於 <code>config.json</code>。</p>
           <div id="admin-degree-wrap"><p style="font-size:.85rem;color:#a0aec0;">讀取設定後顯示…</p></div>
+        </div>
+      </div>
+      </div><!-- /admin-panel-users -->
+      <!-- Panel: 帳號申請審核 -->
+      <div id="admin-panel-apps" style="display:none;">
+        <div class="card">
+          <div class="card-header"><h3>待審帳號申請</h3></div>
+          <div id="admin-apps-wrap" style="padding:16px 20px;">
+            <div class="empty-state"><div class="icon">📋</div><p>載入中…</p></div>
+          </div>
         </div>
       </div>
     </div>
@@ -6522,6 +6536,69 @@ function statusBadge(status) {
 //  渲染管理員使用者列表
 // ══════════════════════════════════════════════
 let _adminUserFilter = { status: 'active', role: '' };
+let _adminActiveTab  = 'users';
+
+function renderAdminPage() {
+  _renderAdminTabs();
+  const showUsers = _adminActiveTab === 'users';
+  document.getElementById('admin-panel-users').style.display = showUsers ? '' : 'none';
+  document.getElementById('admin-panel-apps').style.display  = showUsers ? 'none' : '';
+  if (showUsers) { renderAdminUsers(); renderAdminDegreeMapping(); }
+  else renderPendingUsersTab();
+}
+
+function _renderAdminTabs() {
+  const bar = document.getElementById('admin-tab-bar');
+  if (!bar) return;
+  const count = (pendingUsersData?.applications || []).filter(a => a.status === 'pending').length;
+  const _t = (key, label) => {
+    const active = _adminActiveTab === key;
+    return `<button type="button" onclick="_adminTab('${key}')"
+      style="padding:9px 20px;border:none;border-bottom:2px solid ${active?'#3182ce':'transparent'};
+      background:none;color:${active?'#2b6cb0':'#4a5568'};cursor:pointer;font-size:.9rem;
+      font-weight:${active?'600':'400'};transition:all .15s;">${label}</button>`;
+  };
+  const badge = count > 0
+    ? ` <span style="background:#e53e3e;color:#fff;border-radius:10px;padding:0 5px;font-size:.72rem;">${count}</span>`
+    : '';
+  bar.innerHTML = _t('users','使用者列表') + _t('apps','帳號申請審核' + badge);
+}
+
+function _adminTab(tab) {
+  _adminActiveTab = tab;
+  renderAdminPage();
+}
+
+function renderPendingUsersTab() {
+  const wrap = document.getElementById('admin-apps-wrap');
+  if (!wrap) return;
+  const apps = (pendingUsersData?.applications || []).filter(a => a.status === 'pending');
+  if (!apps.length) {
+    wrap.innerHTML = `<div class="empty-state"><div class="icon">✅</div><p>目前沒有待審的帳號申請</p></div>`;
+    return;
+  }
+  wrap.innerHTML = apps.map(a => `
+    <div style="border:1px solid #e2e8f0;border-radius:8px;padding:16px;margin-bottom:12px;display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;color:#2d3748;font-size:.95rem;">${escHtml(a.name)}</div>
+        <div style="font-size:.83rem;color:#718096;margin-top:2px;">${escHtml(a.email)}</div>
+        <div style="font-size:.83rem;color:#4a5568;margin-top:4px;">申請身分：<b>${escHtml(a.requestedRole)}</b></div>
+        ${a.note ? `<div style="font-size:.82rem;color:#718096;margin-top:4px;background:#f7fafc;padding:6px 8px;border-radius:4px;">${escHtml(a.note)}</div>` : ''}
+        <div style="font-size:.75rem;color:#a0aec0;margin-top:4px;">申請時間：${new Date(a.submittedAt).toLocaleString('zh-TW')}</div>
+        ${a.submittedByEmail && a.submittedByEmail !== a.email ? `<div style="font-size:.75rem;color:#a0aec0;">代為申請帳號：${escHtml(a.submittedByEmail)}</div>` : ''}
+      </div>
+      <div style="display:flex;gap:8px;flex-shrink:0;padding-top:4px;">
+        <button class="btn btn-primary btn-sm" onclick="openApproveModal('${a.id}')">審核通過</button>
+        <button class="btn btn-secondary btn-sm" onclick="rejectUserApp('${a.id}')">拒絕</button>
+      </div>
+    </div>`).join('');
+}
+
+function _refreshPendingAppsViews() {
+  _updatePendingUsersBadge();
+  if (document.getElementById('admin-panel-apps')?.style.display !== 'none') renderPendingUsersTab();
+  if (document.getElementById('attendance-body')) renderAttendancePage();
+}
 let _adminUserSort   = { col: 'role', dir: 1 }; // col: 'key'|'name'|'role'|'extra'; dir: 1=asc, -1=desc
 
 function renderAdminUsers() {
@@ -18330,11 +18407,12 @@ async function loadPendingUsers() {
 }
 
 function _updatePendingUsersBadge() {
-  const badge = document.getElementById('nav-pending-users-badge');
-  if (!badge) return;
   const count = (pendingUsersData?.applications || []).filter(a => a.status === 'pending').length;
-  badge.textContent = count;
-  badge.style.display = count > 0 ? '' : 'none';
+  for (const id of ['nav-pending-users-badge', 'nav-admin-apps-badge']) {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = count; el.style.display = count > 0 ? '' : 'none'; }
+  }
+  _renderAdminTabs(); // 同步更新 tab bar 上的數字
 }
 
 // ── 打卡輔助：依當天位置判斷簽到/簽退標籤 ──
@@ -18711,8 +18789,7 @@ async function _doApproveUser() {
     app.approvedBy = currentUser.email;
     await driveUpdateJsonFile(PENDING_USERS_FILE, pendingUsersData);
     document.getElementById('approve-modal').remove();
-    _updatePendingUsersBadge();
-    renderAttendancePage();
+    _refreshPendingAppsViews();
   } catch (e) {
     errEl.textContent = '操作失敗：' + e.message;
     errEl.style.display = '';
@@ -18727,8 +18804,7 @@ async function rejectUserApp(appId) {
   app.rejectedAt = new Date().toISOString();
   app.rejectedBy = currentUser.email;
   await driveUpdateJsonFile(PENDING_USERS_FILE, pendingUsersData);
-  _updatePendingUsersBadge();
-  renderAttendancePage();
+  _refreshPendingAppsViews();
 }
 
 // ══════════════════════════════════════════════
