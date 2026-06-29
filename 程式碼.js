@@ -15,6 +15,12 @@
 
       const userEmail = verifyIdToken_(idToken);
       if (!userEmail) throw new Error('身份驗證失敗');
+
+      // submitUserApplication 不需白名單（讓未授權使用者也能提交申請）
+      if (action === 'submitUserApplication') {
+        return jsonResp_(submitUserApplication_({ ...params, email: userEmail }));
+      }
+
       if (!isAllowedUser_(userEmail)) throw new Error('此帳號未被授權存取本系統');
 
       let result;
@@ -62,6 +68,29 @@
       if (Number(d.exp) < Math.floor(Date.now() / 1000)) return null;
       return d.email;
     } catch (e) { return null; }
+  }
+
+  function submitUserApplication_({ email, name, requestedRole, note }) {
+    if (!email || !name || !requestedRole) throw new Error('缺少必要欄位');
+    let data;
+    try {
+      data = readJson_({ path: 'pending_users.json' });
+    } catch (_) {
+      data = { applications: [] };
+    }
+    if (!Array.isArray(data.applications)) data.applications = [];
+    // 防重複申請（同 email 且 pending 狀態）
+    const dup = data.applications.find(a => a.email === email && a.status === 'pending');
+    if (dup) throw new Error('您已有一筆待審申請，請等待管理者處理。');
+    data.applications.push({
+      id: 'app_' + Date.now(),
+      email, name, requestedRole,
+      note: note || '',
+      submittedAt: new Date().toISOString(),
+      status: 'pending',
+    });
+    updateJson_({ path: 'pending_users.json', content: data });
+    return { ok: true };
   }
 
   function isAllowedUser_(email) {
