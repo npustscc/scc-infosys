@@ -3231,7 +3231,6 @@
 //  設定區
 // ══════════════════════════════════════════════
 const CLIENT_ID   = '68582831293-fecbka17adht886tm6oh18vrdsdg1hbj.apps.googleusercontent.com';
-const SCOPES      = 'https://www.googleapis.com/auth/drive openid profile email';
 const DRIVE_FOLDER_ID = '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx'; // 測試版資料夾
 const BOOTSTRAP_ADMIN_EMAIL = 'linkinlol528101@gmail.com'; // 永久管理者備援帳號
 const CONFIG_FILE     = 'config.json';
@@ -3545,7 +3544,6 @@ window._dimExpUpdate = function(prefix, i, v) {
 // ══════════════════════════════════════════════
 //  全域狀態
 // ══════════════════════════════════════════════
-let gAccessToken = null;
 let gIdToken     = null;   // Google ID token（傳給 Apps Script 驗證用）
 let currentUser  = null;   // { email, name, picture }
 let currentRole  = null;   // 從 config.json 讀來
@@ -4864,24 +4862,9 @@ window.addEventListener('load', () => {
           // 若靜默成功，handleCredentialResponse 會自動接手並呼叫 afterLogin()
         });
       } else {
-      gIdToken = storedToken;
-      showLoading('自動登入中…');
-      const tokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: CLIENT_ID,
-        scope: SCOPES,
-        hint: currentUser.email,
-        callback: async (tokenResponse) => {
-          if (tokenResponse.error) {
-            hideLoading();
-            sessionStorage.removeItem('scc_user');
-            currentUser = null;
-            return;
-          }
-          gAccessToken = tokenResponse.access_token;
-          await afterLogin();
-        },
-      });
-      tokenClient.requestAccessToken({ prompt: '' });
+        gIdToken = storedToken;
+        showLoading('自動登入中…');
+        afterLogin();
       } // end else (token valid)
     } catch (e) {
       sessionStorage.removeItem('scc_user');
@@ -4891,7 +4874,7 @@ window.addEventListener('load', () => {
 });
 
 // ══════════════════════════════════════════════
-//  登入 callback（取得 id_token 後換 access_token）
+//  登入 callback
 // ══════════════════════════════════════════════
 function handleCredentialResponse(response) {
   // 解碼 JWT payload（Base64url → Base64 → JSON）
@@ -4901,24 +4884,9 @@ function handleCredentialResponse(response) {
   ));
   currentUser = { email: payload.email, name: payload.name, picture: payload.picture };
   sessionStorage.setItem('scc_user', JSON.stringify(currentUser));
-  gIdToken = response.credential; // 保留 ID token 供 Apps Script 驗證用
+  gIdToken = response.credential;
   sessionStorage.setItem('scc_idtoken', response.credential);
-
-  // 用 OAuth2 implicit flow 取得 Drive access_token
-  const tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: CLIENT_ID,
-    scope: SCOPES,
-    hint: currentUser.email,
-    callback: async (tokenResponse) => {
-      if (tokenResponse.error) {
-        alert('取得 Drive 授權失敗：' + tokenResponse.error);
-        return;
-      }
-      gAccessToken = tokenResponse.access_token;
-      await afterLogin();
-    },
-  });
-  tokenClient.requestAccessToken({ prompt: '' });
+  afterLogin();
 }
 
 function _showDisabledScreen() {
@@ -15377,10 +15345,6 @@ async function runInitialization() {
 // ══════════════════════════════════════════════
 function signOut() {
   google.accounts.id.disableAutoSelect();
-  if (gAccessToken) {
-    google.accounts.oauth2.revoke(gAccessToken, () => {});
-    gAccessToken = null;
-  }
   sessionStorage.removeItem('scc_user');
   sessionStorage.removeItem('scc_idtoken');
   gIdToken = null;
@@ -18096,39 +18060,6 @@ async function driveUpdateJsonFile(path, content) {
   return proxyCall('updateJson', { path, content });
 }
 
-function refreshAccessToken() {
-  return new Promise((resolve, reject) => {
-    const tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: SCOPES,
-      hint: currentUser?.email,
-      callback: (tokenResponse) => {
-        if (tokenResponse.error) { reject(new Error(tokenResponse.error)); return; }
-        gAccessToken = tokenResponse.access_token;
-        resolve();
-      },
-    });
-    tokenClient.requestAccessToken({ prompt: '' });
-  });
-}
-
-// 對 Drive API URL 自動補上 supportsAllDrives / includeItemsFromAllDrives，
-// 讓共用雲端硬碟（Shared Drive）內的檔案也能存取。
-function injectSharedDriveParams(url) {
-  if (!url || typeof url !== 'string') return url;
-  if (!url.startsWith('https://www.googleapis.com/drive/v3/') &&
-      !url.startsWith('https://www.googleapis.com/upload/drive/v3/')) return url;
-  const sep = url.includes('?') ? '&' : '?';
-  const extras = ['supportsAllDrives=true'];
-  // 對「列出 / 查詢」端點還需要 includeItemsFromAllDrives
-  if (url.includes('/files?')) extras.push('includeItemsFromAllDrives=true');
-  // 避免重複加
-  const present = new Set(url.split(/[?&]/).map(s => s.split('=')[0]));
-  const add = extras.filter(p => !present.has(p.split('=')[0]));
-  if (!add.length) return url;
-  return url + sep + add.join('&');
-}
-
 // ══════════════════════════════════════════════
 //  Apps Script Proxy（所有 Drive 操作將透過此函式）
 // ══════════════════════════════════════════════
@@ -18160,27 +18091,6 @@ async function proxyCall(action, params = {}, _silent = false) {
     if (!_silent) _syslog('error', `✗ ${action}: ${e.message}`, _logDetail || undefined);
     throw e;
   }
-}
-
-async function apiFetch(url, options = {}) {
-  const finalUrl = injectSharedDriveParams(url);
-  const headers = { Authorization: 'Bearer ' + gAccessToken, ...(options.headers || {}) };
-  const doFetch = () => fetch(finalUrl, { ...options, headers });
-  let r = await doFetch();
-  if (r.status === 401) {
-    await refreshAccessToken();
-    headers.Authorization = 'Bearer ' + gAccessToken;
-    r = await doFetch();
-  }
-  if (!r.ok) {
-    const body = await r.text();
-    throw new Error(`API 錯誤 ${r.status}: ${body.slice(0, 200)}`);
-  }
-  // 204 / 空回應時不解析 JSON
-  if (r.status === 204) return null;
-  const ct = r.headers.get('content-type') || '';
-  if (ct.includes('application/json')) return r.json();
-  return null;
 }
 
 // ══════════════════════════════════════════════

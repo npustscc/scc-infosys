@@ -1,9 +1,10 @@
   // Code.gs — SCC Drive Proxy
   // 執行身份：Me (npust.scc)；存取：任何擁有 Google 帳戶
 
-  const CLIENT_ID     = '68582831293-fecbka17adht886tm6oh18vrdsdg1hbj.apps.googleusercontent.com';
-  const ROOT_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP';
-  const CALENDAR_NAME = 'SCC 空間預約';
+  const CLIENT_ID          = '68582831293-fecbka17adht886tm6oh18vrdsdg1hbj.apps.googleusercontent.com';
+  const ROOT_FOLDER_ID     = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP';
+  const CALENDAR_NAME      = 'SCC 空間預約';
+  const BOOTSTRAP_ADMIN    = 'linkinlol528101@gmail.com';
 
   // ── 進入點 ────────────────────────────────────────────────────────────────────
 
@@ -13,7 +14,8 @@
       const { idToken, action, ...params } = payload;
 
       const userEmail = verifyIdToken_(idToken);
-      if (!userEmail) return jsonResp_({ error: 'Unauthorized' });
+      if (!userEmail) throw new Error('身份驗證失敗');
+      if (!isAllowedUser_(userEmail)) throw new Error('此帳號未被授權存取本系統');
 
       let result;
       switch (action) {
@@ -46,7 +48,7 @@
     return jsonResp_({ ok: true, service: 'SCC Drive Proxy' });
   }
 
-  // ── ID Token 驗證 ─────────────────────────────────────────────────────────────
+  // ── 身份驗證 ─────────────────────────────────────────────────────────────────
 
   function verifyIdToken_(idToken) {
     try {
@@ -60,6 +62,22 @@
       if (Number(d.exp) < Math.floor(Date.now() / 1000)) return null;
       return d.email;
     } catch (e) { return null; }
+  }
+
+  function isAllowedUser_(email) {
+    if (email === BOOTSTRAP_ADMIN) return true;
+    const cache = CacheService.getScriptCache();
+    let raw = cache.get('allowed_users');
+    if (raw === null) {
+      try {
+        const cfg = readJson_({ path: 'config.json' });
+        raw = JSON.stringify(Object.keys(cfg?.users || {}));
+        cache.put('allowed_users', raw, 300);
+      } catch(e) {
+        return true; // config.json 不存在（初次設定），暫時允許
+      }
+    }
+    return JSON.parse(raw).includes(email);
   }
 
   // ── 回應工具 ──────────────────────────────────────────────────────────────────
