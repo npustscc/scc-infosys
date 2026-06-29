@@ -1190,12 +1190,12 @@
     </div>
 
     <div class="sidebar-section" id="nav-attendance-section" data-section-id="attendance" style="display:none;">
-      <h3 onclick="toggleSidebarSection('attendance')">差勤管理<span class="sidebar-section-toggle">▾</span></h3>
+      <h3 onclick="toggleSidebarSection('attendance')">實習生差勤管理<span class="sidebar-section-toggle">▾</span></h3>
       <div class="nav-item" id="nav-clock-item" data-nav-id="page-clock" onclick="showPage('page-clock', this); renderClockPage()" style="display:none;">
         <span class="icon">🕐</span> 差勤打卡 <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" id="nav-attendance-item" data-nav-id="page-attendance" onclick="showPage('page-attendance', this); renderAttendancePage()" style="display:none;">
-        <span class="icon">📊</span> 差勤管理後台 <span id="nav-pending-users-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 4px;font-size:.72rem;margin-left:2px;"></span> <span class="nav-drag-handle">⠿</span>
+        <span class="icon">📊</span> 實習生差勤管理後台 <span id="nav-pending-users-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 4px;font-size:.72rem;margin-left:2px;"></span> <span class="nav-drag-handle">⠿</span>
       </div>
     </div>
 
@@ -1794,10 +1794,37 @@
       <div id="clock-body"></div>
     </div>
 
-    <!-- 差勤管理後台 -->
+    <!-- 實習生差勤管理後台 -->
     <div id="page-attendance" class="page">
-      <div class="page-title">差勤管理後台</div>
+      <div class="page-title">實習生差勤管理</div>
       <div id="attendance-body"></div>
+      <!-- 打卡地理範圍設定（靜態，不被 renderAttendancePage 覆寫） -->
+      <div class="card" id="geo-fence-card" style="margin-top:20px;display:none;">
+        <div class="card-header"><h3>打卡地理範圍設定</h3></div>
+        <div style="padding:16px 20px;">
+          <p style="font-size:.85rem;color:#718096;margin-bottom:14px;">定義「校區內」的圓形地理範圍。中心點座標可從 Google Maps 右鍵複製。</p>
+          <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px;">
+            <div>
+              <label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">中心緯度</label>
+              <input id="geo-lat" type="number" step="0.0001" class="field-input" style="width:140px;">
+            </div>
+            <div>
+              <label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">中心經度</label>
+              <input id="geo-lng" type="number" step="0.0001" class="field-input" style="width:140px;">
+            </div>
+            <div>
+              <label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">半徑（公尺）</label>
+              <input id="geo-radius" type="number" min="100" max="20000" class="field-input" style="width:110px;">
+            </div>
+            <button class="btn btn-secondary" onclick="previewGeoFence()">預覽地圖</button>
+            <button class="btn btn-primary" onclick="saveGeoFenceSettings()">儲存</button>
+          </div>
+          <div id="geo-msg" style="display:none;margin-bottom:12px;"></div>
+          <div id="geo-map-wrap" style="display:none;">
+            <div id="geo-map" style="height:260px;border-radius:8px;overflow:hidden;"></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 結案評估表 -->
@@ -18549,14 +18576,23 @@ function _showClockMap(lat, lng) {
   L.marker([lat, lng]).addTo(_clockMapInstance);
 }
 
-// 屏科大校園中心座標（大約）
-const _CAMPUS_LAT = 22.6383, _CAMPUS_LNG = 120.6009, _CAMPUS_RADIUS_M = 800;
+// 屏科大內埔校區中心座標（預設值，可由管理者在差勤設定中調整）
+const _CAMPUS_LAT_DEFAULT = 22.6390, _CAMPUS_LNG_DEFAULT = 120.6009, _CAMPUS_RADIUS_DEFAULT = 1500;
+function _geoFenceCfg() {
+  const g = configData?.attendanceGeoFence;
+  return {
+    lat:    (g?.lat    != null) ? Number(g.lat)    : _CAMPUS_LAT_DEFAULT,
+    lng:    (g?.lng    != null) ? Number(g.lng)    : _CAMPUS_LNG_DEFAULT,
+    radius: (g?.radius != null) ? Number(g.radius) : _CAMPUS_RADIUS_DEFAULT,
+  };
+}
 function _isNearCampus(lat, lng) {
+  const { lat: cLat, lng: cLng, radius } = _geoFenceCfg();
   const R = 6371000;
-  const dLat = (lat - _CAMPUS_LAT) * Math.PI / 180;
-  const dLng = (lng - _CAMPUS_LNG) * Math.PI / 180;
-  const a = Math.sin(dLat/2)**2 + Math.cos(_CAMPUS_LAT*Math.PI/180)*Math.cos(lat*Math.PI/180)*Math.sin(dLng/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)) <= _CAMPUS_RADIUS_M;
+  const dLat = (lat - cLat) * Math.PI / 180;
+  const dLng = (lng - cLng) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(cLat*Math.PI/180)*Math.cos(lat*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)) <= radius;
 }
 
 function _fmtDate(d) {
@@ -18678,15 +18714,17 @@ function renderAttendancePage() {
       </table>
     </div>
   `;
+  _initGeoFenceCard();
 }
 
 let _attMapInstance = null;
 function renderAttendanceMap() {
   const records = (attendanceData?.records || []).filter(r => r.lat);
   if (_attMapInstance) { _attMapInstance.remove(); _attMapInstance = null; }
-  _attMapInstance = L.map('att-map').setView([_CAMPUS_LAT, _CAMPUS_LNG], 15);
+  const _gc = _geoFenceCfg();
+  _attMapInstance = L.map('att-map').setView([_gc.lat, _gc.lng], 15);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(_attMapInstance);
-  L.circle([_CAMPUS_LAT, _CAMPUS_LNG], { radius: _CAMPUS_RADIUS_M, color: '#3182ce', fillOpacity: .08 }).addTo(_attMapInstance);
+  L.circle([_gc.lat, _gc.lng], { radius: _gc.radius, color: '#3182ce', fillOpacity: .08 }).addTo(_attMapInstance);
   const _allRecs = attendanceData?.records || [];
   records.forEach(r => {
     const { text } = _punchLabel(r, _allRecs);
@@ -18703,6 +18741,61 @@ function renderAttendanceMapPoint(lat, lng) {
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(_attMapInstance);
   L.marker([lat, lng]).addTo(_attMapInstance);
   document.getElementById('att-map').scrollIntoView({ behavior: 'smooth' });
+}
+
+// ── 地理圍欄設定（管理者） ──
+let _geoPreviewMap = null;
+
+function _initGeoFenceCard() {
+  const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  const card = document.getElementById('geo-fence-card');
+  if (!card) return;
+  card.style.display = isAdmin ? '' : 'none';
+  if (!isAdmin) return;
+  const gc = _geoFenceCfg();
+  document.getElementById('geo-lat').value    = gc.lat;
+  document.getElementById('geo-lng').value    = gc.lng;
+  document.getElementById('geo-radius').value = gc.radius;
+}
+
+function previewGeoFence() {
+  const lat    = parseFloat(document.getElementById('geo-lat').value);
+  const lng    = parseFloat(document.getElementById('geo-lng').value);
+  const radius = parseFloat(document.getElementById('geo-radius').value);
+  if (!lat || !lng || !radius) return;
+  const wrap = document.getElementById('geo-map-wrap');
+  wrap.style.display = '';
+  if (_geoPreviewMap) { _geoPreviewMap.remove(); _geoPreviewMap = null; }
+  _geoPreviewMap = L.map('geo-map').setView([lat, lng], 15);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(_geoPreviewMap);
+  L.circle([lat, lng], { radius, color: '#3182ce', fillOpacity: .12 }).addTo(_geoPreviewMap);
+  L.marker([lat, lng]).addTo(_geoPreviewMap).bindPopup('中心點').openPopup();
+}
+
+async function saveGeoFenceSettings() {
+  const lat    = parseFloat(document.getElementById('geo-lat').value);
+  const lng    = parseFloat(document.getElementById('geo-lng').value);
+  const radius = parseFloat(document.getElementById('geo-radius').value);
+  const msg    = document.getElementById('geo-msg');
+  if (!lat || !lng || isNaN(radius) || radius < 100) {
+    msg.style.display = '';
+    msg.style.color   = '#c53030';
+    msg.textContent   = '請填入有效的座標與半徑（至少 100 公尺）。';
+    return;
+  }
+  msg.style.display = '';
+  msg.style.color   = '#4a5568';
+  msg.textContent   = '儲存中…';
+  try {
+    if (!configData) throw new Error('configData 未載入');
+    configData.attendanceGeoFence = { lat, lng, radius };
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    msg.style.color = '#276749';
+    msg.textContent = '✅ 已儲存。打卡範圍設定已更新。';
+  } catch (e) {
+    msg.style.color = '#c53030';
+    msg.textContent = '儲存失敗：' + e.message;
+  }
 }
 
 // ── 帳號申請審核 ──
