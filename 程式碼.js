@@ -5,6 +5,14 @@
   const ROOT_FOLDER_ID     = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP';
   const CALENDAR_NAME      = 'SCC 空間預約';
   const BOOTSTRAP_ADMIN    = 'linkinlol528101@gmail.com';
+  // 允許的根資料夾白名單（正式版 + 測試版）
+  const ALLOWED_ROOTS = new Set([
+    '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP', // 正式版
+    '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx', // 測試版
+  ]);
+  function _safeRoot_(rootFolderId) {
+    return (rootFolderId && ALLOWED_ROOTS.has(rootFolderId)) ? rootFolderId : ROOT_FOLDER_ID;
+  }
 
   // ── 進入點 ────────────────────────────────────────────────────────────────────
 
@@ -70,12 +78,13 @@
     } catch (e) { return null; }
   }
 
-  function submitUserApplication_({ targetEmail, name, requestedRole, note, submittedByEmail }) {
+  function submitUserApplication_({ targetEmail, name, requestedRole, note, submittedByEmail, rootFolderId }) {
     const email = (targetEmail || '').trim().toLowerCase() || submittedByEmail;
     if (!email || !name || !requestedRole) throw new Error('缺少必要欄位');
+    const root = _safeRoot_(rootFolderId);
     let data;
     try {
-      data = readJson_({ path: 'pending_users.json' });
+      data = readJson_({ path: 'pending_users.json', rootFolderId: root });
     } catch (_) {
       data = { applications: [] };
     }
@@ -92,7 +101,7 @@
       submittedAt: new Date().toISOString(),
       status: 'pending',
     });
-    updateJson_({ path: 'pending_users.json', content: data });
+    updateJson_({ path: 'pending_users.json', content: data, rootFolderId: root });
     return { ok: true };
   }
 
@@ -208,10 +217,10 @@
     return data;
   }
 
-  // 路徑解析：把 "cases/manifest.json" 轉成 fileId
-  function resolvePathToId_(path) {
+  // 路徑解析：把 "cases/manifest.json" 轉成 fileId（root 預設 ROOT_FOLDER_ID）
+  function resolvePathToId_(path, root) {
     const parts = path.split('/');
-    let curId = ROOT_FOLDER_ID;
+    let curId = root || ROOT_FOLDER_ID;
     for (let i = 0; i < parts.length - 1; i++) {
       const q = "name='" + parts[i] + "' and mimeType='application/vnd.google-apps.folder'" +
                 " and '" + curId + "' in parents and trashed=false";
@@ -226,10 +235,10 @@
     return res2.files[0].id;
   }
 
-  function resolvePathToParentAndName_(path) {
+  function resolvePathToParentAndName_(path, root) {
     const parts = path.split('/');
     const fileName = parts[parts.length - 1];
-    let parentId = ROOT_FOLDER_ID;
+    let parentId = root || ROOT_FOLDER_ID;
     for (let i = 0; i < parts.length - 1; i++) {
       const q = "name='" + parts[i] + "' and mimeType='application/vnd.google-apps.folder'" +
                 " and '" + parentId + "' in parents and trashed=false";
@@ -246,8 +255,8 @@
     return driveGet_('files/' + fileId, { fields: fields || 'id,name,mimeType' });
   }
 
-  function readJson_({ path }) {
-    const fileId = resolvePathToId_(path);
+  function readJson_({ path, rootFolderId }) {
+    const fileId = resolvePathToId_(path, _safeRoot_(rootFolderId));
     const res = UrlFetchApp.fetch(
       'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
       { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
@@ -269,13 +278,14 @@
     return driveUpload_(name, content, parentId);
   }
 
-  function updateJson_({ path, content }) {
+  function updateJson_({ path, content, rootFolderId }) {
+    const root = _safeRoot_(rootFolderId);
     let fileId;
     try {
-      fileId = resolvePathToId_(path);
+      fileId = resolvePathToId_(path, root);
     } catch (notFound) {
       // 檔案不存在時自動建立
-      const { parentId, fileName } = resolvePathToParentAndName_(path);
+      const { parentId, fileName } = resolvePathToParentAndName_(path, root);
       return driveUpload_(fileName, content, parentId);
     }
     return driveUpdateContent_(fileId, content);
