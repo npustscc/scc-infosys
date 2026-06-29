@@ -3479,8 +3479,8 @@ async function _doUserPrefWrite_() {
 }
 function syncUserPref_(updates) {
   if (!configData || !currentUser?.email) return;
-  if (!configData.users) configData.users = {};
-  if (!configData.users[currentUser.email]) configData.users[currentUser.email] = {};
+  // 安全性：只更新已授權帳號，絕不自動建立新條目（防止未授權帳號寫入 config.json）
+  if (!configData.users?.[currentUser.email]) return;
   Object.assign(configData.users[currentUser.email], updates);
   clearTimeout(_prefSyncTimer);
   // PIN 或 pinSkipped 變更：立即寫入（不走 debounce），確保跨裝置同步可靠；回傳 promise 供 savePrefs 顯示結果
@@ -5021,6 +5021,14 @@ async function afterLogin() {
     ]);
     setLoadingProgress(25);
     configData = cfg;
+    // 二重防護：前端再次確認此帳號存在於 config.json 的授權名單
+    // （防禦 GAS 白名單被繞過，或「殭屍帳號」殘留在 config.json 中）
+    if (currentUser.email !== BOOTSTRAP_ADMIN_EMAIL && !configData?.users?.[currentUser.email]) {
+      hideLoading();
+      document.getElementById('login-screen').style.display = 'none';
+      showApplyScreen();
+      return;
+    }
     resolveUserRole();
     // 檢查帳號是否停用（bootstrap admin 不受限制）
     if (configData?.users?.[currentUser.email]?.disabled && currentUser.email !== BOOTSTRAP_ADMIN_EMAIL) {
@@ -19571,8 +19579,8 @@ function savePinSetup() {
 async function syncPinToConfig(pinVal, tmoMins) {
   try {
     if (!configData || !currentUser?.email) return;
-    if (!configData.users) configData.users = {};
-    if (!configData.users[currentUser.email]) configData.users[currentUser.email] = {};
+    // 安全性：只更新已授權帳號，禁止建立新條目
+    if (!configData.users?.[currentUser.email]) return;
     configData.users[currentUser.email].pin = pinVal;
     if (tmoMins !== undefined && tmoMins !== null) configData.users[currentUser.email].pinTmo = tmoMins;
     await driveUpdateJsonFile(CONFIG_FILE, configData);
