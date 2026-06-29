@@ -78,13 +78,15 @@
     } catch (e) { return null; }
   }
 
-  function submitUserApplication_({ targetEmail, name, requestedRole, note, submittedByEmail, rootFolderId }) {
+  function submitUserApplication_({ targetEmail, name, requestedRole, note, submittedByEmail, pendingFile }) {
     const email = (targetEmail || '').trim().toLowerCase() || submittedByEmail;
     if (!email || !name || !requestedRole) throw new Error('缺少必要欄位');
-    const root = _safeRoot_(rootFolderId);
+    // 允許 dev 用不同檔名（pending_users_dev.json）分離測試申請；只允許特定格式
+    const filePath = (pendingFile && /^pending_users[\w-]*\.json$/.test(pendingFile))
+      ? pendingFile : 'pending_users.json';
     let data;
     try {
-      data = readJson_({ path: 'pending_users.json', rootFolderId: root });
+      data = readJson_({ path: filePath });
     } catch (_) {
       data = { applications: [] };
     }
@@ -101,7 +103,7 @@
       submittedAt: new Date().toISOString(),
       status: 'pending',
     });
-    updateJson_({ path: 'pending_users.json', content: data, rootFolderId: root });
+    updateJson_({ path: filePath, content: data });
     return { ok: true };
   }
 
@@ -255,8 +257,8 @@
     return driveGet_('files/' + fileId, { fields: fields || 'id,name,mimeType' });
   }
 
-  function readJson_({ path, rootFolderId }) {
-    const fileId = resolvePathToId_(path, _safeRoot_(rootFolderId));
+  function readJson_({ path }) {
+    const fileId = resolvePathToId_(path);
     const res = UrlFetchApp.fetch(
       'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
       { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
@@ -278,14 +280,13 @@
     return driveUpload_(name, content, parentId);
   }
 
-  function updateJson_({ path, content, rootFolderId }) {
-    const root = _safeRoot_(rootFolderId);
+  function updateJson_({ path, content }) {
     let fileId;
     try {
-      fileId = resolvePathToId_(path, root);
+      fileId = resolvePathToId_(path);
     } catch (notFound) {
       // 檔案不存在時自動建立
-      const { parentId, fileName } = resolvePathToParentAndName_(path, root);
+      const { parentId, fileName } = resolvePathToParentAndName_(path);
       return driveUpload_(fileName, content, parentId);
     }
     return driveUpdateContent_(fileId, content);
