@@ -15740,8 +15740,12 @@ function _genTodoId() {
 function _putTodoItem(item) {
   const idx = todosData.findIndex(t => t.id === item.id);
   if (idx >= 0) {
-    if (todosData[idx].archivedAt && !('archivedAt' in item))
-      item = { ...item, archivedAt: todosData[idx].archivedAt };
+    const ex = todosData[idx];
+    if (ex.archivedAt && !('archivedAt' in item))
+      item = { ...item, archivedAt: ex.archivedAt };
+    // 保留使用者手動標記的已完成狀態，避免 state-derived todo 重建時覆蓋
+    if (ex.done && ex.doneAt && item.done === false)
+      item = { ...item, done: true, doneAt: ex.doneAt };
     todosData[idx] = item;
   } else todosData.push(item);
   if (item.recordId) _suppressedTodoRecordIds.delete(item.recordId);
@@ -25800,7 +25804,7 @@ function _getGradTransferDecision(caseId, sem) {
 
 function _checkTransferGradTodos() {
   const curSem = currentSemesterPrefix();
-  todosData = todosData.filter(t => (t.type !== 'transfer_grad_counselor' && t.type !== 'transfer_grad_coord') || t.archivedAt);
+  todosData = todosData.filter(t => (t.type !== 'transfer_grad_counselor' && t.type !== 'transfer_grad_coord') || t.archivedAt || (t.done && t.doneAt));
   const myEmail = currentUser?.email;
   if (!myEmail || !casesData.length) { _syncTodoBadge(); return; }
   const myCasesNeedTE = casesData.filter(c => {
@@ -25844,7 +25848,7 @@ function _checkTransferGradTodos() {
 }
 
 function _checkTransferClosureReminders() {
-  todosData = todosData.filter(t => t.type !== 'transfer_closure_reminder' || t.archivedAt);
+  todosData = todosData.filter(t => t.type !== 'transfer_closure_reminder' || t.archivedAt || (t.done && t.doneAt));
   const myEmail = currentUser?.email;
   const isCoord = _isTransferCoordinator();
   const now = new Date();
@@ -25888,7 +25892,7 @@ function _checkTransferClosureReminders() {
 
 function _checkWithdrawTodos() {
   const curSem = currentSemesterPrefix();
-  todosData = todosData.filter(t => t.type !== 'transfer_withdraw_coord' || t.archivedAt);
+  todosData = todosData.filter(t => t.type !== 'transfer_withdraw_coord' || t.archivedAt || (t.done && t.doneAt));
   if (!_isTransferCoordinator()) return;
   const semRecs = (transferData || []).filter(r => r.type === 'withdraw' && r.semester === curSem && !r.deleted);
   const pending = semRecs.filter(r => _getWdDecision(r, curSem) === 'pending');
@@ -25915,7 +25919,7 @@ function _checkWithdrawTodos() {
 // 生成「主責需驗證的姓名/學號不符」待辦 (state-derived，每次登入後重算)
 function _checkWithdrawMismatchTodos() {
   const myEmail = currentUser?.email;
-  todosData = todosData.filter(t => t.type !== 'transfer_withdraw_mismatch' || t.archivedAt);
+  todosData = todosData.filter(t => t.type !== 'transfer_withdraw_mismatch' || t.archivedAt || (t.done && t.doneAt));
   if (!myEmail) return;
   const mismatches = (transferData || []).filter(r =>
     r.type === 'withdraw_mismatch_pending' && !r.resolved && r.matchedCaseCounselor === myEmail
