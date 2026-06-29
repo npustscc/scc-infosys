@@ -6788,6 +6788,7 @@ function renderAdminUsers() {
         <td>${adminBadge}</td>
         <td>
           <button class="btn btn-secondary btn-sm" onclick="openUserModal('${escHtml(key)}')">編輯</button>
+          ${info.pin ? `<button class="btn btn-warning btn-sm" style="margin-left:6px;" onclick="clearUserPin('${escHtml(key)}')">清除 PIN</button>` : ''}
           ${disableBtn}
           ${isSelf ? '' : `<button class="btn btn-danger btn-sm" style="margin-left:6px;" onclick="deleteUser('${escHtml(key)}')">刪除</button>`}
         </td>
@@ -7133,6 +7134,26 @@ async function toggleUserDisabled(key, disabled) {
     // Revert local state on failure
     if (disabled) delete configData.users[key].disabled;
     else configData.users[key].disabled = true;
+    renderAdminUsers();
+  }
+}
+
+async function clearUserPin(key) {
+  if (!configData.users?.[key]) return;
+  const name = configData.users[key].name || key;
+  if (!confirm(`確定要清除「${name}」的 PIN 碼嗎？\n該使用者下次登入時需重新設定 PIN 碼。`)) return;
+  delete configData.users[key].pin;
+  delete configData.users[key].pinSkipped;
+  renderAdminUsers();
+  const jobId = bgJobAdd(`清除「${name}」的 PIN 碼`);
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('清除使用者 PIN 碼', null, null, name);
+    bgJobDone(jobId);
+    setAlert('admin-alert', 'success', `已清除「${escHtml(name)}」的 PIN 碼`);
+  } catch (err) {
+    bgJobFail(jobId, err.message);
+    setAlert('admin-alert', 'error', '儲存失敗：' + err.message);
     renderAdminUsers();
   }
 }
