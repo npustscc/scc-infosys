@@ -18,7 +18,7 @@
 
       // submitUserApplication 不需白名單（讓未授權使用者也能提交申請）
       if (action === 'submitUserApplication') {
-        return jsonResp_(submitUserApplication_({ ...params, email: userEmail }));
+        return jsonResp_(submitUserApplication_({ ...params, submittedByEmail: userEmail }));
       }
 
       if (!isAllowedUser_(userEmail)) throw new Error('此帳號未被授權存取本系統');
@@ -70,7 +70,8 @@
     } catch (e) { return null; }
   }
 
-  function submitUserApplication_({ email, name, requestedRole, note }) {
+  function submitUserApplication_({ targetEmail, name, requestedRole, note, submittedByEmail }) {
+    const email = (targetEmail || '').trim().toLowerCase() || submittedByEmail;
     if (!email || !name || !requestedRole) throw new Error('缺少必要欄位');
     let data;
     try {
@@ -79,12 +80,14 @@
       data = { applications: [] };
     }
     if (!Array.isArray(data.applications)) data.applications = [];
-    // 防重複申請（同 email 且 pending 狀態）
+    // 防重複申請（同 targetEmail 且 pending 狀態）
     const dup = data.applications.find(a => a.email === email && a.status === 'pending');
-    if (dup) throw new Error('您已有一筆待審申請，請等待管理者處理。');
+    if (dup) throw new Error('此 Gmail 已有一筆待審申請，請等待管理者處理。');
     data.applications.push({
       id: 'app_' + Date.now(),
-      email, name, requestedRole,
+      email,
+      submittedByEmail: submittedByEmail || email,
+      name, requestedRole,
       note: note || '',
       submittedAt: new Date().toISOString(),
       status: 'pending',
