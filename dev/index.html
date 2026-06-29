@@ -18304,14 +18304,24 @@ function _updatePendingUsersBadge() {
   badge.style.display = count > 0 ? '' : 'none';
 }
 
+// ── 打卡輔助：依當天位置判斷簽到/簽退標籤 ──
+function _punchLabel(r, allRecords) {
+  const dayTs = allRecords
+    .filter(x => x.email === r.email && x.date === r.date)
+    .map(x => x.timestamp).sort();
+  if (dayTs[0] === r.timestamp) return { icon: '🟢', text: '簽到', color: '#276749' };
+  if (dayTs.length > 1 && dayTs[dayTs.length - 1] === r.timestamp) return { icon: '🔴', text: '簽退', color: '#c53030' };
+  return { icon: '🔵', text: '打卡', color: '#2b6cb0' };
+}
+
 // ── 打卡頁面 ──
 function renderClockPage() {
   const isIntern = currentRole === '實習諮商心理師';
   const today = _fmtDate(new Date());
-  const myRecords = (attendanceData?.records || []).filter(r => r.email === currentUser.email && r.date === today);
-  const lastIn  = myRecords.filter(r => r.type === 'clock_in').slice(-1)[0];
-  const lastOut = myRecords.filter(r => r.type === 'clock_out').slice(-1)[0];
-  const canOut  = lastIn && (!lastOut || lastIn.timestamp > lastOut.timestamp);
+  const allRecords = attendanceData?.records || [];
+  const myRecords = allRecords
+    .filter(r => r.email === currentUser.email && r.date === today)
+    .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
   document.getElementById('clock-body').innerHTML = `
     <div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:24px 16px;background:#f0f4f8;">
@@ -18319,34 +18329,32 @@ function renderClockPage() {
         <div style="text-align:center;margin-bottom:28px;">
           <div style="font-size:2rem;font-weight:700;color:#2d3748;letter-spacing:.04em;" id="clock-time-display">--:--:--</div>
           <div style="font-size:1rem;color:#718096;margin-top:4px;">${today}</div>
-          <div style="font-size:.9rem;color:#4a5568;margin-top:4px;">${currentUser.name || currentUser.email}</div>
+          <div style="font-size:.9rem;color:#4a5568;margin-top:4px;">${configData?.users?.[currentUser.email]?.name || currentUser.name || currentUser.email}</div>
         </div>
 
         <div style="background:#fff;border-radius:16px;padding:20px;box-shadow:0 2px 12px rgba(0,0,0,.08);margin-bottom:16px;">
           <div style="font-size:.85rem;color:#718096;margin-bottom:12px;font-weight:600;">今日打卡紀錄</div>
           ${myRecords.length === 0
             ? '<div style="color:#a0aec0;font-size:.9rem;text-align:center;padding:8px 0;">尚無紀錄</div>'
-            : myRecords.map(r => `
-              <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #f7fafc;">
-                <span style="font-size:1.1rem;">${r.type === 'clock_in' ? '🟢' : '🔴'}</span>
-                <span style="font-weight:600;color:#2d3748;min-width:36px;">${r.type === 'clock_in' ? '簽到' : '簽退'}</span>
-                <span style="color:#4a5568;font-size:.9rem;">${_fmtTime(r.timestamp)}</span>
-                ${r.lat ? `<span style="font-size:.75rem;color:#a0aec0;margin-left:auto;" onclick="_showClockMap(${r.lat},${r.lng})" style="cursor:pointer;">📍 ${_isNearCampus(r.lat, r.lng) ? '校區內' : '校區外'}</span>` : ''}
-              </div>`).join('')
+            : myRecords.map(r => {
+                const { icon, text } = _punchLabel(r, allRecords);
+                return `
+                <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #f7fafc;">
+                  <span style="font-size:1.1rem;">${icon}</span>
+                  <span style="font-weight:600;color:#2d3748;min-width:36px;">${text}</span>
+                  <span style="color:#4a5568;font-size:.9rem;">${_fmtTime(r.timestamp)}</span>
+                  ${r.lat ? `<span style="font-size:.75rem;color:#a0aec0;margin-left:auto;cursor:pointer;" onclick="_showClockMap(${r.lat},${r.lng})">📍 ${_isNearCampus(r.lat, r.lng) ? '校區內' : '校區外'}</span>` : ''}
+                </div>`;
+              }).join('')
           }
         </div>
 
         <div id="clock-geo-status" style="font-size:.8rem;color:#718096;text-align:center;margin-bottom:12px;"></div>
 
         ${isIntern ? `
-        <div style="display:flex;gap:12px;margin-bottom:16px;">
-          <button onclick="clockAction('clock_in')" ${canOut ? 'disabled' : ''} style="flex:1;padding:18px;font-size:1.1rem;font-weight:700;border:none;border-radius:12px;cursor:pointer;background:${canOut ? '#e2e8f0' : '#38a169'};color:${canOut ? '#a0aec0' : '#fff'};">
-            🟢 簽到
-          </button>
-          <button onclick="clockAction('clock_out')" ${!canOut ? 'disabled' : ''} style="flex:1;padding:18px;font-size:1.1rem;font-weight:700;border:none;border-radius:12px;cursor:pointer;background:${!canOut ? '#e2e8f0' : '#e53e3e'};color:${!canOut ? '#a0aec0' : '#fff'};">
-            🔴 簽退
-          </button>
-        </div>` : '<div class="alert alert-info" style="margin-bottom:16px;">您目前不是實習生身分，僅可查看差勤紀錄。</div>'}
+        <button id="clock-punch-btn" onclick="clockAction()" style="width:100%;padding:18px;font-size:1.1rem;font-weight:700;border:none;border-radius:12px;cursor:pointer;background:#3182ce;color:#fff;margin-bottom:16px;">
+          ⏱ 打卡
+        </button>` : '<div class="alert alert-info" style="margin-bottom:16px;">您目前不是實習生身分，僅可查看差勤紀錄。</div>'}
 
         <div id="clock-msg" style="display:none;" class="alert"></div>
 
@@ -18371,9 +18379,11 @@ function _startClockTick() {
   }, 1000);
 }
 
-async function clockAction(type) {
+async function clockAction() {
   const msgEl = document.getElementById('clock-msg');
+  const btn = document.getElementById('clock-punch-btn');
   msgEl.style.display = 'none';
+  if (btn) btn.disabled = true;
   document.getElementById('clock-geo-status').textContent = '正在取得定位…';
 
   let lat = null, lng = null, accuracy = null;
@@ -18394,7 +18404,7 @@ async function clockAction(type) {
     id: 'att_' + currentUser.email + '_' + now.getTime(),
     email: currentUser.email,
     name: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
-    type,
+    type: 'punch',
     timestamp: now.toISOString(),
     date: _fmtDate(now),
     ...(lat !== null ? { lat, lng, accuracy } : {}),
@@ -18405,7 +18415,7 @@ async function clockAction(type) {
   try {
     await saveAttendance();
     msgEl.className = 'alert alert-success';
-    msgEl.textContent = (type === 'clock_in' ? '✅ 簽到成功！' : '✅ 簽退成功！') + ' ' + _fmtTime(record.timestamp);
+    msgEl.textContent = '✅ 打卡成功！ ' + _fmtTime(record.timestamp);
     msgEl.style.display = '';
     setTimeout(() => renderClockPage(), 800);
   } catch (e) {
@@ -18414,6 +18424,7 @@ async function clockAction(type) {
     msgEl.textContent = '打卡失敗：' + e.message;
     msgEl.style.display = '';
     document.getElementById('clock-geo-status').textContent = '';
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -18472,9 +18483,8 @@ function renderAttendancePage() {
   const summaryMap = {};
   monthRecords.forEach(r => {
     if (!summaryMap[r.email]) summaryMap[r.email] = {};
-    if (!summaryMap[r.email][r.date]) summaryMap[r.email][r.date] = {};
-    if (r.type === 'clock_in')  summaryMap[r.email][r.date].in  = r.timestamp;
-    if (r.type === 'clock_out') summaryMap[r.email][r.date].out = r.timestamp;
+    if (!summaryMap[r.email][r.date]) summaryMap[r.email][r.date] = { times: [] };
+    summaryMap[r.email][r.date].times.push(r.timestamp);
   });
 
   document.getElementById('attendance-body').innerHTML = `
@@ -18519,12 +18529,14 @@ function renderAttendancePage() {
         <tbody>
           ${filtered.length === 0
             ? '<tr><td colspan="4" style="text-align:center;color:#a0aec0;padding:20px;">無打卡紀錄</td></tr>'
-            : filtered.map(r => `<tr>
+            : filtered.map(r => {
+                const { icon, text, color } = _punchLabel(r, records);
+                return `<tr>
                 <td>${r.name || r.email}</td>
-                <td><span style="font-weight:600;color:${r.type==='clock_in'?'#276749':'#c53030'}">${r.type==='clock_in'?'🟢 簽到':'🔴 簽退'}</span></td>
+                <td><span style="font-weight:600;color:${color}">${icon} ${text}</span></td>
                 <td>${new Date(r.timestamp).toLocaleString('zh-TW')}</td>
                 <td>${r.lat ? `<button class="btn btn-secondary btn-sm" onclick="renderAttendanceMapPoint(${r.lat},${r.lng})">📍</button> ${_isNearCampus(r.lat,r.lng)?'<span style="color:#276749">校區內</span>':'<span style="color:#c53030">校區外</span>'}` : '—'}</td>
-              </tr>`).join('')}
+              </tr>`;}).join('')}
         </tbody>
       </table>
     </div>
@@ -18540,12 +18552,13 @@ function renderAttendancePage() {
         <thead><tr><th>實習生</th><th>日期</th><th>簽到</th><th>簽退</th><th>工時</th></tr></thead>
         <tbody>
           ${Object.entries(summaryMap).flatMap(([email, dates]) =>
-              Object.entries(dates).map(([date, times]) => {
+              Object.entries(dates).map(([date, { times }]) => {
+                const sorted = [...times].sort();
                 const name = users[email]?.name || email;
-                const inT  = times.in  ? _fmtTime(times.in)  : '—';
-                const outT = times.out ? _fmtTime(times.out) : '—';
-                const hrs  = (times.in && times.out)
-                  ? ((new Date(times.out) - new Date(times.in)) / 3600000).toFixed(1) + ' h'
+                const inT  = sorted.length > 0 ? _fmtTime(sorted[0]) : '—';
+                const outT = sorted.length > 1 ? _fmtTime(sorted[sorted.length - 1]) : '—';
+                const hrs  = sorted.length > 1
+                  ? ((new Date(sorted[sorted.length - 1]) - new Date(sorted[0])) / 3600000).toFixed(1) + ' h'
                   : '—';
                 return `<tr><td>${name}</td><td>${date}</td><td>${inT}</td><td>${outT}</td><td>${hrs}</td></tr>`;
               })
@@ -18563,10 +18576,12 @@ function renderAttendanceMap() {
   _attMapInstance = L.map('att-map').setView([_CAMPUS_LAT, _CAMPUS_LNG], 15);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(_attMapInstance);
   L.circle([_CAMPUS_LAT, _CAMPUS_LNG], { radius: _CAMPUS_RADIUS_M, color: '#3182ce', fillOpacity: .08 }).addTo(_attMapInstance);
+  const _allRecs = attendanceData?.records || [];
   records.forEach(r => {
-    L.marker([r.lat, r.lng], { title: r.name + ' ' + r.type })
+    const { text } = _punchLabel(r, _allRecs);
+    L.marker([r.lat, r.lng], { title: r.name + ' ' + text })
       .addTo(_attMapInstance)
-      .bindPopup(`${r.name || r.email}<br>${r.type==='clock_in'?'簽到':'簽退'} ${_fmtTime(r.timestamp)}`);
+      .bindPopup(`${r.name || r.email}<br>${text} ${_fmtTime(r.timestamp)}`);
   });
 }
 
