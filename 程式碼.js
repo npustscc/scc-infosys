@@ -103,7 +103,11 @@
       submittedAt: new Date().toISOString(),
       status: 'pending',
     });
-    updateJson_({ path: filePath, content: data });
+    try {
+      updateJson_({ path: filePath, content: data });
+    } catch (writeErr) {
+      throw new Error('儲存申請失敗（' + filePath + '）：' + writeErr.message);
+    }
     return { ok: true };
   }
 
