@@ -103,13 +103,12 @@
       submittedAt: new Date().toISOString(),
       status: 'pending',
     });
-    let writeResult;
     try {
-      writeResult = updateJson_({ path: filePath, content: data });
+      updateJson_({ path: filePath, content: data });
     } catch (writeErr) {
       throw new Error('儲存申請失敗（' + filePath + '）：' + writeErr.message);
     }
-    return { ok: true, debug: { fileId: writeResult && writeResult.id, filePath } };
+    return { ok: true };
   }
 
   function isAllowedUser_(email) {
