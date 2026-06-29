@@ -106,7 +106,8 @@
         raw = JSON.stringify(Object.keys(cfg?.users || {}));
         cache.put('allowed_users', raw, 300);
       } catch(e) {
-        return true; // config.json 不存在（初次設定），暫時允許
+        // config.json 讀取失敗時拒絕存取（fail-closed）；BOOTSTRAP_ADMIN 已在上方提前放行
+        return false;
       }
     }
     return JSON.parse(raw).includes(email);
