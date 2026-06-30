@@ -917,6 +917,8 @@
     .attach-drag-over { outline:2px dashed #3182ce !important;background:#ebf8ff !important;border-radius:6px; }
     @keyframes gt-shake { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-6px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(4px)} }
     .gt-shake { animation: gt-shake 0.5s ease; }
+    @keyframes _ncIdFlash { 0%{background:#fef9c3;} 100%{background:transparent;} }
+    ._nc-id-flash { animation: _ncIdFlash 1.5s ease-out; border-radius:4px; }
 
     /* ── Hover 說明 tooltip（由 JS #_tip_el 實作，position:fixed 確保不被 stacking context 遮蔽） ── */
     /* ── 轉銜評估 ── */
@@ -2046,6 +2048,7 @@
         <div id="detail-managers" style="display:none;border-top:1px solid #e2e8f0;margin-top:14px;padding-top:12px;"></div>
       </div>
       <div id="detail-import-notes" style="display:none;"></div>
+      <div id="detail-sem-dup-notice" style="display:none;"></div>
 
       <!-- 所有學期轉銜評估卡片 -->
       <div id="detail-transfer-evals"></div>
@@ -2083,6 +2086,13 @@
       <div id="nc-pending-match" style="display:none;margin-bottom:12px;padding:12px 16px;background:#fffbeb;border:1px solid #f6e05e;border-radius:8px;">
         <div style="font-size:.85rem;font-weight:700;color:#744210;margin-bottom:8px;">⚠ 發現相符的不開案個案，請確認是否為同一人：</div>
         <div id="nc-pending-match-list"></div>
+      </div>
+
+      <!-- 學期重複開案警告 -->
+      <div id="nc-semester-dup-warn" style="display:none;margin-bottom:12px;padding:14px 16px;background:#fff5f5;border:2px solid #fc8181;border-radius:8px;">
+        <div style="font-size:.92rem;font-weight:700;color:#c53030;margin-bottom:6px;">🚨 本學期已有此個案的開案紀錄！</div>
+        <div id="nc-semester-dup-list" style="font-size:.85rem;color:#742a2a;"></div>
+        <div style="font-size:.82rem;color:#9b2c2c;margin-top:6px;">若為不同學期請確認開案日期，若確有重複請先確認是否需另行開案。</div>
       </div>
 
       <!-- 基本資料 -->
@@ -7667,6 +7677,33 @@ function showCaseDetail(caseId) {
     }
   }
 
+  const semDupEl = document.getElementById('detail-sem-dup-notice');
+  if (semDupEl) {
+    const _cSemPrefix = openDateToSemPrefix(c.openDate);
+    const _semDups = casesData.filter(other =>
+      other.id !== c.id && !other.deleted &&
+      openDateToSemPrefix(other.openDate) === _cSemPrefix &&
+      ((c.studentId && other.studentId === c.studentId) ||
+       (c.idNumber  && other.idNumber  === c.idNumber))
+    );
+    if (_semDups.length) {
+      semDupEl.style.display = '';
+      semDupEl.innerHTML =
+        `<div style="margin:0 0 12px;background:#fff5f5;border:2px solid #fc8181;border-radius:8px;padding:12px 16px;">` +
+        `<div style="font-size:.9rem;font-weight:700;color:#c53030;margin-bottom:6px;">🚨 本學期同一個案另有開案紀錄</div>` +
+        _semDups.map(d =>
+          `<div style="font-size:.85rem;color:#742a2a;margin-bottom:3px;">
+            案號：<strong>${escHtml(d.id)}</strong>　主責：${escHtml(d.counselorName || d.counselorEmail || '—')}　開案日期：${escHtml(d.openDate || '—')}
+            <span onclick="showCaseDetail('${escHtml(d.id)}')" style="color:#2b6cb0;cursor:pointer;text-decoration:underline;margin-left:8px;">查看</span>
+          </div>`
+        ).join('') +
+        `</div>`;
+    } else {
+      semDupEl.style.display = 'none';
+      semDupEl.innerHTML = '';
+    }
+  }
+
   auditLog('查閱個案', caseId);
 
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
@@ -12376,6 +12413,7 @@ function openNewCasePage() {
   _ncEthSel = '';
   setAlert('new-case-alert', '', '');
   document.getElementById('nc-id-format-hint').style.display = 'none';
+  const _ncSemDupWarn = document.getElementById('nc-semester-dup-warn'); if (_ncSemDupWarn) _ncSemDupWarn.style.display = 'none';
   const _ncTransferEl = document.getElementById('nc-is-transfer-case'); if (_ncTransferEl) _ncTransferEl.checked = false;
 
   // 填充主責人員選單
@@ -15897,9 +15935,14 @@ function fillFromCase(caseId) {
   document.getElementById('nc-past-psych').checked   = (c.pastRecords||[]).includes('精神科就診');
   document.getElementById('nc-past-med').checked     = (c.pastRecords||[]).includes('服用精神藥物');
   document.getElementById('nc-past-counsel').checked = (c.pastRecords||[]).includes('心理諮商');
-  document.getElementById('nc-id').value = generateCaseId();
+  const _ncIdFill = document.getElementById('nc-id');
+  _ncIdFill.value = generateCaseId();
+  _ncIdFill.classList.remove('_nc-id-flash');
+  void _ncIdFill.offsetWidth;
+  _ncIdFill.classList.add('_nc-id-flash');
   renderCaseIdSuggestions();
   checkCaseIdDuplicate();
+  checkCurrentSemesterDuplicate();
   document.getElementById('nc-refill-q').value = '';
   document.getElementById('nc-refill-results').innerHTML =
     `<div style="color:#276749;background:#f0fff4;border:1px solid #9ae6b4;padding:8px 12px;border-radius:6px;font-size:.875rem;">
@@ -25137,6 +25180,7 @@ function checkPendingMatch() {
   const name = document.getElementById('nc-name')?.value.trim() || '';
   const sid = document.getElementById('nc-student-id')?.value.trim() || '';
   const idn = document.getElementById('nc-id-number')?.value.trim() || '';
+  checkCurrentSemesterDuplicate();
   const banner = document.getElementById('nc-pending-match');
   const list = document.getElementById('nc-pending-match-list');
   if (!banner || !list) return;
@@ -25163,6 +25207,31 @@ function checkPendingMatch() {
       </div>
       <button class="btn btn-secondary" style="font-size:.8rem;padding:4px 10px;flex-shrink:0;margin-left:12px;" onclick="fillFromPending('${escHtml(p.id)}')">帶入資料</button>
     </div>`).join('');
+  checkCurrentSemesterDuplicate();
+}
+
+function checkCurrentSemesterDuplicate() {
+  const prefix = currentSemesterPrefix();
+  const sid = (document.getElementById('nc-student-id')?.value || '').trim();
+  const idn = (document.getElementById('nc-id-number')?.value || '').trim();
+  const warn = document.getElementById('nc-semester-dup-warn');
+  const list = document.getElementById('nc-semester-dup-list');
+  if (!warn || !list) return;
+  if (!sid && !idn) { warn.style.display = 'none'; return; }
+  const dups = casesData.filter(c =>
+    !c.deleted &&
+    c.id && c.id.startsWith(prefix) &&
+    c.id !== _editingCaseId &&
+    ((sid && c.studentId === sid) || (idn && c.idNumber === idn))
+  );
+  if (!dups.length) { warn.style.display = 'none'; return; }
+  warn.style.display = '';
+  list.innerHTML = dups.map(d =>
+    `<div style="margin-bottom:4px;">
+      案號：<strong>${escHtml(d.id)}</strong>　姓名：${escHtml(d.name || '—')}　開案日期：${escHtml(d.openDate || '—')}
+      <span onclick="showCaseDetail('${escHtml(d.id)}')" style="color:#2b6cb0;cursor:pointer;text-decoration:underline;margin-left:8px;font-size:.82rem;">查看</span>
+    </div>`
+  ).join('');
 }
 
 function fillFromPending(id) {
@@ -25183,9 +25252,14 @@ function fillFromPending(id) {
       if (typeof updateBirthRoc === 'function') updateBirthRoc();
     }
   }
-  document.getElementById('nc-id').value = generateCaseId();
+  const _ncIdFillP = document.getElementById('nc-id');
+  _ncIdFillP.value = generateCaseId();
+  _ncIdFillP.classList.remove('_nc-id-flash');
+  void _ncIdFillP.offsetWidth;
+  _ncIdFillP.classList.add('_nc-id-flash');
   renderCaseIdSuggestions();
   checkCaseIdDuplicate();
+  checkCurrentSemesterDuplicate();
   document.getElementById('nc-pending-match').style.display = 'none';
 }
 
