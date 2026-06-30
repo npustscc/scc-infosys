@@ -919,6 +919,8 @@
     .gt-shake { animation: gt-shake 0.5s ease; }
     @keyframes _ncIdFlash { 0%{background:#fef9c3;} 100%{background:transparent;} }
     ._nc-id-flash { animation: _ncIdFlash 1.5s ease-out; border-radius:4px; }
+    @keyframes _formSectionPulse { 0%,100%{background:#fff5f5;} 50%{background:#fed7d7;} }
+    .form-section-error { border:2px solid #fc8181 !important;background:#fff5f5 !important;animation:_formSectionPulse 1s ease; }
 
     /* ── Hover 說明 tooltip（由 JS #_tip_el 實作，position:fixed 確保不被 stacking context 遮蔽） ── */
     /* ── 轉銜評估 ── */
@@ -1456,13 +1458,6 @@
         </div>
       </div>
 
-      <div class="card" style="margin-top:20px;">
-        <div class="card-header"><h3>學制學號前綴設定</h3></div>
-        <div style="padding:16px 20px;">
-          <p style="font-size:.88rem;color:#718096;margin-bottom:14px;">設定學號英文前綴與學制的對應關係。此設定影響畢業轉銜偵測（延畢生／預作畢業生判斷）及 Excel 匯入時的學制識別。設定儲存於 <code>config.json</code>。</p>
-          <div id="admin-degree-wrap"><p style="font-size:.85rem;color:#a0aec0;">讀取設定後顯示…</p></div>
-        </div>
-      </div>
       </div><!-- /admin-panel-users -->
       <!-- Panel: 帳號申請審核 -->
       <div id="admin-panel-apps" style="display:none;">
@@ -1473,6 +1468,23 @@
           </div>
           <div id="admin-apps-wrap" style="padding:16px 20px;">
             <div class="empty-state"><div class="icon">📋</div><p>載入中…</p></div>
+          </div>
+        </div>
+      </div>
+      <!-- Panel: 系所與學制 -->
+      <div id="admin-panel-depts" style="display:none;">
+        <div class="card">
+          <div class="card-header"><h3>學制學號前綴設定</h3></div>
+          <div style="padding:16px 20px;">
+            <p style="font-size:.88rem;color:#718096;margin-bottom:14px;">設定學號英文前綴與學制的對應關係。此設定影響畢業轉銜偵測（延畢生／預作畢業生判斷）及 Excel 匯入時的學制識別。設定儲存於 <code>config.json</code>。</p>
+            <div id="admin-degree-wrap"><p style="font-size:.85rem;color:#a0aec0;">讀取設定後顯示…</p></div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:20px;">
+          <div class="card-header"><h3>系所與學院對照管理</h3></div>
+          <div style="padding:16px 20px;">
+            <p style="font-size:.88rem;color:#718096;margin-bottom:14px;">管理系所名稱與所屬學院的對應關係。設定儲存於 <code>config.json</code>，優先於系統預設對照表。</p>
+            <div id="admin-dept-college-wrap"><p style="font-size:.85rem;color:#a0aec0;">讀取設定後顯示…</p></div>
           </div>
         </div>
       </div>
@@ -2120,7 +2132,7 @@
           </div>
           <div>
             <label class="field-label">學號<span class="req">*</span></label>
-            <input type="text" class="field-input" id="nc-student-id" placeholder="學號" maxlength="20" oninput="checkPendingMatch()" />
+            <input type="text" class="field-input" id="nc-student-id" placeholder="學號" maxlength="20" oninput="checkPendingMatch();checkCurrentSemesterDuplicate()" />
           </div>
           <div>
             <label class="field-label">生日<span class="req">*</span></label>
@@ -2141,7 +2153,7 @@
           </div>
           <div>
             <label class="field-label">身分證字號／居留證號<span class="req">*</span></label>
-            <input type="text" class="field-input" id="nc-id-number" placeholder="A123456789" oninput="checkPendingMatch()" />
+            <input type="text" class="field-input" id="nc-id-number" placeholder="A123456789" oninput="checkPendingMatch();checkCurrentSemesterDuplicate()" />
           </div>
           <div class="full">
             <label class="field-label">法定性別<span class="req">*</span></label>
@@ -6663,11 +6675,13 @@ let _adminActiveTab  = 'users';
 
 function renderAdminPage() {
   _renderAdminTabs();
-  const showUsers = _adminActiveTab === 'users';
-  document.getElementById('admin-panel-users').style.display = showUsers ? '' : 'none';
-  document.getElementById('admin-panel-apps').style.display  = showUsers ? 'none' : '';
-  if (showUsers) { renderAdminUsers(); renderAdminDegreeMapping(); }
-  else renderPendingUsersTab();
+  const tab = _adminActiveTab;
+  document.getElementById('admin-panel-users').style.display = tab === 'users'  ? '' : 'none';
+  document.getElementById('admin-panel-apps').style.display  = tab === 'apps'   ? '' : 'none';
+  document.getElementById('admin-panel-depts').style.display = tab === 'depts'  ? '' : 'none';
+  if (tab === 'users')  { renderAdminUsers(); }
+  else if (tab === 'apps')  renderPendingUsersTab();
+  else if (tab === 'depts') { renderAdminDegreeMapping(); renderAdminDeptCollege(); }
 }
 
 function _renderAdminTabs() {
@@ -6684,7 +6698,7 @@ function _renderAdminTabs() {
   const badge = count > 0
     ? ` <span style="background:#e53e3e;color:#fff;border-radius:10px;padding:0 5px;font-size:.72rem;">${count}</span>`
     : '';
-  bar.innerHTML = _t('users','使用者列表') + _t('apps','帳號申請審核' + badge);
+  bar.innerHTML = _t('users','使用者列表') + _t('apps','帳號申請審核' + badge) + _t('depts','系所與學制');
 }
 
 function _adminTab(tab) {
@@ -10032,32 +10046,37 @@ async function saveRecord() {
     setAlert('new-record-alert', 'error', msg);
     document.getElementById('new-record-alert').scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
+  const _markSec = (sel) => {
+    const el = sel[0]==='#' ? document.getElementById(sel.slice(1)) : document.querySelector(sel);
+    el?.closest('.form-section,.card')?.classList.add('form-section-error');
+  };
+  document.querySelectorAll('.form-section-error').forEach(el => el.classList.remove('form-section-error'));
 
-  if (!date)    { _recAlert('請填寫晤談日期。'); return; }
-  if (!rawTime) { _recAlert('請選擇晤談時間。'); return; }
+  if (!date)    { _markSec('#rec-date'); _recAlert('請填寫晤談日期。'); return; }
+  if (!rawTime) { _markSec('#rec-time'); _recAlert('請選擇晤談時間。'); return; }
   let time = rawTime;
   if (rawTime === '其他') {
     const custom = document.getElementById('rec-time-other').value.trim();
-    if (!custom) { _recAlert('請填寫自訂晤談時間（格式：xx:xx-xx:xx）。'); return; }
-    if (!/^\d{2}:\d{2}-\d{2}:\d{2}$/.test(custom)) { _recAlert('時間格式不正確，請填寫 xx:xx-xx:xx（例：13:30-14:20）。'); return; }
+    if (!custom) { _markSec('#rec-time-other'); _recAlert('請填寫自訂晤談時間（格式：xx:xx-xx:xx）。'); return; }
+    if (!/^\d{2}:\d{2}-\d{2}:\d{2}$/.test(custom)) { _markSec('#rec-time-other'); _recAlert('時間格式不正確，請填寫 xx:xx-xx:xx（例：13:30-14:20）。'); return; }
     time = custom;
   }
-  if (!summary) { _recAlert('請填寫晤談摘要。'); return; }
+  if (!summary) { _markSec('#rec-summary'); _recAlert('請填寫晤談摘要。'); return; }
 
   const topicOtherText = document.getElementById('rec-topic-other').value.trim();
   const topics = [...document.querySelectorAll('input[name="rec-topic"]:checked')].map(cb =>
     cb.value === '其他' && topicOtherText ? `其他：${topicOtherText}` : cb.value
   );
-  if (!topics.length) { _recAlert('請至少選擇一個會談主題。'); return; }
+  if (!topics.length) { _markSec('input[name="rec-topic"]'); _recAlert('請至少選擇一個會談主題。'); return; }
   if (document.querySelector('input[name="rec-topic"][value="其他"]')?.checked && !topicOtherText) {
     _validateTopicOther('rec');
-    _recAlert('請填寫會談主題「其他」的說明。'); return;
+    _markSec('#rec-topic-other'); _recAlert('請填寫會談主題「其他」的說明。'); return;
   }
 
   // ── 此次服務項目驗證（一次顯示所有錯誤） ──
   _clearAllSvcHints();
   const _mainChecked = [...document.querySelectorAll('input[name="rec-service-main"]:checked')].map(cb => cb.value);
-  if (!_mainChecked.length) { _recAlert('請至少勾選一項此次服務項目。'); return; }
+  if (!_mainChecked.length) { _markSec('input[name="rec-service-main"]'); _recAlert('請至少勾選一項此次服務項目。'); return; }
   const _svcErrors = [];
   if (_mainChecked.includes('心理測驗') &&
       ![...document.querySelectorAll('input[name="rec-psychtest"]:checked')].length) {
@@ -10101,22 +10120,23 @@ async function saveRecord() {
     _showSvcHint('hint-transfer'); _svcErrors.push('內部轉案（未選輔導人員）');
   }
   if (_svcErrors.length) {
+    _markSec('input[name="rec-service-main"]');
     _recAlert('服務項目「' + _svcErrors.join('、') + '」已勾選，請補充必要內容後再儲存。'); return;
   }
 
   const interventionMode = document.getElementById('rec-intervention-mode').value;
-  if (!interventionMode) { _recAlert('請選擇介入方式。'); return; }
+  if (!interventionMode) { _markSec('#rec-intervention-mode'); _recAlert('請選擇介入方式。'); return; }
   const interviewees = [...document.querySelectorAll('input[name="rec-interviewee"]:checked')].map(cb => cb.value);
-  if (!interviewees.length) { _recAlert('請至少選擇一項晤談對象。'); return; }
+  if (!interviewees.length) { _markSec('input[name="rec-interviewee"]'); _recAlert('請至少選擇一項晤談對象。'); return; }
   const intervieweeNote = (document.getElementById('rec-interviewee-note')?.value || '').trim();
   const serviceItems  = _collectServiceItems();
   const assessment    = getRichTextValue('rec-assessment');
   const nextPlan      = getRichTextValue('rec-next-plan');
   const notes         = getRichTextValue('rec-notes');
   const _rtText = id => (document.getElementById(id)?.innerText || '').trim();
-  if (!_rtText('rec-assessment')) { _recAlert('請填寫問題評估。'); return; }
-  if (!_rtText('rec-next-plan'))  { _recAlert('請填寫後續處遇計畫。'); return; }
-  if (!_recCounselors.length) { _recAlert('請至少新增一位晤談者。'); return; }
+  if (!_rtText('rec-assessment')) { _markSec('#rec-assessment'); _recAlert('請填寫問題評估。'); return; }
+  if (!_rtText('rec-next-plan'))  { _markSec('#rec-next-plan'); _recAlert('請填寫後續處遇計畫。'); return; }
+  if (!_recCounselors.length) { _markSec('#rec-counselors-wrap'); _recAlert('請至少新增一位晤談者。'); return; }
 
   const cidx = casesData.findIndex(c => c.id === _recordCaseId);
   if (cidx === -1) return;
@@ -12541,7 +12561,11 @@ const DEPT_TO_COLLEGE = {
   '動物用疫苗國際學位專班':'國際學院','熱帶農業暨國際合作系':'國際學院',
 };
 const COLLEGE_ORDER = ['農學院','工學院','管理學院','人文暨科學學院','獸醫學院','國際學院'];
-function getCollegeFromDept(dept) { return DEPT_TO_COLLEGE[dept] || ''; }
+function _getDeptToCollege() {
+  const c = configData?.deptToCollege;
+  return (c && Object.keys(c).length > 0) ? c : DEPT_TO_COLLEGE;
+}
+function getCollegeFromDept(dept) { return _getDeptToCollege()[dept] || ''; }
 
 const ETH_NOTE_IDS = {
   '漢民族': 'nc-eth-note-han',
@@ -15838,7 +15862,17 @@ async function saveCase() {
     document.getElementById('new-case-alert').scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
-  if (missing.length) { _caseAlert('請填寫必填欄位：' + missing.join('、')); return; }
+  if (missing.length) {
+    _caseAlert('請填寫必填欄位：' + missing.join('、'));
+    document.querySelectorAll('.form-section-error').forEach(el => el.classList.remove('form-section-error'));
+    const _fmap = {'案號':'nc-id','姓名':'nc-name','學號':'nc-student-id','身分證字號':'nc-id-number','法定性別':'nc-gender','開案日期':'nc-open-date','對象類別':'nc-type','國籍':'nc-nationality','學制':'nc-program','系所':'nc-dept','聯絡電話':'nc-phone','住所類型':'nc-residence','緊急聯絡人姓名':'nc-emg-name','緊急聯絡人電話':'nc-emg-phone','緊急聯絡人關係':'nc-emg-relation','案別（A案／B案）':'nc-ab-type','來源':'nc-source','主訴問題分類':'nc-topic','主訴問題分類「其他」說明':'nc-topic-other','BSRS-5 量表（6題皆須填寫）':'nc-bsrs1'};
+    missing.forEach(label => {
+      const fid = _fmap[label]; if (!fid) return;
+      const el = document.getElementById(fid) || document.querySelector(`input[name="${fid}"]`);
+      if (el) el.closest('.form-section')?.classList.add('form-section-error');
+    });
+    return;
+  }
 
   if (id.length !== 7) {
     _caseAlert(`案號格式不正確，須為 7 碼（目前輸入 ${id.length} 碼）。`);
@@ -16031,17 +16065,19 @@ function fillFromCase(caseId) {
   document.getElementById('nc-past-med').checked     = (c.pastRecords||[]).includes('服用精神藥物');
   document.getElementById('nc-past-counsel').checked = (c.pastRecords||[]).includes('心理諮商');
   const _ncIdFill = document.getElementById('nc-id');
-  _ncIdFill.value = generateCaseId();
+  _ncIdFill.value = c.id;
   _ncIdFill.classList.remove('_nc-id-flash');
   void _ncIdFill.offsetWidth;
   _ncIdFill.classList.add('_nc-id-flash');
   renderCaseIdSuggestions();
   checkCaseIdDuplicate();
   checkCurrentSemesterDuplicate();
+  const _dupWarn = document.getElementById('nc-semester-dup-warn');
+  if (_dupWarn && _dupWarn.style.display !== 'none') _dupWarn.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   document.getElementById('nc-refill-q').value = '';
   document.getElementById('nc-refill-results').innerHTML =
     `<div style="color:#276749;background:#f0fff4;border:1px solid #9ae6b4;padding:8px 12px;border-radius:6px;font-size:.875rem;">
-      ✓ 已帶入「${escHtml(c.name || '—')}」的歷史資料，案號已自動產生（可手動修改），開案日期與主責人員請確認填寫
+      ✓ 已帶入「${escHtml(c.name || '—')}」的歷史資料，案號已帶入舊案號（如需新案號請手動修改），開案日期與主責人員請確認填寫
     </div>`;
 }
 
@@ -25408,6 +25444,8 @@ function fillFromPending(id) {
   renderCaseIdSuggestions();
   checkCaseIdDuplicate();
   checkCurrentSemesterDuplicate();
+  const _dupWarnP = document.getElementById('nc-semester-dup-warn');
+  if (_dupWarnP && _dupWarnP.style.display !== 'none') _dupWarnP.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   document.getElementById('nc-pending-match').style.display = 'none';
 }
 
@@ -26689,6 +26727,64 @@ async function _adminRemovePrefix(degreeKey, char) {
   if (!configData?.degreeMapping) return;
   if (configData.degreeMapping[degreeKey]) configData.degreeMapping[degreeKey] = configData.degreeMapping[degreeKey].filter(c => c !== char);
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminDegreeMapping(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+
+function renderAdminDeptCollege() {
+  const el = document.getElementById('admin-dept-college-wrap');
+  if (!el) return;
+  const dc = _getDeptToCollege();
+  const colleges = [...new Set(Object.values(dc))].sort();
+  const byCollege = {};
+  colleges.forEach(col => { byCollege[col] = Object.keys(dc).filter(d => dc[d] === col).sort(); });
+  const usingConfig = configData?.deptToCollege && Object.keys(configData.deptToCollege).length > 0;
+  el.innerHTML = `
+    <div style="margin-bottom:12px;font-size:.82rem;color:${usingConfig?'#276749':'#718096'};background:${usingConfig?'#f0fff4':'#f7fafc'};border:1px solid ${usingConfig?'#9ae6b4':'#e2e8f0'};padding:8px 12px;border-radius:6px;">
+      ${usingConfig ? '✓ 目前使用 config.json 中的自訂對照表。' : '⚠ 目前使用系統內建對照表（未自訂），修改後將寫入 config.json。'}
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;">
+      <input type="text" id="dc-input-dept" class="field-input" placeholder="系所名稱" style="flex:1;min-width:180px;max-width:280px;" />
+      <input type="text" id="dc-input-college" class="field-input" placeholder="學院名稱" style="flex:1;min-width:140px;max-width:200px;" list="dc-college-list" />
+      <datalist id="dc-college-list">${colleges.map(c=>`<option value="${escHtml(c)}">`).join('')}</datalist>
+      <button class="btn btn-primary btn-sm" onclick="_adminAddDeptCollege()">新增對應</button>
+      ${usingConfig ? '' : `<button class="btn btn-secondary btn-sm" onclick="_adminInitDeptCollegeFromDefault()">匯入系統預設</button>`}
+    </div>
+    ${colleges.map(col => `
+      <div style="margin-bottom:14px;">
+        <div style="font-weight:700;font-size:.88rem;color:#2b6cb0;background:#ebf8ff;padding:5px 10px;border-radius:6px;margin-bottom:6px;">${escHtml(col)}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;padding:0 4px;">
+          ${(byCollege[col]||[]).map(dept =>
+            `<span style="display:inline-flex;align-items:center;gap:2px;background:#edf2f7;color:#2d3748;border:1px solid #cbd5e0;border-radius:12px;padding:2px 8px 2px 10px;font-size:.83rem;">
+              ${escHtml(dept)}<button onclick="_adminRemoveDeptCollege('${escHtml(dept)}')" title="移除" style="background:none;border:none;cursor:pointer;color:#718096;font-size:1rem;line-height:1;padding:0 0 0 3px;">×</button>
+            </span>`).join('')}
+        </div>
+      </div>`).join('')}
+    ${Object.keys(dc).length === 0 ? '<div style="color:#a0aec0;font-size:.85rem;">尚無對應資料。</div>' : ''}`;
+}
+
+async function _adminAddDeptCollege() {
+  const dept = (document.getElementById('dc-input-dept')?.value || '').trim();
+  const col  = (document.getElementById('dc-input-college')?.value || '').trim();
+  if (!dept) { alert('請填寫系所名稱。'); return; }
+  if (!col)  { alert('請填寫學院名稱。'); return; }
+  if (!configData.deptToCollege) configData.deptToCollege = { ..._getDeptToCollege() };
+  configData.deptToCollege[dept] = col;
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); document.getElementById('dc-input-dept').value=''; renderAdminDeptCollege(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+
+async function _adminRemoveDeptCollege(dept) {
+  if (!confirm(`確認移除「${dept}」的學院對應？`)) return;
+  if (!configData.deptToCollege) configData.deptToCollege = { ..._getDeptToCollege() };
+  delete configData.deptToCollege[dept];
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminDeptCollege(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+
+async function _adminInitDeptCollegeFromDefault() {
+  if (!confirm('將系統內建的系所-學院對照表匯入 config.json 作為初始設定？')) return;
+  configData.deptToCollege = { ...DEPT_TO_COLLEGE };
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminDeptCollege(); }
   catch (e) { alert('儲存失敗：' + e.message); }
 }
 
