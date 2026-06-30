@@ -2331,7 +2331,10 @@
           </div>
           <div>
             <label class="field-label">與個案關係<span class="req">*</span></label>
-            <input type="text" class="field-input" id="nc-emg-relation" placeholder="父／母／配偶…" />
+            <input type="text" class="field-input" id="nc-emg-relation" placeholder="父／母／配偶…"
+              onfocus="_showEmgRelChips()" oninput="_filterEmgRelChips(this.value)"
+              onblur="setTimeout(_hideEmgRelChips, 200)" autocomplete="off" />
+            <div id="nc-emg-relation-chips" style="display:none;flex-wrap:wrap;gap:5px;margin-top:6px;"></div>
           </div>
         </div>
       </div>
@@ -15620,16 +15623,51 @@ function checkCaseIdDuplicate() {
   if (!val) { msgEl.style.display = 'none'; return; }
   const dup = casesData.find(c => c.id === val && c.id !== _editingCaseId);
   if (!dup) { msgEl.style.display = 'none'; return; }
-  msgEl.innerHTML = `<div class="alert alert-warn" style="margin-top:6px;">
-    案號「${escHtml(val)}」已被個案「${escHtml(dup.name)}」（學號：${escHtml(dup.studentId)}）使用。
-    <div style="margin-top:8px;">
-      <span class="dept-msg-option dept-create"
-        onclick="quickEditCaseId('${escHtml(dup.id)}','${escHtml(dup.name)}')">
-        修改「${escHtml(dup.name)}」的案號
-      </span>
-    </div>
-  </div>`;
+  const curSid  = (document.getElementById('nc-student-id')?.value || '').trim();
+  const curIdn  = (document.getElementById('nc-id-number')?.value || '').trim();
+  const curName = (document.getElementById('nc-name')?.value || '').trim();
+  const isStudentMatch = (curSid && curSid === dup.studentId) || (curIdn && curIdn === dup.idNumber) || (curName && curName === dup.name);
+  const isSameSem = dup.id.startsWith(currentSemesterPrefix());
+  if (isStudentMatch && isSameSem) {
+    msgEl.innerHTML = `<div style="margin-top:6px;padding:10px 14px;background:#fff5f5;border:2px solid #fc8181;border-radius:6px;font-size:.875rem;">
+      🚨 <strong>此學生本學期已開案</strong>（案號：${escHtml(dup.id)}）<br>
+      <span style="font-size:.82rem;color:#742a2a;">如確認要重複開案，請修改案號後儲存，儲存時將再次確認。</span>
+    </div>`;
+  } else if (isStudentMatch && !isSameSem) {
+    msgEl.innerHTML = `<div style="margin-top:6px;padding:10px 14px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;font-size:.875rem;">
+      ℹ️ 此為「${escHtml(dup.name)}」的舊學期案號（${escHtml(dup.id)}）<br>
+      <span style="font-size:.82rem;color:#2c5282;">如需本學期開案，請將案號修改為本學期格式（如 ${escHtml(currentSemesterPrefix())}001）。</span>
+    </div>`;
+  } else {
+    msgEl.innerHTML = `<div class="alert alert-warn" style="margin-top:6px;">
+      案號「${escHtml(val)}」已被個案「${escHtml(dup.name)}」（學號：${escHtml(dup.studentId)}）使用。
+      <div style="margin-top:8px;">
+        <span class="dept-msg-option dept-create" onclick="quickEditCaseId('${escHtml(dup.id)}','${escHtml(dup.name)}')">
+          修改「${escHtml(dup.name)}」的案號
+        </span>
+      </div>
+    </div>`;
+  }
   msgEl.style.display = '';
+}
+
+function _showEmgRelChips() { _filterEmgRelChips(document.getElementById('nc-emg-relation')?.value || ''); }
+function _hideEmgRelChips() {
+  const w = document.getElementById('nc-emg-relation-chips');
+  if (w) w.style.display = 'none';
+}
+function _filterEmgRelChips(q) {
+  const w = document.getElementById('nc-emg-relation-chips');
+  if (!w) return;
+  const all = [...new Set((casesData || []).map(c => (c.emergencyRelation || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-TW'));
+  const hits = q.trim() ? all.filter(r => r.includes(q)) : all;
+  if (!hits.length) { w.style.display = 'none'; return; }
+  w.innerHTML = hits.map(r =>
+    `<span onclick="document.getElementById('nc-emg-relation').value='${escHtml(r)}';_hideEmgRelChips();"
+      style="cursor:pointer;background:#ebf8ff;color:#2b6cb0;border:1px solid #90cdf4;border-radius:12px;padding:3px 10px;font-size:.82rem;"
+      onmouseover="this.style.background='#bee3f8'" onmouseout="this.style.background='#ebf8ff'">${escHtml(r)}</span>`
+  ).join('');
+  w.style.display = 'flex';
 }
 
 function toggleTopicOther(cb) {
@@ -15871,6 +15909,8 @@ async function saveCase() {
       const el = document.getElementById(fid) || document.querySelector(`input[name="${fid}"]`);
       if (el) el.closest('.form-section')?.classList.add('form-section-error');
     });
+    const _firstErr = document.querySelector('.form-section-error');
+    if (_firstErr) _firstErr.scrollIntoView({ behavior: 'smooth', block: 'center' });
     return;
   }
 
@@ -15892,6 +15932,16 @@ async function saveCase() {
     checkCaseIdDuplicate();
     _caseAlert('案號已被使用，請修改後再儲存。');
     return;
+  }
+
+  // 同學期重複開案確認
+  const _semPfx = currentSemesterPrefix();
+  const _semDups = casesData.filter(c => !c.deleted && c.id !== _editingCaseId &&
+    c.id && c.id.startsWith(_semPfx) &&
+    ((studentId && c.studentId === studentId) || (idNumber && c.idNumber === idNumber)));
+  if (_semDups.length) {
+    const _dupInfo = _semDups.map(d => `案號 ${d.id}（${d.name}）`).join('、');
+    if (!confirm(`此學生本學期已有開案紀錄：${_dupInfo}\n\n確定要本學期重複開案嗎？`)) return;
   }
 
   // 系所需在列表或已確認建立
@@ -18943,7 +18993,7 @@ async function driveUpdateJsonFile(path, content) {
 // ══════════════════════════════════════════════
 //  Apps Script Proxy（所有 Drive 操作將透過此函式）
 // ══════════════════════════════════════════════
-async function proxyCall(action, params = {}, _silent = false) {
+async function proxyCall(action, params = {}, _silent = false, _retry = 0) {
   if (!gIdToken) throw new Error('尚未取得 ID token，請重新登入');
   const _isRead = _SYSLOG_READ_ACTIONS.has(action);
   const _logDetail = Object.entries(params)
@@ -18951,7 +19001,7 @@ async function proxyCall(action, params = {}, _silent = false) {
     .map(([k, v]) => `${k}=${typeof v === 'string' && v.length > 80 ? v.slice(0, 80) + '…' : v}`)
     .join(', ');
   const _t0 = Date.now();
-  if (!_silent) _syslog(_isRead ? 'debug' : 'info', `→ ${action}`, _logDetail || undefined);
+  if (!_silent && _retry === 0) _syslog(_isRead ? 'debug' : 'info', `→ ${action}`, _logDetail || undefined);
   const payload = JSON.stringify({ idToken: gIdToken, action, rootFolderId: DRIVE_FOLDER_ID, ...params });
   const form = new URLSearchParams();
   form.append('payload', payload);
@@ -18961,12 +19011,19 @@ async function proxyCall(action, params = {}, _silent = false) {
       body: form,
       redirect: 'follow',
     });
-    if (!r.ok) throw new Error(`Apps Script 呼叫失敗 (${r.status})`);
+    if (!r.ok) {
+      if ((r.status === 404 || r.status === 503) && _retry < 2) {
+        if (!_silent) _syslog('debug', `→ ${action} 冷啟動重試 #${_retry + 1}（HTTP ${r.status}）`);
+        await new Promise(res => setTimeout(res, 1200 * (_retry + 1)));
+        return proxyCall(action, params, _silent, _retry + 1);
+      }
+      throw new Error(`Apps Script 呼叫失敗 (${r.status})`);
+    }
     const data = await r.json();
     if (data.status === 401 || data.error === '身份驗證失敗') throw new Error('身份驗證失敗，請重新登入');
     if (!data.success && data.pong === undefined) throw new Error(data.error || 'Apps Script 回應錯誤');
     if (data.data && typeof data.data === 'object' && data.data.error && !data.data.ok) throw new Error(data.data.error);
-    if (!_silent) _syslog(_isRead ? 'debug' : 'success', `✓ ${action} (${Date.now() - _t0}ms)`);
+    if (!_silent) _syslog(_isRead ? 'debug' : 'success', `✓ ${action} (${Date.now() - _t0}ms)${_retry > 0 ? ` [重試${_retry}次]` : ''}`);
     return data.data;
   } catch (e) {
     if (!_silent) _syslog('error', `✗ ${action}: ${e.message}`, _logDetail || undefined);
