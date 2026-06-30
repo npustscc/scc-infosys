@@ -5102,19 +5102,54 @@ async function afterLogin() {
   document.getElementById('header-lock-btn').style.display = 'flex';
 
   try {
-    // 並行讀取 config + 不依賴 config 的資料
-    // loadMentalLeaves 移至背景（檔案最重，但使用者不一定需要），待 UI 顯示後再行載入
-    const [cfg] = await Promise.all([
-      driveReadJson(CONFIG_FILE),
-      loadPendingCases(),
-      loadBookings(),
-      loadTransfer(),
-      loadUnassignedRecords(),
-      loadIssues(),
-      loadUserTodos(),
-    ]);
+    // 單次 GAS 呼叫取回所有啟動資料（內部以 UrlFetchApp.fetchAll 並行）
+    const _lsHint = localStorage.getItem(_USERS_FOLDER_LS_KEY);
+    const _validHint = (_lsHint && _lsHint !== '[object Object]' && _lsHint.length >= 10) ? _lsHint : null;
+    if (_lsHint && !_validHint) localStorage.removeItem(_USERS_FOLDER_LS_KEY);
+    const batch = await proxyCall('startupBatch', {
+      issuesRootId:      ISSUES_FOLDER_ID,
+      userEmail:         currentUser.email,
+      envSuffix:         DRIVE_FOLDER_ID.slice(-8),
+      usersFolderIdHint: _validHint,
+    });
     setLoadingProgress(25);
-    configData = cfg;
+
+    // ── config ──
+    if (!batch.config) throw new Error('找不到設定檔（config.json not found）');
+    configData = batch.config;
+
+    // ── users folder cache ──
+    if (batch.usersFolderId) {
+      _usersFolderIdCache = batch.usersFolderId;
+      localStorage.setItem(_USERS_FOLDER_LS_KEY, batch.usersFolderId);
+    }
+
+    // ── todos ──
+    if (batch.todos) {
+      const raw = batch.todos;
+      _todoFileId = batch.isTodoLegacy ? null : (batch.todoFileId || null);
+      todosData = Array.isArray(raw?.todos) ? raw.todos : [];
+      _suppressedTodoRecordIds = new Set(Array.isArray(raw?.suppressedRecordIds) ? raw.suppressedRecordIds : []);
+      const _prefs = raw?.caseSearchPrefs || {};
+      if (_prefs.closureStatus !== undefined) _cnClosureStatus = _prefs.closureStatus;
+      if (_prefs.archived !== undefined) _cnArchived = _prefs.archived;
+      if (batch.isTodoLegacy) saveUserTodos().catch(() => {});
+    } else {
+      todosData = [];
+      _suppressedTodoRecordIds = new Set();
+    }
+    _cleanupOldTodos();
+
+    // ── 其他資料 ──
+    pendingCasesData       = Array.isArray(batch.pending_cases?.cases)   ? batch.pending_cases.cases   : [];
+    bookingsData           = Array.isArray(batch.bookings?.bookings)      ? batch.bookings.bookings      : [];
+    transferData           = Array.isArray(batch.transfer?.records)       ? batch.transfer.records       : [];
+    unassignedRecordsData  = Array.isArray(batch.unassigned?.records)     ? batch.unassigned.records     : [];
+    issuesData             = Array.isArray(batch.issues?.issues)          ? batch.issues.issues          : [];
+
+    // ── 補充 side effects ──
+    scheduleHourlyCalendarSync();
+    if (typeof renderIssuesBadge === 'function') renderIssuesBadge();
     // 二重防護：前端再次確認此帳號存在於 config.json 的授權名單
     // （防禦 GAS 白名單被繞過，或「殭屍帳號」殘留在 config.json 中）
     if (currentUser.email !== BOOTSTRAP_ADMIN_EMAIL && !configData?.users?.[currentUser.email]) {
@@ -32800,7 +32835,7 @@ function pdfToolDelete(key) {
 const _SYSLOG_MAX = 1000;
 let _syslogEntries = [];
 const _SYSLOG_COLOR = { debug:'#718096', info:'#63b3ed', warn:'#f6ad55', error:'#fc8181', success:'#68d391' };
-const _SYSLOG_READ_ACTIONS = new Set(['readJson','readJsonById','query','listFolder','getMetadata','ping','downloadFileBase64']);
+const _SYSLOG_READ_ACTIONS = new Set(['readJson','readJsonById','query','listFolder','getMetadata','ping','downloadFileBase64','startupBatch']);
 
 function _syslog(level, msg, detail) {
   const now = new Date();

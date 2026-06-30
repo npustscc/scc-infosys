@@ -65,6 +65,7 @@ function doPost(e) {
       case 'clearMentalLeaves':              result = clearMentalLeaves_(ctx); break;
       case 'countMentalLeavesUnprocessed':   result = countMentalLeavesUnprocessed_(ctx); break;
       case 'submitUserApplication': result = submitUserApplication_({ ...params, submittedByEmail: userEmail, ctx }); break;
+      case 'startupBatch':         result = startupBatch_(params, ctx); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
     return jsonResp_(result);
@@ -1216,6 +1217,114 @@ function loadMlKeywords_(ctx) {
     '分手,感情問題,排擠,霸凌,期中,期末,退學,休學,擋修,家庭衝突,經濟壓力,身心調適,休息調適,個人因素,照顧家人'.split(',').forEach(function(kw) { keywords.push({ kw: kw, level: 1 }); });
   }
   return keywords;
+}
+
+// ── 啟動批次讀取：以 UrlFetchApp.fetchAll 並行讀取所有啟動所需資料，減少 GAS 執行次數 ──
+function startupBatch_(params, ctx) {
+  var tok = tok_();
+  var authHeader = { Authorization: 'Bearer ' + tok };
+  var qBase = 'https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&includeItemsFromAllDrives=true&fields=files(id,modifiedTime)&pageSize=5&q=';
+  var contentBase = 'https://www.googleapis.com/drive/v3/files/';
+
+  var issuesRootId      = params.issuesRootId || ctx.root;
+  var userEmail         = params.userEmail || '';
+  var envSuffix         = params.envSuffix || '';
+  var usersFolderIdHint = params.usersFolderIdHint || null;
+
+  // ── Phase 1：並行解析所有 fileId ────────────────────────────────────────────
+  var p1Reqs = [];
+  var p1Keys = [];
+
+  function addQuery(key, parentId, name, mime) {
+    var q = "name='" + name + "' and '" + parentId + "' in parents and trashed=false";
+    if (mime) q += " and mimeType='" + mime + "'";
+    p1Reqs.push({ url: qBase + encodeURIComponent(q), headers: authHeader, muteHttpExceptions: true });
+    p1Keys.push(key);
+  }
+
+  if (!ctx.configOverride) addQuery('config', ctx.root, 'config.json');
+  addQuery('pending_cases', ctx.root, 'pending_cases.json');
+  addQuery('bookings',      ctx.root, 'bookings.json');
+  addQuery('transfer',      ctx.root, 'transfer.json');
+  addQuery('unassigned',    ctx.root, 'unassigned_records.json');
+  addQuery('issues',        issuesRootId, 'issues.json');
+
+  var todoFileName   = 'todos_' + userEmail + '_' + envSuffix + '.json';
+  var legacyTodoName = 'todos_' + userEmail + '.json';
+
+  if (usersFolderIdHint) {
+    addQuery('todos_new',    usersFolderIdHint, todoFileName);
+    addQuery('todos_legacy', usersFolderIdHint, legacyTodoName);
+  } else {
+    addQuery('users_folder', ctx.root, 'users', 'application/vnd.google-apps.folder');
+  }
+
+  var p1Results = UrlFetchApp.fetchAll(p1Reqs);
+
+  var fileIds  = {};
+  var modTimes = {};
+  if (ctx.configOverride) fileIds['config'] = ctx.configOverride;
+
+  p1Keys.forEach(function(key, i) {
+    var res = p1Results[i];
+    if (res.getResponseCode() !== 200) return;
+    var body = JSON.parse(res.getContentText());
+    var files = body.files || [];
+    if (files.length > 0) {
+      fileIds[key] = files[0].id;
+      if (files[0].modifiedTime) modTimes[key] = files[0].modifiedTime;
+    }
+  });
+
+  // ── Phase 1b（無 hint 時）：解析 todos 檔 ──────────────────────────────────
+  var usersFolderId = usersFolderIdHint || fileIds['users_folder'] || null;
+  var isTodoLegacy = false;
+
+  if (!fileIds['todos_new'] && !fileIds['todos_legacy'] && usersFolderId && !usersFolderIdHint) {
+    var todoPhase = [
+      { url: qBase + encodeURIComponent("name='" + todoFileName   + "' and '" + usersFolderId + "' in parents and trashed=false"), headers: authHeader, muteHttpExceptions: true },
+      { url: qBase + encodeURIComponent("name='" + legacyTodoName + "' and '" + usersFolderId + "' in parents and trashed=false"), headers: authHeader, muteHttpExceptions: true },
+    ];
+    var tpRes = UrlFetchApp.fetchAll(todoPhase);
+    var newTodo = JSON.parse(tpRes[0].getContentText());
+    var legTodo = JSON.parse(tpRes[1].getContentText());
+    if (newTodo.files && newTodo.files.length) {
+      fileIds['todos_new'] = newTodo.files[0].id;
+    } else if (legTodo.files && legTodo.files.length) {
+      fileIds['todos_legacy'] = legTodo.files[0].id;
+    }
+  }
+
+  var todoFileId = fileIds['todos_new'] || fileIds['todos_legacy'] || null;
+  if (!fileIds['todos_new'] && fileIds['todos_legacy']) isTodoLegacy = true;
+
+  // ── Phase 2：並行讀取所有檔案內容 ──────────────────────────────────────────
+  var p2Reqs = [];
+  var p2Keys = [];
+
+  ['config', 'pending_cases', 'bookings', 'transfer', 'unassigned', 'issues'].forEach(function(key) {
+    if (fileIds[key]) {
+      p2Reqs.push({ url: contentBase + fileIds[key] + '?alt=media&supportsAllDrives=true', headers: authHeader, muteHttpExceptions: true });
+      p2Keys.push(key);
+    }
+  });
+  if (todoFileId) {
+    p2Reqs.push({ url: contentBase + todoFileId + '?alt=media&supportsAllDrives=true', headers: authHeader, muteHttpExceptions: true });
+    p2Keys.push('todos');
+  }
+
+  var p2Results = UrlFetchApp.fetchAll(p2Reqs);
+
+  var result = { usersFolderId: usersFolderId, todoFileId: todoFileId, isTodoLegacy: isTodoLegacy, modTimes: modTimes };
+  p2Keys.forEach(function(key, i) {
+    var res = p2Results[i];
+    if (res.getResponseCode() === 200) {
+      try { result[key] = JSON.parse(res.getContentText()); } catch(e) { result[key] = null; }
+    } else {
+      result[key] = null;
+    }
+  });
+  return result;
 }
 
 // ── 帳號申請送出（未授權使用者也可呼叫）
