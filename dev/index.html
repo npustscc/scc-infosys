@@ -19452,8 +19452,10 @@ const DEFAULT_LEAVE_TYPES = [
   { id: 'personal', name: '事假',   unit: 'hour', deductsQuota: false, defaultQuotaHours: 0,  order: 2 },
   { id: 'sick',     name: '病假',   unit: 'hour', deductsQuota: false, defaultQuotaHours: 0,  order: 3 },
   { id: 'official', name: '公假',   unit: 'hour', deductsQuota: false, defaultQuotaHours: 0,  order: 4 },
-  { id: 'comp',     name: '加班補休', unit: 'hour', deductsQuota: false, defaultQuotaHours: 0, order: 5 },
+  // 加班補休：額度為「已認證加班時數 − 已用補休」，非固定額度（isComp）
+  { id: 'comp',     name: '加班補休', unit: 'hour', deductsQuota: true, isComp: true, defaultQuotaHours: 0, order: 5 },
 ];
+const WORK_HOURS_NORMAL = 9; // 簽到到簽退滿 9 小時為正常出勤（午休不另扣）
 
 function getLeaveTypes() {
   const lt = configData?.leaveTypes;
@@ -19481,11 +19483,43 @@ function _leaveUsedHours(email, leaveTypeId, excludeId) {
     .reduce((s, a) => s + (Number(a.hours) || 0), 0);
 }
 
-// 剩餘時數（不扣抵的假別回傳 null 表示無上限）
+// 剩餘時數（不扣抵的假別回傳 null 表示無上限；加班補休依已認證加班動態計算）
 function _leaveRemaining(email, leaveTypeId, excludeId) {
   const t = getLeaveType(leaveTypeId);
   if (!t || !t.deductsQuota) return null;
+  if (t.isComp) return _compRemaining(email, excludeId);
   return _leaveQuotaHours(email, leaveTypeId) - _leaveUsedHours(email, leaveTypeId, excludeId);
+}
+
+// ── 加班補休餘額：已認證加班（kind=overtime, approved）− 已用補休（comp 假別, approved+pending）──
+function _compEarnedHours(email) {
+  return (leavesData?.applications || [])
+    .filter(a => a.email === email && a.kind === 'overtime' && a.status === 'approved')
+    .reduce((s, a) => s + (Number(a.hours) || 0), 0);
+}
+function _compUsedHours(email, excludeId) {
+  const compType = getLeaveTypes().find(t => t.isComp);
+  if (!compType) return 0;
+  return (leavesData?.applications || [])
+    .filter(a => a.email === email && a.kind !== 'overtime' && a.leaveTypeId === compType.id &&
+      (a.status === 'approved' || a.status === 'pending') && a.id !== excludeId)
+    .reduce((s, a) => s + (Number(a.hours) || 0), 0);
+}
+function _compRemaining(email, excludeId) {
+  return _compEarnedHours(email) - _compUsedHours(email, excludeId);
+}
+
+// ── 每日打卡工時（工時 = 當日最後一次打卡 − 第一次打卡；≥9hr 為正常）──
+function _dailyWorkHours(email, yyyymm) {
+  const recs = (attendanceData?.records || []).filter(r => r.email === email && (!yyyymm || (r.date || '').startsWith(yyyymm)));
+  const byDate = {};
+  recs.forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r.timestamp); });
+  return Object.entries(byDate).map(([date, ts]) => {
+    ts.sort();
+    const first = ts[0], last = ts[ts.length - 1];
+    const hours = ts.length >= 2 ? Math.round((new Date(last) - new Date(first)) / 3600000 * 10) / 10 : 0;
+    return { date, first, last, count: ts.length, hours, normal: hours >= WORK_HOURS_NORMAL };
+  }).sort((a, b) => b.date.localeCompare(a.date));
 }
 
 function _updateLeaveBadges() {
@@ -19558,19 +19592,25 @@ function renderLeaveReview() {
   const apps = [...(leavesData?.applications || [])].sort((a, b) => (b.appliedAt || '').localeCompare(a.appliedAt || ''));
   const pending = apps.filter(a => a.status === 'pending');
   const decided = apps.filter(a => a.status !== 'pending');
-  const row = (a, showActions) => `
+  const row = (a, showActions) => {
+    const isOt = a.kind === 'overtime';
+    const typeCell = isOt
+      ? '<span style="background:#fef3c7;color:#92400e;border-radius:4px;padding:1px 6px;font-size:.74rem;font-weight:600;">加班登記</span>'
+      : escHtml(a.leaveTypeName);
+    return `
     <tr>
       <td>${escHtml(a.name || a.email)}</td>
-      <td>${escHtml(a.leaveTypeName)}</td>
+      <td>${typeCell}</td>
       <td>${escHtml(a.fromDate || '')}${a.toDate && a.toDate !== a.fromDate ? '~' + escHtml(a.toDate) : ''}</td>
       <td style="text-align:right;">${_fmtLeaveHours(a.hours)}</td>
       <td>${escHtml(a.reason || '—')}${renderAttachChips(a.attachments)}</td>
       <td>${_leaveStatusBadge(a.status)}${a.reviewedByName ? `<div style="font-size:.72rem;color:#718096;margin-top:2px;">${escHtml(a.reviewedByName)}</div>` : ''}${a.reviewNote ? `<div style="font-size:.72rem;color:#c05621;margin-top:2px;">備註：${escHtml(a.reviewNote)}</div>` : ''}</td>
       <td style="white-space:nowrap;">${showActions
-        ? `<button class="btn btn-primary btn-sm" style="font-size:.76rem;" onclick="approveLeave('${a.id}')">核准</button>
-           <button class="btn btn-danger btn-sm" style="font-size:.76rem;margin-left:4px;" onclick="rejectLeave('${a.id}')">駁回</button>`
+        ? `<button class="btn btn-primary btn-sm" style="font-size:.76rem;" onclick="approveLeave('${a.id}')">${isOt ? '認證' : '核准'}</button>
+           <button class="btn btn-danger btn-sm" style="font-size:.76rem;margin-left:4px;" onclick="rejectLeave('${a.id}')">${isOt ? '不予認證' : '駁回'}</button>`
         : '—'}</td>
     </tr>`;
+  };
   body.innerHTML = `
     <div style="margin-bottom:8px;font-weight:600;color:#dd6b20;">待審核（${pending.length}）</div>
     <div style="overflow-x:auto;margin-bottom:24px;">
@@ -19634,21 +19674,28 @@ async function rejectLeave(id) {
 }
 
 async function _notifyLeaveReviewers(app) {
+  const isOt = app.kind === 'overtime';
+  const dateStr = `${app.fromDate}${app.toDate && app.toDate !== app.fromDate ? '~' + app.toDate : ''}`;
+  const label = isOt
+    ? `加班登記待認證：${app.name} 登記加班 ${app.hours} 小時（${dateStr}）`
+    : `差勤申請待審核：${app.name} 申請${app.leaveTypeName} ${app.hours} 小時（${dateStr}）`;
   const reviewers = _leaveReviewerEmails();
   await Promise.all(reviewers.map(email => _appendTodoToUser(email, {
     id: _genTodoId(), type: 'leave_pending_review',
-    label: `差勤申請待審核：${app.name} 申請${app.leaveTypeName} ${app.hours} 小時（${app.fromDate}${app.toDate && app.toDate !== app.fromDate ? '~' + app.toDate : ''}）`,
-    leaveId: app.id, createdAt: new Date().toISOString(), done: false, notifRead: false,
+    label, leaveId: app.id, createdAt: new Date().toISOString(), done: false, notifRead: false,
   }).catch(() => {})));
 }
 
 async function _notifyLeaveDecision(app, approved) {
+  const isOt = app.kind === 'overtime';
   const targets = new Set([app.email]);
   if (approved) { _leaveReviewerEmails().forEach(e => targets.add(e)); _directorEmails().forEach(e => targets.add(e)); }
-  const verb = approved ? '已核准' : '已駁回';
+  const verb = isOt ? (approved ? '已認證' : '不予認證') : (approved ? '已核准' : '已駁回');
+  const what = isOt ? '加班登記' : app.leaveTypeName;
+  const extra = isOt && approved ? `（+${app.hours} 小時補休）` : '';
   await Promise.all([...targets].map(email => _appendTodoToUser(email, {
     id: _genTodoId(), type: 'leave_approved_notify',
-    label: `差勤申請${verb}：${app.name} ${app.leaveTypeName} ${app.hours} 小時（${app.fromDate}）${app.reviewNote ? '｜備註：' + app.reviewNote : ''}　審核：${app.reviewedByName || ''}`,
+    label: `${isOt ? '加班登記' : '差勤申請'}${verb}：${app.name} ${what} ${app.hours} 小時（${app.fromDate}）${extra}${app.reviewNote ? '｜備註：' + app.reviewNote : ''}　審核：${app.reviewedByName || ''}`,
     leaveId: app.id, createdAt: new Date().toISOString(), done: false, notifRead: false,
   }).catch(() => {})));
 }
@@ -19660,10 +19707,10 @@ function renderLeaveTypesAdmin() {
   const types = getLeaveTypes();
   const typeRows = types.map(t => `
     <tr>
-      <td>${escHtml(t.name)}</td>
+      <td>${escHtml(t.name)}${t.isComp ? ' <span style="font-size:.7rem;color:#92400e;background:#fef3c7;border-radius:4px;padding:0 5px;">加班補休</span>' : ''}</td>
       <td>${t.deductsQuota ? '是' : '否'}</td>
-      <td style="text-align:right;">${t.deductsQuota ? (Number(t.defaultQuotaHours) || 0) + ' 小時' : '—'}</td>
-      <td><button class="btn btn-danger btn-sm" style="font-size:.76rem;" onclick="deleteLeaveType('${t.id}')">刪除</button></td>
+      <td style="text-align:right;">${t.isComp ? '依加班認證' : t.deductsQuota ? (Number(t.defaultQuotaHours) || 0) + ' 小時' : '—'}</td>
+      <td>${t.isComp ? '' : `<button class="btn btn-danger btn-sm" style="font-size:.76rem;" onclick="deleteLeaveType('${t.id}')">刪除</button>`}</td>
     </tr>`).join('');
 
   // 在任實習生 × 扣抵型假別 的額度設定
@@ -19672,7 +19719,7 @@ function renderLeaveTypesAdmin() {
     .filter(([, u]) => u.role === '實習諮商心理師' && !u.disabled && _isInternActive(u, today))
     .map(([email, u]) => ({ email, name: u.name || email }))
     .sort((a, b) => a.name.localeCompare(b.name, 'zh-TW'));
-  const deductTypes = types.filter(t => t.deductsQuota);
+  const deductTypes = types.filter(t => t.deductsQuota && !t.isComp); // 加班補休為動態餘額，不在此設定
   const quotaHead = deductTypes.map(t => `<th style="text-align:center;">${escHtml(t.name)}<div style="font-size:.7rem;color:#a0aec0;">預設 ${Number(t.defaultQuotaHours) || 0}h</div></th>`).join('');
   const quotaRows = interns.map(i => {
     const cells = deductTypes.map(t => {
@@ -19777,8 +19824,19 @@ function renderLeaveApplyPage() {
   const myApps = (leavesData?.applications || [])
     .filter(a => a.email === currentUser.email)
     .sort((a, b) => (b.appliedAt || '').localeCompare(a.appliedAt || ''));
-  const typeOpts = types.map(t => `<option value="${t.id}">${escHtml(t.name)}${t.deductsQuota ? '（扣抵額度）' : ''}</option>`).join('');
+  const typeOpts = types.map(t => `<option value="${t.id}">${escHtml(t.name)}${t.isComp ? '（用補休）' : t.deductsQuota ? '（扣抵額度）' : ''}</option>`).join('');
   const today = _fmtDate(new Date());
+  const thisMonth = today.slice(0, 7);
+  const compRemain = _compRemaining(currentUser.email);
+  const workDays = _dailyWorkHours(currentUser.email, thisMonth);
+  const workRows = workDays.length ? workDays.map(d => `
+    <tr>
+      <td>${escHtml(d.date)}</td>
+      <td>${d.first ? _fmtTime(d.first) : '—'}</td>
+      <td>${d.count >= 2 ? _fmtTime(d.last) : '—'}</td>
+      <td style="text-align:right;">${d.count >= 2 ? d.hours + ' 小時' : '單筆打卡'}</td>
+      <td>${d.count >= 2 ? (d.normal ? '<span style="color:#276749;">正常</span>' : '<span style="color:#c05621;">不足 ' + WORK_HOURS_NORMAL + 'hr</span>') : '—'}</td>
+    </tr>`).join('') : '<tr><td colspan="5" style="text-align:center;color:#a0aec0;padding:16px;">本月尚無打卡紀錄</td></tr>';
   const myRows = myApps.length ? myApps.map(a => `
     <tr>
       <td>${escHtml(a.leaveTypeName)}</td>
@@ -19794,7 +19852,12 @@ function renderLeaveApplyPage() {
       <div class="card-header"><h3>新增差勤申請</h3></div>
       <div style="padding:16px 20px;">
         <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
-          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">假別</label>
+          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">類型</label>
+            <select id="la-kind" class="field-select" style="min-width:130px;" onchange="_laKindChange()">
+              <option value="leave">請假 / 補休</option>
+              <option value="overtime">加班登記</option>
+            </select></div>
+          <div id="la-type-row"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">假別</label>
             <select id="la-type" class="field-select" style="min-width:170px;" onchange="_laUpdateRemaining()">${typeOpts}</select></div>
           <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">開始日期</label>
             <input id="la-from" type="date" class="field-input" value="${today}"></div>
@@ -19808,7 +19871,20 @@ function renderLeaveApplyPage() {
           <textarea id="la-reason" class="field-input" rows="2" style="width:100%;max-width:520px;" placeholder="請簡述事由"></textarea></div>
         <div id="attachPicker_la" style="margin-top:12px;max-width:520px;"></div>
         <button class="btn btn-primary" style="margin-top:14px;" onclick="submitLeave()">送出申請</button>
-        <div style="font-size:.78rem;color:#a0aec0;margin-top:8px;">送出後將通知督導審核；任一督導核准即生效，並通知您與主任。</div>
+        <div style="font-size:.78rem;color:#a0aec0;margin-top:8px;">送出後將通知督導審核；任一督導核准即生效，並通知您與主任。加班登記經督導認證後才會累積為補休時數。</div>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:20px;">
+      <div class="card-header"><h3>本月打卡工時（${escHtml(thisMonth)}）</h3></div>
+      <div style="padding:16px 20px;">
+        <div style="font-size:.85rem;color:#4a5568;margin-bottom:10px;">目前可用補休時數：<strong style="color:${compRemain > 0 ? '#276749' : '#718096'};">${compRemain}</strong> 小時（已認證加班 − 已用補休）</div>
+        <div style="overflow-x:auto;">
+          <table class="data-table" style="min-width:440px;">
+            <thead><tr><th>日期</th><th>簽到</th><th>簽退</th><th style="text-align:right;">工時</th><th>判定</th></tr></thead>
+            <tbody>${workRows}</tbody>
+          </table>
+        </div>
+        <div style="font-size:.76rem;color:#a0aec0;margin-top:8px;">工時 = 當日最後一次打卡 − 第一次打卡，滿 ${WORK_HOURS_NORMAL} 小時為正常（午休不另扣）。如有加班，請以上方「加班登記」提出，由督導認證。</div>
       </div>
     </div>
     <div class="card">
@@ -19820,26 +19896,41 @@ function renderLeaveApplyPage() {
         </table>
       </div>
     </div>`;
-  _laUpdateRemaining();
+  _laKindChange();
   attachInit('la', []);
+}
+
+function _laKindChange() {
+  const kind = document.getElementById('la-kind')?.value || 'leave';
+  const typeRow = document.getElementById('la-type-row');
+  if (typeRow) typeRow.style.display = kind === 'overtime' ? 'none' : '';
+  _laUpdateRemaining();
 }
 
 function _laUpdateRemaining() {
   const el = document.getElementById('la-remaining');
   if (!el) return;
+  const kind = document.getElementById('la-kind')?.value || 'leave';
+  if (kind === 'overtime') {
+    el.textContent = '加班登記：經督導認證後將累積為可用補休時數。';
+    el.style.color = '#718096';
+    return;
+  }
   const typeId = document.getElementById('la-type')?.value;
   const t = getLeaveType(typeId);
   if (!t || !t.deductsQuota) { el.textContent = '此假別不扣抵額度。'; el.style.color = '#718096'; return; }
   const remaining = _leaveRemaining(currentUser.email, typeId);
-  const quota = _leaveQuotaHours(currentUser.email, typeId);
-  el.innerHTML = `剩餘額度：<strong>${remaining}</strong> / ${quota} 小時（含待審核佔用）`;
+  if (t.isComp) {
+    el.innerHTML = `可用補休：<strong>${remaining}</strong> 小時（已認證加班 − 已用補休，含待審核佔用）`;
+  } else {
+    const quota = _leaveQuotaHours(currentUser.email, typeId);
+    el.innerHTML = `剩餘額度：<strong>${remaining}</strong> / ${quota} 小時（含待審核佔用）`;
+  }
   el.style.color = remaining <= 0 ? '#c53030' : '#2b6cb0';
 }
 
 async function submitLeave() {
-  const typeId = document.getElementById('la-type')?.value;
-  const t = getLeaveType(typeId);
-  if (!t) { alert('請選擇假別'); return; }
+  const kind = document.getElementById('la-kind')?.value || 'leave';
   const fromDate = document.getElementById('la-from')?.value;
   const toDate = document.getElementById('la-to')?.value || fromDate;
   const hours = Number(document.getElementById('la-hours')?.value);
@@ -19847,11 +19938,21 @@ async function submitLeave() {
   if (!fromDate) { alert('請選擇開始日期'); return; }
   if (toDate < fromDate) { alert('結束日期不可早於開始日期'); return; }
   if (!hours || hours <= 0) { alert('請輸入有效時數'); return; }
-  if (t.deductsQuota) {
-    const remaining = _leaveRemaining(currentUser.email, typeId);
-    if (remaining != null && hours > remaining) {
-      alert(`超出剩餘額度（剩 ${remaining} 小時）。如需調整額度，請洽主任。`);
-      return;
+
+  let leaveTypeId = '', leaveTypeName = '加班登記', deductsQuota = false;
+  if (kind !== 'overtime') {
+    leaveTypeId = document.getElementById('la-type')?.value;
+    const t = getLeaveType(leaveTypeId);
+    if (!t) { alert('請選擇假別'); return; }
+    leaveTypeName = t.name; deductsQuota = !!t.deductsQuota;
+    if (t.deductsQuota) {
+      const remaining = _leaveRemaining(currentUser.email, leaveTypeId);
+      if (remaining != null && hours > remaining) {
+        alert(t.isComp
+          ? `超出可用補休時數（剩 ${remaining} 小時）。請先登記加班並由督導認證。`
+          : `超出剩餘額度（剩 ${remaining} 小時）。如需調整額度，請洽主任。`);
+        return;
+      }
     }
   }
   let attachments = [];
@@ -19860,7 +19961,8 @@ async function submitLeave() {
   const app = {
     id: 'lv_' + currentUser.email + '_' + Date.now(),
     email: currentUser.email, name: _userName(currentUser.email),
-    leaveTypeId: typeId, leaveTypeName: t.name, deductsQuota: !!t.deductsQuota,
+    kind: kind === 'overtime' ? 'overtime' : 'leave',
+    leaveTypeId, leaveTypeName, deductsQuota,
     fromDate, toDate, hours, reason, status: 'pending',
     appliedAt: new Date().toISOString(), attachments,
   };
@@ -21383,6 +21485,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-06-30', title: '彈性工時與加班補休（打卡工時自動計算、加班登記認證）', isProd: false, items: [
+      item('新功能', '差勤申請頁顯示「本月打卡工時」：自動以當日最後一次打卡減第一次打卡計算工時，滿 9 小時標示正常、未滿標示不足（午休不另扣）'),
+      item('新功能', '差勤申請新增「加班登記」類型：實習生登記加班時數，由督導認證後才累積為可用補休時數（不自動累積）'),
+      item('新功能', '加班補休假別改為動態餘額：可用補休 = 已認證加班 − 已用補休；申請補休時自動檢查並扣抵此餘額'),
+      item('改善', '督導審核畫面區分「請假」與「加班登記」，加班登記以「認證／不予認證」處理；通知文案同步調整'),
+    ]},
     { date: '2026-06-30', title: '差勤申請可上傳佐證文件', isProd: false, items: [
       item('新功能', '實習生差勤申請可上傳佐證文件（圖片／PDF／Word，支援拖曳與貼上）；申請紀錄與督導審核畫面皆可檢視附件'),
     ]},
