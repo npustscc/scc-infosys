@@ -19620,8 +19620,8 @@ function renderLeaveReview() {
       <td>${escHtml(a.reason || '—')}${renderAttachChips(a.attachments)}</td>
       <td>${_leaveStatusBadge(a.status)}${a.reviewedByName ? `<div style="font-size:.72rem;color:#718096;margin-top:2px;">${escHtml(a.reviewedByName)}</div>` : ''}${a.reviewNote ? `<div style="font-size:.72rem;color:#c05621;margin-top:2px;">備註：${escHtml(a.reviewNote)}</div>` : ''}</td>
       <td style="white-space:nowrap;">${showActions
-        ? `<button class="btn btn-primary btn-sm" style="font-size:.76rem;" onclick="approveLeave('${a.id}')">${isOt ? '認證' : '核准'}</button>
-           <button class="btn btn-danger btn-sm" style="font-size:.76rem;margin-left:4px;" onclick="rejectLeave('${a.id}')">${isOt ? '不予認證' : '駁回'}</button>`
+        ? `<button class="btn btn-primary btn-sm leave-review-btn" style="font-size:.76rem;" onclick="approveLeave('${a.id}', event)">${isOt ? '認證' : '核准'}</button>
+           <button class="btn btn-danger btn-sm leave-review-btn" style="font-size:.76rem;margin-left:4px;" onclick="rejectLeave('${a.id}', event)">${isOt ? '不予認證' : '駁回'}</button>`
         : '—'}</td>
     </tr>`;
   };
@@ -19642,47 +19642,68 @@ function renderLeaveReview() {
     </div>`;
 }
 
-async function approveLeave(id) {
+let _leaveReviewBusy = false;
+// 處理審核動作時鎖定所有審核按鈕並把點到的那顆標示為處理中，避免重複點擊
+function _lockReviewBtns(clickedEl, busyText) {
+  document.querySelectorAll('.leave-review-btn').forEach(b => {
+    b.disabled = true; b.style.opacity = '0.5'; b.style.cursor = 'wait';
+  });
+  if (clickedEl) { clickedEl.style.opacity = '1'; clickedEl.textContent = busyText; }
+}
+
+async function approveLeave(id, ev) {
+  if (_leaveReviewBusy) return;
   const app = (leavesData?.applications || []).find(a => a.id === id);
   if (!app || app.status !== 'pending') return;
+  const isOt = app.kind === 'overtime';
   if (app.deductsQuota) {
     const remaining = _leaveRemaining(app.email, app.leaveTypeId, app.id);
     if (remaining != null && app.hours > remaining) {
       if (!confirm(`此申請 ${app.hours} 小時超出 ${app.name} 的剩餘額度（剩 ${remaining} 小時）。\n仍要核准嗎？（核准後將造成負額度）`)) return;
     }
   }
+  _leaveReviewBusy = true;
+  _lockReviewBtns(ev?.target, isOt ? '認證中…' : '核准中…');
   app.status = 'approved';
   app.reviewedBy = currentUser.email;
   app.reviewedByName = _userName(currentUser.email);
   app.reviewedAt = new Date().toISOString();
-  const jobId = bgJobAdd(`核准差勤申請（${app.name}）`);
+  const jobId = bgJobAdd(`${isOt ? '認證加班' : '核准差勤申請'}（${app.name}）`);
   try {
     await saveLeaves();
     await _notifyLeaveDecision(app, true);
     bgJobDone(jobId);
-    showToast('已核准，並通知申請人與督導/主任。', 'success');
+    showToast(isOt
+      ? `✅ 已認證加班 ${app.hours} 小時，已累積為 ${app.name} 的補休。`
+      : `✅ 已核准（${app.name}・${app.leaveTypeName} ${app.hours} 小時），並通知申請人與主任。`, 'success');
   } catch (e) { bgJobFail(jobId, e.message); app.status = 'pending'; showToast('核准失敗：' + e.message, 'error'); }
+  _leaveReviewBusy = false;
   renderAttendanceMgr();
   _updateLeaveBadges();
 }
 
-async function rejectLeave(id) {
+async function rejectLeave(id, ev) {
+  if (_leaveReviewBusy) return;
   const app = (leavesData?.applications || []).find(a => a.id === id);
   if (!app || app.status !== 'pending') return;
-  const note = prompt('請輸入駁回原因（將通知申請人）：', '');
+  const isOt = app.kind === 'overtime';
+  const note = prompt(`請輸入${isOt ? '不予認證' : '駁回'}原因（將通知申請人）：`, '');
   if (note === null) return;
+  _leaveReviewBusy = true;
+  _lockReviewBtns(ev?.target, '處理中…');
   app.status = 'rejected';
   app.reviewedBy = currentUser.email;
   app.reviewedByName = _userName(currentUser.email);
   app.reviewedAt = new Date().toISOString();
   app.reviewNote = note.trim();
-  const jobId = bgJobAdd(`駁回差勤申請（${app.name}）`);
+  const jobId = bgJobAdd(`${isOt ? '不予認證加班' : '駁回差勤申請'}（${app.name}）`);
   try {
     await saveLeaves();
     await _notifyLeaveDecision(app, false);
     bgJobDone(jobId);
-    showToast('已駁回，並通知申請人。', 'success');
-  } catch (e) { bgJobFail(jobId, e.message); app.status = 'pending'; showToast('駁回失敗：' + e.message, 'error'); }
+    showToast(isOt ? `已不予認證（${app.name}），並通知申請人。` : `已駁回（${app.name}），並通知申請人。`, 'success');
+  } catch (e) { bgJobFail(jobId, e.message); app.status = 'pending'; showToast('處理失敗：' + e.message, 'error'); }
+  _leaveReviewBusy = false;
   renderAttendanceMgr();
   _updateLeaveBadges();
 }
@@ -19895,7 +19916,8 @@ function renderLeaveApplyPage() {
         <div style="margin-top:10px;"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">事由</label>
           <textarea id="la-reason" class="field-input" rows="2" style="width:100%;max-width:520px;" placeholder="請簡述事由"></textarea></div>
         <div id="attachPicker_la" style="margin-top:12px;max-width:520px;"></div>
-        <button class="btn btn-primary" style="margin-top:14px;" onclick="submitLeave()">送出申請</button>
+        <button id="la-submit-btn" class="btn btn-primary" style="margin-top:14px;" onclick="submitLeave()">送出申請</button>
+        <div id="la-msg" style="display:none;margin-top:12px;max-width:520px;" class="alert"></div>
         <div style="font-size:.78rem;color:#a0aec0;margin-top:8px;">送出後將通知督導審核；任一督導核准即生效，並通知您與主任。加班登記經督導認證後才會累積為補休時數。</div>
       </div>
     </div>
@@ -19977,7 +19999,16 @@ function _laUpdateRemaining() {
   el.style.color = remaining <= 0 ? '#c53030' : '#2b6cb0';
 }
 
+let _leaveSubmitting = false;
+function _laMsg(type, text) {
+  const el = document.getElementById('la-msg');
+  if (!el) return;
+  el.className = 'alert alert-' + (type === 'error' ? 'error' : type === 'info' ? 'info' : 'success');
+  el.textContent = text;
+  el.style.display = '';
+}
 async function submitLeave() {
+  if (_leaveSubmitting) return; // 防重複提交
   const kind = document.getElementById('la-kind')?.value || 'leave';
   const fromDate = document.getElementById('la-from')?.value;
   const toDate = document.getElementById('la-to')?.value || fromDate;
@@ -20006,9 +20037,22 @@ async function submitLeave() {
       }
     }
   }
+  // 進入實際送出階段：鎖定按鈕、顯示送出中，避免重複點擊
+  _leaveSubmitting = true;
+  const btn = document.getElementById('la-submit-btn');
+  const _btnText = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'wait'; btn.textContent = '送出中…'; }
+  _laMsg('info', '⏳ 送出中，請稍候…');
+
   let attachments = [];
   try { attachments = await attachFlush('la'); }
-  catch (e) { showToast('附件未完成：' + e.message, 'error'); return; }
+  catch (e) {
+    _leaveSubmitting = false;
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; btn.textContent = _btnText; }
+    _laMsg('error', '附件未完成：' + e.message);
+    showToast('附件未完成：' + e.message, 'error');
+    return;
+  }
   const app = {
     id: 'lv_' + currentUser.email + '_' + Date.now(),
     email: currentUser.email, name: _userName(currentUser.email),
@@ -20024,13 +20068,18 @@ async function submitLeave() {
     await saveLeaves();
     await _notifyLeaveReviewers(app);
     bgJobDone(jobId);
-    showToast('已送出申請，待督導審核。', 'success');
+    _leaveSubmitting = false;
+    showToast('✅ 已送出申請，待督導審核。', 'success');
+    renderLeaveApplyPage();           // 重繪：表單清空、新申請出現在「我的申請紀錄」最上方
+    _laMsg('success', `✅ 已送出：${leaveTypeName} ${hours} 小時（${_leaveDateTimeStr(app)}），請於下方「我的申請紀錄」確認。`);
   } catch (e) {
     leavesData.applications.pop();
     bgJobFail(jobId, e.message);
+    _leaveSubmitting = false;
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; btn.textContent = _btnText; }
+    _laMsg('error', '送出失敗：' + e.message);
     showToast('送出失敗：' + e.message, 'error');
   }
-  renderLeaveApplyPage();
   _updateLeaveBadges();
 }
 
@@ -21539,6 +21588,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-01', title: '差勤申請/審核回饋感強化（防重複點擊）', isProd: false, items: [
+      item('改善', '送出差勤申請時按鈕立即鎖定並顯示「送出中…」，表單上即時顯示送出中/成功/失敗訊息，並防止重複送出造成多筆申請'),
+      item('改善', '督導審核（核准/認證/駁回）時按鈕立即鎖定並顯示處理中狀態，完成後顯示明確結果，避免重複點擊'),
+    ]},
     { date: '2026-07-01', title: '差勤申請可指定起訖時間（時段請假）', isProd: false, items: [
       item('新功能', '差勤申請的開始/結束可加填時間，支援請特定時段（如 08:00–12:00）；填入起訖時間會自動換算時數（仍可手動調整），整天請假可只填日期'),
       item('改善', '申請列表、審核畫面與通知皆顯示含時間的起訖範圍'),
