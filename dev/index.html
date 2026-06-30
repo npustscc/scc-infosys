@@ -19615,7 +19615,7 @@ function renderLeaveReview() {
     <tr>
       <td>${escHtml(a.name || a.email)}</td>
       <td>${typeCell}</td>
-      <td>${escHtml(a.fromDate || '')}${a.toDate && a.toDate !== a.fromDate ? '~' + escHtml(a.toDate) : ''}</td>
+      <td>${escHtml(_leaveDateTimeStr(a))}</td>
       <td style="text-align:right;">${_fmtLeaveHours(a.hours)}</td>
       <td>${escHtml(a.reason || '—')}${renderAttachChips(a.attachments)}</td>
       <td>${_leaveStatusBadge(a.status)}${a.reviewedByName ? `<div style="font-size:.72rem;color:#718096;margin-top:2px;">${escHtml(a.reviewedByName)}</div>` : ''}${a.reviewNote ? `<div style="font-size:.72rem;color:#c05621;margin-top:2px;">備註：${escHtml(a.reviewNote)}</div>` : ''}</td>
@@ -19689,7 +19689,7 @@ async function rejectLeave(id) {
 
 async function _notifyLeaveReviewers(app) {
   const isOt = app.kind === 'overtime';
-  const dateStr = `${app.fromDate}${app.toDate && app.toDate !== app.fromDate ? '~' + app.toDate : ''}`;
+  const dateStr = _leaveDateTimeStr(app);
   const label = isOt
     ? `加班登記待認證：${app.name} 登記加班 ${app.hours} 小時（${dateStr}）`
     : `差勤申請待審核：${app.name} 申請${app.leaveTypeName} ${app.hours} 小時（${dateStr}）`;
@@ -19709,7 +19709,7 @@ async function _notifyLeaveDecision(app, approved) {
   const extra = isOt && approved ? `（+${app.hours} 小時補休）` : '';
   await Promise.all([...targets].map(email => _appendTodoToUser(email, {
     id: _genTodoId(), type: 'leave_approved_notify',
-    label: `${isOt ? '加班登記' : '差勤申請'}${verb}：${app.name} ${what} ${app.hours} 小時（${app.fromDate}）${extra}${app.reviewNote ? '｜備註：' + app.reviewNote : ''}　審核：${app.reviewedByName || ''}`,
+    label: `${isOt ? '加班登記' : '差勤申請'}${verb}：${app.name} ${what} ${app.hours} 小時（${_leaveDateTimeStr(app)}）${extra}${app.reviewNote ? '｜備註：' + app.reviewNote : ''}　審核：${app.reviewedByName || ''}`,
     leaveId: app.id, createdAt: new Date().toISOString(), done: false, notifRead: false,
   }).catch(() => {})));
 }
@@ -19857,7 +19857,7 @@ function renderLeaveApplyPage() {
   const myRows = myApps.length ? myApps.map(a => `
     <tr>
       <td>${escHtml(a.leaveTypeName)}</td>
-      <td>${escHtml(a.fromDate || '')}${a.toDate && a.toDate !== a.fromDate ? '~' + escHtml(a.toDate) : ''}</td>
+      <td>${escHtml(_leaveDateTimeStr(a))}</td>
       <td style="text-align:right;">${_fmtLeaveHours(a.hours)}</td>
       <td>${escHtml(a.reason || '—')}${renderAttachChips(a.attachments)}</td>
       <td>${_leaveStatusBadge(a.status)}${a.reviewNote ? `<div style="font-size:.72rem;color:#c05621;margin-top:2px;">備註：${escHtml(a.reviewNote)}</div>` : ''}</td>
@@ -19877,13 +19877,20 @@ function renderLeaveApplyPage() {
             </select></div>
           <div id="la-type-row"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">假別</label>
             <select id="la-type" class="field-select" style="min-width:170px;" onchange="_laUpdateRemaining()">${typeOpts}</select></div>
-          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">開始日期</label>
-            <input id="la-from" type="date" class="field-input" value="${today}"></div>
-          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">結束日期</label>
-            <input id="la-to" type="date" class="field-input" value="${today}"></div>
+          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">開始（日期／時間）</label>
+            <div style="display:flex;gap:4px;">
+              <input id="la-from" type="date" class="field-input" value="${today}" onchange="_laAutoHours()">
+              <input id="la-from-time" type="time" class="field-input" style="width:110px;" onchange="_laAutoHours()">
+            </div></div>
+          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">結束（日期／時間）</label>
+            <div style="display:flex;gap:4px;">
+              <input id="la-to" type="date" class="field-input" value="${today}" onchange="_laAutoHours()">
+              <input id="la-to-time" type="time" class="field-input" style="width:110px;" onchange="_laAutoHours()">
+            </div></div>
           <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">時數（小時）</label>
             <input id="la-hours" type="number" min="0.5" step="0.5" class="field-input" style="width:110px;" placeholder="如 8"></div>
         </div>
+        <div style="font-size:.76rem;color:#a0aec0;margin-top:6px;">填入起訖時間可自動換算時數（例：08:00–12:00 = 4 小時）；亦可手動調整時數。整天請假可只填日期。</div>
         <div id="la-remaining" style="font-size:.82rem;color:#2b6cb0;margin-top:10px;"></div>
         <div style="margin-top:10px;"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">事由</label>
           <textarea id="la-reason" class="field-input" rows="2" style="width:100%;max-width:520px;" placeholder="請簡述事由"></textarea></div>
@@ -19925,6 +19932,29 @@ function _laKindChange() {
   _laUpdateRemaining();
 }
 
+// 依起訖日期＋時間自動換算時數（兩者皆填時數才自動帶入，使用者仍可手動覆蓋）
+function _laAutoHours() {
+  const fromD = document.getElementById('la-from')?.value;
+  const toD   = document.getElementById('la-to')?.value || fromD;
+  const fromT = document.getElementById('la-from-time')?.value;
+  const toT   = document.getElementById('la-to-time')?.value;
+  const hoursEl = document.getElementById('la-hours');
+  if (!hoursEl || !fromD || !fromT || !toT) return;
+  const start = new Date(`${fromD}T${fromT}`);
+  const end   = new Date(`${toD}T${toT}`);
+  if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) return;
+  hoursEl.value = Math.round((end - start) / 3600000 * 10) / 10;
+}
+
+// 申請日期/時間範圍的純文字描述（HTML 顯示時請自行 escHtml）
+function _leaveDateTimeStr(a) {
+  const ft = a.fromTime ? ' ' + a.fromTime : '';
+  const tt = a.toTime ? ' ' + a.toTime : '';
+  if (a.toDate && a.toDate !== a.fromDate) return `${a.fromDate}${ft} ~ ${a.toDate}${tt}`;
+  if (a.fromTime || a.toTime) return `${a.fromDate} ${a.fromTime || ''}~${a.toTime || ''}`;
+  return a.fromDate || '';
+}
+
 function _laUpdateRemaining() {
   const el = document.getElementById('la-remaining');
   if (!el) return;
@@ -19951,10 +19981,13 @@ async function submitLeave() {
   const kind = document.getElementById('la-kind')?.value || 'leave';
   const fromDate = document.getElementById('la-from')?.value;
   const toDate = document.getElementById('la-to')?.value || fromDate;
+  const fromTime = document.getElementById('la-from-time')?.value || '';
+  const toTime = document.getElementById('la-to-time')?.value || '';
   const hours = Number(document.getElementById('la-hours')?.value);
   const reason = (document.getElementById('la-reason')?.value || '').trim();
   if (!fromDate) { alert('請選擇開始日期'); return; }
   if (toDate < fromDate) { alert('結束日期不可早於開始日期'); return; }
+  if (toDate === fromDate && fromTime && toTime && toTime <= fromTime) { alert('同日的結束時間需晚於開始時間'); return; }
   if (!hours || hours <= 0) { alert('請輸入有效時數'); return; }
 
   let leaveTypeId = '', leaveTypeName = '加班登記', deductsQuota = false;
@@ -19981,7 +20014,7 @@ async function submitLeave() {
     email: currentUser.email, name: _userName(currentUser.email),
     kind: kind === 'overtime' ? 'overtime' : 'leave',
     leaveTypeId, leaveTypeName, deductsQuota,
-    fromDate, toDate, hours, reason, status: 'pending',
+    fromDate, toDate, fromTime, toTime, hours, reason, status: 'pending',
     appliedAt: new Date().toISOString(), attachments,
   };
   if (!leavesData || !Array.isArray(leavesData.applications)) leavesData = { applications: [] };
@@ -21506,6 +21539,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-01', title: '差勤申請可指定起訖時間（時段請假）', isProd: false, items: [
+      item('新功能', '差勤申請的開始/結束可加填時間，支援請特定時段（如 08:00–12:00）；填入起訖時間會自動換算時數（仍可手動調整），整天請假可只填日期'),
+      item('改善', '申請列表、審核畫面與通知皆顯示含時間的起訖範圍'),
+    ]},
     { date: '2026-06-30', title: '管理者/督導可檢視實習生差勤全部功能（驗證用）', isProd: false, items: [
       item('改善', '管理者與督導也可看到「差勤打卡」與「差勤申請」頁，並可送出申請與打卡（以自己帳號建立），方便驗證實習生流程；非實習生身分時頁面會標示為驗證用途'),
     ]},
