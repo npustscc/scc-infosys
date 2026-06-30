@@ -1488,6 +1488,16 @@
           </div>
         </div>
       </div>
+      <!-- Panel: 快速選項 -->
+      <div id="admin-panel-presets" style="display:none;">
+        <div class="card">
+          <div class="card-header"><h3>緊急聯絡人關係 快速選項</h3></div>
+          <div style="padding:16px 20px;">
+            <p style="font-size:.88rem;color:#718096;margin-bottom:14px;">管理「與個案關係」欄位的快速點選選項。設定儲存於 <code>config.json</code>，個案資料中出現過的關係詞也會自動顯示。</p>
+            <div id="admin-emgrel-wrap"><p style="font-size:.85rem;color:#a0aec0;">載入中…</p></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 案號管理 -->
@@ -6679,12 +6689,14 @@ let _adminActiveTab  = 'users';
 function renderAdminPage() {
   _renderAdminTabs();
   const tab = _adminActiveTab;
-  document.getElementById('admin-panel-users').style.display = tab === 'users'  ? '' : 'none';
-  document.getElementById('admin-panel-apps').style.display  = tab === 'apps'   ? '' : 'none';
-  document.getElementById('admin-panel-depts').style.display = tab === 'depts'  ? '' : 'none';
-  if (tab === 'users')  { renderAdminUsers(); }
-  else if (tab === 'apps')  renderPendingUsersTab();
-  else if (tab === 'depts') { renderAdminDegreeMapping(); renderAdminDeptCollege(); }
+  document.getElementById('admin-panel-users').style.display   = tab === 'users'   ? '' : 'none';
+  document.getElementById('admin-panel-apps').style.display    = tab === 'apps'    ? '' : 'none';
+  document.getElementById('admin-panel-depts').style.display   = tab === 'depts'   ? '' : 'none';
+  document.getElementById('admin-panel-presets').style.display = tab === 'presets' ? '' : 'none';
+  if (tab === 'users')    { renderAdminUsers(); }
+  else if (tab === 'apps')    renderPendingUsersTab();
+  else if (tab === 'depts')   { renderAdminDegreeMapping(); renderAdminDeptCollege(); }
+  else if (tab === 'presets') renderAdminPresets();
 }
 
 function _renderAdminTabs() {
@@ -6701,7 +6713,7 @@ function _renderAdminTabs() {
   const badge = count > 0
     ? ` <span style="background:#e53e3e;color:#fff;border-radius:10px;padding:0 5px;font-size:.72rem;">${count}</span>`
     : '';
-  bar.innerHTML = _t('users','使用者列表') + _t('apps','帳號申請審核' + badge) + _t('depts','系所與學制');
+  bar.innerHTML = _t('users','使用者列表') + _t('apps','帳號申請審核' + badge) + _t('depts','系所與學制') + _t('presets','快速選項');
 }
 
 function _adminTab(tab) {
@@ -11961,7 +11973,8 @@ function renderCaseNums(resetPage) {
       if (!studentSemCaseId[c.studentId]) studentSemCaseId[c.studentId] = {};
       studentSemCounselors[c.studentId][sem] = configData?.users?.[c.counselorEmail]?.name || c.counselorName || c.counselorText || '';
       studentSemStatus[c.studentId][sem] = (c.semesterStatus?.[sem] || c.status || 'active');
-      studentSemCaseId[c.studentId][sem] = c.id;
+      if (!studentSemCaseId[c.studentId][sem]) studentSemCaseId[c.studentId][sem] = [];
+      studentSemCaseId[c.studentId][sem].push(c.id);
       const evals = c.semesterEvaluations || [];
       const hasTypedClosures = evals.some(e => e.type === 'closure');
       const ev = evals.find(e => e.type === 'closure' && e.semester === sem) || (!hasTypedClosures ? (c.closureEvaluation || null) : null);
@@ -12001,8 +12014,20 @@ function renderCaseNums(resetPage) {
         || (semStatus !== 'closed'
           ? (s < _curSem ? { bg:'#f3e8ff', border:'#a855f7', color:'#6b21a8' } : { bg:'#ebf8ff', border:'#63b3ed', color:'#2b6cb0' })
           : { bg:'#f0f4f8', border:'#cbd5e0', color:'#718096' });
+      const caseIds = studentSemCaseId[c.studentId]?.[s] || [c.id];
+      if (caseIds.length > 1) {
+        return caseIds.map((cid, _idx) => {
+          const _c2 = casesData.find(x => x.id === cid) || {};
+          const _cn2 = configData?.users?.[_c2.counselorEmail]?.name || _c2.counselorName || _c2.counselorText || '';
+          const _ev2 = (_c2.semesterEvaluations||[]).find(e=>e.type==='closure'&&e.semester===s) || (!(_c2.semesterEvaluations||[]).some(e=>e.type==='closure') ? _c2.closureEvaluation : null);
+          const _lk2 = _ev2?.light || _ev2?.statusLight || '';
+          const _st2 = _c2.semesterStatus?.[s] || _c2.status || 'active';
+          const {bg:bg2,border:border2,color:color2} = lightStyles[_lk2] || (_st2!=='closed'?(s<_curSem?{bg:'#f3e8ff',border:'#a855f7',color:'#6b21a8'}:{bg:'#ebf8ff',border:'#63b3ed',color:'#2b6cb0'}):{bg:'#f0f4f8',border:'#cbd5e0',color:'#718096'});
+          return `<span onclick="event.stopPropagation();showCaseDetailAtSem('${escHtml(cid)}','${escHtml(s)}')" style="display:inline-block;background:${bg2};border:1px solid ${border2};color:${color2};border-radius:10px;padding:1px 8px;font-size:.78rem;margin:1px 2px;white-space:nowrap;cursor:pointer;" data-tip="此學期有${caseIds.length}筆開案">${escHtml(semesterLabel(s))}_${_idx+1}${_cn2?`<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(_cn2)}</span>`:''}</span>`;
+        }).join('');
+      }
       const cName = studentSemCounselors[c.studentId]?.[s] || '';
-      const chipCaseId = studentSemCaseId[c.studentId]?.[s] || c.id;
+      const chipCaseId = caseIds[0];
       return `<span onclick="event.stopPropagation();showCaseDetailAtSem('${escHtml(chipCaseId)}','${escHtml(s)}')" style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:1px 8px;font-size:.78rem;margin:1px 2px;white-space:nowrap;cursor:pointer;" data-tip="點選跳至該學期詳細資料">${escHtml(semesterLabel(s))}${cName ? `<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(cName)}</span>` : ''}</span>`;
     }).join('') || '<span style="color:#a0aec0;">—</span>';
     const editBtn = !c.deleted
@@ -15626,29 +15651,42 @@ function checkCaseIdDuplicate() {
   const curSid  = (document.getElementById('nc-student-id')?.value || '').trim();
   const curIdn  = (document.getElementById('nc-id-number')?.value || '').trim();
   const curName = (document.getElementById('nc-name')?.value || '').trim();
-  const isStudentMatch = (curSid && curSid === dup.studentId) || (curIdn && curIdn === dup.idNumber) || (curName && curName === dup.name);
+  const sidMatch  = curSid  && curSid  === dup.studentId;
+  const idnMatch  = curIdn  && curIdn  === dup.idNumber;
+  const nameMatch = curName && curName === dup.name;
+  const anyMatch  = sidMatch || idnMatch || nameMatch;
   const isSameSem = dup.id.startsWith(currentSemesterPrefix());
-  if (isStudentMatch && isSameSem) {
-    msgEl.innerHTML = `<div style="margin-top:6px;padding:10px 14px;background:#fff5f5;border:2px solid #fc8181;border-radius:6px;font-size:.875rem;">
+  let html = '';
+  if (anyMatch && isSameSem) {
+    html = `<div style="margin-top:6px;padding:12px 14px;background:#fff5f5;border:2px solid #fc8181;border-radius:6px;font-size:.875rem;">
       🚨 <strong>此學生本學期已開案</strong>（案號：${escHtml(dup.id)}）<br>
-      <span style="font-size:.82rem;color:#742a2a;">如確認要重複開案，請修改案號後儲存，儲存時將再次確認。</span>
-    </div>`;
-  } else if (isStudentMatch && !isSameSem) {
-    msgEl.innerHTML = `<div style="margin-top:6px;padding:10px 14px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;font-size:.875rem;">
-      ℹ️ 此為「${escHtml(dup.name)}」的舊學期案號（${escHtml(dup.id)}）<br>
-      <span style="font-size:.82rem;color:#2c5282;">如需本學期開案，請將案號修改為本學期格式（如 ${escHtml(currentSemesterPrefix())}001）。</span>
-    </div>`;
-  } else {
-    msgEl.innerHTML = `<div class="alert alert-warn" style="margin-top:6px;">
-      案號「${escHtml(val)}」已被個案「${escHtml(dup.name)}」（學號：${escHtml(dup.studentId)}）使用。
-      <div style="margin-top:8px;">
-        <span class="dept-msg-option dept-create" onclick="quickEditCaseId('${escHtml(dup.id)}','${escHtml(dup.name)}')">
-          修改「${escHtml(dup.name)}」的案號
-        </span>
+      <span style="font-size:.82rem;color:#742a2a;">如需另行開案，點選下方按鈕產生新案號，儲存時將再次確認。</span>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-primary btn-sm" onclick="_confirmAnotherCase('${escHtml(dup.id)}')">是，另行開案（產生新案號）</button>
+        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();showCaseDetail('${escHtml(dup.id)}')">查看現有案號</button>
       </div>
     </div>`;
+  } else if (anyMatch && !isSameSem) {
+    html = `<div style="margin-top:6px;padding:10px 14px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;font-size:.875rem;">
+      ℹ️ 此為「${escHtml(dup.name)}」的舊學期案號（${escHtml(dup.id)}），請修改為本學期格式（如 ${escHtml(currentSemesterPrefix())}001）再儲存。
+    </div>`;
+  } else {
+    html = `<div style="margin-top:6px;padding:10px 14px;background:#fffbeb;border:2px solid #f6ad55;border-radius:6px;font-size:.875rem;">
+      ⚠️ 案號「${escHtml(val)}」已被個案「${escHtml(dup.name)}」（學號：${escHtml(dup.studentId)}）使用。<br>
+      <span style="font-size:.82rem;color:#7d4a00;">若為不同學生請修改案號；若為同一學生但資料有異動，修改案號後儲存，系統將協助確認更新。</span>
+      <div style="margin-top:8px;"><span class="dept-msg-option dept-create" onclick="quickEditCaseId('${escHtml(dup.id)}','${escHtml(dup.name)}')">修改「${escHtml(dup.name)}」的案號</span></div>
+    </div>`;
   }
+  msgEl.innerHTML = html;
   msgEl.style.display = '';
+}
+
+function _confirmAnotherCase(dupId) {
+  const el = document.getElementById('nc-id');
+  el.value = generateCaseId();
+  el.classList.remove('_nc-id-flash'); void el.offsetWidth; el.classList.add('_nc-id-flash');
+  document.getElementById('nc-id-message').style.display = 'none';
+  renderCaseIdSuggestions(); checkCaseIdDuplicate(); checkCurrentSemesterDuplicate();
 }
 
 function _showEmgRelChips() { _filterEmgRelChips(document.getElementById('nc-emg-relation')?.value || ''); }
@@ -15659,7 +15697,9 @@ function _hideEmgRelChips() {
 function _filterEmgRelChips(q) {
   const w = document.getElementById('nc-emg-relation-chips');
   if (!w) return;
-  const all = [...new Set((casesData || []).map(c => (c.emergencyRelation || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-TW'));
+  const presets = configData?.emgRelationPresets || ['父','母','兄','姊','弟','妹','配偶','祖父','祖母','外祖父','外祖母','友人'];
+  const fromData = [...new Set((casesData || []).map(c => (c.emergencyRelation || '').trim()).filter(Boolean))];
+  const all = [...new Set([...presets, ...fromData])].sort((a, b) => a.localeCompare(b, 'zh-TW'));
   const hits = q.trim() ? all.filter(r => r.includes(q)) : all;
   if (!hits.length) { w.style.display = 'none'; return; }
   w.innerHTML = hits.map(r =>
@@ -15928,9 +15968,46 @@ async function saveCase() {
   // 案號重複（編輯時排除自己）
   const duplicate = casesData.find(c => c.id === id && c.id !== _editingCaseId);
   if (duplicate) {
-    document.getElementById('nc-id').focus();
+    const _dupSid = duplicate.studentId || '', _dupIdn = duplicate.idNumber || '', _dupName = duplicate.name || '';
+    const _sidM = studentId && studentId === _dupSid;
+    const _idnM = idNumber  && idNumber  === _dupIdn;
+    const _namM = name      && name      === _dupName;
+    const _anyM = _sidM || _idnM || _namM;
+    const _sameSem = duplicate.id.startsWith(currentSemesterPrefix());
+    if (_anyM) {
+      document.getElementById('nc-id').focus();
+      checkCaseIdDuplicate();
+      _caseAlert(_sameSem
+        ? '此學生本學期已開案，請點選「是，另行開案（產生新案號）」後再儲存。'
+        : '此為舊學期案號，請修改為本學期格式後再儲存。');
+      return;
+    }
+    // 不同學生：詢問是否為同一學生
+    const _isSameStudent = confirm(
+      `案號「${id}」已被個案「${duplicate.name}」（學號：${duplicate.studentId}）使用。\n\n此是否為同一學生但學號、姓名或身分證字號有所異動？`
+    );
+    if (!_isSameStudent) {
+      document.getElementById('nc-id').focus(); checkCaseIdDuplicate();
+      _caseAlert('案號已被不同學生使用，請修改案號後再儲存。');
+      return;
+    }
+    // 同一學生，確認各欄位更新
+    const _fieldChecks = [
+      { label:'學號',       cur: studentId, old: _dupSid },
+      { label:'姓名',       cur: name,      old: _dupName },
+      { label:'身分證字號', cur: idNumber,  old: _dupIdn },
+    ].filter(f => f.cur && f.old && f.old !== f.cur);
+    for (const f of _fieldChecks) {
+      if (!confirm(`${f.label}：「${f.old}」→「${f.cur}」\n是否於本學期起更新此項目？`)) {
+        _caseAlert(`「${f.label}」更新未確認，儲存中止。如不需更新請恢復原值，或修改案號以區分。`);
+        return;
+      }
+    }
+    // 全部確認後自動產生新案號
+    const _newAutoId = generateCaseId();
+    document.getElementById('nc-id').value = _newAutoId;
     checkCaseIdDuplicate();
-    _caseAlert('案號已被使用，請修改後再儲存。');
+    _caseAlert(`已確認資料異動，系統已自動產生新案號「${_newAutoId}」，請確認後再次儲存。`);
     return;
   }
 
@@ -15941,7 +16018,7 @@ async function saveCase() {
     ((studentId && c.studentId === studentId) || (idNumber && c.idNumber === idNumber)));
   if (_semDups.length) {
     const _dupInfo = _semDups.map(d => `案號 ${d.id}（${d.name}）`).join('、');
-    if (!confirm(`此學生本學期已有開案紀錄：${_dupInfo}\n\n確定要本學期重複開案嗎？`)) return;
+    if (!confirm(`此學生本學期已有開案紀錄：${_dupInfo}\n\n確定要另行開案嗎？`)) return;
   }
 
   // 系所需在列表或已確認建立
@@ -26842,6 +26919,46 @@ async function _adminInitDeptCollegeFromDefault() {
   if (!confirm('將系統內建的系所-學院對照表匯入 config.json 作為初始設定？')) return;
   configData.deptToCollege = { ...DEPT_TO_COLLEGE };
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminDeptCollege(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+
+function _getEmgRelPresets() {
+  return configData?.emgRelationPresets || ['父','母','兄','姊','弟','妹','配偶','祖父','祖母','外祖父','外祖母','友人'];
+}
+
+function renderAdminPresets() {
+  const el = document.getElementById('admin-emgrel-wrap');
+  if (!el) return;
+  const presets = _getEmgRelPresets();
+  el.innerHTML = `
+    <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center;">
+      <input type="text" id="emgrel-input" class="field-input" placeholder="新增關係詞…" style="flex:1;min-width:140px;max-width:220px;" />
+      <button class="btn btn-primary btn-sm" onclick="_adminAddEmgRelPreset()">新增</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      ${presets.length ? presets.map(r =>
+        `<span style="display:inline-flex;align-items:center;gap:2px;background:#ebf8ff;color:#2b6cb0;border:1px solid #90cdf4;border-radius:12px;padding:3px 10px;font-size:.85rem;">
+          ${escHtml(r)}<button onclick="_adminRemoveEmgRelPreset('${escHtml(r)}')" title="移除" style="background:none;border:none;cursor:pointer;color:#2b6cb0;font-size:1rem;line-height:1;padding:0 0 0 3px;">×</button>
+        </span>`
+      ).join('') : '<span style="font-size:.83rem;color:#a0aec0;">尚無自訂選項。</span>'}
+    </div>`;
+}
+
+async function _adminAddEmgRelPreset() {
+  const val = (document.getElementById('emgrel-input')?.value || '').trim();
+  if (!val) { alert('請填寫關係詞。'); return; }
+  if (!configData.emgRelationPresets) configData.emgRelationPresets = [..._getEmgRelPresets()];
+  if (configData.emgRelationPresets.includes(val)) { alert('此選項已存在。'); return; }
+  configData.emgRelationPresets.push(val);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); document.getElementById('emgrel-input').value=''; renderAdminPresets(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+
+async function _adminRemoveEmgRelPreset(val) {
+  if (!confirm(`確認移除「${val}」？`)) return;
+  if (!configData.emgRelationPresets) configData.emgRelationPresets = [..._getEmgRelPresets()];
+  configData.emgRelationPresets = configData.emgRelationPresets.filter(r => r !== val);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminPresets(); }
   catch (e) { alert('儲存失敗：' + e.message); }
 }
 
