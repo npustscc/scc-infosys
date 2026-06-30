@@ -5664,23 +5664,37 @@ async function loadCases() {
         : [];
       if (chunkEntries.length > 0) {
         showLoading(`偵測到 ${chunkEntries.length} 個 chunk 檔，自動重建 manifest 中…`);
-        const results = await Promise.all(
-          chunkEntries.map(([, id]) => driveReadJsonById(id).then(r => r.cases || []).catch(() => []))
-        );
+        // 分批讀取（每批 5 個），避免同時打爆 GAS；逐批更新進度
+        const REBUILD_BATCH = 5;
+        const allRebuildCases = [];
+        for (let _ri = 0; _ri < chunkEntries.length; _ri += REBUILD_BATCH) {
+          const _rbatch = chunkEntries.slice(_ri, _ri + REBUILD_BATCH);
+          const _rresults = await Promise.all(
+            _rbatch.map(([, id]) => driveReadJsonById(id).then(r => r.cases || []).catch(() => []))
+          );
+          allRebuildCases.push(..._rresults);
+          const _rdone = Math.min(_ri + REBUILD_BATCH, chunkEntries.length);
+          showLoading(`自動重建 manifest 中… (${_rdone}/${chunkEntries.length})`);
+          _setCasesLoadingProgress(5 + Math.round(75 * _rdone / chunkEntries.length));
+        }
         // 保留既有墓碑（若 manifest 已被刪掉就無法保留，但若還在就吃下來）
         const deletedSet = new Set(manifest?.deletedIds || []);
         const seen = new Set();
-        casesData = results.flat().filter(c => {
+        casesData = allRebuildCases.flat().filter(c => {
           if (!c?.id) return false;
           if (deletedSet.has(c.id)) return false;
           if (seen.has(c.id)) return false;
           seen.add(c.id);
           return true;
         });
-        casesManifest = { chunks: [], deletedIds: [...deletedSet] };
         if (casesData.length > 0) {
-          await migrateToChunks();
+          // chunk 檔案已存在且正確，只需重建 manifest.json（不重寫所有 chunk）
+          const _rebuildChunkNames = chunkEntries.map(([name]) => name.replace(/\.json$/, '')).sort();
+          casesManifest = { chunks: _rebuildChunkNames, deletedIds: [...deletedSet] };
+          await driveSaveJsonInCases('manifest.json', casesManifest);
           console.info('[loadCases] manifest 已自動重建，個案數:', casesData.length);
+        } else {
+          casesManifest = { chunks: [], deletedIds: [...deletedSet] };
         }
       } else {
         // 舊格式 index.json → 自動升級
