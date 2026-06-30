@@ -1349,6 +1349,7 @@
           <button class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="resetCaseFilters()">清除篩選</button>
           <button id="btn-sort-lock" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="toggleSortLock()"></button>
           <button id="btn-cases-compact" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="toggleCasesCompact()" data-tip="切換緊湊顯示模式">緊湊：關</button>
+          <button id="btn-archive-non-current" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;display:none;" onclick="archiveNonCurrentOpenCases()" data-tip="將本學期沒有開案中的個案全部封存，使其成為 cold data（驗證 Hot/Cold 載入用）">封存非本學期開案</button>
         </div>
         <div id="cases-batch-bar" style="display:none;padding:8px 16px;background:#ebf8ff;border-bottom:1px solid #bee3f8;align-items:center;gap:10px;">
           <span id="cases-batch-count" style="font-size:.87rem;color:#2b6cb0;font-weight:600;"></span>
@@ -5156,7 +5157,21 @@ async function afterLogin() {
     if (batch._debug) console.log('[startupBatch _debug]', JSON.stringify(batch._debug, null, 2));
 
     // ── config ──
-    if (!batch.config) throw new Error('找不到設定檔（config.json not found）');
+    // startupBatch 偶發回傳空 config（GAS 冷啟動或暫時讀取失敗）。
+    // 若直接判定「未初始化」會誤導使用者進入初始化畫面（F5 後又正常）。
+    // 因此 batch.config 缺失時，直接重讀一次 config.json（proxyCall 內含 404/503 retry）確認，
+    // 只有重讀仍找不到才視為真正未初始化。
+    if (!batch.config) {
+      let _cfgRetry = null;
+      try { _cfgRetry = await driveReadJson(CONFIG_FILE); } catch (_) { _cfgRetry = null; }
+      if (_cfgRetry && typeof _cfgRetry === 'object' && _cfgRetry.users) {
+        console.warn('[afterLogin] startupBatch 未帶回 config，已重讀 config.json 復原');
+        _syslog?.('warn', 'startupBatch 未帶回 config，已重讀 config.json 復原');
+        batch.config = _cfgRetry;
+      } else {
+        throw new Error('找不到設定檔（config.json not found）');
+      }
+    }
     configData = batch.config;
 
     // ── users folder cache ──
@@ -5741,6 +5756,8 @@ function renderCases() {
   // ── 排序鎖定按鈕文字 ──
   const btnSortLock = document.getElementById('btn-sort-lock');
   if (btnSortLock) btnSortLock.textContent = sortStatusLocked ? '結案排後：開' : '結案排後：關';
+  const btnArchiveNC = document.getElementById('btn-archive-non-current');
+  if (btnArchiveNC) btnArchiveNC.style.display = isAdmin ? '' : 'none';
   const _compactWrap = document.getElementById('cases-table-wrap');
   if (_compactWrap) _compactWrap.classList.toggle('cases-compact', _casesCompact);
   const _compactBtn = document.getElementById('btn-cases-compact');
@@ -11779,6 +11796,48 @@ async function unarchiveCase(caseId) {
     bgJobFail(jobId, err.message);
     renderCases();
     if (_detailCaseId === caseId) showCaseDetail(caseId);
+  }
+}
+
+// 將「本學期沒有開案中」的個案全部封存，使其成為 cold data（驗證 Hot/Cold 載入用）
+// 開案中＝該案 semesters 含本學期，且該學期 semesterStatus 非 closed
+async function archiveNonCurrentOpenCases() {
+  const curSem = currentSemesterPrefix();
+  const _isOpenInCur = c => {
+    const sems = (Array.isArray(c.semesters) && c.semesters.length)
+      ? c.semesters : [openDateToSemPrefix(c.openDate)].filter(Boolean);
+    return sems.includes(curSem) && (c.semesterStatus?.[curSem] || 'active') !== 'closed';
+  };
+  const candidates = casesData.filter(c => c.id && !c.deleted && !c.archived);
+  const toArchive = candidates.filter(c => !_isOpenInCur(c));
+  const keepHot   = candidates.filter(c => _isOpenInCur(c));
+  if (!toArchive.length) {
+    alert(`沒有需要封存的個案。\n\n本學期（${semesterLabel(curSem)}）開案中：${keepHot.length} 個（保持未封存）。`);
+    return;
+  }
+  if (!confirm(
+    `即將把「本學期（${semesterLabel(curSem)}）沒有開案中」的 ${toArchive.length} 個個案全部封存。\n\n` +
+    `• 保持未封存（hot，本學期開案中）：${keepHot.length} 個\n` +
+    `• 封存（cold）：${toArchive.length} 個\n\n` +
+    `封存後可透過篩選「已封存」查閱，統計分析仍計入。\n確定執行？`
+  )) return;
+  const now = new Date().toISOString();
+  toArchive.forEach(c => { c.archived = true; c.updatedAt = now; });
+  _casesSelected.clear();
+  renderCases();
+  const ids = toArchive.map(c => c.id);
+  const jobId = bgJobAdd(`批次封存 ${ids.length} 個非本學期開案個案`);
+  try {
+    bgJobProgress(jobId, 10);
+    await saveCasesChunks(...ids, (done, total) => bgJobProgress(jobId, 10 + Math.round(80 * done / total)));
+    ids.forEach(id => auditLog('封存個案（非本學期開案批次）', id));
+    bgJobDone(jobId);
+    showToast(`已封存 ${ids.length} 個個案；本學期開案中 ${keepHot.length} 個維持 hot。重新整理即可驗證載入速度。`, 'success');
+  } catch (e) {
+    toArchive.forEach(c => { delete c.archived; });
+    bgJobFail(jobId, e.message);
+    renderCases();
+    showToast('批次封存失敗：' + e.message, 'error');
   }
 }
 
@@ -21319,6 +21378,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-06-30', title: '登入初始化誤判修正、批次封存非本學期開案個案', isProd: false, items: [
+      item('修復', '修正登入時偶發進入「初始化」畫面的問題：啟動批次（startupBatch）因 GAS 冷啟動暫時未帶回 config 時，改為重讀一次 config.json 確認，只有真的找不到才視為未初始化（不再需要 F5 重試）'),
+      item('新功能', '個案列表（管理者）新增「封存非本學期開案」按鈕：一鍵將本學期沒有開案中的個案全部封存，使其成為 cold data，方便驗證 Hot/Cold 載入速度'),
+    ]},
     { date: '2026-06-30', title: '實習生差勤申請（請假/補休、假別額度、督導審核）', isProd: false, items: [
       item('新功能', '實習生新增「差勤申請」頁：選假別、日期、時數、事由送出申請，並顯示扣抵型假別的剩餘額度（含待審核佔用）；可查看「我的申請紀錄」並取消待審核申請'),
       item('新功能', '差勤管理後台改為分頁：打卡紀錄／請假審核／假別與額度'),
