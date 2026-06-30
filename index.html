@@ -210,12 +210,16 @@
     .sidebar-section.sec-collapsed .sidebar-section-toggle { transform: rotate(-90deg); }
     .sidebar-section.sec-collapsed .nav-item:not(.nav-pinned) { display: none; }
     .nav-pin-bar {
-      position: absolute; left: 3px; top: 4px; bottom: 4px;
-      width: 3px; border-radius: 2px; cursor: pointer;
-      background: transparent; transition: background .15s;
+      position: absolute; left: 0; top: 0; bottom: 0;
+      width: 14px; cursor: pointer;
     }
-    .nav-item:hover .nav-pin-bar { background: #c8d0d8; }
-    .nav-item.nav-pinned .nav-pin-bar { background: #dd6b20; }
+    .nav-pin-bar::after {
+      content: ''; position: absolute;
+      left: 3px; top: 4px; bottom: 4px; width: 4px;
+      border-radius: 2px; background: transparent; transition: background .15s;
+    }
+    .nav-item:hover .nav-pin-bar::after { background: #c8d0d8; }
+    .nav-item.nav-pinned .nav-pin-bar::after { background: #dd6b20; }
     .nav-item {
       display: flex;
       align-items: center;
@@ -2416,6 +2420,29 @@
         <button onclick="exitRecordForm()" title="離開" style="margin-left:auto;background:none;border:none;font-size:1.5rem;cursor:pointer;color:#a0aec0;line-height:1;padding:0 4px;">×</button>
       </div>
       <div id="new-record-case-info" class="alert alert-info" style="margin-bottom:16px;"></div>
+      <!-- 伴侶諮商選取面板 -->
+      <div id="couple-case-panel" style="display:none;margin-bottom:12px;background:#faf5ff;border:1px solid #d6bcfa;border-radius:8px;padding:12px 14px;">
+        <div id="couple-search-box">
+          <input id="couple-search-input" class="field-input" placeholder="輸入姓名或學號搜尋個案…" oninput="searchCoupleCases(this.value)" style="margin-bottom:8px;">
+          <div id="couple-search-results" style="max-height:200px;overflow-y:auto;"></div>
+          <div id="couple-manual-input" style="display:none;margin-top:8px;">
+            <div style="font-size:.85rem;color:#553c9a;margin-bottom:6px;">找不到符合個案，請直接輸入：</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+              <div><label style="font-size:.8rem;display:block;margin-bottom:3px;">姓名<span class="req">*</span></label><input id="couple-manual-name" class="field-input" placeholder="王小明" style="width:140px;"></div>
+              <div><label style="font-size:.8rem;display:block;margin-bottom:3px;">學號<span class="req">*</span></label><input id="couple-manual-sid" class="field-input" placeholder="B11311001" style="width:140px;"></div>
+              <button class="btn btn-secondary btn-sm" type="button" onclick="quickOpenCoupleCase()" style="margin-bottom:1px;">快速新增並開案</button>
+            </div>
+          </div>
+        </div>
+        <div id="couple-case-selected" style="display:none;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;">
+          <span style="font-size:.88rem;color:#553c9a;">共用對象：</span><strong id="couple-selected-label" style="font-size:.88rem;"></strong>
+          <button class="btn btn-secondary btn-sm" type="button" id="btn-clear-couple" onclick="clearCoupleTarget()">清除</button>
+        </div>
+        <div id="couple-quick-open-bar" style="display:none;margin-top:8px;background:#fffff0;border:1px solid #f6e05e;border-radius:6px;padding:8px 12px;font-size:.85rem;">
+          ⚠ <span id="couple-quick-open-msg"></span>
+          <button class="btn btn-secondary btn-sm" type="button" onclick="quickOpenCoupleCase()" style="margin-left:8px;">本學期快速開案</button>
+        </div>
+      </div>
       <div id="new-record-alert"></div>
 
       <!-- 晤談基本資訊 -->
@@ -2471,6 +2498,7 @@
               <option>E-mail/簡訊</option>
               <option>外展訪視</option>
               <option>其他</option>
+              <option value="伴侶諮商" id="opt-couple-counseling" style="display:none;">伴侶諮商</option>
             </select>
           </div>
           <div>
@@ -3604,7 +3632,7 @@ const ROLES = [
 ];
 const EXTRA_ROLES = ['管理者', '個案管理員', '實習生行政督導', '實習生專業督導'];
 const ATTENDANCE_FILE    = 'attendance.json';
-const PENDING_USERS_FILE = 'pending_users.json';
+const PENDING_USERS_FILE = 'pending_users_dev.json'; // dev 版專用，與正式版分離
 const BASIC_INFO_SNAPSHOT_FIELDS = [
   'name', 'legalGender', 'genderIdentity', 'studentId', 'birthday', 'idNumber',
   'nationality', 'foreignCountry', 'ethnicity', 'ethnicityNote',
@@ -6766,12 +6794,16 @@ function renderAdminUsers() {
   if (_hlKey) window._adminHighlightUser = null;
   const rows = filtered.map(([key, info]) => {
     const isAdminUser = info.isAdmin === true || info.extraRole === '管理者';
-    const tcBadge = info.isTransferContact ? `<span class="badge badge-teal" style="margin-left:4px;">轉銜窗口</span>` : '';
-    const adminBadge = (isAdminUser
-      ? `<span class="badge badge-orange">管理者</span>`
-      : (info.extraRole === '個案管理員'
-          ? `<span class="badge badge-gray">個案管理員</span> <span style="color:#718096;font-size:.8rem;">(${(info.allowedCases || []).length} 個案)</span>`
-          : (info.extraRole ? `<span class="badge badge-gray">${escHtml(info.extraRole)}</span>` : '—'))) + tcBadge;
+    const _xBadges = [];
+    if (isAdminUser) _xBadges.push(`<span class="badge badge-orange">管理者</span>`);
+    if (info.extraRole && info.extraRole !== '管理者') {
+      _xBadges.push(info.extraRole === '個案管理員'
+        ? `<span class="badge badge-gray">個案管理員</span><span style="color:#718096;font-size:.8rem;"> (${(info.allowedCases || []).length} 個案)</span>`
+        : `<span class="badge badge-gray">${escHtml(info.extraRole)}</span>`);
+    }
+    if (info.isTransferContact)    _xBadges.push(`<span class="badge badge-teal">轉銜窗口</span>`);
+    if (info.isMentalLeaveContact) _xBadges.push(`<span class="badge badge-blue">身心調適假窗口</span>`);
+    const adminBadge = _xBadges.length ? _xBadges.join(' ') : '—';
     const isSelf = key === currentUser.email;
     const isNomail = key.startsWith('nomail_');
     const displayKey = isNomail
@@ -7531,7 +7563,7 @@ function _buildAllSemTimeline(relatedCases, currentCaseId, isAdminUser) {
       let actions = viewBtn;
       if (item.isCurrent && !r.deleted && !isPending) {
         actions += `<button class="btn-rec btn-rec-edit" onclick="printRecord('${escHtml(rc.id)}','${escHtml(r.id)}')">列印</button>`;
-        if (isRecordCreator(r)) actions += isEditable(r.createdAt) ? `<button class="btn-rec btn-rec-edit" onclick="editRecord('${escHtml(rc.id)}','${escHtml(r.id)}')">編輯</button>` : `<span class="edit-locked">超過2週</span>`;
+        if (isRecordCreator(r)) actions += `<button class="btn-rec btn-rec-edit" onclick="editRecord('${escHtml(rc.id)}','${escHtml(r.id)}')">編輯</button>`;
       }
       if (item.isCurrent && !r.deleted && (isRecordCreator(r) || isAdminUser))
         actions += `<button class="btn-rec btn-rec-delete" onclick="deleteRecord('${escHtml(rc.id)}','${escHtml(r.id)}')">刪除</button>`;
@@ -7786,6 +7818,9 @@ function showCaseDetail(caseId) {
       ...(r.topics||[]).map(t=>`<span class="badge badge-gray" style="${_cs}">${escHtml(t)}</span>`),
       ...(r.serviceItems||[]).map(s=>`<span class="badge badge-gray" style="background:#fef9e7;color:#7d6608;border:1px solid #fbd38d;${_cs}">${escHtml(s)}</span>`)
     ].filter(Boolean).join('');
+    const coupleBadge = (r.coupleId && r.couplePartnerName)
+      ? `<span class="badge" style="background:#e9d8fd;color:#553c9a;border:1px solid #d6bcfa;${_cs}">伴侶：${escHtml(r.couplePartnerName)}</span>`
+      : '';
 
     const foldView = `<div class="rec-fold-view">
       ${r.summary ? `<div class="record-summary rec-summary-clamp">${renderMaybeHtml(r.summary)}</div>
@@ -7824,7 +7859,7 @@ function showCaseDetail(caseId) {
             ${r.isEventRecord ? '<span class="badge badge-orange" style="font-size:.73rem;">事件處理</span>' : ''}
             ${isLinkedAsII ? '<span class="badge" style="background:#bee3f8;color:#2b6cb0;border:1px solid #90cdf4;font-size:.73rem;">📋 初談記錄表</span>' : ''}
             ${deletedLabel}
-            ${statChipsHtml}
+            ${coupleBadge}${statChipsHtml}
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
             <span class="record-counselor">${escHtml(r.counselorName || r.counselorEmail || '')}</span>
@@ -8623,8 +8658,7 @@ let _detailCaseId = null; // tracks which case is open; resets page when case ch
 let _detailSemFilter = 'current'; // 'current' | 'all'
 
 function isEditable(createdAt) {
-  if (!createdAt) return false;
-  return Date.now() - new Date(createdAt).getTime() < 14 * 24 * 60 * 60 * 1000;
+  return true;
 }
 
 function editRecord(caseId, recordId) {
@@ -8655,16 +8689,39 @@ async function deleteRecord(caseId, recordId) {
   rec.deletedBy   = currentUser.email;
   rec.deletedByName = configData?.users?.[currentUser.email]?.name || currentUser.name;
   casesData[cidx].updatedAt = new Date().toISOString();
+  // 若為伴侶記錄，同步刪除夥伴方
+  let _delPCaseIdx = -1, _delPRecIdx = -1;
+  if (rec.coupleId && rec.coupleCaseId) {
+    _delPCaseIdx = casesData.findIndex(c => c.id === rec.coupleCaseId);
+    if (_delPCaseIdx >= 0) {
+      _delPRecIdx = (casesData[_delPCaseIdx].records || []).findIndex(r => r.coupleId === rec.coupleId);
+      if (_delPRecIdx >= 0) {
+        const pRec = casesData[_delPCaseIdx].records[_delPRecIdx];
+        if (!pRec.deleted) {
+          pRec.deleted = true;
+          pRec.deletedAt = rec.deletedAt;
+          pRec.deletedBy = rec.deletedBy;
+          pRec.deletedByName = rec.deletedByName;
+          casesData[_delPCaseIdx].updatedAt = new Date().toISOString();
+        }
+      }
+    }
+  }
 
   const _cName = casesData[cidx].name || caseId;
   const _recJobId = bgJobAdd(rec.status === 'pending' ? '刪除草稿記錄' : '刪除晤談記錄', _cName);
   showCaseDetail(caseId);
-  saveCasesChunks(caseId).then(() => {
+  const _delSaveIds = [caseId, ...(rec.coupleId && rec.coupleCaseId ? [rec.coupleCaseId] : [])];
+  saveCasesChunks(..._delSaveIds).then(() => {
     bgJobDone(_recJobId);
     auditLog('刪除晤談紀錄', caseId, recordId, rec.date ? `${rec.date}（${semesterLabel(openDateToSemPrefix(rec.date))}）` : '');
     showToast('晤談紀錄已刪除');
   }).catch(err => {
     delete rec.deleted; delete rec.deletedAt; delete rec.deletedBy; delete rec.deletedByName;
+    if (_delPCaseIdx >= 0 && _delPRecIdx >= 0) {
+      const pRec = casesData[_delPCaseIdx].records[_delPRecIdx];
+      delete pRec.deleted; delete pRec.deletedAt; delete pRec.deletedBy; delete pRec.deletedByName;
+    }
     showCaseDetail(caseId);
     bgJobFail(_recJobId, err.message);
     showToast('刪除失敗：' + err.message, 'error');
@@ -8681,10 +8738,23 @@ async function purgeRecord(caseId, recordId) {
   if (ridx === -1) return;
   const removed = casesData[cidx].records.splice(ridx, 1)[0];
   casesData[cidx].updatedAt = new Date().toISOString();
+  // 若為伴侶記錄，同步徹底移除夥伴方
+  let _purgePCaseIdx = -1, _purgePRecIdx = -1, _purgePartnerRec = null;
+  if (removed.coupleId && removed.coupleCaseId) {
+    _purgePCaseIdx = casesData.findIndex(c => c.id === removed.coupleCaseId);
+    if (_purgePCaseIdx >= 0) {
+      _purgePRecIdx = (casesData[_purgePCaseIdx].records || []).findIndex(r => r.coupleId === removed.coupleId);
+      if (_purgePRecIdx >= 0) {
+        [_purgePartnerRec] = casesData[_purgePCaseIdx].records.splice(_purgePRecIdx, 1);
+        casesData[_purgePCaseIdx].updatedAt = new Date().toISOString();
+      }
+    }
+  }
   showLoading('徹底移除…');
   const jobId = bgJobAdd('徹底移除晤談紀錄');
   try {
-    await saveCasesChunks(caseId);
+    const _purgeIds = [caseId, ...(removed.coupleId && removed.coupleCaseId ? [removed.coupleCaseId] : [])];
+    await saveCasesChunks(..._purgeIds);
     bgJobDone(jobId);
     auditLog('徹底移除晤談紀錄', caseId, recordId);
     hideLoading();
@@ -8692,6 +8762,9 @@ async function purgeRecord(caseId, recordId) {
   } catch (err) {
     bgJobFail(jobId, err.message);
     casesData[cidx].records.splice(ridx, 0, removed);
+    if (_purgePartnerRec && _purgePCaseIdx >= 0 && _purgePRecIdx >= 0) {
+      casesData[_purgePCaseIdx].records.splice(_purgePRecIdx, 0, _purgePartnerRec);
+    }
     hideLoading();
     alert('操作失敗：' + err.message);
   }
@@ -8735,8 +8808,32 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
 
   document.getElementById('new-record-page-title').textContent =
     recordId ? `編輯${existingRec?.recordKind||'晤談紀錄'}` : `新增${_recordKind}`;
-  document.getElementById('new-record-case-info').textContent =
-    `個案：${c?.name || '—'}（${caseId}）`;
+  // 重設伴侶諮商狀態
+  _coupleTargetCaseId = null;
+  _coupleTargetHistoryCaseId = null;
+  const _couplePanel = document.getElementById('couple-case-panel');
+  if (_couplePanel) _couplePanel.style.display = 'none';
+  const _csb = document.getElementById('couple-search-box'); if (_csb) _csb.style.display = '';
+  const _csi = document.getElementById('couple-search-input'); if (_csi) _csi.value = '';
+  const _csr = document.getElementById('couple-search-results'); if (_csr) _csr.innerHTML = '';
+  const _cmi = document.getElementById('couple-manual-input'); if (_cmi) _cmi.style.display = 'none';
+  const _ccs = document.getElementById('couple-case-selected'); if (_ccs) _ccs.style.display = 'none';
+  const _cqb = document.getElementById('couple-quick-open-bar'); if (_cqb) _cqb.style.display = 'none';
+  const _optCouple = document.getElementById('opt-couple-counseling'); if (_optCouple) _optCouple.style.display = 'none';
+  // case-info 顯示
+  const _caseInfoEl = document.getElementById('new-record-case-info');
+  if (existingRec?.coupleId) {
+    _caseInfoEl.innerHTML =
+      `個案：${escHtml(c?.name || '—')}（${escHtml(caseId)}）` +
+      ` ｜ 共用對象：<strong>${escHtml(existingRec.couplePartnerName || existingRec.coupleCaseId || '—')}</strong>`;
+    if (_optCouple) _optCouple.style.display = '';
+  } else if (!recordId) {
+    _caseInfoEl.innerHTML =
+      `個案：${escHtml(c?.name || '—')}（${escHtml(caseId)}）` +
+      ` <button class="btn btn-secondary btn-sm" type="button" onclick="openCoupleCaseSearch()" style="margin-left:10px;">＋ 增加晤談對象</button>`;
+  } else {
+    _caseInfoEl.textContent = `個案：${c?.name || '—'}（${caseId}）`;
+  }
 
   // ── 先全部清空 ──
   document.getElementById('rec-time-other').style.display = 'none';
@@ -8910,6 +9007,8 @@ let _draftTimer = null;
 let _recCounselors = []; // [{email, label}]
 let _recFromBkRoom = '';
 let _recFromBkId   = '';
+let _coupleTargetCaseId = null;        // 已選入的伴侶本學期 caseId
+let _coupleTargetHistoryCaseId = null; // 伴侶的歷史個案 id（取姓名/學號及主責諮商師用）
 
 // 渲染晤談者 chips 與下拉
 function renderRecCounselorChips() {
@@ -8982,6 +9081,210 @@ function initRecCounselorsForEdit(rec) {
   }
   renderRecCounselorChips();
 }
+
+// ── 伴侶諮商 ──────────────────────────────────────────
+function _coupleId() {
+  return 'CPID-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
+}
+
+function _syncCoupleRecord(masterRec) {
+  if (!masterRec.coupleId || !masterRec.coupleCaseId) return;
+  const pCaseIdx = casesData.findIndex(c => c.id === masterRec.coupleCaseId);
+  if (pCaseIdx === -1) return;
+  const pRec = (casesData[pCaseIdx].records || []).find(r => r.coupleId === masterRec.coupleId);
+  if (!pRec) return;
+  const SKIP = new Set([
+    'id', 'coupleId', 'coupleCaseId', 'couplePartnerName',
+    'createdAt', 'creatorEmail', 'counselorEmail', 'counselorName', 'counselors',
+    'recordKind', 'nextBkId',
+    'deleted', 'deletedAt', 'deletedBy', 'deletedByName',
+    'status', 'draftSavedAt',
+  ]);
+  for (const k of Object.keys(masterRec)) {
+    if (!SKIP.has(k)) pRec[k] = masterRec[k];
+  }
+  casesData[pCaseIdx].updatedAt = new Date().toISOString();
+}
+
+function openCoupleCaseSearch() {
+  const panel = document.getElementById('couple-case-panel');
+  if (panel) panel.style.display = '';
+  const inp = document.getElementById('couple-search-input');
+  if (inp) { inp.value = ''; inp.focus(); }
+  document.getElementById('couple-search-results').innerHTML = '';
+  document.getElementById('couple-manual-input').style.display = 'none';
+}
+
+function clearCoupleTarget() {
+  _coupleTargetCaseId = null;
+  _coupleTargetHistoryCaseId = null;
+  document.getElementById('couple-case-selected').style.display = 'none';
+  document.getElementById('couple-quick-open-bar').style.display = 'none';
+  document.getElementById('couple-search-box').style.display = '';
+  const _csi = document.getElementById('couple-search-input'); if (_csi) _csi.value = '';
+  document.getElementById('couple-search-results').innerHTML = '';
+  document.getElementById('couple-manual-input').style.display = 'none';
+  const opt = document.getElementById('opt-couple-counseling'); if (opt) opt.style.display = 'none';
+  const modeEl = document.getElementById('rec-intervention-mode');
+  if (modeEl && modeEl.value === '伴侶諮商') modeEl.value = '';
+  const c = casesData.find(x => x.id === _recordCaseId);
+  const caseInfoEl = document.getElementById('new-record-case-info');
+  if (caseInfoEl && c) {
+    caseInfoEl.innerHTML =
+      `個案：${escHtml(c.name || '—')}（${escHtml(_recordCaseId)}）` +
+      ` <button class="btn btn-secondary btn-sm" type="button" onclick="openCoupleCaseSearch()" style="margin-left:10px;">＋ 增加晤談對象</button>`;
+  }
+}
+
+function searchCoupleCases(q) {
+  const res = document.getElementById('couple-search-results');
+  const manualDiv = document.getElementById('couple-manual-input');
+  if (!res) return;
+  q = (q || '').trim();
+  if (!q) { res.innerHTML = ''; if (manualDiv) manualDiv.style.display = 'none'; return; }
+  const thisSem = currentSemesterPrefix();
+  const hasCaseThisSem = c =>
+    !c.deleted &&
+    (Array.isArray(c.semesters) ? c.semesters.includes(thisSem) : openDateToSemPrefix(c.openDate) === thisSem);
+  const qLow = q.toLowerCase();
+  const hits = casesData.filter(c =>
+    c.id !== _recordCaseId && !c.deleted &&
+    ((c.name || '').toLowerCase().includes(qLow) || (c.studentId || '').includes(qLow))
+  );
+  if (!hits.length) {
+    res.innerHTML = '<div style="font-size:.85rem;color:#718096;padding:6px 4px;">找不到符合的個案。</div>';
+    if (manualDiv) manualDiv.style.display = '';
+    return;
+  }
+  // 按 studentId 分組
+  const byStudent = new Map();
+  for (const c of hits) {
+    const key = c.studentId || c.id;
+    if (!byStudent.has(key)) byStudent.set(key, []);
+    byStudent.get(key).push(c);
+  }
+  if (manualDiv) manualDiv.style.display = 'none';
+  res.innerHTML = '';
+  for (const [, cases] of byStudent) {
+    const thisSemCase = cases.find(hasCaseThisSem);
+    const repCase = thisSemCase || cases.sort((a, b) => (b.openDate || '').localeCompare(a.openDate || ''))[0];
+    const item = document.createElement('div');
+    item.style.cssText = 'display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:6px;cursor:pointer;font-size:.88rem;border:1px solid #e2e8f0;margin-bottom:4px;background:#fff;';
+    item.onmouseenter = () => { item.style.background = '#f7fafc'; };
+    item.onmouseleave = () => { item.style.background = '#fff'; };
+    const status = thisSemCase
+      ? '<span style="font-size:.75rem;padding:1px 6px;background:#c6f6d5;color:#276749;border-radius:10px;flex-shrink:0;">本學期已開案</span>'
+      : '<span style="font-size:.75rem;padding:1px 6px;background:#fefcbf;color:#744210;border-radius:10px;flex-shrink:0;">本學期未開案</span>';
+    item.innerHTML = `<span style="flex:1;"><strong>${escHtml(repCase.name || '—')}</strong>（${escHtml(repCase.studentId || '—')}）</span>${status}`;
+    item.onclick = () => selectCoupleCase(thisSemCase ? thisSemCase.id : null, repCase);
+    res.appendChild(item);
+  }
+}
+
+function selectCoupleCase(caseId, repCase) {
+  document.getElementById('couple-search-results').innerHTML = '';
+  document.getElementById('couple-manual-input').style.display = 'none';
+  _coupleTargetHistoryCaseId = repCase?.id || null;
+  if (caseId) {
+    _coupleTargetCaseId = caseId;
+    document.getElementById('couple-quick-open-bar').style.display = 'none';
+    _showCoupleSelected(repCase, false);
+  } else {
+    _coupleTargetCaseId = null;
+    const bar = document.getElementById('couple-quick-open-bar');
+    document.getElementById('couple-quick-open-msg').textContent =
+      `${escHtml(repCase?.name || '此個案')}本學期尚未開案，需先快速開案才能共用記錄。`;
+    bar.style.display = '';
+    _showCoupleSelected(repCase, true);
+  }
+  document.getElementById('couple-search-box').style.display = 'none';
+}
+
+function _showCoupleSelected(repCase, isPending) {
+  const label = `${repCase?.name || '—'}（${repCase?.studentId || '—'}）`;
+  document.getElementById('couple-selected-label').textContent = label;
+  document.getElementById('couple-case-selected').style.display = 'flex';
+  if (!isPending) _updateCaseInfoWithCouple(label);
+}
+
+function _updateCaseInfoWithCouple(coupleLabel) {
+  const c = casesData.find(x => x.id === _recordCaseId);
+  const caseInfoEl = document.getElementById('new-record-case-info');
+  if (!caseInfoEl) return;
+  caseInfoEl.innerHTML =
+    `個案：${escHtml(c?.name || '—')}（${escHtml(_recordCaseId)}）` +
+    ` ｜ 共用對象：<strong>${escHtml(coupleLabel)}</strong>`;
+  const opt = document.getElementById('opt-couple-counseling');
+  if (opt) opt.style.display = '';
+  const modeEl = document.getElementById('rec-intervention-mode');
+  if (modeEl) modeEl.value = '伴侶諮商';
+}
+
+async function quickOpenCoupleCase() {
+  let name, studentId, existingCounselorEmail;
+  const historicCase = _coupleTargetHistoryCaseId
+    ? casesData.find(c => c.id === _coupleTargetHistoryCaseId) : null;
+  if (historicCase) {
+    name = historicCase.name || '';
+    studentId = historicCase.studentId || '';
+    existingCounselorEmail = historicCase.counselorEmail || '';
+  } else {
+    name = (document.getElementById('couple-manual-name')?.value || '').trim();
+    studentId = (document.getElementById('couple-manual-sid')?.value || '').trim();
+    existingCounselorEmail = '';
+  }
+  if (!name || !studentId) { alert('請輸入姓名與學號。'); return; }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const thisSem = currentSemesterPrefix();
+  const newCaseId = generateCaseId();
+  const now = new Date().toISOString();
+  const newCase = {
+    id: newCaseId, openDate: today, name, studentId, semesters: [thisSem],
+    counselorEmail: existingCounselorEmail || currentUser.email,
+    createdAt: now, updatedAt: now, records: [],
+  };
+  casesData.push(newCase);
+
+  const jobId = bgJobAdd('快速開案（伴侶諮商）', name);
+  try {
+    await saveCasesChunks(newCaseId);
+    bgJobDone(jobId);
+    _addCoupleTodos(newCaseId, name, existingCounselorEmail);
+    saveUserTodos().catch(() => {});
+  } catch (err) {
+    bgJobFail(jobId, err.message);
+    const idx = casesData.findIndex(c => c.id === newCaseId);
+    if (idx >= 0) casesData.splice(idx, 1);
+    alert('快速開案失敗：' + err.message);
+    return;
+  }
+
+  _coupleTargetCaseId = newCaseId;
+  _coupleTargetHistoryCaseId = newCaseId;
+  const label = `${name}（${studentId}）`;
+  document.getElementById('couple-quick-open-bar').style.display = 'none';
+  document.getElementById('couple-selected-label').textContent = label;
+  document.getElementById('couple-case-selected').style.display = 'flex';
+  _updateCaseInfoWithCouple(label);
+  showToast(`已快速開案：${name}`);
+}
+
+function _addCoupleTodos(caseId, caseName, counselorEmail) {
+  const label = `個案資料尚未填寫完整，請補充「${caseName}」的詳細資料`;
+  const now = new Date().toISOString();
+  const recipients = new Set([currentUser.email]);
+  if (counselorEmail && counselorEmail !== currentUser.email) recipients.add(counselorEmail);
+  for (const email of recipients) {
+    _putTodoItem({
+      id: _genTodoId(), type: 'couple_incomplete', label,
+      caseId, caseLabel: `${caseName}（${caseId}）`,
+      assignedTo: email,
+      createdAt: now, updatedAt: now, done: false, notifRead: false,
+    });
+  }
+}
+// ─────────────────────────────────────────────────────
 
 // 權限判定：是否為建立者（可編輯）
 function isRecordCreator(rec) {
@@ -9827,6 +10130,19 @@ async function saveRecord() {
     });
     delete casesData[cidx].records[ridx].status;
     delete casesData[cidx].records[ridx].draftSavedAt;
+    // 伴侶記錄同步
+    const _editedRec = casesData[cidx].records[ridx];
+    let _prevPartnerRec = null, _partnerCaseIdx = -1, _partnerRecIdx = -1;
+    if (_editedRec.coupleId && _editedRec.coupleCaseId) {
+      _partnerCaseIdx = casesData.findIndex(c => c.id === _editedRec.coupleCaseId);
+      if (_partnerCaseIdx >= 0) {
+        _partnerRecIdx = (casesData[_partnerCaseIdx].records || []).findIndex(r => r.coupleId === _editedRec.coupleId);
+        if (_partnerRecIdx >= 0) {
+          _prevPartnerRec = { ...casesData[_partnerCaseIdx].records[_partnerRecIdx] };
+          _syncCoupleRecord(_editedRec);
+        }
+      }
+    }
     // mark corresponding todo as done
     const _draftTodo = todosData.find(t => t.recordId === _editingRecordId && t.type === 'record' && !t.done);
     if (_draftTodo) { _draftTodo.done = true; _draftTodo.doneAt = new Date().toISOString(); saveUserTodos().catch(()=>{}); _syncTodoBadge(); }
@@ -9837,7 +10153,11 @@ async function saveRecord() {
     (async () => {
       try {
         bgJobProgress(jobId, 40);
-        await saveCasesChunks(_recordCaseId);
+        {
+          const _saveIds = [_recordCaseId];
+          if (_editedRec?.coupleId && _editedRec?.coupleCaseId) _saveIds.push(_editedRec.coupleCaseId);
+          await saveCasesChunks(..._saveIds);
+        }
         bgJobProgress(jobId, 75);
         if (_editBkAction !== 'none') {
           const myName = configData?.users?.[currentUser.email]?.name || currentUser.email || '';
@@ -9895,6 +10215,9 @@ async function saveRecord() {
         bgJobDone(jobId);
       } catch(err) {
         casesData[cidx].records[ridx] = prev;
+        if (_prevPartnerRec && _partnerCaseIdx >= 0 && _partnerRecIdx >= 0) {
+          casesData[_partnerCaseIdx].records[_partnerRecIdx] = _prevPartnerRec;
+        }
         bgJobFail(jobId, err.message);
       }
     })();
@@ -9914,6 +10237,34 @@ async function saveRecord() {
     };
     casesData[cidx].records.push(newRecord);
     casesData[cidx].updatedAt = new Date().toISOString();
+    // 伴侶諮商：建立夥伴方記錄
+    let _partnerNewCaseIdx = -1, _partnerNewRecord = null;
+    const _savedCoupleCaseId = _coupleTargetCaseId;
+    if (_savedCoupleCaseId) {
+      _partnerNewCaseIdx = casesData.findIndex(c => c.id === _savedCoupleCaseId);
+      if (_partnerNewCaseIdx >= 0) {
+        const coupleId = _coupleId();
+        newRecord.coupleId = coupleId;
+        newRecord.coupleCaseId = _savedCoupleCaseId;
+        newRecord.couplePartnerName = casesData[_partnerNewCaseIdx].name || _savedCoupleCaseId;
+        _partnerNewRecord = {
+          ...newRecord,
+          id: 'REC-' + (Date.now() + 1),
+          creatorEmail: currentUser.email,
+          counselorEmail: currentUser.email,
+          counselorName, counselors: counselorList,
+          recordKind: _recordKind,
+          coupleCaseId: _recordCaseId,
+          couplePartnerName: casesData[cidx]?.name || _recordCaseId,
+          coupleId,
+          nextBkId: '',
+          createdAt: new Date().toISOString(),
+        };
+        if (!casesData[_partnerNewCaseIdx].records) casesData[_partnerNewCaseIdx].records = [];
+        casesData[_partnerNewCaseIdx].records.push(_partnerNewRecord);
+        casesData[_partnerNewCaseIdx].updatedAt = new Date().toISOString();
+      }
+    }
 
     // 立刻把預約推入記憶體（讓同 session 的衝突檢查可立即偵測）
     let _newBkObj = null;
@@ -9934,7 +10285,10 @@ async function saveRecord() {
     (async () => {
       try {
         bgJobProgress(jobId, 40);
-        await saveCasesChunks(_recordCaseId);
+        {
+          const _saveIds = [_recordCaseId, ...(_savedCoupleCaseId ? [_savedCoupleCaseId] : [])];
+          await saveCasesChunks(..._saveIds);
+        }
         bgJobProgress(jobId, 75);
         if (_newBkObj) {
           await saveBookings().catch(e => console.warn('預約儲存失敗:', e));
@@ -9960,11 +10314,18 @@ async function saveRecord() {
           _bkGcFlush();
         }
         bgJobProgress(jobId, 90);
-        auditLog('新增晤談紀錄', _recordCaseId, newRecord.id, newRecord.date ? `${newRecord.date}（${semesterLabel(openDateToSemPrefix(newRecord.date))}）` : '');
+        const _coupleNote = _savedCoupleCaseId ? `；共用對象：${newRecord.couplePartnerName || _savedCoupleCaseId}` : '';
+        auditLog('新增晤談紀錄', _recordCaseId, newRecord.id,
+          (newRecord.date ? `${newRecord.date}（${semesterLabel(openDateToSemPrefix(newRecord.date))}）` : '') + _coupleNote);
         bgJobDone(jobId);
       } catch(err) {
         const failIdx = casesData[cidx]?.records.findIndex(r => r.id === newRecord.id);
         if (failIdx >= 0) casesData[cidx].records.splice(failIdx, 1);
+        // 回滾伴侶記錄
+        if (_partnerNewRecord && _partnerNewCaseIdx >= 0) {
+          const pIdx = casesData[_partnerNewCaseIdx]?.records.findIndex(r => r.id === _partnerNewRecord.id);
+          if (pIdx >= 0) casesData[_partnerNewCaseIdx].records.splice(pIdx, 1);
+        }
         // 若預約已推入記憶體，回滾
         if (_newBkObj) {
           const _bkIdx = bookingsData.findIndex(b => b.id === _newBkId);
@@ -15529,10 +15890,13 @@ function fillFromCase(caseId) {
   document.getElementById('nc-past-psych').checked   = (c.pastRecords||[]).includes('精神科就診');
   document.getElementById('nc-past-med').checked     = (c.pastRecords||[]).includes('服用精神藥物');
   document.getElementById('nc-past-counsel').checked = (c.pastRecords||[]).includes('心理諮商');
+  document.getElementById('nc-id').value = generateCaseId();
+  renderCaseIdSuggestions();
+  checkCaseIdDuplicate();
   document.getElementById('nc-refill-q').value = '';
   document.getElementById('nc-refill-results').innerHTML =
     `<div style="color:#276749;background:#f0fff4;border:1px solid #9ae6b4;padding:8px 12px;border-radius:6px;font-size:.875rem;">
-      ✓ 已帶入「${escHtml(c.name || '—')}」的歷史資料，案號、開案日期、主責人員請重新填寫
+      ✓ 已帶入「${escHtml(c.name || '—')}」的歷史資料，案號已自動產生（可手動修改），開案日期與主責人員請確認填寫
     </div>`;
 }
 
@@ -18746,8 +19110,6 @@ function _isInternActive(info, today) {
 // ── 差勤管理後台 ──
 function renderAttendancePage() {
   const records = attendanceData?.records || [];
-  const apps = (pendingUsersData?.applications || []).filter(a => a.status === 'pending');
-
   const users = configData?.users || {};
   const today = _fmtDate(new Date());
   const filterEmailVal = document.getElementById('att-filter-email')?.value || '';
@@ -18788,23 +19150,6 @@ function renderAttendancePage() {
   });
 
   document.getElementById('attendance-body').innerHTML = `
-    ${apps.length > 0 ? `
-    <div style="background:#fffbeb;border:1.5px solid #f6e05e;border-radius:10px;padding:16px;margin-bottom:20px;">
-      <div style="font-weight:700;color:#744210;margin-bottom:12px;">📋 待審帳號申請（${apps.length} 件）</div>
-      ${apps.map(a => `
-        <div style="background:#fff;border-radius:8px;padding:12px;margin-bottom:8px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-          <div style="flex:1;min-width:0;">
-            <div style="font-weight:600;color:#2d3748;">${a.name}</div>
-            <div style="font-size:.82rem;color:#718096;">${a.email} · 申請身分：${a.requestedRole}</div>
-            ${a.note ? `<div style="font-size:.8rem;color:#4a5568;margin-top:2px;">${a.note}</div>` : ''}
-            <div style="font-size:.75rem;color:#a0aec0;">${new Date(a.submittedAt).toLocaleString('zh-TW')}</div>
-          </div>
-          <div style="display:flex;gap:8px;flex-shrink:0;">
-            <button class="btn btn-primary btn-sm" onclick="openApproveModal('${a.id}')">審核通過</button>
-            <button class="btn btn-secondary btn-sm" onclick="rejectUserApp('${a.id}')">拒絕</button>
-          </div>
-        </div>`).join('')}
-    </div>` : ''}
 
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:20px;">
       <div>
@@ -19964,6 +20309,14 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-06-29', title: '伴侶諮商記錄共用', isProd: false, items: [
+      item('新功能', '新增晤談記錄時可點選「＋ 增加晤談對象」，搜尋並選入另一位個案，兩邊記錄自動同步（Full Copy + coupleId）'),
+      item('新功能', '搜尋結果標示「本學期已開案 / 未開案」；本學期未開案者可一鍵快速開案（自動建立最小化個案並新增待辦）'),
+      item('新功能', '找不到個案時可直接輸入姓名與學號快速新增並開案'),
+      item('新功能', '記錄卡片標題區顯示紫色「伴侶：姓名」badge'),
+      item('新功能', '編輯共用記錄 → 兩方個案同步更新；刪除 / 徹底移除 → 兩方同步'),
+      item('改善', '介入方式自動填入「伴侶諮商」；伴侶關係儲存後鎖定（唯讀，不可更換）'),
+    ]},
     { date: '2026-06-29', title: '實習生管理強化、帳號申請修復、使用者管理改善', isProd: true, items: [
       item('新功能', '使用者管理「清除 PIN」按鈕：管理者可替使用者清除 PIN 碼（操作記入稽核日誌）'),
       item('新功能', '在任期間欄位：實習諮商心理師可設定 internFrom/internTo，差勤下拉選單依在任/非在任/已停用分群顯示'),
@@ -24816,6 +25169,9 @@ function fillFromPending(id) {
       if (typeof updateBirthRoc === 'function') updateBirthRoc();
     }
   }
+  document.getElementById('nc-id').value = generateCaseId();
+  renderCaseIdSuggestions();
+  checkCaseIdDuplicate();
   document.getElementById('nc-pending-match').style.display = 'none';
 }
 
