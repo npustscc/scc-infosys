@@ -19564,7 +19564,7 @@ function renderLeaveReview() {
       <td>${escHtml(a.leaveTypeName)}</td>
       <td>${escHtml(a.fromDate || '')}${a.toDate && a.toDate !== a.fromDate ? '~' + escHtml(a.toDate) : ''}</td>
       <td style="text-align:right;">${_fmtLeaveHours(a.hours)}</td>
-      <td>${escHtml(a.reason || '—')}</td>
+      <td>${escHtml(a.reason || '—')}${renderAttachChips(a.attachments)}</td>
       <td>${_leaveStatusBadge(a.status)}${a.reviewedByName ? `<div style="font-size:.72rem;color:#718096;margin-top:2px;">${escHtml(a.reviewedByName)}</div>` : ''}${a.reviewNote ? `<div style="font-size:.72rem;color:#c05621;margin-top:2px;">備註：${escHtml(a.reviewNote)}</div>` : ''}</td>
       <td style="white-space:nowrap;">${showActions
         ? `<button class="btn btn-primary btn-sm" style="font-size:.76rem;" onclick="approveLeave('${a.id}')">核准</button>
@@ -19784,7 +19784,7 @@ function renderLeaveApplyPage() {
       <td>${escHtml(a.leaveTypeName)}</td>
       <td>${escHtml(a.fromDate || '')}${a.toDate && a.toDate !== a.fromDate ? '~' + escHtml(a.toDate) : ''}</td>
       <td style="text-align:right;">${_fmtLeaveHours(a.hours)}</td>
-      <td>${escHtml(a.reason || '—')}</td>
+      <td>${escHtml(a.reason || '—')}${renderAttachChips(a.attachments)}</td>
       <td>${_leaveStatusBadge(a.status)}${a.reviewNote ? `<div style="font-size:.72rem;color:#c05621;margin-top:2px;">備註：${escHtml(a.reviewNote)}</div>` : ''}</td>
       <td>${a.status === 'pending' ? `<button class="btn btn-secondary btn-sm" style="font-size:.74rem;" onclick="cancelLeave('${a.id}')">取消</button>` : ''}</td>
     </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:#a0aec0;padding:20px;">尚無申請紀錄</td></tr>';
@@ -19806,6 +19806,7 @@ function renderLeaveApplyPage() {
         <div id="la-remaining" style="font-size:.82rem;color:#2b6cb0;margin-top:10px;"></div>
         <div style="margin-top:10px;"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">事由</label>
           <textarea id="la-reason" class="field-input" rows="2" style="width:100%;max-width:520px;" placeholder="請簡述事由"></textarea></div>
+        <div id="attachPicker_la" style="margin-top:12px;max-width:520px;"></div>
         <button class="btn btn-primary" style="margin-top:14px;" onclick="submitLeave()">送出申請</button>
         <div style="font-size:.78rem;color:#a0aec0;margin-top:8px;">送出後將通知督導審核；任一督導核准即生效，並通知您與主任。</div>
       </div>
@@ -19820,6 +19821,7 @@ function renderLeaveApplyPage() {
       </div>
     </div>`;
   _laUpdateRemaining();
+  attachInit('la', []);
 }
 
 function _laUpdateRemaining() {
@@ -19852,12 +19854,15 @@ async function submitLeave() {
       return;
     }
   }
+  let attachments = [];
+  try { attachments = await attachFlush('la'); }
+  catch (e) { showToast('附件未完成：' + e.message, 'error'); return; }
   const app = {
     id: 'lv_' + currentUser.email + '_' + Date.now(),
     email: currentUser.email, name: _userName(currentUser.email),
     leaveTypeId: typeId, leaveTypeName: t.name, deductsQuota: !!t.deductsQuota,
     fromDate, toDate, hours, reason, status: 'pending',
-    appliedAt: new Date().toISOString(),
+    appliedAt: new Date().toISOString(), attachments,
   };
   if (!leavesData || !Array.isArray(leavesData.applications)) leavesData = { applications: [] };
   leavesData.applications.push(app);
@@ -21378,6 +21383,9 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-06-30', title: '差勤申請可上傳佐證文件', isProd: false, items: [
+      item('新功能', '實習生差勤申請可上傳佐證文件（圖片／PDF／Word，支援拖曳與貼上）；申請紀錄與督導審核畫面皆可檢視附件'),
+    ]},
     { date: '2026-06-30', title: '登入初始化誤判修正、批次封存非本學期開案個案', isProd: false, items: [
       item('修復', '修正登入時偶發進入「初始化」畫面的問題：啟動批次（startupBatch）因 GAS 冷啟動暫時未帶回 config 時，改為重讀一次 config.json 確認，只有真的找不到才視為未初始化（不再需要 F5 重試）'),
       item('新功能', '個案列表（管理者）新增「封存非本學期開案」按鈕：一鍵將本學期沒有開案中的個案全部封存，使其成為 cold data，方便驗證 Hot/Cold 載入速度'),
