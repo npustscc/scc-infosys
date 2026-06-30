@@ -8,8 +8,9 @@ const CALENDAR_NAME  = '[DEV] SCC 空間預約';
 const CONFIG_FILE_ID_OVERRIDE = null;  // dev 版從 root 路徑查找 config.json
 
 // 白名單：只允許 dev 資料夾
+// configOverride 指向正式版 config.json（使用者名單共用，個案資料各自獨立）
 const ALLOWED_ROOTS = {
-  '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx': { configOverride: null, calendarName: '[DEV] SCC 空間預約', gmailLabel: 'ml-processed-dev' },
+  '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx': { configOverride: '1CKXefjjiB-PrIFZa-DBQ7Q2ASs-TQroj', calendarName: '[DEV] SCC 空間預約', gmailLabel: 'ml-processed-dev' },
 };
 
 // ── 進入點 ────────────────────────────────────────────────────────────────────
