@@ -1353,10 +1353,10 @@
         </div>
         <div id="cases-batch-bar" style="display:none;padding:8px 16px;background:#ebf8ff;border-bottom:1px solid #bee3f8;align-items:center;gap:10px;">
           <span id="cases-batch-count" style="font-size:.87rem;color:#2b6cb0;font-weight:600;"></span>
-          <button class="btn btn-secondary btn-sm"
+          <button id="btn-batch-archive" class="btn btn-secondary btn-sm"
             data-tip="將所有勾選個案封存。封存後可透過篩選「已封存」查閱，統計分析仍計入。"
             onclick="batchArchiveCases([..._casesSelected])">批次封存</button>
-          <button class="btn btn-secondary btn-sm"
+          <button id="btn-batch-unarchive" class="btn btn-secondary btn-sm"
             data-tip="將所有勾選個案解除封存，使其重新出現在未封存列表中。"
             onclick="batchUnarchiveCases([..._casesSelected])">批次解封</button>
           <button class="btn btn-secondary btn-sm" onclick="_casesSelected.clear();renderCases()">取消選取</button>
@@ -5889,8 +5889,8 @@ function renderCases() {
   const _semMs = caseFilters.semester ? semesterMonths(caseFilters.semester) : null;
   const transferCaseIds = new Set((transferData||[]).filter(t => t.type === 'incoming' && t.caseId).map(t => t.caseId));
 
-  // 同步勾選狀態：從 _casesSelected 移除不再可見的 ID
-  const visibleIds = new Set(visible.filter(c => !c.deleted && !c.archived).map(c => c.id));
+  // 同步勾選狀態：從 _casesSelected 移除不再可見的 ID（封存個案仍可勾選，以便批次解封）
+  const visibleIds = new Set(visible.filter(c => !c.deleted).map(c => c.id));
   [..._casesSelected].forEach(id => { if (!visibleIds.has(id)) _casesSelected.delete(id); });
   const allCasesChecked = visibleIds.size > 0 && [...visibleIds].every(id => _casesSelected.has(id));
 
@@ -5985,7 +5985,7 @@ function renderCases() {
       ? `<span class="badge-case-deleted">已刪除</span>`
       : statusBadge(c.status) + archivedBadge + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '') + mlRecentBadge;
     const rowBg = !c.deleted && pastUnclosedSems.length ? 'background:#fffbeb;' : '';
-    const canCheckCase = !c.deleted && !c.archived;
+    const canCheckCase = !c.deleted; // 封存個案也可勾選，以便批次解封
     return `
     <tr class="${c.deleted ? 'case-deleted-row' : ''}" style="cursor:pointer;${rowBg}" onclick="showCaseDetail('${cid}')">
       <td style="width:36px;text-align:center;" onclick="event.stopPropagation()">${canCheckCase ? `<input type="checkbox" class="case-row-chk" data-id="${cid}" ${_casesSelected.has(c.id)?'checked':''} onchange="_caseChkChange(this)">` : ''}</td>
@@ -6023,7 +6023,7 @@ function renderCases() {
       <thead>
         <tr>
           <th style="width:36px;text-align:center;" data-col="1">
-            <input type="checkbox" id="cases-select-all" title="全選當頁未封存個案"
+            <input type="checkbox" id="cases-select-all" title="全選當頁個案"
               ${allCasesChecked && visibleIds.size > 0 ? 'checked' : ''}
               onchange="_casesSelectAll(this.checked)">
           </th>
@@ -6070,6 +6070,14 @@ function _syncCasesBatchBar() {
   if (_casesSelected.size > 0) {
     bar.style.display = 'flex';
     if (cnt) cnt.textContent = `已選 ${_casesSelected.size} 筆`;
+    // 依勾選內容顯示對應的批次按鈕（封存個案才顯示解封，反之亦然）
+    const sel = [..._casesSelected].map(id => casesData.find(c => c.id === id)).filter(Boolean);
+    const hasArchived   = sel.some(c => c.archived);
+    const hasUnarchived = sel.some(c => !c.archived);
+    const archBtn   = document.getElementById('btn-batch-archive');
+    const unarchBtn = document.getElementById('btn-batch-unarchive');
+    if (archBtn)   archBtn.style.display   = hasUnarchived ? '' : 'none';
+    if (unarchBtn) unarchBtn.style.display = hasArchived   ? '' : 'none';
   } else {
     bar.style.display = 'none';
   }
@@ -21485,6 +21493,9 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-06-30', title: '修正：已封存個案可勾選以批次解封', isProd: false, items: [
+      item('修復', '個案列表的已封存個案現在可勾選，並依勾選內容自動顯示「批次封存／批次解封」按鈕，解決封存後無法批次解封的問題'),
+    ]},
     { date: '2026-06-30', title: '彈性工時與加班補休（打卡工時自動計算、加班登記認證）', isProd: false, items: [
       item('新功能', '差勤申請頁顯示「本月打卡工時」：自動以當日最後一次打卡減第一次打卡計算工時，滿 9 小時標示正常、未滿標示不足（午休不另扣）'),
       item('新功能', '差勤申請新增「加班登記」類型：實習生登記加班時數，由督導認證後才累積為可用補休時數（不自動累積）'),
