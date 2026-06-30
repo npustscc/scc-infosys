@@ -5102,7 +5102,8 @@ async function afterLogin() {
   document.getElementById('header-lock-btn').style.display = 'flex';
 
   try {
-    // 並行讀取 config + 三個不依賴 config 的資料，節省一次 round-trip
+    // 並行讀取 config + 不依賴 config 的資料
+    // loadMentalLeaves 移至背景（檔案最重，但使用者不一定需要），待 UI 顯示後再行載入
     const [cfg] = await Promise.all([
       driveReadJson(CONFIG_FILE),
       loadPendingCases(),
@@ -5111,7 +5112,6 @@ async function afterLogin() {
       loadUnassignedRecords(),
       loadIssues(),
       loadUserTodos(),
-      loadMentalLeaves(),
     ]);
     setLoadingProgress(25);
     configData = cfg;
@@ -5142,7 +5142,8 @@ async function afterLogin() {
     document.getElementById('main-layout').style.display  = 'flex';
     hideLoading(); // 設定檔已載入，關閉全螢幕 overlay；個案改在背景載入
     checkPinSetup();
-    _mlAutoFetchOnLogin();
+    // 身心調適假資料：背景載入，不阻擋 UI；完成後再觸發自動抓取檢查
+    loadMentalLeaves().then(() => { _mlAutoFetchOnLogin(); }).catch(() => {});
     // cases 在背景載入，不阻擋 UI；完成後再跑後續初始化任務
 
     loadCases().then(() => {
@@ -5286,7 +5287,6 @@ async function _ckMetaRead() {
   } catch { return {}; }
 }
 async function _ckSave(name, data, modTime) {
-  if (!modTime) return;
   try {
     const db = await _idbOpen();
     await new Promise((resolve, reject) => {
@@ -5296,7 +5296,7 @@ async function _ckSave(name, data, modTime) {
       const getReq = metaStore.get(_CK_META_KEY());
       getReq.onsuccess = () => {
         const m = getReq.result || {};
-        m[name] = { modTime };
+        m[name] = { modTime: modTime || '', savedAt: Date.now() };
         metaStore.put(m, _CK_META_KEY());
       };
       tx.oncomplete = resolve;
@@ -5306,7 +5306,14 @@ async function _ckSave(name, data, modTime) {
 }
 async function _ckLoad(name, meta, expectedModTime) {
   const m = meta[name];
-  if (!m || !expectedModTime || m.modTime !== expectedModTime) return null;
+  if (!m) return null;
+  if (expectedModTime) {
+    // Drive modTime 有效：比對是否相同
+    if (m.modTime !== expectedModTime) return null;
+  } else {
+    // modTime 取不到（如 getCasesFolderFileMap 失敗）：改用 30 分鐘 TTL
+    if (!m.savedAt || Date.now() - m.savedAt > 30 * 60 * 1000) return null;
+  }
   try {
     const db = await _idbOpen();
     return await new Promise(resolve => {

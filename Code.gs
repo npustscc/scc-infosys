@@ -86,6 +86,14 @@ function doGet(e) {
 // ── ID Token 驗證 ─────────────────────────────────────────────────────────────
 
 function verifyIdToken_(idToken) {
+  // CacheService 快取：同一 idToken 在 5 分鐘內跳過外部 tokeninfo HTTP 呼叫
+  // idToken 末尾為 JWT 簽章（每個 token 唯一），取末 199 字元作為 key（CacheService 限制 250 字元）
+  const cache = CacheService.getScriptCache();
+  const cacheKey = 't' + idToken.slice(-199);
+  try {
+    const hit = cache.get(cacheKey);
+    if (hit) return hit;
+  } catch (_) {}
   try {
     const res = UrlFetchApp.fetch(
       'https://oauth2.googleapis.com/tokeninfo?id_token=' + idToken,
@@ -95,6 +103,7 @@ function verifyIdToken_(idToken) {
     const d = JSON.parse(res.getContentText());
     if (d.aud !== CLIENT_ID) return null;
     if (Number(d.exp) < Math.floor(Date.now() / 1000)) return null;
+    try { cache.put(cacheKey, d.email, 300); } catch (_) {}
     return d.email;
   } catch (e) { return null; }
 }
