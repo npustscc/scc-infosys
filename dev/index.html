@@ -1202,8 +1202,11 @@
       <div class="nav-item" id="nav-clock-item" data-nav-id="page-clock" onclick="showPage('page-clock', this); renderClockPage()" style="display:none;">
         <span class="icon">🕐</span> 差勤打卡 <span class="nav-drag-handle">⠿</span>
       </div>
-      <div class="nav-item" id="nav-attendance-item" data-nav-id="page-attendance" onclick="showPage('page-attendance', this); renderAttendancePage()" style="display:none;">
-        <span class="icon">📊</span> 差勤管理後台 <span id="nav-pending-users-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 4px;font-size:.72rem;margin-left:2px;"></span> <span class="nav-drag-handle">⠿</span>
+      <div class="nav-item" id="nav-leave-apply-item" data-nav-id="page-leave-apply" onclick="showPage('page-leave-apply', this); renderLeaveApplyPage()" style="display:none;">
+        <span class="icon">📝</span> 差勤申請 <span class="nav-drag-handle">⠿</span>
+      </div>
+      <div class="nav-item" id="nav-attendance-item" data-nav-id="page-attendance" onclick="showPage('page-attendance', this); renderAttendanceMgr()" style="display:none;">
+        <span class="icon">📊</span> 差勤管理後台 <span id="nav-leave-review-badge" style="display:none;background:#dd6b20;color:#fff;border-radius:10px;padding:0 4px;font-size:.72rem;margin-left:2px;"></span> <span id="nav-pending-users-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 4px;font-size:.72rem;margin-left:2px;"></span> <span class="nav-drag-handle">⠿</span>
       </div>
     </div>
 
@@ -1825,9 +1828,16 @@
       <div id="clock-body"></div>
     </div>
 
+    <!-- 差勤申請（實習生） -->
+    <div id="page-leave-apply" class="page">
+      <div class="page-title">差勤申請</div>
+      <div id="leave-apply-body"></div>
+    </div>
+
     <!-- 差勤管理後台 -->
     <div id="page-attendance" class="page">
       <div class="page-title">差勤管理</div>
+      <div id="att-mgr-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;border-bottom:2px solid #e2e8f0;padding-bottom:0;"></div>
       <div id="attendance-body"></div>
       <!-- 打卡地理範圍設定（靜態，不被 renderAttendancePage 覆寫） -->
       <div class="card" id="geo-fence-card" style="margin-top:20px;display:none;">
@@ -3671,6 +3681,8 @@ const ROLES = [
 ];
 const EXTRA_ROLES = ['管理者', '個案管理員', '實習生行政督導', '實習生專業督導'];
 const ATTENDANCE_FILE    = 'attendance.json';
+const LEAVES_FILE        = 'leaves.json';   // 實習生差勤申請（請假/補休）
+const INTERN_HOURS_PER_DAY = 8;             // 1 天 = 8 小時（暑休 5 天 = 40hr）
 const PENDING_USERS_FILE = 'pending_users_dev.json'; // dev 版專用，與正式版分離
 const BASIC_INFO_SNAPSHOT_FIELDS = [
   'name', 'legalGender', 'genderIdentity', 'studentId', 'birthday', 'idNumber',
@@ -3756,6 +3768,7 @@ let isTransferContact = false;    // 轉銜窗口
 let isInternAdminSupervisor = false; // 實習生行政督導
 let isInternProSupervisor   = false; // 實習生專業督導
 let attendanceData   = null;  // attendance.json 快取
+let leavesData       = null;  // leaves.json 快取 { applications: [] }
 let pendingUsersData = null;  // pending_users.json 快取
 let isMentalLeaveContact = false; // 身心調適假窗口
 let _mlLastFetchedAt = null;      // mental_leaves.json 上次成功擷取時間（UTC ISO）
@@ -5223,6 +5236,7 @@ async function afterLogin() {
 
     // 背景載入差勤資料
     loadAttendance().catch(() => {});
+    loadLeaves().catch(() => {});
     loadPendingUsers().catch(() => {});
 
     // URL routing：?page=clock 等
@@ -5310,7 +5324,9 @@ function resolveUserRole() {
   const showAttendanceSection = isIntern || isAttendanceMgr;
   document.getElementById('nav-attendance-section').style.display = showAttendanceSection ? '' : 'none';
   document.getElementById('nav-clock-item').style.display       = isIntern ? '' : 'none';
+  document.getElementById('nav-leave-apply-item').style.display  = isIntern ? '' : 'none';
   document.getElementById('nav-attendance-item').style.display  = isAttendanceMgr ? '' : 'none';
+  _updateLeaveBadges();
 
   // 填充管理員頁使用者列表
   if (isAdmin && configData && configData.users) { renderAdminUsers(); renderAdminDegreeMapping(); }
@@ -17446,7 +17462,7 @@ function renderTodosPage() {
     return;
   }
 
-  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（轉銜窗口）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）', transfer_withdraw_coord: '教務處名單（轉銜窗口）', transfer_withdraw_mismatch: '教務處名單（姓名/學號不符）', transfer_reassign_assessor: '轉派評估者', transfer_reassign_assessor_notify: '轉銜評估者通知' };
+  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（轉銜窗口）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）', transfer_withdraw_coord: '教務處名單（轉銜窗口）', transfer_withdraw_mismatch: '教務處名單（姓名/學號不符）', transfer_reassign_assessor: '轉派評估者', transfer_reassign_assessor_notify: '轉銜評估者通知', leave_pending_review: '差勤申請（待審核）', leave_approved_notify: '差勤申請結果' };
 
   body.innerHTML = filtered.map(t => {
     const tLabel = typeLabels[t.type] || t.type;
@@ -17465,8 +17481,9 @@ function renderTodosPage() {
     const _isAdminUserTodo = t.type === 'admin_verify_new_user';
     const _isReassignInitiatorTodo = t.type === 'transfer_reassign_assessor';
     const _isReassignNotifyTodo = t.type === 'transfer_reassign_assessor_notify';
-    const _continueBtnLabel = (_isTransferTodo || _isReassignNotifyTodo) ? '前往轉銜管理' : (_isAdminUserTodo ? '前往設定' : '繼續編輯');
-    const continueBtn = !readOnly && !t.done && !_isMismatchTodo && !_isReassignInitiatorTodo ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">${_continueBtnLabel}</button>` : '';
+    const _isLeaveTodo = t.type === 'leave_pending_review' || t.type === 'leave_approved_notify';
+    const _continueBtnLabel = (_isTransferTodo || _isReassignNotifyTodo) ? '前往轉銜管理' : (_isAdminUserTodo ? '前往設定' : _isLeaveTodo ? '前往差勤管理' : '繼續編輯');
+    const continueBtn = !readOnly && !t.done && !_isMismatchTodo && !_isReassignInitiatorTodo && !(_isLeaveTodo && t.type === 'leave_approved_notify') ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">${_continueBtnLabel}</button>` : '';
     const doneBtn = !readOnly
       ? (!t.done
         ? (t.type === 'transfer_closure_reminder'
@@ -17715,6 +17732,11 @@ function _continueTodo(id) {
     const navEl = document.querySelector('[data-nav-id="page-transfer"]');
     showPage('page-transfer', navEl);
     renderTransferPage();
+  } else if (t.type === 'leave_pending_review') {
+    _attMgrTab = 'review';
+    const navEl = document.querySelector('[data-nav-id="page-attendance"]');
+    showPage('page-attendance', navEl);
+    renderAttendanceMgr();
   } else if (t.type === 'admin_verify_new_user') {
     const navEl = document.querySelector('[data-nav-id="page-admin"]');
     showPage('page-admin', navEl);
@@ -19284,7 +19306,8 @@ function _checkInitialPage() {
   const navEl = document.querySelector(`[data-nav-id="${id}"]`);
   showPage(id, navEl);
   if (id === 'page-clock') renderClockPage();
-  if (id === 'page-attendance') renderAttendancePage();
+  if (id === 'page-attendance') renderAttendanceMgr();
+  if (id === 'page-leave-apply') renderLeaveApplyPage();
 }
 
 // ── 申請帳號流程 ──
@@ -19345,6 +19368,465 @@ async function loadAttendance() {
 
 async function saveAttendance() {
   await driveUpdateJsonFile(ATTENDANCE_FILE, attendanceData);
+}
+
+// ══════════════════════════════════════════════
+//  實習生差勤申請（請假 / 補休）
+// ══════════════════════════════════════════════
+async function loadLeaves() {
+  try {
+    leavesData = await driveReadJson(LEAVES_FILE);
+    if (!leavesData || !Array.isArray(leavesData.applications)) leavesData = { applications: [] };
+  } catch {
+    leavesData = { applications: [] };
+  }
+  _updateLeaveBadges();
+}
+
+async function saveLeaves() {
+  await driveUpdateJsonFile(LEAVES_FILE, leavesData);
+}
+
+// 預設假別（首次無設定時用）；deductsQuota=是否扣抵額度
+const DEFAULT_LEAVE_TYPES = [
+  { id: 'summer',   name: '暑休',   unit: 'hour', deductsQuota: true,  defaultQuotaHours: 40, order: 1 },
+  { id: 'personal', name: '事假',   unit: 'hour', deductsQuota: false, defaultQuotaHours: 0,  order: 2 },
+  { id: 'sick',     name: '病假',   unit: 'hour', deductsQuota: false, defaultQuotaHours: 0,  order: 3 },
+  { id: 'official', name: '公假',   unit: 'hour', deductsQuota: false, defaultQuotaHours: 0,  order: 4 },
+  { id: 'comp',     name: '加班補休', unit: 'hour', deductsQuota: false, defaultQuotaHours: 0, order: 5 },
+];
+
+function getLeaveTypes() {
+  const lt = configData?.leaveTypes;
+  if (Array.isArray(lt) && lt.length) return [...lt].sort((a, b) => (a.order || 0) - (b.order || 0));
+  return DEFAULT_LEAVE_TYPES;
+}
+
+function getLeaveType(id) {
+  return getLeaveTypes().find(t => t.id === id) || null;
+}
+
+// 取得某實習生某假別的額度（小時）：優先 per-user 設定，否則用假別預設
+function _leaveQuotaHours(email, leaveTypeId) {
+  const userQuota = configData?.users?.[email]?.leaveQuota;
+  if (userQuota && userQuota[leaveTypeId] != null) return Number(userQuota[leaveTypeId]) || 0;
+  const t = getLeaveType(leaveTypeId);
+  return t ? (Number(t.defaultQuotaHours) || 0) : 0;
+}
+
+// 已使用時數（approved + pending 皆視為已佔用，避免重複申請超額）
+function _leaveUsedHours(email, leaveTypeId, excludeId) {
+  return (leavesData?.applications || [])
+    .filter(a => a.email === email && a.leaveTypeId === leaveTypeId &&
+      (a.status === 'approved' || a.status === 'pending') && a.id !== excludeId)
+    .reduce((s, a) => s + (Number(a.hours) || 0), 0);
+}
+
+// 剩餘時數（不扣抵的假別回傳 null 表示無上限）
+function _leaveRemaining(email, leaveTypeId, excludeId) {
+  const t = getLeaveType(leaveTypeId);
+  if (!t || !t.deductsQuota) return null;
+  return _leaveQuotaHours(email, leaveTypeId) - _leaveUsedHours(email, leaveTypeId, excludeId);
+}
+
+function _updateLeaveBadges() {
+  // 督導/主任：待審核件數；實習生：自己被駁回未讀（簡化以待辦呈現，這裡僅更新後台 tab 數字）
+  const isMgr = currentRole === '主任' || extraRole === '管理者' || isInternAdminSupervisor || isInternProSupervisor;
+  const pendingCount = isMgr ? (leavesData?.applications || []).filter(a => a.status === 'pending').length : 0;
+  const el = document.getElementById('nav-leave-review-badge');
+  if (el) { el.textContent = pendingCount; el.style.display = pendingCount > 0 ? '' : 'none'; }
+}
+
+// ── 共用小工具 ──
+function _leaveStatusBadge(s) {
+  const m = { pending: ['待審核', '#dd6b20', '#fffaf0'], approved: ['已核准', '#276749', '#f0fff4'], rejected: ['已駁回', '#c53030', '#fff5f5'], cancelled: ['已取消', '#718096', '#f7fafc'] };
+  const [t, c, bg] = m[s] || [s, '#718096', '#f7fafc'];
+  return `<span style="background:${bg};color:${c};border:1px solid ${c}55;border-radius:10px;padding:1px 8px;font-size:.75rem;font-weight:600;">${t}</span>`;
+}
+function _fmtLeaveHours(h) {
+  const n = Number(h) || 0;
+  const days = n / INTERN_HOURS_PER_DAY;
+  return Number.isInteger(days) && days >= 1 ? `${n} 小時（${days} 天）` : `${n} 小時`;
+}
+function _leaveReviewerEmails() {
+  return Object.entries(configData?.users || {})
+    .filter(([, u]) => u.extraRole === '實習生行政督導' || u.extraRole === '實習生專業督導')
+    .map(([email]) => email);
+}
+function _directorEmails() {
+  return Object.entries(configData?.users || {})
+    .filter(([, u]) => u.role === '主任')
+    .map(([email]) => email);
+}
+function _userName(email) {
+  return configData?.users?.[email]?.name || email;
+}
+
+// ══════════════════════════════════════════════
+//  差勤管理後台（分頁）
+// ══════════════════════════════════════════════
+let _attMgrTab = 'punch';
+function renderAttendanceMgr() {
+  const bar = document.getElementById('att-mgr-tabs');
+  const tabs = [
+    { id: 'punch',  label: '打卡紀錄' },
+    { id: 'review', label: '請假審核' },
+    { id: 'types',  label: '假別與額度' },
+  ];
+  const pend = (leavesData?.applications || []).filter(a => a.status === 'pending').length;
+  if (bar) {
+    bar.innerHTML = tabs.map(t => {
+      const active = _attMgrTab === t.id;
+      const badge = (t.id === 'review' && pend > 0) ? ` <span style="background:#dd6b20;color:#fff;border-radius:10px;padding:0 6px;font-size:.72rem;">${pend}</span>` : '';
+      return `<button type="button" onclick="_attMgrTab='${t.id}';renderAttendanceMgr()" style="padding:8px 16px;border:none;background:none;cursor:pointer;font-size:.9rem;font-weight:${active ? '700' : '500'};color:${active ? '#2b6cb0' : '#718096'};border-bottom:3px solid ${active ? '#2b6cb0' : 'transparent'};margin-bottom:-2px;">${t.label}${badge}</button>`;
+    }).join('');
+  }
+  const geo = document.getElementById('geo-fence-card');
+  if (_attMgrTab === 'punch') {
+    renderAttendancePage();
+    if (typeof _initGeoFenceCard === 'function') _initGeoFenceCard();
+  } else {
+    if (geo) geo.style.display = 'none';
+    if (_attMgrTab === 'review') renderLeaveReview();
+    else if (_attMgrTab === 'types') renderLeaveTypesAdmin();
+  }
+}
+
+// ── 請假審核 tab ──
+function renderLeaveReview() {
+  const body = document.getElementById('attendance-body');
+  if (!body) return;
+  const apps = [...(leavesData?.applications || [])].sort((a, b) => (b.appliedAt || '').localeCompare(a.appliedAt || ''));
+  const pending = apps.filter(a => a.status === 'pending');
+  const decided = apps.filter(a => a.status !== 'pending');
+  const row = (a, showActions) => `
+    <tr>
+      <td>${escHtml(a.name || a.email)}</td>
+      <td>${escHtml(a.leaveTypeName)}</td>
+      <td>${escHtml(a.fromDate || '')}${a.toDate && a.toDate !== a.fromDate ? '~' + escHtml(a.toDate) : ''}</td>
+      <td style="text-align:right;">${_fmtLeaveHours(a.hours)}</td>
+      <td>${escHtml(a.reason || '—')}</td>
+      <td>${_leaveStatusBadge(a.status)}${a.reviewedByName ? `<div style="font-size:.72rem;color:#718096;margin-top:2px;">${escHtml(a.reviewedByName)}</div>` : ''}${a.reviewNote ? `<div style="font-size:.72rem;color:#c05621;margin-top:2px;">備註：${escHtml(a.reviewNote)}</div>` : ''}</td>
+      <td style="white-space:nowrap;">${showActions
+        ? `<button class="btn btn-primary btn-sm" style="font-size:.76rem;" onclick="approveLeave('${a.id}')">核准</button>
+           <button class="btn btn-danger btn-sm" style="font-size:.76rem;margin-left:4px;" onclick="rejectLeave('${a.id}')">駁回</button>`
+        : '—'}</td>
+    </tr>`;
+  body.innerHTML = `
+    <div style="margin-bottom:8px;font-weight:600;color:#dd6b20;">待審核（${pending.length}）</div>
+    <div style="overflow-x:auto;margin-bottom:24px;">
+      <table class="data-table" style="min-width:720px;">
+        <thead><tr><th>實習生</th><th>假別</th><th>日期</th><th style="text-align:right;">時數</th><th>事由</th><th>狀態</th><th>操作</th></tr></thead>
+        <tbody>${pending.length ? pending.map(a => row(a, true)).join('') : '<tr><td colspan="7" style="text-align:center;color:#a0aec0;padding:20px;">目前沒有待審核申請</td></tr>'}</tbody>
+      </table>
+    </div>
+    <div style="margin-bottom:8px;font-weight:600;color:#718096;">已處理（最近）</div>
+    <div style="overflow-x:auto;">
+      <table class="data-table" style="min-width:720px;">
+        <thead><tr><th>實習生</th><th>假別</th><th>日期</th><th style="text-align:right;">時數</th><th>事由</th><th>狀態</th><th></th></tr></thead>
+        <tbody>${decided.length ? decided.slice(0, 50).map(a => row(a, false)).join('') : '<tr><td colspan="7" style="text-align:center;color:#a0aec0;padding:20px;">尚無已處理紀錄</td></tr>'}</tbody>
+      </table>
+    </div>`;
+}
+
+async function approveLeave(id) {
+  const app = (leavesData?.applications || []).find(a => a.id === id);
+  if (!app || app.status !== 'pending') return;
+  if (app.deductsQuota) {
+    const remaining = _leaveRemaining(app.email, app.leaveTypeId, app.id);
+    if (remaining != null && app.hours > remaining) {
+      if (!confirm(`此申請 ${app.hours} 小時超出 ${app.name} 的剩餘額度（剩 ${remaining} 小時）。\n仍要核准嗎？（核准後將造成負額度）`)) return;
+    }
+  }
+  app.status = 'approved';
+  app.reviewedBy = currentUser.email;
+  app.reviewedByName = _userName(currentUser.email);
+  app.reviewedAt = new Date().toISOString();
+  const jobId = bgJobAdd(`核准差勤申請（${app.name}）`);
+  try {
+    await saveLeaves();
+    await _notifyLeaveDecision(app, true);
+    bgJobDone(jobId);
+    showToast('已核准，並通知申請人與督導/主任。', 'success');
+  } catch (e) { bgJobFail(jobId, e.message); app.status = 'pending'; showToast('核准失敗：' + e.message, 'error'); }
+  renderAttendanceMgr();
+  _updateLeaveBadges();
+}
+
+async function rejectLeave(id) {
+  const app = (leavesData?.applications || []).find(a => a.id === id);
+  if (!app || app.status !== 'pending') return;
+  const note = prompt('請輸入駁回原因（將通知申請人）：', '');
+  if (note === null) return;
+  app.status = 'rejected';
+  app.reviewedBy = currentUser.email;
+  app.reviewedByName = _userName(currentUser.email);
+  app.reviewedAt = new Date().toISOString();
+  app.reviewNote = note.trim();
+  const jobId = bgJobAdd(`駁回差勤申請（${app.name}）`);
+  try {
+    await saveLeaves();
+    await _notifyLeaveDecision(app, false);
+    bgJobDone(jobId);
+    showToast('已駁回，並通知申請人。', 'success');
+  } catch (e) { bgJobFail(jobId, e.message); app.status = 'pending'; showToast('駁回失敗：' + e.message, 'error'); }
+  renderAttendanceMgr();
+  _updateLeaveBadges();
+}
+
+async function _notifyLeaveReviewers(app) {
+  const reviewers = _leaveReviewerEmails();
+  await Promise.all(reviewers.map(email => _appendTodoToUser(email, {
+    id: _genTodoId(), type: 'leave_pending_review',
+    label: `差勤申請待審核：${app.name} 申請${app.leaveTypeName} ${app.hours} 小時（${app.fromDate}${app.toDate && app.toDate !== app.fromDate ? '~' + app.toDate : ''}）`,
+    leaveId: app.id, createdAt: new Date().toISOString(), done: false, notifRead: false,
+  }).catch(() => {})));
+}
+
+async function _notifyLeaveDecision(app, approved) {
+  const targets = new Set([app.email]);
+  if (approved) { _leaveReviewerEmails().forEach(e => targets.add(e)); _directorEmails().forEach(e => targets.add(e)); }
+  const verb = approved ? '已核准' : '已駁回';
+  await Promise.all([...targets].map(email => _appendTodoToUser(email, {
+    id: _genTodoId(), type: 'leave_approved_notify',
+    label: `差勤申請${verb}：${app.name} ${app.leaveTypeName} ${app.hours} 小時（${app.fromDate}）${app.reviewNote ? '｜備註：' + app.reviewNote : ''}　審核：${app.reviewedByName || ''}`,
+    leaveId: app.id, createdAt: new Date().toISOString(), done: false, notifRead: false,
+  }).catch(() => {})));
+}
+
+// ── 假別與額度 tab ──
+function renderLeaveTypesAdmin() {
+  const body = document.getElementById('attendance-body');
+  if (!body) return;
+  const types = getLeaveTypes();
+  const typeRows = types.map(t => `
+    <tr>
+      <td>${escHtml(t.name)}</td>
+      <td>${t.deductsQuota ? '是' : '否'}</td>
+      <td style="text-align:right;">${t.deductsQuota ? (Number(t.defaultQuotaHours) || 0) + ' 小時' : '—'}</td>
+      <td><button class="btn btn-danger btn-sm" style="font-size:.76rem;" onclick="deleteLeaveType('${t.id}')">刪除</button></td>
+    </tr>`).join('');
+
+  // 在任實習生 × 扣抵型假別 的額度設定
+  const today = _fmtDate(new Date());
+  const interns = Object.entries(configData?.users || {})
+    .filter(([, u]) => u.role === '實習諮商心理師' && !u.disabled && _isInternActive(u, today))
+    .map(([email, u]) => ({ email, name: u.name || email }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'zh-TW'));
+  const deductTypes = types.filter(t => t.deductsQuota);
+  const quotaHead = deductTypes.map(t => `<th style="text-align:center;">${escHtml(t.name)}<div style="font-size:.7rem;color:#a0aec0;">預設 ${Number(t.defaultQuotaHours) || 0}h</div></th>`).join('');
+  const quotaRows = interns.map(i => {
+    const cells = deductTypes.map(t => {
+      const q = _leaveQuotaHours(i.email, t.id);
+      const used = _leaveUsedHours(i.email, t.id);
+      return `<td style="text-align:center;">
+        <input type="number" min="0" step="1" id="q_${i.email.replace(/[^a-zA-Z0-9]/g, '_')}_${t.id}" value="${q}" style="width:64px;padding:3px 6px;text-align:right;border:1px solid #cbd5e0;border-radius:6px;">
+        <div style="font-size:.68rem;color:#718096;margin-top:2px;">已用 ${used}h</div>
+      </td>`;
+    }).join('');
+    return `<tr><td style="white-space:nowrap;">${escHtml(i.name)}</td>${cells}<td><button class="btn btn-secondary btn-sm" style="font-size:.74rem;" onclick="saveInternQuota('${i.email}')">儲存</button></td></tr>`;
+  }).join('');
+
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:20px;">
+      <div class="card-header"><h3>可申請假別</h3></div>
+      <div style="padding:16px 20px;">
+        <div style="overflow-x:auto;margin-bottom:16px;">
+          <table class="data-table" style="min-width:420px;">
+            <thead><tr><th>假別名稱</th><th>扣抵額度</th><th style="text-align:right;">預設額度</th><th></th></tr></thead>
+            <tbody>${typeRows}</tbody>
+          </table>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;border-top:1px solid #edf2f7;padding-top:14px;">
+          <div><label style="font-size:.8rem;color:#718096;display:block;margin-bottom:4px;">新增假別名稱</label>
+            <input id="lt-name" class="field-input" placeholder="如：特休、勞動節公假" style="min-width:160px;"></div>
+          <div><label style="font-size:.8rem;color:#718096;display:block;margin-bottom:4px;">扣抵額度</label>
+            <label style="font-size:.85rem;display:flex;align-items:center;gap:4px;height:38px;"><input type="checkbox" id="lt-deducts"> 此假別會扣抵額度</label></div>
+          <div><label style="font-size:.8rem;color:#718096;display:block;margin-bottom:4px;">預設額度（小時）</label>
+            <input id="lt-quota" type="number" min="0" step="1" value="0" class="field-input" style="width:120px;"></div>
+          <button class="btn btn-primary btn-sm" onclick="addLeaveType()">新增假別</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h3>實習生額度設定（扣抵型假別）</h3></div>
+      <div style="padding:16px 20px;">
+        ${deductTypes.length === 0
+          ? '<div style="color:#a0aec0;font-size:.9rem;">目前沒有扣抵型假別，請先於上方新增並勾選「扣抵額度」。</div>'
+          : interns.length === 0
+            ? '<div style="color:#a0aec0;font-size:.9rem;">目前沒有在任實習生。</div>'
+            : `<p style="font-size:.82rem;color:#718096;margin-bottom:12px;">未設定者沿用假別預設額度。修改後請按該列「儲存」。</p>
+               <div style="overflow-x:auto;">
+                 <table class="data-table" style="min-width:480px;">
+                   <thead><tr><th>實習生</th>${quotaHead}<th></th></tr></thead>
+                   <tbody>${quotaRows}</tbody>
+                 </table>
+               </div>`}
+      </div>
+    </div>`;
+}
+
+async function addLeaveType() {
+  const name = (document.getElementById('lt-name')?.value || '').trim();
+  if (!name) { alert('請輸入假別名稱'); return; }
+  const deducts = !!document.getElementById('lt-deducts')?.checked;
+  const quota = Number(document.getElementById('lt-quota')?.value) || 0;
+  if (!Array.isArray(configData.leaveTypes)) configData.leaveTypes = getLeaveTypes().map(t => ({ ...t }));
+  if (configData.leaveTypes.some(t => t.name === name)) { alert('已有同名假別'); return; }
+  configData.leaveTypes.push({
+    id: 'lt_' + Date.now().toString(36), name, unit: 'hour',
+    deductsQuota: deducts, defaultQuotaHours: deducts ? quota : 0,
+    order: configData.leaveTypes.length + 1,
+  });
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); auditLog('新增假別', null, null, name); renderLeaveTypesAdmin(); showToast('已新增假別', 'success'); }
+  catch (e) { showToast('新增失敗：' + e.message, 'error'); }
+}
+
+async function deleteLeaveType(id) {
+  const t = getLeaveType(id);
+  if (!t) return;
+  if (!confirm(`確定刪除假別「${t.name}」？\n已申請的紀錄不受影響，但日後無法再選此假別。`)) return;
+  if (!Array.isArray(configData.leaveTypes)) configData.leaveTypes = getLeaveTypes().map(x => ({ ...x }));
+  configData.leaveTypes = configData.leaveTypes.filter(x => x.id !== id);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); auditLog('刪除假別', null, null, t.name); renderLeaveTypesAdmin(); showToast('已刪除', 'success'); }
+  catch (e) { showToast('刪除失敗：' + e.message, 'error'); }
+}
+
+async function saveInternQuota(email) {
+  const deductTypes = getLeaveTypes().filter(t => t.deductsQuota);
+  const key = email.replace(/[^a-zA-Z0-9]/g, '_');
+  if (!configData.users[email]) { alert('找不到使用者'); return; }
+  const quota = { ...(configData.users[email].leaveQuota || {}) };
+  deductTypes.forEach(t => {
+    const v = document.getElementById(`q_${key}_${t.id}`)?.value;
+    if (v != null && v !== '') quota[t.id] = Number(v) || 0;
+  });
+  configData.users[email].leaveQuota = quota;
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); showToast(`已儲存 ${_userName(email)} 的額度`, 'success'); renderLeaveTypesAdmin(); }
+  catch (e) { showToast('儲存失敗：' + e.message, 'error'); }
+}
+
+// ══════════════════════════════════════════════
+//  實習生差勤申請頁
+// ══════════════════════════════════════════════
+function renderLeaveApplyPage() {
+  const body = document.getElementById('leave-apply-body');
+  if (!body) return;
+  const isIntern = currentRole === '實習諮商心理師';
+  if (!isIntern) { body.innerHTML = '<div class="alert alert-info">此頁僅供實習生申請差勤。</div>'; return; }
+  const types = getLeaveTypes();
+  const myApps = (leavesData?.applications || [])
+    .filter(a => a.email === currentUser.email)
+    .sort((a, b) => (b.appliedAt || '').localeCompare(a.appliedAt || ''));
+  const typeOpts = types.map(t => `<option value="${t.id}">${escHtml(t.name)}${t.deductsQuota ? '（扣抵額度）' : ''}</option>`).join('');
+  const today = _fmtDate(new Date());
+  const myRows = myApps.length ? myApps.map(a => `
+    <tr>
+      <td>${escHtml(a.leaveTypeName)}</td>
+      <td>${escHtml(a.fromDate || '')}${a.toDate && a.toDate !== a.fromDate ? '~' + escHtml(a.toDate) : ''}</td>
+      <td style="text-align:right;">${_fmtLeaveHours(a.hours)}</td>
+      <td>${escHtml(a.reason || '—')}</td>
+      <td>${_leaveStatusBadge(a.status)}${a.reviewNote ? `<div style="font-size:.72rem;color:#c05621;margin-top:2px;">備註：${escHtml(a.reviewNote)}</div>` : ''}</td>
+      <td>${a.status === 'pending' ? `<button class="btn btn-secondary btn-sm" style="font-size:.74rem;" onclick="cancelLeave('${a.id}')">取消</button>` : ''}</td>
+    </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:#a0aec0;padding:20px;">尚無申請紀錄</td></tr>';
+
+  body.innerHTML = `
+    <div class="card" style="margin-bottom:20px;">
+      <div class="card-header"><h3>新增差勤申請</h3></div>
+      <div style="padding:16px 20px;">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">假別</label>
+            <select id="la-type" class="field-select" style="min-width:170px;" onchange="_laUpdateRemaining()">${typeOpts}</select></div>
+          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">開始日期</label>
+            <input id="la-from" type="date" class="field-input" value="${today}"></div>
+          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">結束日期</label>
+            <input id="la-to" type="date" class="field-input" value="${today}"></div>
+          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">時數（小時）</label>
+            <input id="la-hours" type="number" min="0.5" step="0.5" class="field-input" style="width:110px;" placeholder="如 8"></div>
+        </div>
+        <div id="la-remaining" style="font-size:.82rem;color:#2b6cb0;margin-top:10px;"></div>
+        <div style="margin-top:10px;"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">事由</label>
+          <textarea id="la-reason" class="field-input" rows="2" style="width:100%;max-width:520px;" placeholder="請簡述事由"></textarea></div>
+        <button class="btn btn-primary" style="margin-top:14px;" onclick="submitLeave()">送出申請</button>
+        <div style="font-size:.78rem;color:#a0aec0;margin-top:8px;">送出後將通知督導審核；任一督導核准即生效，並通知您與主任。</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h3>我的申請紀錄</h3></div>
+      <div style="padding:16px 20px;overflow-x:auto;">
+        <table class="data-table" style="min-width:560px;">
+          <thead><tr><th>假別</th><th>日期</th><th style="text-align:right;">時數</th><th>事由</th><th>狀態</th><th></th></tr></thead>
+          <tbody>${myRows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  _laUpdateRemaining();
+}
+
+function _laUpdateRemaining() {
+  const el = document.getElementById('la-remaining');
+  if (!el) return;
+  const typeId = document.getElementById('la-type')?.value;
+  const t = getLeaveType(typeId);
+  if (!t || !t.deductsQuota) { el.textContent = '此假別不扣抵額度。'; el.style.color = '#718096'; return; }
+  const remaining = _leaveRemaining(currentUser.email, typeId);
+  const quota = _leaveQuotaHours(currentUser.email, typeId);
+  el.innerHTML = `剩餘額度：<strong>${remaining}</strong> / ${quota} 小時（含待審核佔用）`;
+  el.style.color = remaining <= 0 ? '#c53030' : '#2b6cb0';
+}
+
+async function submitLeave() {
+  const typeId = document.getElementById('la-type')?.value;
+  const t = getLeaveType(typeId);
+  if (!t) { alert('請選擇假別'); return; }
+  const fromDate = document.getElementById('la-from')?.value;
+  const toDate = document.getElementById('la-to')?.value || fromDate;
+  const hours = Number(document.getElementById('la-hours')?.value);
+  const reason = (document.getElementById('la-reason')?.value || '').trim();
+  if (!fromDate) { alert('請選擇開始日期'); return; }
+  if (toDate < fromDate) { alert('結束日期不可早於開始日期'); return; }
+  if (!hours || hours <= 0) { alert('請輸入有效時數'); return; }
+  if (t.deductsQuota) {
+    const remaining = _leaveRemaining(currentUser.email, typeId);
+    if (remaining != null && hours > remaining) {
+      alert(`超出剩餘額度（剩 ${remaining} 小時）。如需調整額度，請洽主任。`);
+      return;
+    }
+  }
+  const app = {
+    id: 'lv_' + currentUser.email + '_' + Date.now(),
+    email: currentUser.email, name: _userName(currentUser.email),
+    leaveTypeId: typeId, leaveTypeName: t.name, deductsQuota: !!t.deductsQuota,
+    fromDate, toDate, hours, reason, status: 'pending',
+    appliedAt: new Date().toISOString(),
+  };
+  if (!leavesData || !Array.isArray(leavesData.applications)) leavesData = { applications: [] };
+  leavesData.applications.push(app);
+  const jobId = bgJobAdd('送出差勤申請');
+  try {
+    await saveLeaves();
+    await _notifyLeaveReviewers(app);
+    bgJobDone(jobId);
+    showToast('已送出申請，待督導審核。', 'success');
+  } catch (e) {
+    leavesData.applications.pop();
+    bgJobFail(jobId, e.message);
+    showToast('送出失敗：' + e.message, 'error');
+  }
+  renderLeaveApplyPage();
+  _updateLeaveBadges();
+}
+
+async function cancelLeave(id) {
+  const app = (leavesData?.applications || []).find(a => a.id === id);
+  if (!app || app.status !== 'pending' || app.email !== currentUser.email) return;
+  if (!confirm('確定取消此申請？')) return;
+  app.status = 'cancelled';
+  app.cancelledAt = new Date().toISOString();
+  try { await saveLeaves(); showToast('已取消申請', 'success'); }
+  catch (e) { app.status = 'pending'; showToast('取消失敗：' + e.message, 'error'); }
+  renderLeaveApplyPage();
+  _updateLeaveBadges();
 }
 
 async function loadPendingUsers() {
@@ -20837,6 +21319,13 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-06-30', title: '實習生差勤申請（請假/補休、假別額度、督導審核）', isProd: false, items: [
+      item('新功能', '實習生新增「差勤申請」頁：選假別、日期、時數、事由送出申請，並顯示扣抵型假別的剩餘額度（含待審核佔用）；可查看「我的申請紀錄」並取消待審核申請'),
+      item('新功能', '差勤管理後台改為分頁：打卡紀錄／請假審核／假別與額度'),
+      item('新功能', '假別與額度設定：管理者/督導可新增、刪除可申請假別（可設定是否扣抵額度與預設額度），並逐位設定在任實習生的各假別額度（顯示已用時數）'),
+      item('新功能', '請假審核：任一督導（行政或專業）核准即生效；核准/駁回後以待辦事項通知申請人，核准時並通知行政督導、專業督導與主任'),
+      item('新功能', '額度控管：扣抵型假別於申請時檢查剩餘額度並擋下超額（待審核亦佔用額度），核准時再次確認'),
+    ]},
     { date: '2026-06-30', title: '個案載入效能：Hot/Cold 分層載入', isProd: false, items: [
       item('改善', '啟動改為輕量索引（cases-index.json）+ 只載入含使用中個案的區塊（hot chunks）；個案列表在完整資料載入前即可見，封存個案所在的封存區塊不再每次載入'),
       item('改善', '點開封存個案時才即時讀取其完整資料（on-demand，含「正在讀取資料」提示），IndexedDB 快取後再次開啟近乎即時'),
