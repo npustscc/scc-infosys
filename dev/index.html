@@ -16167,6 +16167,63 @@ async function saveCase() {
     return;
   }
 
+  // ── 學生資料變動確認 ──
+  // 案號無衝突的情境下，仍需檢查學號/姓名/身分證是否與既有個案「部分相符」
+  // → 可能是「同一學生但欄位有異動」，逐一詢問使用者是否確認更新
+  const _dataChangeMatches = casesData.filter(c => {
+    if (c.deleted || c.id === _editingCaseId) return false;
+    const sidM = studentId && studentId === c.studentId;
+    const idnM = idNumber  && idNumber  === c.idNumber;
+    const namM = name      && name      === c.name;
+    const anyM = sidM || idnM || namM;
+    const allM = sidM && idnM && namM;
+    // 「三項皆同」由後續同學期重複開案邏輯處理；此處只抓「部分相符」
+    return anyM && !allM;
+  });
+  for (const dup of _dataChangeMatches) {
+    const _sidM = studentId && studentId === dup.studentId;
+    const _idnM = idNumber  && idNumber  === dup.idNumber;
+    const _namM = name      && name      === dup.name;
+    const _matchLabels = [];
+    if (_sidM) _matchLabels.push(`學號：${studentId}`);
+    if (_idnM) _matchLabels.push(`身分證：${idNumber}`);
+    if (_namM) _matchLabels.push(`姓名：${name}`);
+    const _diffFields = [];
+    if (!_sidM && studentId && dup.studentId) _diffFields.push({ label:'學號',       cur: studentId, old: dup.studentId });
+    if (!_idnM && idNumber  && dup.idNumber)  _diffFields.push({ label:'身分證字號', cur: idNumber,  old: dup.idNumber });
+    if (!_namM && name      && dup.name)      _diffFields.push({ label:'姓名',       cur: name,      old: dup.name });
+    if (!_diffFields.length) continue; // 無可比對的異動欄位，跳過
+    const _diffLines = _diffFields.map(f => `　${f.label}：「${f.old}」→「${f.cur}」`).join('\n');
+    const _semLbl = semesterLabel(openDateToSemPrefix(dup.openDate)) || '—';
+    const _isSameStudent = confirm(
+      `偵測到既有個案：\n　姓名：${dup.name}　案號：${dup.id}　開案學期：${_semLbl}\n\n` +
+      `相符欄位：\n　${_matchLabels.join('、')}\n\n` +
+      `以下欄位不同：\n${_diffLines}\n\n` +
+      `是否為同一學生（欄位有異動）？\n\n` +
+      `• 是 → 逐項確認是否於本學期起更新\n` +
+      `• 否 → 視為不同學生，此比對忽略、繼續儲存`
+    );
+    if (!_isSameStudent) continue;
+    // 同一學生 → 逐欄位確認
+    for (const f of _diffFields) {
+      if (!confirm(`${f.label}：「${f.old}」→「${f.cur}」\n是否於本學期起更新此項目？`)) {
+        _caseAlert(`「${f.label}」更新未確認，儲存中止。如要保留原資料請恢復該欄位；如確認為不同學生請點「否」略過此比對。`);
+        return;
+      }
+    }
+    // 全部確認後：同步更新既有個案的 root-level 欄位（本學期起生效）
+    // 舊學期資料保存於 basicInfoSnapshots；不影響歷史
+    _diffFields.forEach(f => {
+      const key = { '學號':'studentId', '身分證字號':'idNumber', '姓名':'name' }[f.label];
+      if (key && dup[key] !== f.cur) dup[key] = f.cur;
+    });
+    dup.updatedAt = new Date().toISOString();
+    // 標記既有案需連帶儲存（於本次儲存後一併寫入 chunk）
+    if (!Array.isArray(window._pendingUpdateCaseIds)) window._pendingUpdateCaseIds = [];
+    window._pendingUpdateCaseIds.push(dup.id);
+    auditLog('學生資料異動更新', dup.id, null, _diffFields.map(f => `${f.label}：${f.old}→${f.cur}`).join('；'));
+  }
+
   // 同學期重複開案確認
   const _semPfx = currentSemesterPrefix();
   const _semDups = casesData.filter(c => !c.deleted && c.id !== _editingCaseId &&
@@ -16248,7 +16305,10 @@ async function saveCase() {
         }
       }
       casesData.push(newCase);
-      await saveCasesChunks(newCase.id);
+      // 若有既有個案因學生資料異動需一併儲存，一起送入 saveCasesChunks
+      const _extraIds = Array.isArray(window._pendingUpdateCaseIds) ? [...new Set(window._pendingUpdateCaseIds)] : [];
+      window._pendingUpdateCaseIds = [];
+      await saveCasesChunks(newCase.id, ..._extraIds);
       let cfgChanged = syncManagersFromForm(newCase.id, null);
       if (counselorEmail && counselorEmail !== currentUser.email)
         cfgChanged = addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name) || cfgChanged;
@@ -21814,6 +21874,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '新開案：儲存時偵測學號/姓名/身分證字號欄位變動', isProd: false, items: [
+      item('新功能', '儲存新個案時，若學號、姓名或身分證字號與既有個案「部分相符」（有一項相同、另有一項不同），彈出對話詢問「是否為同一學生（欄位有異動）？」'),
+      item('新功能', '若確認為同一學生 → 逐項詢問「是否於本學期起更新此項目？」，全部確認後同步更新既有個案的 root-level 欄位（學號/姓名/身分證），並記錄稽核日誌'),
+      item('新功能', '若拒絕為同一學生 → 該筆比對忽略，繼續儲存為新個案'),
+      item('保護', '任一項目未確認更新即中止儲存，提示使用者恢復原值或改為「否」'),
+    ]},
     { date: '2026-07-02', title: '修正：明細排序陷阱與展開列邊界溢出', isProd: false, items: [
       item('修復', '明細排序改用數值比較：原本以字串比對 date，「6/10」被誤判小於「6/8」；改為 YYYY*10000+MM*100+DD 排序鍵'),
       item('修復', '課程明細 table 加 table-layout:fixed，節次/課名欄改用 word-break 允許換行，避免長字串撐爆版面'),
