@@ -21809,6 +21809,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-01', title: '身心調適假：重新解析舊信件（補齊節次等欄位）', isProd: false, items: [
+      item('新功能', '身心調適假頁面新增「🔄 重新解析舊信件」按鈕（主任/管理者/身心調適假窗口可用），將 Gmail 中已標記為 ml-processed 的信件重新解析，補上節次、課名等原本沒抓到的欄位'),
+      item('保護', '使用者管理欄位（受理情況、已閱、已刪除等）不會被覆蓋'),
+      item('後端', 'Code.gs fetchMentalLeaves action 新增 reparse 模式；查詢含 label 的信件、以 emailId 對應既有紀錄做 merge 而非跳過'),
+    ]},
     { date: '2026-07-01', title: '身心調適假列印新增主責/個管欄位', isProd: false, items: [
       item('新功能', '列印通知單的個案案號那行新增「主責」與「個管」欄位，12pt 字級並列顯示'),
     ]},
@@ -23835,7 +23840,8 @@ function _mlUpdateTitleBtn() {
   const area = document.getElementById('ml-title-fetch');
   if (area) {
     area.innerHTML = _canFetch
-      ? `<button class="btn btn-primary btn-sm" onclick="window._mlFetch()" style="white-space:nowrap;font-size:.85rem;padding:4px 12px;">📥 從信箱擷取</button>`
+      ? `<button class="btn btn-primary btn-sm" onclick="window._mlFetch()" style="white-space:nowrap;font-size:.85rem;padding:4px 12px;">📥 從信箱擷取</button>
+         <button class="btn btn-secondary btn-sm" onclick="window._mlReparse()" style="white-space:nowrap;font-size:.85rem;padding:4px 12px;margin-left:6px;" data-tip="重新解析已擷取的信件，用來補上舊資料缺少的節次等欄位。使用者管理的欄位（受理情況、已閱等）會保留。">🔄 重新解析舊信件</button>`
       : '';
   }
   const icon = document.getElementById('nav-ml-fetch-icon');
@@ -24851,6 +24857,45 @@ window._mlFetch = async (isAuto) => {
     alert('從信箱擷取失敗：' + e.message);
   } finally {
     _restoreBtn();
+  }
+};
+
+// 重新解析所有已擷取的信件（用來補上舊資料缺少的節次等欄位）
+// 保留使用者管理欄位：handlingStatus、acknowledgedBy、deleted、deletedAt、deletedBy
+window._mlReparse = async () => {
+  if (!confirm('重新解析所有已擷取的信件？\n\n用途：補上舊資料缺少的節次、課名等欄位。\n保留：受理情況、已閱、已刪除等使用者狀態。\n\n可能需要數十秒至數分鐘（依信件數）。')) return;
+  const btn = document.querySelector('[onclick="window._mlReparse()"]');
+  if (btn) { btn.disabled = true; btn.textContent = '解析中…'; }
+  const jobId = bgJobAdd('重新解析身心調適假信件');
+  const BATCH = 50, MAX_ROUNDS = 40;
+  let totalUpdated = 0, totalProcessed = 0, rounds = 0;
+  try {
+    let hasMore = true;
+    let nextToken = null; // 第一次強制從頭開始，避免受前次 fetch 遺留的 pageToken 影響
+    while (hasMore && rounds < MAX_ROUNDS) {
+      rounds++;
+      const result = await proxyCall('fetchMentalLeaves', { reparse: true, batchSize: BATCH, pageToken: nextToken });
+      if (result?.needsAuth) {
+        bgJobFail(jobId, '需要 Gmail 授權'); _mlShowAuthModal(result.authUrl);
+        return;
+      }
+      totalUpdated += result.updatedCount ?? 0;
+      totalProcessed += result.batchCount ?? 0;
+      hasMore = !!result.hasMore;
+      nextToken = result.nextPageToken || null;
+      if (btn) btn.textContent = `解析中… (${totalProcessed} 封 / 更新 ${totalUpdated})`;
+      if (!result.batchCount) break;
+    }
+    await loadMentalLeaves();
+    renderMentalLeavePage();
+    bgJobDone(jobId);
+    auditLog('重新解析身心調適假信件', null, null, `處理 ${totalProcessed} 封，更新 ${totalUpdated} 筆`);
+    showToast(`重新解析完成：處理 ${totalProcessed} 封，更新 ${totalUpdated} 筆${rounds >= MAX_ROUNDS ? '（達最大回合數，可再點一次繼續）' : ''}`, 'success');
+  } catch(e) {
+    bgJobFail(jobId, e.message);
+    alert('重新解析失敗：' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄 重新解析舊信件'; }
   }
 };
 

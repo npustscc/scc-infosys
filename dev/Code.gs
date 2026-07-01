@@ -512,6 +512,7 @@ function fetchMentalLeaves_(ctx, opts) {
 
 function fetchMentalLeavesInner_(ctx, opts) {
   var force = opts && opts.force;
+  var reparse = opts && opts.reparse;  // 重新解析已擷取信件（保留 handlingStatus 等使用者欄位）
   var token = npust5GetAccessToken_();
   if (!token) {
     return { needsAuth: true, authUrl: npust5BuildAuthUrl_() };
@@ -534,25 +535,32 @@ function fetchMentalLeavesInner_(ctx, opts) {
 
   var keywords = loadMlKeywords_(ctx);
 
-  var processedLabelId = force ? gmailGetOrCreateLabel_(token, labelName) : gmailGetOrCreateLabel_(token, labelName);
-  var query = force
-    ? 'subject:(請假 OR 身心調適假 OR 缺課)'
-    : 'subject:(請假 OR 身心調適假 OR 缺課) -label:' + labelName;
-  var batchSize = (opts && opts.batchSize) ? opts.batchSize : (force ? 300 : 50);
+  var processedLabelId = gmailGetOrCreateLabel_(token, labelName);
+  // reparse 模式：查詢已標記的信件（重新解析用）
+  var query;
+  if (reparse) query = 'subject:(請假 OR 身心調適假 OR 缺課) label:' + labelName;
+  else if (force) query = 'subject:(請假 OR 身心調適假 OR 缺課)';
+  else query = 'subject:(請假 OR 身心調適假 OR 缺課) -label:' + labelName;
+  var batchSize = (opts && opts.batchSize) ? opts.batchSize : ((force || reparse) ? 300 : 50);
   var apiUrl = '/messages?q=' + encodeURIComponent(query) + '&maxResults=' + batchSize;
-  var pageTokenToUse = (opts && 'pageToken' in opts) ? opts.pageToken : (force ? (existingData.fetchPageToken || null) : null);
+  var pageTokenToUse = (opts && 'pageToken' in opts) ? opts.pageToken : ((force || reparse) ? (existingData.fetchPageToken || null) : null);
   if (pageTokenToUse) apiUrl += '&pageToken=' + encodeURIComponent(pageTokenToUse);
   var searchData = gmailApi_(token, apiUrl);
   var messages = searchData.messages || [];
 
   var newRecords = [];
+  var updatedCount = 0;
   var existingSet = {};
-  existingData.records.forEach(function(r) { if (r.emailId) existingSet[r.emailId] = true; });
+  var existingByEmailId = {};
+  existingData.records.forEach(function(r, i) {
+    if (r.emailId) { existingSet[r.emailId] = true; existingByEmailId[r.emailId] = i; }
+  });
 
   messages.forEach(function(m) {
     try {
       var msgId = m.id;
-      if (existingSet[msgId]) return;
+      // reparse 模式：不跳過既有，改為 merge；非 reparse 才跳過
+      if (!reparse && existingSet[msgId]) return;
 
       var msg = gmailApi_(token, '/messages/' + msgId + '?format=full');
       var subject = '', fromHdr = '';
@@ -676,7 +684,7 @@ function fetchMentalLeavesInner_(ctx, opts) {
       }
 
       var receivedAt = msg.internalDate ? new Date(parseInt(msg.internalDate)).toISOString() : new Date().toISOString();
-      newRecords.push({
+      var parsedRec = {
         id: 'ml_' + msgId, emailId: msgId,
         studentId: studentId, name: name, department: department,
         reason: reason, leaveDate: leaveDate, leaveDateTo: leaveDateTo,
@@ -685,10 +693,28 @@ function fetchMentalLeavesInner_(ctx, opts) {
         riskLevel: maxLevel,
         handlingStatus: maxLevel >= 3 ? '待處理' : '非危機',
         receivedAt: receivedAt, parsedAt: new Date().toISOString(),
-      });
-      existingSet[msgId] = true;
+      };
+      // reparse 模式：merge 到既有紀錄，保留使用者管理的欄位
+      if (reparse && existingByEmailId[msgId] !== undefined) {
+        var idx = existingByEmailId[msgId];
+        var existing = existingData.records[idx];
+        // 保留使用者欄位（handlingStatus, acknowledgedBy, deleted 等）
+        var preserved = {
+          handlingStatus: existing.handlingStatus,
+          acknowledgedBy: existing.acknowledgedBy,
+          deleted: existing.deleted, deletedAt: existing.deletedAt, deletedBy: existing.deletedBy,
+        };
+        // 用解析結果覆蓋 existing 的其他欄位
+        Object.keys(parsedRec).forEach(function(k) { existing[k] = parsedRec[k]; });
+        // 還原使用者欄位
+        Object.keys(preserved).forEach(function(k) { if (preserved[k] !== undefined) existing[k] = preserved[k]; });
+        updatedCount++;
+      } else {
+        newRecords.push(parsedRec);
+        existingSet[msgId] = true;
+      }
 
-      if (processedLabelId) {
+      if (processedLabelId && !reparse) {
         try { gmailApi_(token, '/messages/' + msgId + '/modify', 'post', { addLabelIds: [processedLabelId] }); } catch(e) {}
       }
     } catch(msgErr) {
@@ -696,7 +722,7 @@ function fetchMentalLeavesInner_(ctx, opts) {
     }
   });
 
-  if (force) {
+  if (force || reparse) {
     if (searchData.nextPageToken) {
       existingData.fetchPageToken = searchData.nextPageToken;
     } else {
@@ -705,7 +731,7 @@ function fetchMentalLeavesInner_(ctx, opts) {
   }
 
   existingData.lastFetchedAt = new Date().toISOString();
-  existingData.records = existingData.records.concat(newRecords);
+  if (newRecords.length) existingData.records = existingData.records.concat(newRecords);
   try {
     updateJson_({ path: 'mental_leaves.json', content: existingData }, ctx);
   } catch(e) {
@@ -715,10 +741,11 @@ function fetchMentalLeavesInner_(ctx, opts) {
 
   return {
     newCount: newRecords.length,
+    updatedCount: updatedCount,
     totalCount: existingData.records.length,
     batchCount: messages.length,
-    hasMore: !!(force && existingData.fetchPageToken),
-    nextPageToken: (force && existingData.fetchPageToken) || null
+    hasMore: !!((force || reparse) && existingData.fetchPageToken),
+    nextPageToken: ((force || reparse) && existingData.fetchPageToken) || null
   };
 }
 
