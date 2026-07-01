@@ -3778,6 +3778,7 @@ let configData   = null;   // 完整 config.json 內容
 let casesData    = [];
 let casesManifest = { chunks: [] };
 let _casesIndexCache = null; // cases-index.json 記憶體快取 { updatedAt, cases:[] }
+let _clockOnlyMode = false;  // ?page=clock 快速啟動時為 true；使用者離開打卡頁時觸發完整載入
 function currentSemesterPrefix() {
   const now = new Date();
   const rocYear = now.getFullYear() - 1911;
@@ -3918,7 +3919,29 @@ function handlePrevPage(){
   const s=_prevNavState;_prevNavState=null;_updatePrevBtn();
   if(s?.restore)s.restore();
 }
+// 打卡模式（?page=clock）啟動時跳過的重載入，於使用者切離打卡頁時補齊
+function _upgradeFromClockMode() {
+  if (!_clockOnlyMode) return;
+  _clockOnlyMode = false;
+  _syslog('info', '離開 clock 模式，補齊完整 INFOSYS 載入');
+  loadMentalLeaves().then(() => { _mlAutoFetchOnLogin(); }).catch(() => {});
+  loadCases().then(() => {
+    loadPsychTestDB().catch(() => {});
+    scanUnassignedRecords().catch(() => {});
+    _migrateLocalStorageDrafts();
+    _syncPendingRecordsToTodos();
+    _checkMlCumulativeTodos();
+    _checkPastSemUnclosedForDirectors();
+    _cleanupDeletedEvals();
+    _checkTransferGradTodos();
+    _checkWithdrawMismatchTodos();
+  }).catch(() => {});
+  loadPendingUsers().catch(() => {});
+}
+
 function showPage(pageId, navEl) {
+  // 打卡模式下切到其他頁 → 觸發完整 INFOSYS 載入
+  if (_clockOnlyMode && pageId !== 'page-clock') _upgradeFromClockMode();
   // 離開待辦頁時標記待派案 todo 為已讀
   const prevPage = document.querySelector('.page.active')?.id;
   if (prevPage === 'page-todos' && pageId !== 'page-todos') {
@@ -5237,8 +5260,9 @@ async function afterLogin() {
 
     // ── 打卡模式（?page=clock）：手機快速打卡 ──
     // 只載入打卡所需資料（attendance / leaves），跳過個案等重資料與其載入進度條，
-    // 立即切到打卡頁，符合手機打卡的即時性。
+    // 立即切到打卡頁，符合手機打卡的即時性。使用者若點選其他 nav，會於 showPage 觸發完整載入。
     if (new URLSearchParams(window.location.search).get('page') === 'clock') {
+      _clockOnlyMode = true;
       _setCasesLoadingProgress(-1);          // 確保不顯示個案載入進度條
       _checkInitialPage();                    // 立即切到打卡頁（先顯示骨架）
       loadAttendance().then(() => renderClockPage()).catch(() => {});
