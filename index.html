@@ -16167,6 +16167,63 @@ async function saveCase() {
     return;
   }
 
+  // ── 學生資料變動確認 ──
+  // 案號無衝突的情境下，仍需檢查學號/姓名/身分證是否與既有個案「部分相符」
+  // → 可能是「同一學生但欄位有異動」，逐一詢問使用者是否確認更新
+  const _dataChangeMatches = casesData.filter(c => {
+    if (c.deleted || c.id === _editingCaseId) return false;
+    const sidM = studentId && studentId === c.studentId;
+    const idnM = idNumber  && idNumber  === c.idNumber;
+    const namM = name      && name      === c.name;
+    const anyM = sidM || idnM || namM;
+    const allM = sidM && idnM && namM;
+    // 「三項皆同」由後續同學期重複開案邏輯處理；此處只抓「部分相符」
+    return anyM && !allM;
+  });
+  for (const dup of _dataChangeMatches) {
+    const _sidM = studentId && studentId === dup.studentId;
+    const _idnM = idNumber  && idNumber  === dup.idNumber;
+    const _namM = name      && name      === dup.name;
+    const _matchLabels = [];
+    if (_sidM) _matchLabels.push(`學號：${studentId}`);
+    if (_idnM) _matchLabels.push(`身分證：${idNumber}`);
+    if (_namM) _matchLabels.push(`姓名：${name}`);
+    const _diffFields = [];
+    if (!_sidM && studentId && dup.studentId) _diffFields.push({ label:'學號',       cur: studentId, old: dup.studentId });
+    if (!_idnM && idNumber  && dup.idNumber)  _diffFields.push({ label:'身分證字號', cur: idNumber,  old: dup.idNumber });
+    if (!_namM && name      && dup.name)      _diffFields.push({ label:'姓名',       cur: name,      old: dup.name });
+    if (!_diffFields.length) continue; // 無可比對的異動欄位，跳過
+    const _diffLines = _diffFields.map(f => `　${f.label}：「${f.old}」→「${f.cur}」`).join('\n');
+    const _semLbl = semesterLabel(openDateToSemPrefix(dup.openDate)) || '—';
+    const _isSameStudent = confirm(
+      `偵測到既有個案：\n　姓名：${dup.name}　案號：${dup.id}　開案學期：${_semLbl}\n\n` +
+      `相符欄位：\n　${_matchLabels.join('、')}\n\n` +
+      `以下欄位不同：\n${_diffLines}\n\n` +
+      `是否為同一學生（欄位有異動）？\n\n` +
+      `• 是 → 逐項確認是否於本學期起更新\n` +
+      `• 否 → 視為不同學生，此比對忽略、繼續儲存`
+    );
+    if (!_isSameStudent) continue;
+    // 同一學生 → 逐欄位確認
+    for (const f of _diffFields) {
+      if (!confirm(`${f.label}：「${f.old}」→「${f.cur}」\n是否於本學期起更新此項目？`)) {
+        _caseAlert(`「${f.label}」更新未確認，儲存中止。如要保留原資料請恢復該欄位；如確認為不同學生請點「否」略過此比對。`);
+        return;
+      }
+    }
+    // 全部確認後：同步更新既有個案的 root-level 欄位（本學期起生效）
+    // 舊學期資料保存於 basicInfoSnapshots；不影響歷史
+    _diffFields.forEach(f => {
+      const key = { '學號':'studentId', '身分證字號':'idNumber', '姓名':'name' }[f.label];
+      if (key && dup[key] !== f.cur) dup[key] = f.cur;
+    });
+    dup.updatedAt = new Date().toISOString();
+    // 標記既有案需連帶儲存（於本次儲存後一併寫入 chunk）
+    if (!Array.isArray(window._pendingUpdateCaseIds)) window._pendingUpdateCaseIds = [];
+    window._pendingUpdateCaseIds.push(dup.id);
+    auditLog('學生資料異動更新', dup.id, null, _diffFields.map(f => `${f.label}：${f.old}→${f.cur}`).join('；'));
+  }
+
   // 同學期重複開案確認
   const _semPfx = currentSemesterPrefix();
   const _semDups = casesData.filter(c => !c.deleted && c.id !== _editingCaseId &&
@@ -16248,7 +16305,10 @@ async function saveCase() {
         }
       }
       casesData.push(newCase);
-      await saveCasesChunks(newCase.id);
+      // 若有既有個案因學生資料異動需一併儲存，一起送入 saveCasesChunks
+      const _extraIds = Array.isArray(window._pendingUpdateCaseIds) ? [...new Set(window._pendingUpdateCaseIds)] : [];
+      window._pendingUpdateCaseIds = [];
+      await saveCasesChunks(newCase.id, ..._extraIds);
       let cfgChanged = syncManagersFromForm(newCase.id, null);
       if (counselorEmail && counselorEmail !== currentUser.email)
         cfgChanged = addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name) || cfgChanged;
@@ -21814,6 +21874,29 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '緊急修復：ml 明細列表徹底收束到外層欄寬', isProd: true, items: [
+      item('修復', '前版修正未生效——展開儲存格套用 max-width:0 + overflow:hidden 的 CSS 收束技巧，內層 div 帶 overflow-x:auto 於必要時提供橫向捲軸'),
+      item('修復', '藍色連請三天邊框改由內層 div 承載（原本在 tr 上會被截斷）'),
+      item('修復', 'colspan 從 99 改為動態計算實際欄位數（9 或 10），配合 max-width:0 的行為'),
+      item('修復', '內層表格所有 cell 改用 word-break:break-all（原 break-word 對純數字/英文串效果不足）'),
+    ]},
+    { date: '2026-07-02', title: '新開案：儲存時偵測學號/姓名/身分證字號欄位變動', isProd: true, items: [
+      item('新功能', '儲存新個案時，若學號、姓名或身分證字號與既有個案「部分相符」（有一項相同、另有一項不同），彈出對話詢問「是否為同一學生（欄位有異動）？」'),
+      item('新功能', '若確認為同一學生 → 逐項詢問「是否於本學期起更新此項目？」，全部確認後同步更新既有個案的 root-level 欄位（學號/姓名/身分證），並記錄稽核日誌'),
+      item('新功能', '若拒絕為同一學生 → 該筆比對忽略，繼續儲存為新個案'),
+      item('保護', '任一項目未確認更新即中止儲存，提示使用者恢復原值或改為「否」'),
+    ]},
+    { date: '2026-07-02', title: '修正：明細排序陷阱與展開列邊界溢出', isProd: true, items: [
+      item('修復', '明細排序改用數值比較：原本以字串比對 date，「6/10」被誤判小於「6/8」；改為 YYYY*10000+MM*100+DD 排序鍵'),
+      item('修復', '課程明細 table 加 table-layout:fixed，節次/課名欄改用 word-break 允許換行，避免長字串撐爆版面'),
+      item('修復', '展開列繼承外列的 border-left（藍色連請三天群組線）並改為 td padding:0 + 內層 div 套 padding，避免視覺寬突'),
+    ]},
+    { date: '2026-07-02', title: '身心調適假課程展開表格：排序、星期國字化、節次含時段', isProd: true, items: [
+      item('改善', '展開表格排序改為請假日 → 星期 → 節次遞增排列，同批請假讀起來更順'),
+      item('改善', '星期欄位統一為單字國字（一/二/三/四/五/六/日）；資料若含「星期一/週一」等前綴會自動去除'),
+      item('新功能', '節次欄位顯示對應時段，如「第 3 節 (10:15-11:05)」；多節課「3,4」自動展開為「第 3 節 (…)、第 4 節 (…)」'),
+      item('修復', '展開列的左右 padding 從 20px 改為 10px，與外層資料列一致，避免視覺上比原卡片寬'),
+    ]},
     { date: '2026-07-02', title: '附件貼法擴充：可直接拖曳/貼上到文字框', isProd: true, items: [
       item('新功能', '原本要拖曳/Ctrl+V 到附件區才能貼附件，現在可以直接拖曳或貼在該表單的文字框（textarea 或富文字編輯區）上'),
       item('新功能', '涵蓋：晤談紀錄（rec）、初談（ii）、事件處理（evr）、差勤申請（la）、精神科（psy）、問題回報/許願池（issue_new）、留言（ic）'),
@@ -23986,20 +24069,71 @@ function _mlPeriodsSummary(l) {
   if (!nameSet.size) return '';
   return [...nameSet].join('、');
 }
+// 節次對應時間（參考新增晤談紀錄的節次表）
+const _ML_PERIOD_TIMES = {
+  '1':'08:10-09:00', '2':'09:10-10:00', '3':'10:15-11:05', '4':'11:10-12:00',
+  '5':'13:30-14:20', '6':'14:30-15:20', '7':'15:30-16:20', '8':'16:30-17:20',
+  '9':'18:00-18:50', '10':'18:55-19:45', '11':'19:50-20:40'
+};
+// 星期文字統一為單字國字（去除「星期/週/禮拜」前綴；數字轉國字）
+function _mlNormalizeWeekday(w) {
+  const s = String(w || '').trim();
+  if (!s) return '';
+  const map = { '1':'一','2':'二','3':'三','4':'四','5':'五','6':'六','7':'日','0':'日' };
+  if (map[s]) return map[s];
+  // 去前綴：星期一 → 一，週一 → 一
+  const m = s.match(/[一二三四五六日]/);
+  return m ? m[0] : s;
+}
+// 星期排序值（一=1、二=2、...、六=6、日=7）
+function _mlWeekdayOrder(w) {
+  const norm = _mlNormalizeWeekday(w);
+  return { '一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'日':7 }[norm] || 99;
+}
+// 節次排序值（用第一個數字；空字串排最後）
+function _mlPeriodOrder(p) {
+  const m = String(p || '').match(/\d+/);
+  return m ? parseInt(m[0], 10) : 999;
+}
+// 節次顯示：把 "3,4" 轉為 "第 3 節 (10:15-11:05)、第 4 節 (11:10-12:00)"
+function _mlPeriodWithTime(period) {
+  const parts = String(period || '').split(/[,、，\s\-]+/).map(s => s.trim()).filter(Boolean);
+  if (!parts.length) return '—';
+  return parts.map(p => {
+    const t = _ML_PERIOD_TIMES[p];
+    return t ? `第 ${p} 節 (${t})` : `第 ${p} 節`;
+  }).join('、');
+}
+// 日期字串（YYYY/M/D 或 YYYY-M-D）轉時間戳；無效值排最後
+function _mlDateNum(s) {
+  const str = String(s || '').trim().replace(/-/g, '/');
+  if (!str) return Infinity;
+  const m = str.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})/);
+  if (!m) return Infinity;
+  const y = parseInt(m[1], 10), mo = parseInt(m[2], 10), d = parseInt(m[3], 10);
+  // 用純數字組成排序鍵：YYYYMMDD（避免時區問題）
+  return y * 10000 + mo * 100 + d;
+}
 function _mlCourseDetailHtml(l) {
-  const courses = Array.isArray(l.courses) && l.courses.length
+  const rawCourses = Array.isArray(l.courses) && l.courses.length
     ? l.courses
     : (l.course ? l.course.split('；').filter(Boolean).map(n => ({ name: n })) : []);
-  if (!courses.length) return '';
-  const hasDetail = courses.some(c => c.date);
-  return `<table style="font-size:.78rem;border-collapse:collapse;width:100%;">
+  if (!rawCourses.length) return '';
+  const hasDetail = rawCourses.some(c => c.date);
+  // ── 排序：第一層請假日（數值化）遞增；第二層節次（整數化）遞增 ──
+  const courses = [...rawCourses].sort((a, b) => {
+    const dt = _mlDateNum(a.date) - _mlDateNum(b.date);
+    if (dt !== 0) return dt;
+    return _mlPeriodOrder(a.period) - _mlPeriodOrder(b.period);
+  });
+  return `<table style="font-size:.78rem;border-collapse:collapse;width:100%;table-layout:fixed;box-sizing:border-box;">
     <thead><tr style="background:#f0fff4;color:#276749;">
       <th style="padding:3px 8px;text-align:left;font-weight:600;">課程名稱</th>
-      ${hasDetail ? '<th style="padding:3px 8px;text-align:left;font-weight:600;">請假日</th><th style="padding:3px 8px;text-align:left;font-weight:600;">星期</th><th style="padding:3px 8px;text-align:left;font-weight:600;">節次</th>' : ''}
+      ${hasDetail ? '<th style="padding:3px 8px;text-align:left;font-weight:600;width:80px;">請假日</th><th style="padding:3px 8px;text-align:left;font-weight:600;width:40px;">星期</th><th style="padding:3px 8px;text-align:left;font-weight:600;">節次</th>' : ''}
     </tr></thead>
     <tbody>${courses.map(c => `<tr style="border-bottom:1px solid #e2e8f0;">
-      <td style="padding:3px 8px;">${escHtml(c.name||'—')}</td>
-      ${hasDetail ? `<td style="padding:3px 8px;color:#718096;">${escHtml(c.date||'—')}</td><td style="padding:3px 8px;color:#718096;">${escHtml(c.weekday||'—')}</td><td style="padding:3px 8px;color:#718096;">${escHtml(c.period||'—')}</td>` : ''}
+      <td style="padding:3px 8px;word-break:break-all;">${escHtml(c.name||'—')}</td>
+      ${hasDetail ? `<td style="padding:3px 8px;color:#718096;word-break:break-all;">${escHtml(c.date||'—')}</td><td style="padding:3px 8px;color:#718096;text-align:center;">${escHtml(_mlNormalizeWeekday(c.weekday)||'—')}</td><td style="padding:3px 8px;color:#718096;word-break:break-all;">${escHtml(_mlPeriodWithTime(c.period))}</td>` : ''}
     </tr>`).join('')}</tbody>
   </table>`;
 }
@@ -24420,7 +24554,9 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       ${isAdmin ? `<td style="padding:7px 10px;"><button class="btn btn-danger btn-sm" onclick="window._mlDeleteRecord('${escHtml(l.id)}')">刪除</button></td>` : ''}
     </tr>
     <tr id="ml-course-${escHtml(l.id)}" style="display:none;background:#f7fffe;">
-      <td colspan="99" style="padding:8px 20px 12px;">${_mlCourseDetailHtml(l)}</td>
+      <td colspan="${isAdmin ? 10 : 9}" style="padding:0 !important;margin:0;border:none;max-width:0;overflow:hidden;">
+        <div style="box-sizing:border-box;width:100%;padding:8px 12px;overflow-x:auto;${leftBorder}">${_mlCourseDetailHtml(l)}</div>
+      </td>
     </tr>`;
   }).join('')
     : `<tr><td colspan="99" style="text-align:center;padding:24px;color:#a0aec0;">尚無紀錄</td></tr>`;
