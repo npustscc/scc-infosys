@@ -21814,6 +21814,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '身心調適假課程展開表格：排序、星期國字化、節次含時段', isProd: false, items: [
+      item('改善', '展開表格排序改為請假日 → 星期 → 節次遞增排列，同批請假讀起來更順'),
+      item('改善', '星期欄位統一為單字國字（一/二/三/四/五/六/日）；資料若含「星期一/週一」等前綴會自動去除'),
+      item('新功能', '節次欄位顯示對應時段，如「第 3 節 (10:15-11:05)」；多節課「3,4」自動展開為「第 3 節 (…)、第 4 節 (…)」'),
+      item('修復', '展開列的左右 padding 從 20px 改為 10px，與外層資料列一致，避免視覺上比原卡片寬'),
+    ]},
     { date: '2026-07-02', title: '附件貼法擴充：可直接拖曳/貼上到文字框', isProd: true, items: [
       item('新功能', '原本要拖曳/Ctrl+V 到附件區才能貼附件，現在可以直接拖曳或貼在該表單的文字框（textarea 或富文字編輯區）上'),
       item('新功能', '涵蓋：晤談紀錄（rec）、初談（ii）、事件處理（evr）、差勤申請（la）、精神科（psy）、問題回報/許願池（issue_new）、留言（ic）'),
@@ -23986,12 +23992,56 @@ function _mlPeriodsSummary(l) {
   if (!nameSet.size) return '';
   return [...nameSet].join('、');
 }
+// 節次對應時間（參考新增晤談紀錄的節次表）
+const _ML_PERIOD_TIMES = {
+  '1':'08:10-09:00', '2':'09:10-10:00', '3':'10:15-11:05', '4':'11:10-12:00',
+  '5':'13:30-14:20', '6':'14:30-15:20', '7':'15:30-16:20', '8':'16:30-17:20',
+  '9':'18:00-18:50', '10':'18:55-19:45', '11':'19:50-20:40'
+};
+// 星期文字統一為單字國字（去除「星期/週/禮拜」前綴；數字轉國字）
+function _mlNormalizeWeekday(w) {
+  const s = String(w || '').trim();
+  if (!s) return '';
+  const map = { '1':'一','2':'二','3':'三','4':'四','5':'五','6':'六','7':'日','0':'日' };
+  if (map[s]) return map[s];
+  // 去前綴：星期一 → 一，週一 → 一
+  const m = s.match(/[一二三四五六日]/);
+  return m ? m[0] : s;
+}
+// 星期排序值（一=1、二=2、...、六=6、日=7）
+function _mlWeekdayOrder(w) {
+  const norm = _mlNormalizeWeekday(w);
+  return { '一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'日':7 }[norm] || 99;
+}
+// 節次排序值（用第一個數字；空字串排最後）
+function _mlPeriodOrder(p) {
+  const m = String(p || '').match(/\d+/);
+  return m ? parseInt(m[0], 10) : 999;
+}
+// 節次顯示：把 "3,4" 轉為 "第 3 節 (10:15-11:05)、第 4 節 (11:10-12:00)"
+function _mlPeriodWithTime(period) {
+  const parts = String(period || '').split(/[,、，\s\-]+/).map(s => s.trim()).filter(Boolean);
+  if (!parts.length) return '—';
+  return parts.map(p => {
+    const t = _ML_PERIOD_TIMES[p];
+    return t ? `第 ${p} 節 (${t})` : `第 ${p} 節`;
+  }).join('、');
+}
 function _mlCourseDetailHtml(l) {
-  const courses = Array.isArray(l.courses) && l.courses.length
+  const rawCourses = Array.isArray(l.courses) && l.courses.length
     ? l.courses
     : (l.course ? l.course.split('；').filter(Boolean).map(n => ({ name: n })) : []);
-  if (!courses.length) return '';
-  const hasDetail = courses.some(c => c.date);
+  if (!rawCourses.length) return '';
+  const hasDetail = rawCourses.some(c => c.date);
+  // 排序：請假日 asc、星期 asc、節次 asc（皆有 fallback 到 99/999）
+  const courses = [...rawCourses].sort((a, b) => {
+    const da = (a.date || '').replace(/\D/g, '');
+    const db = (b.date || '').replace(/\D/g, '');
+    if (da !== db) return da.localeCompare(db);
+    const wa = _mlWeekdayOrder(a.weekday), wb = _mlWeekdayOrder(b.weekday);
+    if (wa !== wb) return wa - wb;
+    return _mlPeriodOrder(a.period) - _mlPeriodOrder(b.period);
+  });
   return `<table style="font-size:.78rem;border-collapse:collapse;width:100%;">
     <thead><tr style="background:#f0fff4;color:#276749;">
       <th style="padding:3px 8px;text-align:left;font-weight:600;">課程名稱</th>
@@ -23999,7 +24049,7 @@ function _mlCourseDetailHtml(l) {
     </tr></thead>
     <tbody>${courses.map(c => `<tr style="border-bottom:1px solid #e2e8f0;">
       <td style="padding:3px 8px;">${escHtml(c.name||'—')}</td>
-      ${hasDetail ? `<td style="padding:3px 8px;color:#718096;">${escHtml(c.date||'—')}</td><td style="padding:3px 8px;color:#718096;">${escHtml(c.weekday||'—')}</td><td style="padding:3px 8px;color:#718096;">${escHtml(c.period||'—')}</td>` : ''}
+      ${hasDetail ? `<td style="padding:3px 8px;color:#718096;">${escHtml(c.date||'—')}</td><td style="padding:3px 8px;color:#718096;">${escHtml(_mlNormalizeWeekday(c.weekday)||'—')}</td><td style="padding:3px 8px;color:#718096;white-space:nowrap;">${escHtml(_mlPeriodWithTime(c.period))}</td>` : ''}
     </tr>`).join('')}</tbody>
   </table>`;
 }
@@ -24420,7 +24470,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       ${isAdmin ? `<td style="padding:7px 10px;"><button class="btn btn-danger btn-sm" onclick="window._mlDeleteRecord('${escHtml(l.id)}')">刪除</button></td>` : ''}
     </tr>
     <tr id="ml-course-${escHtml(l.id)}" style="display:none;background:#f7fffe;">
-      <td colspan="99" style="padding:8px 20px 12px;">${_mlCourseDetailHtml(l)}</td>
+      <td colspan="99" style="padding:7px 10px 12px;">${_mlCourseDetailHtml(l)}</td>
     </tr>`;
   }).join('')
     : `<tr><td colspan="99" style="text-align:center;padding:24px;color:#a0aec0;">尚無紀錄</td></tr>`;
