@@ -20245,23 +20245,25 @@ function renderLeaveApplyPage() {
             <select id="la-kind" class="field-select" style="min-width:130px;" onchange="_laKindChange()">
               <option value="leave">請假 / 補休</option>
               <option value="overtime">加班登記</option>
+              <option value="manual">手動打卡</option>
             </select></div>
           <div id="la-type-row"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">假別</label>
             <select id="la-type" class="field-select" style="min-width:170px;" onchange="_laUpdateRemaining()">${typeOpts}</select></div>
-          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">開始（日期／時間）</label>
+          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;"><span id="la-from-label">開始（日期／時間）</span></label>
             <div style="display:flex;gap:4px;">
               <input id="la-from" type="date" class="field-input" value="${today}" onchange="_laAutoHours()">
               <input id="la-from-time" type="time" class="field-input" style="width:110px;" onchange="_laAutoHours()">
             </div></div>
-          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">結束（日期／時間）</label>
+          <div id="la-end-row"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">結束（日期／時間）</label>
             <div style="display:flex;gap:4px;">
               <input id="la-to" type="date" class="field-input" value="${today}" onchange="_laAutoHours()">
               <input id="la-to-time" type="time" class="field-input" style="width:110px;" onchange="_laAutoHours()">
             </div></div>
-          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">時數（小時）</label>
+          <div id="la-hours-row"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">時數（小時）</label>
             <input id="la-hours" type="number" min="0.5" step="0.5" class="field-input" style="width:110px;" placeholder="如 8"></div>
         </div>
-        <div style="font-size:.76rem;color:#a0aec0;margin-top:6px;">填入起訖時間可自動換算時數（例：08:00–12:00 = 4 小時）；亦可手動調整時數。整天請假可只填日期。</div>
+        <div id="la-hint-hours" style="font-size:.76rem;color:#a0aec0;margin-top:6px;">填入起訖時間可自動換算時數（例：08:00–12:00 = 4 小時）；亦可手動調整時數。整天請假可只填日期。</div>
+        <div id="la-hint-manual" style="display:none;font-size:.76rem;color:#a0aec0;margin-top:6px;">補登一筆打卡紀錄（如忘記簽到／簽退）。系統會依當日打卡時間先後自動判定簽到／簽退，如同打卡機。手動補登的紀錄會標記為「手動」供督導稽核。</div>
         <div id="la-remaining" style="font-size:.82rem;color:#2b6cb0;margin-top:10px;"></div>
         <div style="margin-top:10px;"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">事由</label>
           <textarea id="la-reason" class="field-input" rows="2" style="width:100%;max-width:520px;" placeholder="請簡述事由"></textarea></div>
@@ -20299,9 +20301,20 @@ function renderLeaveApplyPage() {
 
 function _laKindChange() {
   const kind = document.getElementById('la-kind')?.value || 'leave';
-  const typeRow = document.getElementById('la-type-row');
-  if (typeRow) typeRow.style.display = kind === 'overtime' ? 'none' : '';
-  _laUpdateRemaining();
+  const isManual = kind === 'manual';
+  const _show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+  _show('la-type-row', kind === 'leave');
+  _show('la-end-row', !isManual);       // 手動打卡只有單一時間點
+  _show('la-hours-row', !isManual);     // 手動打卡不需時數
+  _show('la-hint-hours', !isManual);
+  _show('la-hint-manual', isManual);
+  const fromLabel = document.getElementById('la-from-label');
+  if (fromLabel) fromLabel.textContent = isManual ? '打卡時間（日期／時間）' : '開始（日期／時間）';
+  const submitBtn = document.getElementById('la-submit-btn');
+  if (submitBtn) submitBtn.textContent = isManual ? '新增打卡' : '送出申請';
+  const rem = document.getElementById('la-remaining');
+  if (rem && isManual) { rem.textContent = ''; }
+  else _laUpdateRemaining();
 }
 
 // 依起訖日期＋時間自動換算時數（兩者皆填時數才自動帶入，使用者仍可手動覆蓋）
@@ -20366,6 +20379,7 @@ function _laMsg(type, text) {
 async function submitLeave() {
   if (_leaveSubmitting) return; // 防重複提交
   const kind = document.getElementById('la-kind')?.value || 'leave';
+  if (kind === 'manual') { await submitManualPunch(); return; }
   const fromDate = document.getElementById('la-from')?.value;
   const toDate = document.getElementById('la-to')?.value || fromDate;
   const fromTime = document.getElementById('la-from-time')?.value || '';
@@ -20443,6 +20457,57 @@ async function submitLeave() {
     showToast('送出失敗：' + e.message, 'error');
   }
   _updateLeaveBadges();
+}
+
+// 手動補登打卡：只有單一時間點，寫入 attendanceData（與打卡機同一資料）；簽到/簽退由當日時間先後自動判定
+async function submitManualPunch() {
+  if (_leaveSubmitting) return;
+  const date = document.getElementById('la-from')?.value;
+  const time = document.getElementById('la-from-time')?.value || '';
+  const reason = (document.getElementById('la-reason')?.value || '').trim();
+  if (!date) { alert('請選擇打卡日期'); return; }
+  if (!time) { alert('請選擇打卡時間'); return; }
+  const when = new Date(`${date}T${time}`);
+  if (isNaN(when.getTime())) { alert('打卡時間格式不正確'); return; }
+  if (when.getTime() > Date.now() + 60000) { alert('打卡時間不可為未來時間'); return; }
+
+  _leaveSubmitting = true;
+  const btn = document.getElementById('la-submit-btn');
+  const _btnText = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'wait'; btn.textContent = '新增中…'; }
+  _laMsg('info', '⏳ 新增打卡中…');
+
+  const record = {
+    id: 'att_' + currentUser.email + '_' + when.getTime(),
+    email: currentUser.email,
+    name: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
+    type: 'punch',
+    timestamp: when.toISOString(),
+    date: _fmtDate(when),
+    manual: true,
+    manualBy: currentUser.email,
+    manualAt: new Date().toISOString(),
+    ...(reason ? { manualNote: reason } : {}),
+  };
+  if (!attendanceData || !Array.isArray(attendanceData.records)) attendanceData = { records: [] };
+  attendanceData.records.push(record);
+  const jobId = bgJobAdd('手動補登打卡');
+  try {
+    await saveAttendance();
+    auditLog('手動補登打卡', null, null, `${record.name || currentUser.email} ${date} ${time}${reason ? '（' + reason + '）' : ''}`);
+    bgJobDone(jobId);
+    _leaveSubmitting = false;
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; btn.textContent = _btnText; }
+    showToast('✅ 已補登打卡', 'success');
+    _laMsg('success', `✅ 已補登打卡：${date} ${time}`);
+  } catch (e) {
+    attendanceData.records.pop();
+    bgJobFail(jobId, e.message);
+    _leaveSubmitting = false;
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; btn.textContent = _btnText; }
+    _laMsg('error', '補登失敗：' + e.message);
+    showToast('補登失敗：' + e.message, 'error');
+  }
 }
 
 async function cancelLeave(id) {
@@ -20523,6 +20588,7 @@ function renderClockPage() {
                     <span style="font-size:1.1rem;">${icon}</span>
                     <span style="font-weight:600;color:#2d3748;min-width:36px;">${text}</span>
                     <span style="color:#4a5568;font-size:.9rem;">${_fmtTime(r.timestamp)}</span>
+                    ${r.manual ? '<span style="font-size:.7rem;color:#6b46c1;background:#e9d8fd;border-radius:4px;padding:0 5px;">手動</span>' : ''}
                     <span style="margin-left:auto;display:flex;align-items:center;gap:6px;">${locTag}${updBtn}</span>
                   </div>${hint}${origHint}
                 </div>`;
@@ -20767,9 +20833,9 @@ function renderAttendancePage() {
                 const { icon, text, color } = _punchLabel(r, records);
                 return `<tr>
                 <td>${r.name || r.email}</td>
-                <td><span style="font-weight:600;color:${color}">${icon} ${text}</span></td>
+                <td><span style="font-weight:600;color:${color}">${icon} ${text}</span>${r.manual ? ' <span style="font-size:.7rem;color:#6b46c1;background:#e9d8fd;border-radius:4px;padding:0 5px;" title="手動補登">手動</span>' : ''}</td>
                 <td>${new Date(r.timestamp).toLocaleString('zh-TW')}</td>
-                <td>${r.lat ? `<button class="btn btn-secondary btn-sm" onclick="renderAttendanceMapPoint(${r.lat},${r.lng})">📍</button> ${_isNearCampus(r.lat,r.lng)?'<span style="color:#276749">校區內</span>':'<span style="color:#c53030">校區外</span>'}${r.accuracyLow&&!r.locationUpdated?' <span style="color:#c05621" title="定位精度不足">⚠️</span>':''}${r.locationUpdated?` <span style="font-size:.72rem;color:#3182ce;">✏️已更新</span>`:''}${r.locationUpdated&&r.origLat!=null?`<br><span style="font-size:.72rem;color:#a0aec0;">原: ${_isNearCampus(r.origLat,r.origLng)?'校區內':'校區外'}</span>`:''}` : '—'}</td>
+                <td>${r.manual ? `<span style="color:#6b46c1;font-size:.8rem;">手動補登${r.manualNote ? '：' + escHtml(r.manualNote) : ''}</span>` : r.lat ? `<button class="btn btn-secondary btn-sm" onclick="renderAttendanceMapPoint(${r.lat},${r.lng})">📍</button> ${_isNearCampus(r.lat,r.lng)?'<span style="color:#276749">校區內</span>':'<span style="color:#c53030">校區外</span>'}${r.accuracyLow&&!r.locationUpdated?' <span style="color:#c05621" title="定位精度不足">⚠️</span>':''}${r.locationUpdated?` <span style="font-size:.72rem;color:#3182ce;">✏️已更新</span>`:''}${r.locationUpdated&&r.origLat!=null?`<br><span style="font-size:.72rem;color:#a0aec0;">原: ${_isNearCampus(r.origLat,r.origLng)?'校區內':'校區外'}</span>`:''}` : '—'}</td>
               </tr>`;}).join('')}
         </tbody>
       </table>
@@ -21952,6 +22018,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '差勤：新增「手動打卡」補登（單一時間點，簽到/簽退自動判定）', isProd: false, items: [
+      item('新功能', '差勤申請頁類型新增「手動打卡」：設定日期＋時間即可補登一筆打卡（如忘記簽到／簽退）'),
+      item('新功能', '如同打卡機只有單一時間點，簽到／簽退由當日打卡時間先後自動判定，無需選擇'),
+      item('稽核', '手動補登的紀錄標記為「手動」（含補登人、時間、備註），於打卡頁與差勤管理清楚顯示並寫入稽核日誌'),
+    ]},
     { date: '2026-07-02', title: '差勤：假別可完整編輯（名稱／額度／申請期間）', isProd: false, items: [
       item('新功能', '差勤管理 → 假別與額度：每個假別可直接編輯名稱、是否扣抵、預設額度（如調整暑休額度），按「儲存」即生效'),
       item('新功能', '假別新增「申請期間」欄位（MM-DD ~ MM-DD）；暑休預設 07-01 ~ 08-31，僅該期間可申請，支援跨年區間（如 12-01 ~ 01-31）'),
