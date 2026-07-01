@@ -5243,7 +5243,6 @@ async function afterLogin() {
 
     // ── 補充 side effects ──
     scheduleHourlyCalendarSync();
-    if (typeof renderIssuesBadge === 'function') renderIssuesBadge();
     // 二重防護：前端再次確認此帳號存在於 config.json 的授權名單
     // （防禦 GAS 白名單被繞過，或「殭屍帳號」殘留在 config.json 中）
     if (currentUser.email !== BOOTSTRAP_ADMIN_EMAIL && !configData?.users?.[currentUser.email]) {
@@ -5253,6 +5252,8 @@ async function afterLogin() {
       return;
     }
     resolveUserRole();
+    // 許願池燈號：需在 resolveUserRole 之後才知道是否 admin，過濾邏輯才正確
+    if (typeof renderIssuesBadge === 'function') renderIssuesBadge();
     // 檢查帳號是否停用（bootstrap admin 不受限制）
     if (configData?.users?.[currentUser.email]?.disabled && currentUser.email !== BOOTSTRAP_ADMIN_EMAIL) {
       hideLoading();
@@ -21808,6 +21809,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-01', title: '身心調適假列印新增主責/個管欄位', isProd: false, items: [
+      item('新功能', '列印通知單的個案案號那行新增「主責」與「個管」欄位，12pt 字級並列顯示'),
+    ]},
+    { date: '2026-07-01', title: '修正：許願池燈號啟動後不顯示，需點選才顯示', isProd: false, items: [
+      item('修復', '啟動時 renderIssuesBadge() 呼叫時機過早，currentRole/extraRole 尚未由 resolveUserRole() 設定，導致管理者身分被誤判為非管理者而過濾掉大部分燈號；改為在 resolveUserRole() 之後呼叫'),
+    ]},
     { date: '2026-07-01', title: '身心調適假列表顯示請假節次摘要（含 fallback）', isProd: false, items: [
       item('改善', '身心調適假管理列表的「課程」欄位下方新增節次摘要（如「第 2、3、4 節」），不需展開就能看到請了哪幾節'),
       item('改善', '舊資料若無節次資訊，自動 fallback 顯示課名清單（如「國文、英文」）'),
@@ -24591,8 +24598,17 @@ function mlPrintNotices() {
     const days = totalDays(recs);
     const maxRisk = Math.max(0, ...recs.map(l => _mlMatchKeywords(l.reason).maxLevel));
     const tagHtml = isConsec ? tagBadge('consec','連請三天') : days >= 3 ? tagBadge('accum',`累計 ${days} 天`) : '';
+    // 主責 + 個管（列印用，顯示姓名）
+    const counselorLbl = mc ? (formatCounselorLabel(mc.counselorEmail) || mc.counselorName || mc.counselorText || '—') : '—';
+    const managers = mc ? Object.entries(configData?.users || {})
+      .filter(([email, info]) => (info.allowedCases || []).includes(mc.id))
+      .map(([email, info]) => info.name || email) : [];
+    const managersLbl = managers.length ? managers.join('、') : '—';
+    const staffLine = mc
+      ? `<span style="font-size:12pt;font-weight:400;margin-left:8px;color:#4a5568;">主責：${escHtml(counselorLbl)}　個管：${escHtml(managersLbl)}</span>`
+      : '';
     const headerId = caseNum
-      ? `${escHtml(caseNum)}（${escHtml(anonName(name))} / ${escHtml(sid)}）`
+      ? `${escHtml(caseNum)}（${escHtml(anonName(name))} / ${escHtml(sid)}）${staffLine}`
       : `${escHtml(anonName(name))} / ${escHtml(sid)}`;
     const sorted = [...recs].sort((a,b) => (_mlParseDateRange(a).from||'').localeCompare(_mlParseDateRange(b).from||''));
     const rows = sorted.map(l =>
