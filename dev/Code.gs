@@ -66,6 +66,7 @@ function doPost(e) {
       case 'countMentalLeavesUnprocessed':   result = countMentalLeavesUnprocessed_(ctx); break;
       case 'submitUserApplication': result = submitUserApplication_({ ...params, submittedByEmail: userEmail, ctx }); break;
       case 'startupBatch':         result = startupBatch_(params, ctx); break;
+      case 'casesUpsert':          result = casesUpsert_(params, ctx); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
     return jsonResp_(result);
@@ -1179,4 +1180,52 @@ function submitUserApplication_(params) {
     throw new Error('儲存申請失敗（' + filePath + '）：' + writeErr.message);
   }
   return { ok: true };
+}
+
+// ── cases-hot.json / cases-index.json 併發安全的 upsert（LockService）──
+// 前端傳 { path, upserts:[{id,...完整entry}], removes:[id...] }，GAS 在 lock 內做 RMW。
+// 檔案結構固定：{ updatedAt, cases:[{ id, ... }] }
+function casesUpsert_({ path, upserts, removes }, ctx) {
+  if (!path) throw new Error('casesUpsert: path required');
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    let fileId = null;
+    let data = { updatedAt: '', cases: [] };
+    try {
+      fileId = resolvePathToId_(path, ctx);
+      const res = UrlFetchApp.fetch(
+        'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+        { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+      );
+      if (res.getResponseCode() < 400) {
+        try { data = JSON.parse(res.getContentText()); } catch (_) { data = { updatedAt: '', cases: [] }; }
+        if (!data || !Array.isArray(data.cases)) data = { updatedAt: '', cases: [] };
+      }
+    } catch (_) { /* 檔不存在，稍後建立 */ }
+
+    const pos = {};
+    data.cases.forEach(function (c, i) { if (c && c.id) pos[c.id] = i; });
+    (upserts || []).forEach(function (entry) {
+      if (!entry || !entry.id) return;
+      if (pos[entry.id] !== undefined) data.cases[pos[entry.id]] = entry;
+      else { pos[entry.id] = data.cases.length; data.cases.push(entry); }
+    });
+    const rmSet = {};
+    (removes || []).forEach(function (id) { if (id) rmSet[id] = true; });
+    if (Object.keys(rmSet).length) {
+      data.cases = data.cases.filter(function (c) { return c && c.id && !rmSet[c.id]; });
+    }
+    data.updatedAt = new Date().toISOString();
+
+    if (fileId) {
+      driveUpdateContent_(fileId, data);
+    } else {
+      const pn = resolvePathToParentAndName_(path, ctx);
+      driveUpload_(pn.fileName, data, pn.parentId);
+    }
+    return { ok: true, count: data.cases.length, updatedAt: data.updatedAt };
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
 }

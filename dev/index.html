@@ -3448,6 +3448,7 @@ const BOOTSTRAP_ADMIN_EMAIL = 'linkinlol528101@gmail.com'; // 永久管理者備
 const CONFIG_FILE     = 'config.json';
 const CASES_INDEX     = 'cases/index.json'; // 舊格式（升級後僅作備份）
 const CASES_INDEX_FILE = 'cases-index.json'; // 輕量索引（相對 cases/），Hot/Cold 分層載入用
+const CASES_HOT_FILE   = 'cases-hot.json';   // 本學期開案完整資料（相對 cases/），啟動快路徑
 const CASES_MANIFEST  = 'cases/manifest.json';
 const CHUNK_SIZE      = 20;
 const AUDIT_LOG_FILE  = 'audit_log.json';
@@ -3778,7 +3779,9 @@ let configData   = null;   // 完整 config.json 內容
 let casesData    = [];
 let casesManifest = { chunks: [] };
 let _casesIndexCache = null; // cases-index.json 記憶體快取 { updatedAt, cases:[] }
+let _casesHotCache   = null; // cases-hot.json 記憶體快取 { updatedAt, cases:[完整] }
 let _clockOnlyMode = false;  // ?page=clock 快速啟動時為 true；使用者離開打卡頁時觸發完整載入
+let _bulkLoadedAllOnce = false; // 已 bulk load 過所有 cold cases（重頁面用）
 function currentSemesterPrefix() {
   const now = new Date();
   const rocYear = now.getFullYear() - 1911;
@@ -5588,21 +5591,25 @@ async function loadCases() {
   setAlert('cases-alert', 'info', '');
   _setCasesLoadingProgress(5, '載入個案資料…');
   _syslog('info', '開始載入個案資料');
+  _bulkLoadedAllOnce = false; // 每次 loadCases 重置 bulk load 快取
   try {
     let manifest = null;
     let fileMap  = null;
     let fileTimesMap = null;
     let indexData = null;
+    let hotData   = null;
 
-    // 嘗試批次取得 cases 資料夾所有檔案 ID（減少 API 呼叫次數）+ 並行讀 manifest / cases-index
+    // 嘗試批次取得 cases 資料夾所有檔案 ID（減少 API 呼叫次數）+ 並行讀 manifest / cases-index / cases-hot
     try {
       ({ map: fileMap, fileTimes: fileTimesMap } = await getCasesFolderFileMap());
       const manifestId = fileMap.get('manifest.json');
       const indexId    = fileMap.get(CASES_INDEX_FILE);
-      _syslog('debug', `fileMap 取得：${fileMap.size} 個檔案，manifest ${manifestId ? '找到' : '未找到'}，index ${indexId ? '找到' : '未找到'}`);
-      [manifest, indexData] = await Promise.all([
+      const hotId      = fileMap.get(CASES_HOT_FILE);
+      _syslog('debug', `fileMap 取得：${fileMap.size} 個檔案，manifest ${manifestId?'找到':'未找到'}，index ${indexId?'找到':'未找到'}，hot ${hotId?'找到':'未找到'}`);
+      [manifest, indexData, hotData] = await Promise.all([
         manifestId ? driveReadJsonById(manifestId) : Promise.resolve(null),
         indexId ? driveReadJsonById(indexId).catch(e => { _syslog('warn', `cases-index 讀取失敗：${e.message}`); return null; }) : Promise.resolve(null),
+        hotId    ? driveReadJsonById(hotId).catch(e => { _syslog('warn', `cases-hot 讀取失敗：${e.message}`); return null; }) : Promise.resolve(null),
       ]);
     } catch (e) {
       _syslog('warn', `getCasesFolderFileMap 失敗，改用路徑方式：${e.message}`);
@@ -5618,9 +5625,29 @@ async function loadCases() {
 
     const hasManifest = manifest && Array.isArray(manifest.chunks) && manifest.chunks.length > 0;
     const hasIndex    = indexData && Array.isArray(indexData.cases) && indexData.cases.length > 0;
+    const hasHot      = hotData   && Array.isArray(hotData.cases);
 
-    if (hasManifest && hasIndex) {
-      // ── Hot/Cold 兩層載入：先以輕量 index 立即渲染，再只載入含未封存個案的 hot chunks ──
+    if (hasManifest && hasIndex && hasHot) {
+      // ── 分支 0（最快）：index + hot 都有 → 只讀 2 個檔就能完整運作本學期 ──
+      casesManifest = manifest;
+      _casesIndexCache = indexData;
+      _casesHotCache = hotData;
+      const deletedSet = new Set(manifest.deletedIds || []);
+      const hotById = new Map(hotData.cases.filter(c => c?.id && !deletedSet.has(c.id)).map(c => [c.id, c]));
+      casesData = indexData.cases
+        .filter(c => c?.id && !deletedSet.has(c.id))
+        .map(c => {
+          const full = hotById.get(c.id);
+          if (full) return { ...full, _fullLoaded: true, _indexOnly: false };
+          return { ...c, _indexOnly: true };
+        });
+      const _hot = casesData.filter(c => c._fullLoaded).length;
+      const _cold = casesData.length - _hot;
+      _syslog('info', `分支 0（快路徑）：hot ${_hot} / cold ${_cold}，合計 ${casesData.length}`);
+      console.info(`[Hot/Cold] 分支 0（快路徑）：hot=${_hot}（本學期完整資料）・cold=${_cold}（僅索引，點開再載）・合計 ${casesData.length}`);
+      _setCasesLoadingProgress(90);
+    } else if (hasManifest && hasIndex) {
+      // ── 分支 1：index 有但 hot 缺 → 走原 Hot/Cold（載入 hot chunks），完成後建 cases-hot.json ──
       casesManifest = manifest;
       _casesIndexCache = indexData;
       const deletedSet = new Set(manifest.deletedIds || []);
@@ -5636,7 +5663,7 @@ async function loadCases() {
       const _coldCount = _idxCases.filter(c => c.archived).length;
       const _hotCount  = _idxCases.length - _coldCount;
       _syslog('info', `hot chunks：${hotChunks.length} / ${manifest.chunks.length}`);
-      console.info(`[Hot/Cold] hot chunks：${hotChunks.length} / ${manifest.chunks.length}　|　個案 hot(未封存)：${_hotCount}・cold(封存)：${_coldCount}・合計 ${_idxCases.length}`);
+      console.info(`[Hot/Cold] 分支 1：hot chunks ${hotChunks.length} / ${manifest.chunks.length}　|　個案 hot(未封存)：${_hotCount}・cold(封存)：${_coldCount}・合計 ${_idxCases.length}`);
       _setCasesLoadingProgress(50, `載入使用中個案（${hotChunks.length} 區塊）…`);
       const loadOrder = [...hotChunks].sort((a, b) => b.localeCompare(a));
       const fullCases = await _fetchCasesChunks(loadOrder, fileMap, fileTimesMap, deletedSet, { progressBase: 50, progressSpan: 40 });
@@ -5649,6 +5676,8 @@ async function loadCases() {
       });
       // 防呆：index 缺漏但 chunk 有的個案補進來
       fullById.forEach(full => casesData.push({ ...full, _fullLoaded: true }));
+      // 建立 cases-hot.json 供下次啟動走分支 0
+      _saveCasesHot().catch(e => _syslog('warn', `建立 cases-hot 失敗：${e.message}`));
     } else if (hasManifest) {
       // ── 無 index（首次部署 / index 遺失）：全載入後自動建立 index ──
       casesManifest = manifest;
@@ -5667,6 +5696,7 @@ async function loadCases() {
       });
       casesData = fullCases.map(c => ({ ...c, _fullLoaded: true }));
       _saveCasesIndex().catch(e => _syslog('warn', `建立 cases-index 失敗：${e.message}`));
+      _saveCasesHot().catch(e => _syslog('warn', `建立 cases-hot 失敗：${e.message}`));
     } else {
       // manifest 為空或不存在，先嘗試從殘存 chunk 檔自動恢復
       const chunkEntries = fileMap
@@ -5721,9 +5751,12 @@ async function loadCases() {
           casesManifest = { chunks: [] };
         }
       }
-      // 此分支載入的都是完整資料；標記後建立 cases-index 供下次 Hot/Cold 啟動
+      // 此分支載入的都是完整資料；標記後建立 cases-index 與 cases-hot 供下次快路徑啟動
       casesData.forEach(c => { c._fullLoaded = true; });
-      if (casesData.length > 0) _saveCasesIndex().catch(e => _syslog('warn', `建立 cases-index 失敗：${e.message}`));
+      if (casesData.length > 0) {
+        _saveCasesIndex().catch(e => _syslog('warn', `建立 cases-index 失敗：${e.message}`));
+        _saveCasesHot().catch(e => _syslog('warn', `建立 cases-hot 失敗：${e.message}`));
+      }
     }
     _syslog('success', `個案載入完成：${casesData.length} 筆`);
     renderCases();
@@ -18784,6 +18817,10 @@ async function _batchWriteChunks(affectedIds, onProgress) {
     }
   }
   if (manifestChanged) await driveSaveJsonInCases('manifest.json', casesManifest);
+  // 寫入前 patch lastActivityAt（衍生欄位）
+  chunks.forEach(name => {
+    (chunkMap[name] || []).forEach(c => { if (c && c.id) c.lastActivityAt = _computeLastActivityAt(c); });
+  });
   let done = 0;
   const BATCH = 3;
   for (let i = 0; i < chunks.length; i += BATCH) {
@@ -18793,8 +18830,9 @@ async function _batchWriteChunks(affectedIds, onProgress) {
       if (onProgress) onProgress(done, chunks.length);
     }));
   }
-  // 同步輕量索引
+  // 同步輕量索引與 hot 集合
   await _updateCasesIndexEntries([...affSet]);
+  await _updateCasesHotEntries([...affSet]);
 }
 
 // ── cases-index.json（Hot/Cold 分層載入用輕量索引）─────────────────
@@ -18815,6 +18853,7 @@ function _caseToIndexEntry(c) {
     grade: c.grade || '',
     openDate: c.openDate || '',
     updatedAt: c.updatedAt || '',
+    lastActivityAt: c.lastActivityAt || '',
     status: c.status || '',
     abType: c.abType || '',
     caseType: c.caseType || '',
@@ -18823,6 +18862,31 @@ function _caseToIndexEntry(c) {
       ? [...c.semesters]
       : [openDateToSemPrefix(c.openDate)].filter(Boolean),
   };
+}
+
+// 從 case 掃描 records / psychiatristRecords / events，取最新非刪除項目的 date；
+// 保守 fallback 到 c.updatedAt。用於索引展示與未來「殭屍案」偵測。
+function _computeLastActivityAt(c) {
+  const dates = [];
+  (c.records || []).forEach(r => { if (r && r.date && !r.deleted) dates.push(r.date); });
+  (c.psychiatristRecords || []).forEach(p => { if (p && p.date && !p.deleted) dates.push(p.date); });
+  (c.events || []).forEach(ev => { if (ev && ev.date && !ev.deleted) dates.push(ev.date); });
+  if (!dates.length) return c.updatedAt || c.openDate || '';
+  dates.sort();
+  return dates[dates.length - 1];
+}
+
+// 判定 case 是否 hot（本學期開案、未結案、未封存、未刪除）
+function _isHotCase(c) {
+  if (!c || !c.id) return false;
+  if (c.archived || c.deleted) return false;
+  const cur = currentSemesterPrefix();
+  const sems = (Array.isArray(c.semesters) && c.semesters.length)
+    ? c.semesters : [openDateToSemPrefix(c.openDate)].filter(Boolean);
+  if (!sems.includes(cur)) return false;
+  const st = (c.semesterStatus && c.semesterStatus[cur]) || 'active';
+  if (st === 'closed') return false;
+  return true;
 }
 
 // 從目前 casesData 全量重建並寫入 cases-index.json（遷移／首建時用）
@@ -18836,30 +18900,77 @@ async function _saveCasesIndex() {
   _syslog('info', `cases-index 已建立：${cases.length} 筆`);
 }
 
-// patch 指定個案的 index entry（讀最新版→patch→寫回，避免覆蓋他人變更）
+// 從目前 casesData 全量重建並寫入 cases-hot.json（遷移／首建時用）
+// 僅收 hot 個案完整資料；_indexOnly 個案跳過（避免覆蓋）
+async function _saveCasesHot() {
+  const cases = casesData
+    .filter(c => c?.id && !c._indexOnly && _isHotCase(c))
+    .map(c => { const { _indexOnly, _fullLoaded, ...rest } = c; return rest; });
+  _casesHotCache = { updatedAt: new Date().toISOString(), cases };
+  await driveSaveJsonInCases(CASES_HOT_FILE, _casesHotCache);
+  _syslog('info', `cases-hot 已建立：${cases.length} 筆`);
+}
+
+// patch 指定個案的 index entry；透過 GAS casesUpsert action（LockService 保護）
 // 不丟例外：index 為衍生快取，失敗僅記 log，下次完整載入會重建
 async function _updateCasesIndexEntries(ids) {
   const idSet = [...new Set((ids || []).filter(Boolean))];
   if (!idSet.length) return;
+  const delSet = new Set(casesManifest?.deletedIds || []);
+  const upserts = [];
+  const removes = [];
+  idSet.forEach(id => {
+    if (delSet.has(id)) { removes.push(id); return; }
+    const c = casesData.find(x => x.id === id);
+    if (!c) { removes.push(id); return; }
+    upserts.push(_caseToIndexEntry(c));
+  });
   try {
-    let data = null;
-    try { data = await driveReadJson(`cases/${CASES_INDEX_FILE}`); } catch (_) { data = null; }
-    if (!data || !Array.isArray(data.cases)) return; // index 尚未建立，待完整載入時 _saveCasesIndex 重建
-    const pos = new Map(data.cases.map((c, i) => [c.id, i]));
-    idSet.forEach(id => {
-      const c = casesData.find(x => x.id === id);
-      if (!c) return;
-      const entry = _caseToIndexEntry(c);
-      if (pos.has(id)) data.cases[pos.get(id)] = entry;
-      else data.cases.push(entry);
-    });
-    const delSet = new Set(casesManifest?.deletedIds || []);
-    if (delSet.size) data.cases = data.cases.filter(c => !delSet.has(c.id));
-    data.updatedAt = new Date().toISOString();
-    _casesIndexCache = data;
-    await driveSaveJsonInCases(CASES_INDEX_FILE, data);
+    await proxyCall('casesUpsert', { path: `cases/${CASES_INDEX_FILE}`, upserts, removes });
   } catch (e) {
     _syslog('warn', `更新 cases-index 失敗：${e.message}`);
+  }
+}
+
+// patch 指定個案的 hot entry；hot 判定 true 就 upsert 完整資料，false 就 remove
+// 透過 GAS casesUpsert action（LockService 保護）
+async function _updateCasesHotEntries(ids) {
+  const idSet = [...new Set((ids || []).filter(Boolean))];
+  if (!idSet.length) return;
+  const delSet = new Set(casesManifest?.deletedIds || []);
+  const upserts = [];
+  const removes = [];
+  idSet.forEach(id => {
+    if (delSet.has(id)) { removes.push(id); return; }
+    const c = casesData.find(x => x.id === id);
+    if (!c || c._indexOnly) { removes.push(id); return; } // 沒完整資料就不能 upsert
+    if (_isHotCase(c)) {
+      const { _indexOnly, _fullLoaded, ...rest } = c;
+      upserts.push(rest);
+    } else {
+      removes.push(id);
+    }
+  });
+  try {
+    await proxyCall('casesUpsert', { path: `cases/${CASES_HOT_FILE}`, upserts, removes });
+  } catch (e) {
+    _syslog('warn', `更新 cases-hot 失敗：${e.message}`);
+  }
+}
+
+// 進入重度分析頁時 bulk load 所有 cold cases 補回完整資料
+// 首次呼叫顯示 loading + toast；同一 session 再呼叫直接放行
+async function _ensureAllFullyLoaded(reason) {
+  if (_bulkLoadedAllOnce) return;
+  const coldIds = casesData.filter(c => c?.id && c._indexOnly && !c._fullLoaded).map(c => c.id);
+  if (!coldIds.length) { _bulkLoadedAllOnce = true; return; }
+  showLoading(`${reason || '分析頁載入中'}：補載入 ${coldIds.length} 筆封存/舊學期個案…`);
+  try {
+    await _ensureFullCases(coldIds);
+    _bulkLoadedAllOnce = true;
+    showToast(`已載入 ${coldIds.length} 筆歷史個案完整資料，本次工作階段不再重載`, 'success');
+  } finally {
+    hideLoading();
   }
 }
 
@@ -19036,6 +19147,11 @@ async function saveCasesChunks(...args) {
     }
   }
   if (manifestChanged) await driveSaveJsonInCases('manifest.json', casesManifest);
+  // 寫入前 patch lastActivityAt（衍生欄位）
+  caseIds.forEach(id => {
+    const c = casesData.find(x => x.id === id);
+    if (c) c.lastActivityAt = _computeLastActivityAt(c);
+  });
   let done = 0;
   // 逐批處理（每批 3 個），避免並發過多導致 Apps Script CORS/rate-limit 錯誤
   const BATCH = 3;
@@ -19058,8 +19174,9 @@ async function saveCasesChunks(...args) {
       if (onProgress) onProgress(done, chunkNames.length);
     }));
   }
-  // 同步輕量索引（封存個案於列表僅靠此資料顯示；失敗不影響主寫入）
+  // 同步輕量索引與 hot 集合（衍生檔，失敗不影響主寫入）
   await _updateCasesIndexEntries(caseIds);
+  await _updateCasesHotEntries(caseIds);
 }
 
 // 將當前 DRIVE_FOLDER_ID 內的所有檔案 / 子資料夾搬移到指定的共用雲端硬碟資料夾
@@ -21025,7 +21142,9 @@ function auditToggleCol(n) {
 let _statsTab    = 'overview';
 let _statsSvcSem = null;
 
-function renderStats() {
+async function renderStats() {
+  // 統計頁需迭代所有 case 的 records/psychiatristRecords；補載入封存/舊學期完整資料
+  await _ensureAllFullyLoaded('統計分析');
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   const visible = isAdmin
     ? casesData
@@ -21672,6 +21791,15 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-01', title: 'Hot/Cold Phase 2：本學期開案完整資料集中，啟動 66 chunk → 2 檔案', isProd: false, items: [
+      item('效能', '新增 cases/cases-hot.json：本學期開案（未結案、未封存、未刪除）的完整資料集中一檔。啟動時只需讀 cases-index.json + cases-hot.json，跳過所有 chunk 讀取'),
+      item('效能', '啟動時間預估：66 chunk reads → 2 file reads，從 5-10s 降至 2-3s；GAS 呼叫次數從 66+ 降至 2'),
+      item('併發安全', 'GAS 新增 casesUpsert action（LockService 保護）：cases-hot.json 與 cases-index.json 的 patch 寫入改由 GAS 端在 lock 內做 RMW，避免多人同時寫入時互相覆蓋'),
+      item('自動同步', 'saveCasesChunks / _batchWriteChunks 尾端自動同步 cases-hot.json：case 進入 hot（新開/重開/解封）自動加入，退出 hot（結案/封存/刪除）自動移除'),
+      item('衍生欄位', '每次寫入前自動計算並存入 lastActivityAt（掃 records/psychiatristRecords/events 找最新日期）；index 加此欄位供未來「殭屍案」偵測用'),
+      item('重頁面 defensive', '進入統計頁 / 精神科頁 / 學期批次刪除時，自動 bulk 補載封存與舊學期個案完整資料（首次進入顯示 loading，同工作階段不再重載）'),
+      item('打卡模式改善', '?page=clock 快速啟動後，點選其他 nav（如個案列表）時自動觸發完整 INFOSYS 載入（原本會被鎖在打卡頁）'),
+    ]},
     { date: '2026-07-01', title: '修正：批次解封／編輯封存個案不再遺失記錄', isProd: false, items: [
       item('修復', 'Hot/Cold 分層載入下，對「封存個案（cold）」執行批次解封或任何寫入時，寫入前會先從 IndexedDB／Drive 補回完整資料，避免以輕量索引覆蓋 Drive 上的晤談紀錄、附件、精神科紀錄等內容'),
       item('修復', '解封相關函式的內部旗標統一改為顯式 archived=false（原本使用 delete 會與 cold case 補資料流程產生衝突）'),
@@ -27064,6 +27192,8 @@ async function confirmDeleteCaseFromAdmin(caseId) {
 }
 
 async function openSemesterDeleteModal() {
+  // 破壞性動作：確保所有 cold case 完整資料已載入，避免漏刪 records
+  await _ensureAllFullyLoaded('學期批次刪除');
   // 以「記錄日期」+ 「個案 openDate」雙軌分組
   const semMap = new Map();
   const ensureSem = (sem) => {
@@ -31915,7 +32045,9 @@ function clearPsyDraft() {
   _psyDraftKey = null;
 }
 
-function renderPsychiatryPage() {
+async function renderPsychiatryPage() {
+  // 精神科頁需迭代所有 case 的 psychiatristRecords；補載入封存/舊學期完整資料
+  await _ensureAllFullyLoaded('精神科紀錄');
   const q    = (document.getElementById('psychiatry-q')?.value    || '').trim().toLowerCase();
   const diag = (document.getElementById('psychiatry-diag')?.value || '');
   const tag  = (document.getElementById('psychiatry-tag')?.value  || '');
