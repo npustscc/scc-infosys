@@ -644,15 +644,60 @@ function fetchMentalLeavesInner_(ctx, opts) {
 
       var coursesArr = [];
       try {
-        var bodyText = plainBody || htmlBody.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
-        var fullCRe = /\d{4,6}\s+([^\d\s\n][^\n\r]{2,40}?)\s+(\d{4}\/\d{1,2}\/\d{1,2})\s+([一二三四五六日])\s+([\d,、]+)/g, cM;
-        while ((cM = fullCRe.exec(bodyText)) !== null) {
-          coursesArr.push({ name: cM[1].trim(), date: cM[2].trim(), weekday: cM[3].trim(), period: cM[4].trim() });
+        // ── 方法 1（優先）：直接解析 HTML 表格 <tr><td>×5</tr> ──
+        // 校務系統信件明細為 5 欄結構：流水號 / 課程名稱 / 請假日 / 星期 / 節次
+        // 以 <tr> 為單位切，每列取 5 個 <td>；標頭列 (第 1 欄非數字) 自動略過
+        if (htmlBody) {
+          var detailIdx = htmlBody.indexOf('請假明細');
+          var scanBody  = detailIdx >= 0 ? htmlBody.slice(detailIdx) : htmlBody;
+          var trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+          var trM;
+          while ((trM = trRe.exec(scanBody)) !== null) {
+            var cells = [];
+            var cellRe = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
+            var cellM;
+            while ((cellM = cellRe.exec(trM[1])) !== null) {
+              var txt = cellM[1]
+                .replace(/<[^>]+>/g, '')
+                .replace(/&nbsp;/g, ' ')
+                .replace(/&amp;/g,  '&')
+                .replace(/&lt;/g,   '<')
+                .replace(/&gt;/g,   '>')
+                .replace(/\s+/g, ' ')
+                .trim();
+              cells.push(txt);
+            }
+            // 只吃「至少 5 欄且第 1 欄為 4-6 位純數字流水號」的資料列
+            if (cells.length >= 5 && /^\d{4,6}$/.test(cells[0])) {
+              coursesArr.push({
+                name:    cells[1],
+                date:    cells[2],
+                weekday: cells[3],
+                period:  cells[4]
+              });
+            }
+          }
         }
+        // ── 方法 2（fallback）：純文字 regex（相容早期 plain text 格式）──
+        // 放寬 weekday：可接受「星期一/週一/禮拜一」等前綴；period 也接受 - 分隔
         if (!coursesArr.length) {
-          var cRe2 = /\d{4,6}\s+([^\d\s\n][^\n\r]+?)\s+\d{4}\/\d{1,2}\/\d{1,2}/g;
-          while ((cM = cRe2.exec(bodyText)) !== null) {
-            var cn = cM[1].trim();
+          var bodyText = plainBody || (htmlBody||'').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
+          var fullCRe = /(\d{4,6})\s+([^\d\s\n][^\n\r]{2,40}?)\s+(\d{4}\/\d{1,2}\/\d{1,2})\s+(?:星期|週|禮拜)?([一二三四五六日])\s+([\d,、\-]+)/g, cM;
+          while ((cM = fullCRe.exec(bodyText)) !== null) {
+            coursesArr.push({
+              name:    cM[2].trim(),
+              date:    cM[3].trim(),
+              weekday: cM[4].trim(),
+              period:  cM[5].trim()
+            });
+          }
+        }
+        // ── 方法 3（最終 fallback）：只抓課程名稱（節次資訊缺失時） ──
+        if (!coursesArr.length) {
+          var bodyText2 = plainBody || (htmlBody||'').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ');
+          var cRe2 = /\d{4,6}\s+([^\d\s\n][^\n\r]+?)\s+\d{4}\/\d{1,2}\/\d{1,2}/g, cM2;
+          while ((cM2 = cRe2.exec(bodyText2)) !== null) {
+            var cn = cM2[1].trim();
             if (cn) coursesArr.push({ name: cn });
           }
         }
@@ -661,7 +706,9 @@ function fetchMentalLeavesInner_(ctx, opts) {
           coursesArr.forEach(function(c) { if (!seen[c.name]) { seen[c.name] = true; uniq.push(c.name); } });
           course = uniq.join('；');
         }
-      } catch(e2) {}
+      } catch(e2) {
+        Logger.log('解析課程明細失敗：' + msgId + ' / ' + e2.message);
+      }
 
       if (!studentId && !name) return;
 
