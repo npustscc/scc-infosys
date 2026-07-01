@@ -19885,6 +19885,24 @@ function _dateInLeavePeriod(t, yyyymmdd) {
   const s = t.periodStart, e = t.periodEnd;
   return s <= e ? (md >= s && md <= e) : (md >= s || md <= e);
 }
+// 週期型假別「當前這次週期」的實際日期區間 [start,end]（YYYY-MM-DD），以 refDate（預設今天）為基準
+// 用於年度額度自動化：暑休 40hr 每年 7/1 自動回滿——已用時數只計本次週期內的申請，無需主動配額、無重複配風險
+function _leavePeriodWindow(t, refDate) {
+  if (!t || !_isValidMMDD(t.periodStart) || !_isValidMMDD(t.periodEnd)) return null;
+  const ref = refDate || _fmtDate(new Date());
+  const year = Number(ref.slice(0, 4));
+  const md = ref.slice(5);
+  const s = t.periodStart, e = t.periodEnd;
+  if (s <= e) return { start: `${year}-${s}`, end: `${year}-${e}` }; // 同年區間，如 07-01~08-31
+  // 跨年區間，如 12-01~01-31：ref 落在年初側時，週期起點為前一年
+  const startYear = (md >= s) ? year : year - 1;
+  return { start: `${startYear}-${s}`, end: `${startYear + 1}-${e}` };
+}
+// 週期型假別的年度標籤（如「2026 年暑休」），供 UI 顯示；非週期型回空字串
+function _leavePeriodYearLabel(t, refDate) {
+  const win = _leavePeriodWindow(t, refDate);
+  return win ? `${win.start.slice(0, 4)} 年${t.name}期間` : '';
+}
 
 // 取得某實習生某假別的額度（小時）：優先 per-user 設定，否則用假別預設
 function _leaveQuotaHours(email, leaveTypeId) {
@@ -19895,10 +19913,14 @@ function _leaveQuotaHours(email, leaveTypeId) {
 }
 
 // 已使用時數（approved + pending 皆視為已佔用，避免重複申請超額）
-function _leaveUsedHours(email, leaveTypeId, excludeId) {
+// 週期型假別（如暑休）只計「本次週期視窗」內的申請 → 額度每年自動刷新（年度額度自動化）
+function _leaveUsedHours(email, leaveTypeId, excludeId, refDate) {
+  const t = getLeaveType(leaveTypeId);
+  const win = t ? _leavePeriodWindow(t, refDate) : null;
   return (leavesData?.applications || [])
     .filter(a => a.email === email && a.leaveTypeId === leaveTypeId &&
-      (a.status === 'approved' || a.status === 'pending') && a.id !== excludeId)
+      (a.status === 'approved' || a.status === 'pending') && a.id !== excludeId &&
+      (!win || (a.fromDate >= win.start && a.fromDate <= win.end)))
     .reduce((s, a) => s + (Number(a.hours) || 0), 0);
 }
 
@@ -20209,7 +20231,7 @@ function renderLeaveTypesAdmin() {
           ? '<div style="color:#a0aec0;font-size:.9rem;">目前沒有扣抵型假別，請先於上方新增並勾選「扣抵額度」。</div>'
           : interns.length === 0
             ? '<div style="color:#a0aec0;font-size:.9rem;">目前沒有在任實習生。</div>'
-            : `<p style="font-size:.82rem;color:#718096;margin-bottom:12px;">未設定者沿用假別預設額度。修改後請按該列「儲存」。</p>
+            : `<p style="font-size:.82rem;color:#718096;margin-bottom:12px;">未設定者沿用假別預設額度。修改後請按該列「儲存」。<br>有申請期間的假別（如暑休）額度為<strong>年度制</strong>——「已用」只計本次期間，每年自動回滿，無需手動重配。</p>
                <div style="overflow-x:auto;">
                  <table class="data-table" style="min-width:480px;">
                    <thead><tr><th>實習生</th>${quotaHead}<th></th></tr></thead>
@@ -20466,7 +20488,9 @@ function _laUpdateRemaining() {
     el.innerHTML = `可用補休：<strong>${remaining}</strong> 小時（已認證加班 − 已用補休，含待審核佔用）` + periodTip;
   } else {
     const quota = _leaveQuotaHours(currentUser.email, typeId);
-    el.innerHTML = `剩餘額度：<strong>${remaining}</strong> / ${quota} 小時（含待審核佔用）` + periodTip;
+    const win = _leavePeriodWindow(t);
+    const scopeTip = win ? `<span style="color:#718096;font-weight:400;">（${_leavePeriodYearLabel(t)}，每年自動回滿）</span>` : '';
+    el.innerHTML = `剩餘額度：<strong>${remaining}</strong> / ${quota} 小時（含待審核佔用）${scopeTip}` + periodTip;
   }
   el.style.color = remaining <= 0 ? '#c53030' : '#2b6cb0';
 }
@@ -22121,6 +22145,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '差勤：暑休額度年度自動化（每年 7/1 自動回滿 40hr）', isProd: false, items: [
+      item('新功能', '有申請期間的假別（如暑休）額度改為年度制：「已用時數」只計本次期間內的申請，每年自動回滿，無需管理者手動重配、無重複配風險'),
+      item('新功能', '支援跨年期間（如寒休 12/1–1/31）正確歸屬同一年度視窗'),
+      item('改善', '申請頁顯示「（2026 年暑休期間，每年自動回滿）」；差勤管理額度表註明年度制'),
+    ]},
     { date: '2026-07-02', title: '個案載入：非管理者只下載自己有權檢視的個案（資料最小化）', isProd: true, items: [
       item('安全', '非管理者（主責/心理師/實習生）啟動時只完整下載自己主責、個管、初次晤談、未派案的個案；他人敏感晤談紀錄不再進入無權者瀏覽器'),
       item('效能', '啟動改為只載入「我的個案」所在區塊，下載量與記憶體大幅降低；主任/管理者維持載入全部'),
