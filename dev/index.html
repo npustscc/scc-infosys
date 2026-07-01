@@ -1168,6 +1168,9 @@
       <div class="nav-item active" data-nav-id="page-cases" onclick="showPage('page-cases', this)">
         <span class="icon">📋</span> 個案列表 <span class="nav-drag-handle">⠿</span>
       </div>
+      <div class="nav-item" id="nav-crisis-access-item" data-nav-id="page-crisis-access" onclick="showPage('page-crisis-access', this); renderCrisisAccessPage()" style="display:none;">
+        <span class="icon">🚨</span> 危機個案閱讀 <span class="nav-drag-handle">⠿</span>
+      </div>
       <div class="nav-item" data-nav-id="page-pending" onclick="showPage('page-pending', this); renderPendingList()">
         <span class="icon">📁</span> 不開案個案 <span class="nav-drag-handle">⠿</span>
       </div>
@@ -1829,6 +1832,12 @@
     <div id="page-changelog" class="page">
       <div class="page-title">版本更新紀錄</div>
       <div id="changelog-body"></div>
+    </div>
+
+    <!-- 危機個案閱讀申請 -->
+    <div id="page-crisis-access" class="page">
+      <div class="page-title">危機個案閱讀</div>
+      <div id="crisis-access-body"></div>
     </div>
 
     <!-- 差勤打卡 -->
@@ -3377,6 +3386,7 @@
         <button class="btn btn-sm" id="todos-batch-delete-btn" style="display:none;" onclick="_batchArchiveTodos()" data-tip="將選取的待辦事項移至封存列表">封存選取</button>
         <button class="btn btn-sm" id="todos-show-archived-btn" onclick="_toggleTodosArchived()" style="background:#f7fafc;border-color:#cbd5e0;color:#4a5568;" data-tip="查看已封存的待辦事項">📦 封存紀錄</button>
       </div>
+      <div id="todos-access-audit-section"></div>
       <div id="todos-ml-notif-section"></div>
       <div id="todos-assignment-section"></div>
       <div id="todos-unclosed-summary"></div>
@@ -3468,6 +3478,9 @@ const CASES_HOT_FILE   = 'cases-hot.json';   // 本學期開案完整資料（�
 const CASES_MANIFEST  = 'cases/manifest.json';
 const CHUNK_SIZE      = 20;
 const AUDIT_LOG_FILE  = 'audit_log.json';
+const CASE_ACCESS_LOG_FILE = 'case_access_log.json'; // 危機案件閱讀：授權+閱讀共享稽核 feed
+let _accessLogCache = { entries: [] };               // case_access_log.json 記憶體快取
+let _detailReadOnly = false;                          // 目前個案詳情是否為危機唯讀檢視
 const BOOKINGS_FILE   = 'bookings.json';
 const ISSUES_FILE        = 'issues.json';
 const ISSUES_FOLDER_ID   = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP'; // dev/prod 共用正式版資料夾
@@ -5312,6 +5325,7 @@ async function afterLogin() {
     loadAttendance().catch(() => {});
     loadLeaves().catch(() => {});
     loadPendingUsers().catch(() => {});
+    loadAccessLog().catch(() => {}); // 危機閱讀監督 feed + 我今日的授權
 
     // URL routing：?page=clock 等
     _checkInitialPage();
@@ -5401,6 +5415,9 @@ function resolveUserRole() {
   document.getElementById('nav-clock-item').style.display       = (isIntern || isAttendanceMgr) ? '' : 'none';
   document.getElementById('nav-leave-apply-item').style.display  = (isIntern || isAttendanceMgr) ? '' : 'none';
   document.getElementById('nav-attendance-item').style.display  = isAttendanceMgr ? '' : 'none';
+  // 危機個案閱讀：專任+實習生可申請（主任/管理者本就全可見不需此頁）
+  const _crisisNav = document.getElementById('nav-crisis-access-item');
+  if (_crisisNav) _crisisNav.style.display = _canApplyCrisisAccess() ? '' : 'none';
   _updateLeaveBadges();
 
   // 填充管理員頁使用者列表
@@ -5866,6 +5883,199 @@ function _caseVisibleToUser(c, email, allowedSet) {
   return false;
 }
 
+// ══════════════════════════════════════════════
+//  危機案件個案閱讀（申請即通過、全員監督）
+// ══════════════════════════════════════════════
+// 可申請者：專任（角色以「專任」開頭）或實習諮商心理師；主任/管理者本就全可見不需申請
+function _canApplyCrisisAccess() {
+  if (currentRole === '主任' || extraRole === '管理者') return false;
+  return (typeof currentRole === 'string' && currentRole.startsWith('專任')) || currentRole === '實習諮商心理師';
+}
+// 監督區可見者：主任/管理者/專任（依需求；實習生被監督但不看 feed）
+function _canViewAccessAudit() {
+  return currentRole === '主任' || extraRole === '管理者' || (typeof currentRole === 'string' && currentRole.startsWith('專任'));
+}
+function _accessLogEntries() { return (_accessLogCache && Array.isArray(_accessLogCache.entries)) ? _accessLogCache.entries : []; }
+function _accessIsToday(iso) { return (iso || '').slice(0, 10) === _fmtDate(new Date()); }
+// 我今日是否對此案有有效危機授權
+function _hasCrisisGrant(caseId) {
+  const me = currentUser?.email;
+  if (!me) return false;
+  return _accessLogEntries().some(e => e.type === 'grant' && e.email === me && e.caseId === caseId && _accessIsToday(e.t));
+}
+// 此案是否為「非危機途徑本就可存取」（主任/管理者/主責/個管/初次晤談/未派案/已封存）
+function _caseNormallyAccessible(c) {
+  if (!c) return false;
+  if (currentRole === '主任' || extraRole === '管理者') return true;
+  if (c.archived) return true;
+  const allowedSet = new Set(configData?.users?.[currentUser?.email]?.allowedCases || []);
+  return _caseVisibleToUser(c, currentUser?.email, allowedSet);
+}
+async function loadAccessLog() {
+  try { _accessLogCache = await driveReadJson(CASE_ACCESS_LOG_FILE); } catch { _accessLogCache = null; }
+  if (!_accessLogCache || !Array.isArray(_accessLogCache.entries)) _accessLogCache = { entries: [] };
+}
+// append 一筆 feed 條目（RMW：讀最新→push→寫回；低頻，容忍極少數 race，auditLog 另有永久留存）
+async function _appendAccessLog(entry) {
+  let latest;
+  try { latest = await driveReadJson(CASE_ACCESS_LOG_FILE); } catch { latest = null; }
+  if (!latest || !Array.isArray(latest.entries)) latest = { entries: [] };
+  latest.entries.push(entry);
+  latest.updatedAt = new Date().toISOString();
+  await driveUpdateJsonFile(CASE_ACCESS_LOG_FILE, latest);
+  _accessLogCache = latest;
+}
+// 危機閱讀區塊級記錄（session 內以 caseId|sem|區塊簽章去重，避免同一次瀏覽重複記）
+const _crisisReadLogged = new Set();
+async function _logCrisisRead(c, sem) {
+  if (!c || !c.id) return;
+  const blocks = [];
+  const recN = (c.records || []).filter(r => !r.deleted && r.status !== 'pending').length;
+  if (recN) blocks.push({ k: 'record', n: recN });
+  const iiN = c.initialInterviews ? Object.keys(c.initialInterviews).length : (c.initialInterview ? 1 : 0);
+  if (iiN) blocks.push({ k: 'initial', n: iiN });
+  const psyN = (c.psychiatristRecords || []).filter(r => !r.deleted).length;
+  if (psyN) blocks.push({ k: 'psychiatry', n: psyN });
+  const evalN = (c.semesterEvaluations || []).filter(e => !e.deletedAt).length;
+  if (evalN) blocks.push({ k: 'eval', n: evalN });
+  const sig = `${c.id}|${sem || ''}|${blocks.map(b => b.k + b.n).join(',')}`;
+  if (_crisisReadLogged.has(sig)) return;
+  _crisisReadLogged.add(sig);
+  const entry = {
+    id: 'acr_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), type: 'read',
+    email: currentUser.email, name: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
+    caseId: c.id, caseName: c.name || '', sem: sem || '', blocks, t: new Date().toISOString(),
+  };
+  auditLog('危機案件閱讀', c.id, null, blocks.map(b => _crisisBlockLabel(b.k) + '×' + b.n).join('、'));
+  _appendAccessLog(entry).catch(e => _syslog('warn', '危機閱讀記錄寫入失敗：' + e.message));
+}
+function _crisisBlockLabel(k) {
+  return { record: '晤談紀錄', initial: '初談表', psychiatry: '精神科評估', eval: '學期/結案評估' }[k] || k;
+}
+
+// ── 危機個案閱讀申請頁 ──
+let _crisisApplyTarget = null;
+function renderCrisisAccessPage() {
+  const body = document.getElementById('crisis-access-body');
+  if (!body) return;
+  if (!_canApplyCrisisAccess()) { body.innerHTML = '<div class="alert alert-info">此頁供專任／實習人員於危機案件時申請閱讀他人個案。</div>'; return; }
+  body.innerHTML = `
+    <div class="alert alert-warn" style="margin-bottom:16px;background:#fffbeb;border:1px solid #f6ad55;color:#744210;border-radius:8px;padding:12px 16px;">
+      ⚠ <strong>危機案件專用</strong>：申請後<strong>立即取得該案「當日唯讀」權限</strong>（隔日失效，需重新申請）。你的<strong>申請目的</strong>與<strong>閱讀的資料區塊</strong>會公開於全體監督區（主任／管理者／專任皆可見），請審慎使用。
+    </div>
+    <div class="card" style="margin-bottom:16px;">
+      <div style="padding:16px 20px;">
+        <label style="font-size:.85rem;color:#718096;display:block;margin-bottom:4px;">搜尋個案（姓名／學號／案號）</label>
+        <input id="crisis-search" class="field-input" style="max-width:360px;" oninput="_crisisRenderResults()" placeholder="輸入姓名、學號或案號">
+        <div id="crisis-apply-form" style="margin-top:14px;"></div>
+        <div id="crisis-results" style="margin-top:14px;"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header"><h3>我今日已取得閱讀權限</h3></div>
+      <div style="padding:12px 20px;" id="crisis-today"></div>
+    </div>`;
+  _crisisRenderApplyForm();
+  _crisisRenderResults();
+  _crisisRenderToday();
+}
+
+function _crisisRenderResults() {
+  const el = document.getElementById('crisis-results');
+  if (!el) return;
+  const q = (document.getElementById('crisis-search')?.value || '').trim().toLowerCase();
+  if (!q) { el.innerHTML = '<div style="color:#a0aec0;font-size:.88rem;">請輸入關鍵字搜尋。只會列出你目前無權檢視的個案。</div>'; return; }
+  const rows = (casesData || []).filter(c => {
+    if (!c?.id || c.deleted) return false;
+    if (_caseNormallyAccessible(c)) return false; // 本就看得到的不列
+    const hay = `${c.name || ''} ${c.studentId || ''} ${c.id || ''}`.toLowerCase();
+    return hay.includes(q);
+  }).slice(0, 50);
+  if (!rows.length) { el.innerHTML = '<div style="color:#a0aec0;font-size:.88rem;">無符合的個案（或都已可檢視）。</div>'; return; }
+  el.innerHTML = `<div style="overflow-x:auto;"><table class="data-table" style="min-width:520px;">
+    <thead><tr><th>姓名</th><th>學號</th><th>案號</th><th>主責</th><th></th></tr></thead>
+    <tbody>${rows.map(c => {
+      const granted = _hasCrisisGrant(c.id);
+      const btn = granted
+        ? `<button class="btn btn-secondary btn-sm" style="font-size:.76rem;" onclick="showCaseDetail('${escHtml(c.id)}')">開啟（今日已授權）</button>`
+        : `<button class="btn btn-danger btn-sm" style="font-size:.76rem;" onclick="_crisisPickTarget('${escHtml(c.id)}')">申請閱讀</button>`;
+      return `<tr><td>${escHtml(c.name || '—')}</td><td>${escHtml(c.studentId || '—')}</td><td style="font-family:monospace;">${escHtml(c.id)}</td><td>${escHtml(c.counselorName || c.counselorEmail || '—')}</td><td style="text-align:right;">${btn}</td></tr>`;
+    }).join('')}</tbody></table></div>`;
+}
+
+function _crisisPickTarget(caseId) {
+  _crisisApplyTarget = caseId;
+  _crisisRenderApplyForm();
+  document.getElementById('crisis-apply-form')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function _crisisRenderApplyForm() {
+  const el = document.getElementById('crisis-apply-form');
+  if (!el) return;
+  if (!_crisisApplyTarget) { el.innerHTML = ''; return; }
+  const c = (casesData || []).find(x => x.id === _crisisApplyTarget);
+  if (!c) { el.innerHTML = ''; _crisisApplyTarget = null; return; }
+  el.innerHTML = `
+    <div style="border:2px solid #fc8181;background:#fff5f5;border-radius:8px;padding:14px 16px;">
+      <div style="font-weight:600;color:#c53030;margin-bottom:8px;">申請閱讀：${escHtml(c.name || '—')}（${escHtml(c.studentId || '')} / ${escHtml(c.id)}）</div>
+      <label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">申請目的（必填，將公開於監督區）</label>
+      <textarea id="crisis-reason" class="field-input" rows="2" style="width:100%;max-width:520px;" placeholder="例：該生為我督導之危機個案，需了解近期晤談與精神科評估以協助處遇"></textarea>
+      <div style="margin-top:10px;display:flex;gap:8px;">
+        <button id="crisis-submit-btn" class="btn btn-danger btn-sm" onclick="submitCrisisAccess()">送出並立即開啟</button>
+        <button class="btn btn-secondary btn-sm" onclick="_crisisApplyTarget=null;_crisisRenderApplyForm();">取消</button>
+      </div>
+      <div id="crisis-apply-msg" style="display:none;margin-top:8px;" class="alert"></div>
+    </div>`;
+  setTimeout(() => document.getElementById('crisis-reason')?.focus(), 50);
+}
+
+function _crisisRenderToday() {
+  const el = document.getElementById('crisis-today');
+  if (!el) return;
+  const me = currentUser?.email;
+  const grants = _accessLogEntries().filter(e => e.type === 'grant' && e.email === me && _accessIsToday(e.t))
+    .sort((a, b) => (b.t || '').localeCompare(a.t || ''));
+  if (!grants.length) { el.innerHTML = '<div style="color:#a0aec0;font-size:.88rem;">今日尚無。</div>'; return; }
+  el.innerHTML = grants.map(g => `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid #f7fafc;">
+    <span style="font-weight:600;">${escHtml(g.caseName || g.caseId)}</span>
+    <span style="font-size:.78rem;color:#718096;font-family:monospace;">${escHtml(g.caseId)}</span>
+    <span style="font-size:.78rem;color:#a0aec0;flex:1;">目的：${escHtml(g.reason || '—')}</span>
+    <button class="btn btn-secondary btn-sm" style="font-size:.74rem;" onclick="showCaseDetail('${escHtml(g.caseId)}')">開啟</button>
+  </div>`).join('');
+}
+
+let _crisisSubmitting = false;
+async function submitCrisisAccess() {
+  if (_crisisSubmitting) return;
+  const caseId = _crisisApplyTarget;
+  const c = (casesData || []).find(x => x.id === caseId);
+  if (!c) { alert('找不到個案'); return; }
+  const reason = (document.getElementById('crisis-reason')?.value || '').trim();
+  if (!reason) { alert('請填寫申請目的'); return; }
+  _crisisSubmitting = true;
+  const btn = document.getElementById('crisis-submit-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '送出中…'; }
+  const entry = {
+    id: 'acg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), type: 'grant',
+    email: currentUser.email, name: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
+    caseId, caseName: c.name || '', caseStudentId: c.studentId || '', reason, t: new Date().toISOString(),
+  };
+  try {
+    await _appendAccessLog(entry);
+    auditLog('危機案件閱讀申請', caseId, null, reason);
+    _crisisSubmitting = false;
+    _crisisApplyTarget = null;
+    showToast('✅ 已取得當日閱讀權限，開啟中…', 'success');
+    renderCases(); // 讓此案進入可見清單
+    showCaseDetail(caseId);
+  } catch (e) {
+    _crisisSubmitting = false;
+    if (btn) { btn.disabled = false; btn.textContent = '送出並立即開啟'; }
+    const m = document.getElementById('crisis-apply-msg');
+    if (m) { m.className = 'alert alert-error'; m.textContent = '送出失敗：' + e.message; m.style.display = ''; }
+  }
+}
+
 function renderCases() {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
 
@@ -5875,7 +6085,8 @@ function renderCases() {
     const allowedSet = new Set(configData?.users?.[currentUser.email]?.allowedCases || []);
     visible = casesData.filter(c => {
       if (c.archived) return true; // 已封存全員可見
-      return _caseVisibleToUser(c, currentUser.email, allowedSet);
+      if (_caseVisibleToUser(c, currentUser.email, allowedSet)) return true;
+      return _hasCrisisGrant(c.id); // 危機閱讀當日授權
     });
   }
 
@@ -7866,6 +8077,9 @@ async function showCaseDetail(caseId) {
   }
   if (_detailCaseId !== caseId) { _recPage = 1; _detailCaseId = caseId; _caseDetailActiveSem = null; _caseDetailMode = 'semester'; _caseDetailPsychIdx = 0; _detailSemFilter = 'current'; }
   _recSortDesc = _userPref_('recSortDesc', false);
+  // 危機唯讀檢視：非危機途徑本就看不到、但今日有危機授權 → 唯讀 + 記錄閱讀
+  const _crisisView = !_caseNormallyAccessible(c) && _hasCrisisGrant(c.id);
+  _detailReadOnly = _crisisView;
   const _relatedCases = _getRelatedCases(caseId);
   const _hasRelated = _relatedCases.length > 1;
 
@@ -7878,6 +8092,7 @@ async function showCaseDetail(caseId) {
     _caseDetailActiveSem = openDateToSemPrefix(c.openDate);
   }
   const _activeSem = _caseDetailActiveSem;
+  if (_crisisView) _logCrisisRead(c, _activeSem); // 區塊級閱讀記錄（session 節流）
   // Per-semester snapshot: use snapshot data if available, otherwise fall back to case
   const _snapData = (c.basicInfoSnapshots && _activeSem && c.basicInfoSnapshots[_activeSem]) || null;
   const _cd = (field) => (_snapData !== null && _snapData[field] !== undefined) ? _snapData[field] : c[field];
@@ -7893,6 +8108,10 @@ async function showCaseDetail(caseId) {
     ((c.isTransferCase || (transferData||[]).some(t => t.type === 'incoming' && t.caseId === c.id)) ? ' &nbsp;<span class="badge badge-teal">轉銜個案</span>' : '') +
     (c.archived ? ' &nbsp;<span style="background:#e2e8f0;color:#4a5568;border-radius:4px;padding:2px 8px;font-size:.78rem;font-weight:600;">封存</span>' : '') +
     (c.deleted ? ` &nbsp;<span class="badge-case-deleted">已刪除 by ${escHtml(c.deletedByName || c.deletedBy || '?')}</span>` : '');
+  if (_crisisView) {
+    document.getElementById('detail-meta').insertAdjacentHTML('afterbegin',
+      '<div style="background:#fff5f5;border:2px solid #fc8181;color:#c53030;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-weight:600;font-size:.86rem;">⚠ 危機閱讀（唯讀）— 你透過危機申請檢視此案，無法編輯；你的閱讀已記錄並公開於全體監督區。</div>');
+  }
 
   const notesEl = document.getElementById('detail-import-notes');
   if (notesEl) {
@@ -7939,8 +8158,8 @@ async function showCaseDetail(caseId) {
   auditLog('查閱個案', caseId);
 
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
-  const _canEditMgrs = isAdminUser || c.counselorEmail === currentUser?.email
-    || _hasManagerAccess(currentUser?.email, c.id, _activeSem);
+  const _canEditMgrs = !_detailReadOnly && (isAdminUser || c.counselorEmail === currentUser?.email
+    || _hasManagerAccess(currentUser?.email, c.id, _activeSem));
   const isActive = ((c.semesterStatus || {})[_activeSem] || 'active') !== 'closed';
   const caseIsDeleted = !!c.deleted;
   const cid = escHtml(c.id);
@@ -7975,7 +8194,7 @@ async function showCaseDetail(caseId) {
   // ── 學期內操作按鈕（在學期chips之下） ──
   const _canDeleteSem = (c.semesters||[]).length > 1;
   let semActHtml = '';
-  if (!caseIsDeleted) {
+  if (!caseIsDeleted && !_detailReadOnly) { // 危機唯讀：不顯示任何個案操作按鈕
     if (isActive) {
       semActHtml += `<button class="btn btn-primary" onclick="openNewRecordPage('${cid}')">＋ 新增記錄</button>`;
       semActHtml += ` <button class="btn btn-secondary" onclick="openEventRecordForm('${cid}', undefined, 'case-detail')">＋ 事件處理記錄</button>`;
@@ -8042,7 +8261,7 @@ async function showCaseDetail(caseId) {
   const deletedCount = visibleRecords.filter(r => r.deleted).length;
 
   const renderRecordCard = r => {
-    const editable = !r.deleted && isEditable(r.createdAt);
+    const editable = !r.deleted && isEditable(r.createdAt) && !_detailReadOnly;
     const isCreator = isRecordCreator(r);
     const isLinkedAsII = !r.deleted && c.initialInterview?.type === 'linkedRecord' && r.id === c.initialInterview?.recordId;
     const rcid = escHtml(c.id);
@@ -8182,7 +8401,7 @@ async function showCaseDetail(caseId) {
        ii.type !== 'filled' && !ii.problemsMain?.length && !ii.summary && !ii.mainIssue);
 
     // 動作列（需填寫 / 已刪除時顯示）
-    const _iiActionBtns = (showRestore) => `
+    const _iiActionBtns = (showRestore) => _detailReadOnly ? '' : `
       <div id="ii-needs-buttons-${cid}" style="display:flex;gap:8px;flex-wrap:wrap;padding:8px 0 4px;">
         <button class="btn btn-primary btn-sm" onclick="openInitialInterviewPage('${cid}')">填寫</button>
         <button class="btn btn-secondary btn-sm" onclick="showIiContinuationPanel('${cid}')">舊案延續</button>
@@ -8277,7 +8496,7 @@ async function showCaseDetail(caseId) {
         ${ii.updatedAt ? `<div style="font-size:.75rem;color:#a0aec0;margin-top:6px;">更新：${new Date(ii.updatedAt).toLocaleString('zh-TW')}</div>` : ''}
       </div>`;
     const iiIsCreator = ii.createdBy === currentUser?.email;
-    const iiEditable = !ii.createdAt || isEditable(ii.createdAt);
+    const iiEditable = (!ii.createdAt || isEditable(ii.createdAt)) && !_detailReadOnly;
     const iiCanDelete = isAdminUser || (iiIsCreator && iiEditable);
     return _semTabsHtml + `
       <div class="record-card" id="${iiId}" style="border:1.5px solid #b2d8b2;background:#f6fbf6;">
@@ -8289,8 +8508,8 @@ async function showCaseDetail(caseId) {
               ? `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="openInitialInterviewPage('${cid}')">編輯</button>`
               : `<span style="font-size:.78rem;color:#a0aec0;">超過2週，不可編輯</span>`}
             <button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="printInitialInterview('${cid}')">列印</button>
-            ${iiCanDelete && !caseIsDeleted ? `<button class="btn btn-danger btn-sm" style="font-size:.78rem;" onclick="deleteInitialInterview('${cid}')">刪除</button>` : ''}
-            <button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${cid}')" style="font-size:.78rem;">清除</button>
+            ${iiCanDelete && !caseIsDeleted && !_detailReadOnly ? `<button class="btn btn-danger btn-sm" style="font-size:.78rem;" onclick="deleteInitialInterview('${cid}')">刪除</button>` : ''}
+            ${!_detailReadOnly ? `<button class="btn btn-secondary btn-sm" onclick="clearInitialInterviewMark('${cid}')" style="font-size:.78rem;">清除</button>` : ''}
             <button class="rec-toggle-btn" onclick="toggleRecordExpand('${iiId}')">展開 ▼</button>
           </div>
         </div>
@@ -8325,7 +8544,7 @@ async function showCaseDetail(caseId) {
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           ${_semFilterBtn}
           ${sortBtn}
-          ${_detailSemFilter !== 'all' && !caseIsDeleted ? (isActive
+          ${_detailSemFilter !== 'all' && !caseIsDeleted && !_detailReadOnly ? (isActive
             ? `<button class="btn btn-primary" onclick="openNewRecordPage('${escHtml(c.id)}')">＋ 新增紀錄</button>
                <button class="btn btn-secondary btn-sm" onclick="openEventRecordForm('${escHtml(c.id)}', undefined, 'case-detail')">＋ 事件處理記錄</button>`
             : `<span style="font-size:.82rem;color:#718096;font-style:italic;padding:4px 0;">取消結案以新增記錄</span>`) : ''}
@@ -8352,7 +8571,7 @@ async function showCaseDetail(caseId) {
     const deletedCount = allPsy.filter(pr => pr.deleted).length;
     const cards = visiblePsy.map(pr => {
       const isCreator = pr.createdBy === currentUser?.email;
-      const psyEditable = !pr.createdAt || isEditable(pr.createdAt);
+      const psyEditable = (!pr.createdAt || isEditable(pr.createdAt)) && !_detailReadOnly;
       let btnHtml = '';
       if (!caseIsDeleted) {
         if (!pr.deleted) {
@@ -8385,7 +8604,7 @@ async function showCaseDetail(caseId) {
         ${renderAttachChips(pr.attachments)}
       </div>`;
     }).join('');
-    const addBtn = !caseIsDeleted ? `<button class="btn btn-primary" onclick="openPsychiatristModal('${escHtml(c.id)}')">＋ 新增評估</button>` : '';
+    const addBtn = (!caseIsDeleted && !_detailReadOnly) ? `<button class="btn btn-primary" onclick="openPsychiatristModal('${escHtml(c.id)}')">＋ 新增評估</button>` : '';
     const countLabel = isAdminUser && deletedCount > 0
       ? `精神科醫師評估（${activeCount} 筆，含 ${deletedCount} 筆已刪除）`
       : `精神科醫師評估（${activeCount} 筆）`;
@@ -8427,13 +8646,13 @@ async function showCaseDetail(caseId) {
       let statusTag = '', actionBtn = '';
       if (ev.deletedAt) {
         statusTag = `<span style="background:#fde8e8;color:#c53030;border-radius:4px;padding:1px 5px;font-size:.72rem;">已刪除 ${ev.deletedAt.slice(0,10)}</span>`;
-        if (ev.evalId) actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();restoreDeletedEval('${escHtml(cid)}','${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;">還原</button>`;
+        if (ev.evalId && !_detailReadOnly) actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();restoreDeletedEval('${escHtml(cid)}','${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;">還原</button>`;
       } else if (ev.replacedBy) {
         statusTag = `<span style="background:#e2e8f0;color:#718096;border-radius:4px;padding:1px 5px;font-size:.72rem;">已取代</span>`;
       } else if (ev.evalId && !ev._isLegacy) {
-        actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printClosureEval('${escHtml(cid)}',null,null,'${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;">列印</button>
-<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();openClosureEvalPage('${escHtml(cid)}','${ev.type||'closure'}','${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;">編輯</button>
-<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();softDeleteEval('${escHtml(cid)}','${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;color:#c53030;border-color:#fc8181;">刪除</button>`;
+        actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();printClosureEval('${escHtml(cid)}',null,null,'${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;">列印</button>` +
+        (_detailReadOnly ? '' : `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();openClosureEvalPage('${escHtml(cid)}','${ev.type||'closure'}','${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;">編輯</button>
+<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();softDeleteEval('${escHtml(cid)}','${escHtml(ev.evalId)}')" style="font-size:.72rem;padding:2px 7px;color:#c53030;border-color:#fc8181;">刪除</button>`);
       }
       const opacity = isActive ? '' : 'opacity:.6;';
       const borderColor = isActive ? (isClosure ? '#bee3f8' : '#d6bcfa') : '#e2e8f0';
@@ -17499,6 +17718,67 @@ async function _confirmCaseAssignment(todoId) {
   }
 }
 
+// ── 同仁個案閱讀監督（危機閱讀 feed；主任/管理者/專任可見）──
+function _accessAuditSeenKey() { return 'scc_access_audit_seen_' + DRIVE_FOLDER_ID.slice(-8); }
+function _toggleAccessAudit() { window._accessAuditCollapsed = !window._accessAuditCollapsed; _renderCaseAccessAuditSection(); }
+function _markAccessAuditSeen() { localStorage.setItem(_accessAuditSeenKey(), new Date().toISOString()); _renderCaseAccessAuditSection(); }
+function _renderCaseAccessAuditSection() {
+  const section = document.getElementById('todos-access-audit-section');
+  if (!section) return;
+  if (!_canViewAccessAudit()) { section.innerHTML = ''; return; }
+  const entries = _accessLogEntries();
+  if (!entries.length) { section.innerHTML = ''; return; }
+  // 依 申請人|案|日期 分組：一組＝某人某日對某案的一次危機閱讀（授權 + 該次所有閱讀）
+  const groups = {};
+  entries.forEach(e => {
+    const day = (e.t || '').slice(0, 10);
+    const key = `${e.email}|${e.caseId}|${day}`;
+    if (!groups[key]) groups[key] = { email: e.email, name: e.name, caseId: e.caseId, caseName: e.caseName || '', reason: '', grantT: '', reads: [], latest: '' };
+    const g = groups[key];
+    if (e.type === 'grant') { g.reason = e.reason || ''; g.grantT = e.t; if (!g.caseName) g.caseName = e.caseName || ''; }
+    else if (e.type === 'read') g.reads.push(e);
+    if ((e.t || '') > g.latest) g.latest = e.t || '';
+    if (!g.caseName && e.caseName) g.caseName = e.caseName;
+  });
+  const list = Object.values(groups).sort((a, b) => (b.latest || '').localeCompare(a.latest || ''));
+  const seenAt = localStorage.getItem(_accessAuditSeenKey()) || '';
+  const unread = entries.filter(e => (e.t || '') > seenAt).length;
+  const isCollapsed = !!window._accessAuditCollapsed;
+  const showAll = !!window._accessAuditShowAll;
+  const shown = showAll ? list : list.slice(0, 20);
+  const fmtT = t => t ? new Date(t).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' }) : '';
+  const groupHtml = g => {
+    const readsHtml = g.reads.sort((a, b) => (a.t || '').localeCompare(b.t || '')).map(r =>
+      `<div style="font-size:.78rem;color:#4a5568;padding:2px 0 2px 14px;border-left:2px solid #e9d8fd;margin-left:4px;">
+        → 閱讀 ${escHtml((r.blocks || []).map(b => _crisisBlockLabel(b.k) + '×' + b.n).join('、') || '（無資料區塊）')}${r.sem ? `（${escHtml(semesterLabel(r.sem))}）` : ''} <span style="color:#a0aec0;">${fmtT(r.t)}</span>
+      </div>`).join('');
+    return `<div style="padding:8px 0;border-top:1px solid #fed7d7;">
+      <div style="font-size:.86rem;color:#2d3748;">
+        <span style="font-weight:700;">${escHtml(g.name || g.email)}</span>
+        申請閱讀 <span style="font-weight:600;">${escHtml(g.caseName || g.caseId)}</span>
+        <span style="font-family:monospace;font-size:.76rem;color:#718096;">${escHtml(g.caseId)}</span>
+        <span style="color:#a0aec0;font-size:.76rem;">${fmtT(g.grantT || g.latest)}</span>
+      </div>
+      <div style="font-size:.82rem;color:#9b2c2c;margin:2px 0 4px;">目的：${escHtml(g.reason || '（未填）')}</div>
+      ${readsHtml || '<div style="font-size:.76rem;color:#a0aec0;padding-left:14px;">（尚未開啟閱讀）</div>'}
+    </div>`;
+  };
+  section.innerHTML = `
+    <div style="background:#fffaf0;border:1px solid #fbb6ce;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+        <span style="font-weight:700;font-size:.9rem;color:#97266d;">🚨 同仁個案閱讀監督（${list.length}）${unread > 0 ? ` <span class="badge" style="background:#e53e3e;color:#fff;font-size:.72rem;">${unread} 則新</span>` : ''}</span>
+        <div style="display:flex;gap:6px;">
+          ${unread > 0 ? `<button class="btn btn-sm" style="font-size:.76rem;padding:2px 10px;" onclick="_markAccessAuditSeen()">標示已讀</button>` : ''}
+          <button class="btn btn-sm" style="font-size:.76rem;padding:2px 10px;background:#fff;" onclick="_toggleAccessAudit()">${isCollapsed ? '展開 ▼' : '收合 ▲'}</button>
+        </div>
+      </div>
+      ${isCollapsed ? '' : `<div style="margin-top:8px;">
+        ${shown.map(groupHtml).join('')}
+        ${!showAll && list.length > shown.length ? `<div style="text-align:center;margin-top:8px;"><button class="btn btn-sm" style="font-size:.76rem;" onclick="window._accessAuditShowAll=true;_renderCaseAccessAuditSection()">顯示全部 ${list.length} 筆</button></div>` : ''}
+      </div>`}
+    </div>`;
+}
+
 function _renderMlNotifSection() {
   const section = document.getElementById('todos-ml-notif-section');
   if (!section) return;
@@ -17588,6 +17868,7 @@ window._mlBatchAcknowledge = async function() {
 };
 
 function renderTodosPage() {
+  _renderCaseAccessAuditSection();
   _renderAssignmentTodos();
   _renderMlNotifSection();
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
@@ -19207,7 +19488,7 @@ function _getMyChunks(indexData, manifest, deletedSet, email, allowedSet) {
   (indexData?.cases || []).forEach(c => {
     if (!c?.id || c.archived || c.deleted) return;
     if (deletedSet && deletedSet.has(c.id)) return;
-    if (!_caseVisibleToUser(c, email, allowedSet)) return;
+    if (!_caseVisibleToUser(c, email, allowedSet) && !_hasCrisisGrant(c.id)) return;
     const name = getCaseChunkName(c.id);
     if (manifestSet.has(name)) mine.add(name);
   });
@@ -22145,6 +22426,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '危機案件個案閱讀（申請即通過 + 全員監督）', isProd: false, items: [
+      item('新功能', '專任/實習人員可於「危機個案閱讀」頁搜尋（姓名/學號/案號）並申請閱讀他人個案，填寫申請目的後立即取得該案「當日唯讀」權限（隔日失效需重新申請）'),
+      item('新功能', '危機途徑開啟他人個案為唯讀：隱藏所有編輯/新增/刪除/結案按鈕，頂部顯示唯讀警示'),
+      item('稽核', '待辦頁新增「同仁個案閱讀監督」區塊（主任/管理者/專任可見，可收合）：公開每筆申請的目的與該人閱讀了哪些資料區塊（晤談×N、精神科×N…），形成彼此監督'),
+      item('安全', '監督記錄採單一共享 feed（case_access_log.json），非管理者不因此取得他人常態存取權；主任/管理者不受影響'),
+    ]},
     { date: '2026-07-02', title: '差勤：暑休額度年度自動化（每年 7/1 自動回滿 40hr）', isProd: true, items: [
       item('新功能', '有申請期間的假別（如暑休）額度改為年度制：「已用時數」只計本次期間內的申請，每年自動回滿，無需管理者手動重配、無重複配風險'),
       item('新功能', '支援跨年期間（如寒休 12/1–1/31）正確歸屬同一年度視窗'),
