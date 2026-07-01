@@ -21814,6 +21814,9 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '修正：問題回報送出無回饋且可重複送出', isProd: false, items: [
+      item('修復', '問題回報送出時新增 _issueSubmitting 旗標防止重複點擊；按鈕鎖定並顯示「送出中…」；完成後 toast「已送出問題回報 #XXX」；描述欄位清空'),
+    ]},
     { date: '2026-07-02', title: '修正：身心調適假信件節次擷取邏輯（改為直接解析 HTML 表格）', isProd: false, items: [
       item('修復', '原本用純文字 regex 解析課程明細，對「星期一/週一/禮拜一」等非單字星期或含 HTML span 的欄位抓不到；改為優先解析信件內文 HTML 表格結構（流水號/課程名稱/請假日/星期/節次 5 欄），純文字 regex 作為 fallback'),
       item('改善', 'fallback regex 放寬：星期接受星期/週/禮拜前綴，節次接受 - 分隔符'),
@@ -34007,47 +34010,62 @@ function openIssueModal() {
   setTimeout(() => { attachInit('issue_new', []); document.getElementById('issue-desc').focus(); }, 50);
 }
 
+let _issueSubmitting = false;
 async function submitIssue() {
+  if (_issueSubmitting) return; // 防止重複點擊
   const desc = document.getElementById('issue-desc').value.trim();
   if (!desc) { alert('請填寫問題說明'); return; }
+  _issueSubmitting = true;
+  const submitBtn = document.querySelector('#issue-submit-modal button.btn-primary');
+  const cancelBtn = document.querySelector('#issue-submit-modal button.btn-secondary');
+  const _origBtnHtml = submitBtn?.innerHTML;
+  if (submitBtn) { submitBtn.disabled = true; submitBtn.innerHTML = '送出中…'; submitBtn.style.opacity = '.7'; submitBtn.style.cursor = 'wait'; }
+  if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.style.opacity = '.5'; }
   showLoading('送出中…');
   let _issueAttachments = [];
-  try { _issueAttachments = await attachFlush('issue_new'); }
-  catch(e) { hideLoading(); alert('附件上傳失敗：' + e.message); return; }
-  const issue = {
-    id: 'issue_' + Date.now(),
-    serial: _issueNextSerial(),
-    description: desc,
-    attachments: _issueAttachments,
-    submittedBy: currentUser?.email || '',
-    submittedByName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
-    submittedAt: new Date().toISOString(),
-    status: 'open',
-    resolution: '',
-  };
-  issuesData.push(issue);
   try {
-    await _saveIssues();
-    // 通知所有系統管理者（主任 or 管理者 extraRole）
-    let notified = false;
-    Object.entries(configData?.users || {}).forEach(([email, u]) => {
-      if (u.role === '主任' || u.extraRole === '管理者') {
-        notified = addNotificationToUser(email, 'new_issue', issue.id, issue.serial) || notified;
-      }
-    });
-    if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
-    // @提及通知（排除已收到 new_issue 通知的管理者，避免重複）
-    const _adminEmails = new Set(Object.entries(configData?.users || {})
-      .filter(([, u]) => u.role === '主任' || u.extraRole === '管理者').map(([e]) => e));
-    const _mentioned = _parseIssueMentions(desc).filter(e => !_adminEmails.has(e));
-    if (_mentioned.length) _notifyIssueEvent(issue, null, { mentioned: _mentioned });
-    document.getElementById('issue-submit-modal').style.display = 'none';
-    renderIssuesPage();
-  } catch (e) {
-    issuesData.pop();
-    alert('送出失敗：' + e.message);
+    try { _issueAttachments = await attachFlush('issue_new'); }
+    catch(e) { alert('附件上傳失敗：' + e.message); return; }
+    const issue = {
+      id: 'issue_' + Date.now(),
+      serial: _issueNextSerial(),
+      description: desc,
+      attachments: _issueAttachments,
+      submittedBy: currentUser?.email || '',
+      submittedByName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
+      submittedAt: new Date().toISOString(),
+      status: 'open',
+      resolution: '',
+    };
+    issuesData.push(issue);
+    try {
+      await _saveIssues();
+      // 通知所有系統管理者（主任 or 管理者 extraRole）
+      let notified = false;
+      Object.entries(configData?.users || {}).forEach(([email, u]) => {
+        if (u.role === '主任' || u.extraRole === '管理者') {
+          notified = addNotificationToUser(email, 'new_issue', issue.id, issue.serial) || notified;
+        }
+      });
+      if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+      // @提及通知（排除已收到 new_issue 通知的管理者，避免重複）
+      const _adminEmails = new Set(Object.entries(configData?.users || {})
+        .filter(([, u]) => u.role === '主任' || u.extraRole === '管理者').map(([e]) => e));
+      const _mentioned = _parseIssueMentions(desc).filter(e => !_adminEmails.has(e));
+      if (_mentioned.length) _notifyIssueEvent(issue, null, { mentioned: _mentioned });
+      document.getElementById('issue-submit-modal').style.display = 'none';
+      document.getElementById('issue-desc').value = '';
+      renderIssuesPage();
+      showToast(`已送出問題回報 #${String(issue.serial).padStart(3,'0')}`, 'success');
+    } catch (e) {
+      issuesData.pop();
+      alert('送出失敗：' + e.message);
+    }
   } finally {
     hideLoading();
+    _issueSubmitting = false;
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = _origBtnHtml || '送出'; submitBtn.style.opacity = ''; submitBtn.style.cursor = ''; }
+    if (cancelBtn) { cancelBtn.disabled = false; cancelBtn.style.opacity = ''; }
   }
 }
 
