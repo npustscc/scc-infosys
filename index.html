@@ -3796,6 +3796,8 @@ let casesData    = [];
 let casesManifest = { chunks: [] };
 let _casesIndexCache = null; // cases-index.json 記憶體快取 { updatedAt, cases:[] }
 let _casesHotCache   = null; // cases-hot.json 記憶體快取 { updatedAt, cases:[完整] }
+// 本次載入是否持有「全體完整資料」；非管理者 scoped 載入時為 false，用來擋掉全量重建共享檔（否則會用少量本地資料覆蓋全體 index/hot）
+let _loadedFullDataset = false;
 let _clockOnlyMode = false;  // ?page=clock 快速啟動時為 true；使用者離開打卡頁時觸發完整載入
 let _bulkLoadedAllOnce = false; // 已 bulk load 過所有 cold cases（重頁面用）
 function currentSemesterPrefix() {
@@ -5616,13 +5618,15 @@ async function loadCases() {
     let indexData = null;
     let hotData   = null;
 
+    // 特權身份才需要（也才會讀）cases-hot；非管理者走 scoped，直接跳過 hot 下載以節省頻寬
+    const _isPrivLoad = currentRole === '主任' || extraRole === '管理者';
     // 嘗試批次取得 cases 資料夾所有檔案 ID（減少 API 呼叫次數）+ 並行讀 manifest / cases-index / cases-hot
     try {
       ({ map: fileMap, fileTimes: fileTimesMap } = await getCasesFolderFileMap());
       const manifestId = fileMap.get('manifest.json');
       const indexId    = fileMap.get(CASES_INDEX_FILE);
-      const hotId      = fileMap.get(CASES_HOT_FILE);
-      _syslog('debug', `fileMap 取得：${fileMap.size} 個檔案，manifest ${manifestId?'找到':'未找到'}，index ${indexId?'找到':'未找到'}，hot ${hotId?'找到':'未找到'}`);
+      const hotId      = _isPrivLoad ? fileMap.get(CASES_HOT_FILE) : null; // 非管理者不讀 hot
+      _syslog('debug', `fileMap 取得：${fileMap.size} 個檔案，manifest ${manifestId?'找到':'未找到'}，index ${indexId?'找到':'未找到'}，hot ${hotId?'找到':(_isPrivLoad?'未找到':'略過(scoped)')}`);
       [manifest, indexData, hotData] = await Promise.all([
         manifestId ? driveReadJsonById(manifestId) : Promise.resolve(null),
         indexId ? driveReadJsonById(indexId).catch(e => { _syslog('warn', `cases-index 讀取失敗：${e.message}`); return null; }) : Promise.resolve(null),
@@ -5643,9 +5647,12 @@ async function loadCases() {
     const hasManifest = manifest && Array.isArray(manifest.chunks) && manifest.chunks.length > 0;
     const hasIndex    = indexData && Array.isArray(indexData.cases) && indexData.cases.length > 0;
     const hasHot      = hotData   && Array.isArray(hotData.cases);
+    // 特權身份（主任/管理者）載入全部；其餘走 scoped，只載自己有權檢視的個案（資料最小化）
+    const isPriv = currentRole === '主任' || extraRole === '管理者';
 
-    if (hasManifest && hasIndex && hasHot) {
-      // ── 分支 0（最快）：index + hot 都有 → 只讀 2 個檔就能完整運作本學期 ──
+    if (isPriv && hasManifest && hasIndex && hasHot) {
+      // ── 分支 0（最快，管理者）：index + hot 都有 → 只讀 2 個檔就能完整運作本學期 ──
+      _loadedFullDataset = true;
       casesManifest = manifest;
       _casesIndexCache = indexData;
       _casesHotCache = hotData;
@@ -5663,7 +5670,36 @@ async function loadCases() {
       _syslog('info', `分支 0（快路徑）：hot ${_hot} / cold ${_cold}，合計 ${casesData.length}`);
       console.info(`[Hot/Cold] 分支 0（快路徑）：hot=${_hot}（本學期完整資料）・cold=${_cold}（僅索引，點開再載）・合計 ${casesData.length}`);
       _setCasesLoadingProgress(90);
+    } else if (!isPriv && hasManifest && hasIndex) {
+      // ── 分支 S（非管理者 scoped）：忽略 cases-hot，只載入「我可見的個案」所在 chunk ──
+      _loadedFullDataset = false; // 只持有自己的資料 → 禁止全量重建共享檔
+      casesManifest = manifest;
+      _casesIndexCache = indexData;
+      const deletedSet = new Set(manifest.deletedIds || []);
+      const myEmail = currentUser?.email || '';
+      const allowedSet = new Set(configData?.users?.[myEmail]?.allowedCases || []);
+      // 1. 先用 index 立即渲染（他人案雖在 casesData，會被 renderCases 可見性過濾掉）
+      casesData = indexData.cases
+        .filter(c => c?.id && !deletedSet.has(c.id))
+        .map(c => ({ ...c, _indexOnly: true }));
+      renderCases();
+      // 2. 只載入「我可見案」所在 chunk
+      const myChunks = _getMyChunks(indexData, manifest, deletedSet, myEmail, allowedSet);
+      _syslog('info', `scoped 載入：my chunks ${myChunks.length} / ${manifest.chunks.length}`);
+      console.info(`[Hot/Cold] 分支 S（scoped）：my chunks ${myChunks.length} / ${manifest.chunks.length}（只載自己有權檢視的個案，未下載 cases-hot）`);
+      _setCasesLoadingProgress(50, `載入我的個案（${myChunks.length} 區塊）…`);
+      const loadOrder = [...myChunks].sort((a, b) => b.localeCompare(a));
+      const fullCases = await _fetchCasesChunks(loadOrder, fileMap, fileTimesMap, deletedSet, { progressBase: 50, progressSpan: 40 });
+      const fullById = new Map(fullCases.map(c => [c.id, c]));
+      casesData = casesData.map(c => {
+        const full = fullById.get(c.id);
+        if (full) { fullById.delete(c.id); return { ...full, _fullLoaded: true }; }
+        return c;
+      });
+      fullById.forEach(full => casesData.push({ ...full, _fullLoaded: true }));
+      // 不建立 cases-hot、不重建 index（見 _saveCasesHot/_saveCasesIndex 防呆）
     } else if (hasManifest && hasIndex) {
+      _loadedFullDataset = true;
       // ── 分支 1：index 有但 hot 缺 → 走原 Hot/Cold（載入 hot chunks），完成後建 cases-hot.json ──
       casesManifest = manifest;
       _casesIndexCache = indexData;
@@ -5697,6 +5733,7 @@ async function loadCases() {
       _saveCasesHot().catch(e => _syslog('warn', `建立 cases-hot 失敗：${e.message}`));
     } else if (hasManifest) {
       // ── 無 index（首次部署 / index 遺失）：全載入後自動建立 index ──
+      _loadedFullDataset = true;
       casesManifest = manifest;
       _syslog('info', `manifest 載入：${manifest.chunks.length} 個 chunks（無 index → 全載入並建立 index）`);
       _setCasesLoadingProgress(50);
@@ -5715,7 +5752,8 @@ async function loadCases() {
       _saveCasesIndex().catch(e => _syslog('warn', `建立 cases-index 失敗：${e.message}`));
       _saveCasesHot().catch(e => _syslog('warn', `建立 cases-hot 失敗：${e.message}`));
     } else {
-      // manifest 為空或不存在，先嘗試從殘存 chunk 檔自動恢復
+      // manifest 為空或不存在，先嘗試從殘存 chunk 檔自動恢復（全載入路徑）
+      _loadedFullDataset = true;
       const chunkEntries = fileMap
         ? [...fileMap.entries()].filter(([name]) => name !== 'manifest.json' && name !== 'index.json' && name !== CASES_INDEX_FILE && name.endsWith('.json'))
         : [];
@@ -5782,6 +5820,8 @@ async function loadCases() {
     casesData = [];
     setAlert('cases-alert', 'warn', `無法載入個案（${err.message}）。`);
     renderCases();
+    // 舊 index 遷移（管理者一次性補 interviewerEmails；非管理者不觸發）；背景執行不阻塞
+    _maybeRebuildIndexForInterviewers().catch(() => {});
   } finally {
     _setCasesLoadingProgress(-1);
     _syslogFlushToDrive().catch(() => {});
@@ -5807,6 +5847,22 @@ function _isInitialInterviewerOfCase(c, email) {
   if (c.initialInterviews) {
     return Object.values(c.initialInterviews).some(ii => ii?.interviewerEmail === email);
   }
+  // index-only 個案無完整晤談資料時，改用 index 帶入的 interviewerEmails
+  if (!c.initialInterview && !c.initialInterviews && Array.isArray(c.interviewerEmails)) {
+    return c.interviewerEmails.includes(email);
+  }
+  return false;
+}
+
+// 個案（可為 index-only entry）對某使用者是否「屬於我／我可見的自有案」——非管理者可見性單一真相
+// 供 renderCases 過濾與 scoped 載入 chunk 計算共用，確保兩處判定一致
+function _caseVisibleToUser(c, email, allowedSet) {
+  if (!email) return false;
+  const lat = _getLatestCounselorEmail(c); // index-only 時 fallback 到 index.counselorEmail
+  if (!lat) return true;                    // 未派案：全員可見
+  if (lat === email) return true;           // 主責
+  if (allowedSet && allowedSet.has(c.id)) return true; // 個管
+  if (_isInitialInterviewerOfCase(c, email)) return true; // 初次晤談者（index 相容）
   return false;
 }
 
@@ -5816,15 +5872,10 @@ function renderCases() {
   // 過濾個案：只有最新學期主責 / 個管 可以看到自己的個案；無主責或已封存者所有人可見
   let visible = casesData;
   if (!isAdmin) {
+    const allowedSet = new Set(configData?.users?.[currentUser.email]?.allowedCases || []);
     visible = casesData.filter(c => {
-      if (c.archived) return true;
-      const latestCounselor = _getLatestCounselorEmail(c);
-      if (!latestCounselor) return true; // 未派案，所有人可見
-      if (latestCounselor === currentUser.email) return true;
-      const allowed = configData?.users?.[currentUser.email]?.allowedCases || [];
-      if (allowed.includes(c.id)) return true;
-      if (_isInitialInterviewerOfCase(c, currentUser.email)) return true;
-      return false;
+      if (c.archived) return true; // 已封存全員可見
+      return _caseVisibleToUser(c, currentUser.email, allowedSet);
     });
   }
 
@@ -18920,6 +18971,16 @@ async function _batchWriteChunks(affectedIds, onProgress) {
 
 // ── cases-index.json（Hot/Cold 分層載入用輕量索引）─────────────────
 // 從完整 case 物件擷取索引欄位（足夠列表渲染與搜尋；封存個案僅靠此資料顯示）
+// 蒐集個案的所有初次晤談者 email（供 index 驅動的可見性判定；不含空值、去重）
+function _caseInterviewerEmails(c) {
+  const set = new Set();
+  if (c?.initialInterview?.interviewerEmail) set.add(c.initialInterview.interviewerEmail);
+  if (c?.initialInterviews) {
+    Object.values(c.initialInterviews).forEach(ii => { if (ii?.interviewerEmail) set.add(ii.interviewerEmail); });
+  }
+  return [...set];
+}
+
 function _caseToIndexEntry(c) {
   return {
     id: c.id,
@@ -18929,9 +18990,14 @@ function _caseToIndexEntry(c) {
     phone: c.phone || '',
     archived: !!c.archived,
     deleted: !!c.deleted,
-    counselorEmail: c.counselorEmail || '',
+    // 存「最新學期主責」而非 raw root 值，確保 scoped 載入與可見性判定用同一真相
+    counselorEmail: _getLatestCounselorEmail(c) || '',
     counselorName: c.counselorName || '',
     counselorText: c.counselorText || '',
+    // index-only 個案可能已帶有 interviewerEmails（來自上次 index），若無完整資料則沿用；有完整資料則重算
+    interviewerEmails: (c.initialInterview || c.initialInterviews)
+      ? _caseInterviewerEmails(c)
+      : (Array.isArray(c.interviewerEmails) ? [...c.interviewerEmails] : []),
     department: c.department || '',
     grade: c.grade || '',
     openDate: c.openDate || '',
@@ -18974,6 +19040,8 @@ function _isHotCase(c) {
 
 // 從目前 casesData 全量重建並寫入 cases-index.json（遷移／首建時用）
 async function _saveCasesIndex() {
+  // 🔴 紅線：只有持有全體完整資料時才可全量重建；scoped 載入（非管理者）只有自己幾筆，重建會覆蓋掉全體索引
+  if (!_loadedFullDataset) { _syslog('warn', '跳過 cases-index 全量重建（scoped 載入，未持有全體資料）'); return; }
   const delSet = new Set(casesManifest?.deletedIds || []);
   const cases = casesData
     .filter(c => c?.id && !delSet.has(c.id))
@@ -18986,6 +19054,8 @@ async function _saveCasesIndex() {
 // 從目前 casesData 全量重建並寫入 cases-hot.json（遷移／首建時用）
 // 僅收 hot 個案完整資料；_indexOnly 個案跳過（避免覆蓋）
 async function _saveCasesHot() {
+  // 🔴 紅線：只有持有全體完整資料時才可全量重建；scoped 載入（非管理者）重建會把全體 hot 覆蓋成只剩自己的案
+  if (!_loadedFullDataset) { _syslog('warn', '跳過 cases-hot 全量重建（scoped 載入，未持有全體資料）'); return; }
   const cases = casesData
     .filter(c => c?.id && !c._indexOnly && _isHotCase(c))
     .map(c => { const { _indexOnly, _fullLoaded, ...rest } = c; return rest; });
@@ -19039,6 +19109,24 @@ async function _updateCasesHotEntries(ids) {
   } catch (e) {
     _syslog('warn', `更新 cases-hot 失敗：${e.message}`);
   }
+}
+
+// 舊 index（無 interviewerEmails 欄位）遷移：由管理者登入時偵測並一次性重建
+// 僅限管理者執行（需全體完整資料），非管理者不觸發以免破壞資料最小化
+async function _maybeRebuildIndexForInterviewers() {
+  const isPriv = currentRole === '主任' || extraRole === '管理者';
+  if (!isPriv) return;
+  const cases = _casesIndexCache?.cases || [];
+  if (!cases.length) return;
+  if (cases.every(c => 'interviewerEmails' in c)) return; // 已是新版 index
+  _syslog('info', '偵測到舊 index 缺 interviewerEmails，管理者背景重建中…');
+  try {
+    await _ensureAllFullyLoaded('重建索引（補初次晤談者欄位）');
+    _loadedFullDataset = true; // 已補齊全體完整資料
+    await _saveCasesIndex();
+    await _saveCasesHot();
+    _syslog('info', 'index/hot 已重建（含 interviewerEmails）');
+  } catch (e) { _syslog('warn', `重建 index 失敗：${e.message}`); }
 }
 
 // 進入重度分析頁時 bulk load 所有 cold cases 補回完整資料
@@ -19109,6 +19197,21 @@ function _getHotChunks(indexData, manifest, deletedSet) {
     if (manifestSet.has(name)) hot.add(name);
   });
   return [...hot];
+}
+
+// 非管理者 scoped 載入：只算「我可見的非封存個案」所在 chunk（主責/個管/初次晤談者/未派案）
+// 封存與他人案不納入 → 敏感晤談紀錄不進入無權者的瀏覽器
+function _getMyChunks(indexData, manifest, deletedSet, email, allowedSet) {
+  const manifestSet = new Set(manifest?.chunks || []);
+  const mine = new Set();
+  (indexData?.cases || []).forEach(c => {
+    if (!c?.id || c.archived || c.deleted) return;
+    if (deletedSet && deletedSet.has(c.id)) return;
+    if (!_caseVisibleToUser(c, email, allowedSet)) return;
+    const name = getCaseChunkName(c.id);
+    if (manifestSet.has(name)) mine.add(name);
+  });
+  return [...mine];
 }
 
 // 載入指定 chunk 名單，回傳去重後的 case 陣列（含 IndexedDB 快取、分批、重試、chunk bar）
@@ -19746,7 +19849,7 @@ async function saveLeaves() {
 
 // 預設假別（首次無設定時用）；deductsQuota=是否扣抵額度
 const DEFAULT_LEAVE_TYPES = [
-  { id: 'summer',   name: '暑休',   unit: 'hour', deductsQuota: true,  defaultQuotaHours: 40, order: 1 },
+  { id: 'summer',   name: '暑休',   unit: 'hour', deductsQuota: true,  defaultQuotaHours: 40, order: 1, periodStart: '07-01', periodEnd: '08-31' },
   { id: 'personal', name: '事假',   unit: 'hour', deductsQuota: false, defaultQuotaHours: 0,  order: 2 },
   { id: 'sick',     name: '病假',   unit: 'hour', deductsQuota: false, defaultQuotaHours: 0,  order: 3 },
   { id: 'official', name: '公假',   unit: 'hour', deductsQuota: false, defaultQuotaHours: 0,  order: 4 },
@@ -19763,6 +19866,24 @@ function getLeaveTypes() {
 
 function getLeaveType(id) {
   return getLeaveTypes().find(t => t.id === id) || null;
+}
+
+// ── 假別申請期間限制（MM-DD）：如暑休僅 07-01 ~ 08-31 可申請 ──
+function _isValidMMDD(s) {
+  if (!/^\d{2}-\d{2}$/.test(s || '')) return false;
+  const mm = Number(s.slice(0, 2)), dd = Number(s.slice(3));
+  return mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31;
+}
+function _leavePeriodLabel(t) {
+  return (t && _isValidMMDD(t.periodStart) && _isValidMMDD(t.periodEnd)) ? `${t.periodStart} ~ ${t.periodEnd}` : '全年';
+}
+// 某日期（YYYY-MM-DD）是否落在假別的可申請期間內；無設定則全年皆可。支援跨年區間（如 12-01 ~ 01-31）
+function _dateInLeavePeriod(t, yyyymmdd) {
+  if (!t || !_isValidMMDD(t.periodStart) || !_isValidMMDD(t.periodEnd)) return true;
+  const md = (yyyymmdd || '').slice(5); // MM-DD
+  if (!/^\d{2}-\d{2}$/.test(md)) return true;
+  const s = t.periodStart, e = t.periodEnd;
+  return s <= e ? (md >= s && md <= e) : (md >= s || md <= e);
 }
 
 // 取得某實習生某假別的額度（小時）：優先 per-user 設定，否則用假別預設
@@ -20024,12 +20145,15 @@ function renderLeaveTypesAdmin() {
   const body = document.getElementById('attendance-body');
   if (!body) return;
   const types = getLeaveTypes();
+  const _pInput = (id, val) => `<input id="${id}" value="${escHtml(val || '')}" placeholder="MM-DD" maxlength="5" style="width:60px;padding:3px 5px;text-align:center;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;">`;
   const typeRows = types.map(t => `
     <tr>
-      <td>${escHtml(t.name)}${t.isComp ? ' <span style="font-size:.7rem;color:#92400e;background:#fef3c7;border-radius:4px;padding:0 5px;">加班補休</span>' : ''}</td>
-      <td>${t.deductsQuota ? '是' : '否'}</td>
-      <td style="text-align:right;">${t.isComp ? '依加班認證' : t.deductsQuota ? (Number(t.defaultQuotaHours) || 0) + ' 小時' : '—'}</td>
-      <td>${t.isComp ? '' : `<button class="btn btn-danger btn-sm" style="font-size:.76rem;" onclick="deleteLeaveType('${t.id}')">刪除</button>`}</td>
+      <td><input id="lt_name_${t.id}" value="${escHtml(t.name)}" style="width:120px;padding:3px 6px;border:1px solid #cbd5e0;border-radius:6px;font-size:.85rem;">${t.isComp ? ' <span style="font-size:.7rem;color:#92400e;background:#fef3c7;border-radius:4px;padding:0 5px;">加班補休</span>' : ''}</td>
+      <td style="text-align:center;">${t.isComp ? '<span style="color:#a0aec0;font-size:.8rem;">依認證</span>' : `<input type="checkbox" id="lt_deducts_${t.id}" ${t.deductsQuota ? 'checked' : ''} onchange="_ltRowToggle('${t.id}')">`}</td>
+      <td style="text-align:right;">${t.isComp ? '<span style="color:#a0aec0;font-size:.8rem;">依加班認證</span>' : `<input type="number" min="0" step="1" id="lt_quota_${t.id}" value="${Number(t.defaultQuotaHours) || 0}" ${t.deductsQuota ? '' : 'disabled'} style="width:76px;padding:3px 6px;text-align:right;border:1px solid #cbd5e0;border-radius:6px;"> <span style="font-size:.72rem;color:#a0aec0;">h</span>`}</td>
+      <td style="white-space:nowrap;">${_pInput('ltp_start_' + t.id, t.periodStart)} <span style="color:#a0aec0;">~</span> ${_pInput('ltp_end_' + t.id, t.periodEnd)}
+        <div style="font-size:.68rem;color:#a0aec0;margin-top:2px;">留空＝全年；如暑休填 07-01 ~ 08-31</div></td>
+      <td style="white-space:nowrap;"><button class="btn btn-primary btn-sm" style="font-size:.74rem;" onclick="saveLeaveType('${t.id}')">儲存</button>${t.isComp ? '' : ` <button class="btn btn-danger btn-sm" style="font-size:.74rem;" onclick="deleteLeaveType('${t.id}')">刪除</button>`}</td>
     </tr>`).join('');
 
   // 在任實習生 × 扣抵型假別 的額度設定
@@ -20057,8 +20181,8 @@ function renderLeaveTypesAdmin() {
       <div class="card-header"><h3>可申請假別</h3></div>
       <div style="padding:16px 20px;">
         <div style="overflow-x:auto;margin-bottom:16px;">
-          <table class="data-table" style="min-width:420px;">
-            <thead><tr><th>假別名稱</th><th>扣抵額度</th><th style="text-align:right;">預設額度</th><th></th></tr></thead>
+          <table class="data-table" style="min-width:600px;">
+            <thead><tr><th>假別名稱</th><th>扣抵額度</th><th style="text-align:right;">預設額度</th><th>申請期間</th><th></th></tr></thead>
             <tbody>${typeRows}</tbody>
           </table>
         </div>
@@ -20069,6 +20193,11 @@ function renderLeaveTypesAdmin() {
             <label style="font-size:.85rem;display:flex;align-items:center;gap:4px;height:38px;"><input type="checkbox" id="lt-deducts"> 此假別會扣抵額度</label></div>
           <div><label style="font-size:.8rem;color:#718096;display:block;margin-bottom:4px;">預設額度（小時）</label>
             <input id="lt-quota" type="number" min="0" step="1" value="0" class="field-input" style="width:120px;"></div>
+          <div><label style="font-size:.8rem;color:#718096;display:block;margin-bottom:4px;">申請期間（MM-DD，可留空）</label>
+            <div style="display:flex;gap:4px;align-items:center;">
+              <input id="lt-period-start" class="field-input" placeholder="07-01" maxlength="5" style="width:80px;text-align:center;">
+              <span style="color:#a0aec0;">~</span>
+              <input id="lt-period-end" class="field-input" placeholder="08-31" maxlength="5" style="width:80px;text-align:center;"></div></div>
           <button class="btn btn-primary btn-sm" onclick="addLeaveType()">新增假別</button>
         </div>
       </div>
@@ -20096,13 +20225,18 @@ async function addLeaveType() {
   if (!name) { alert('請輸入假別名稱'); return; }
   const deducts = !!document.getElementById('lt-deducts')?.checked;
   const quota = Number(document.getElementById('lt-quota')?.value) || 0;
+  const pStart = (document.getElementById('lt-period-start')?.value || '').trim();
+  const pEnd = (document.getElementById('lt-period-end')?.value || '').trim();
+  if ((pStart || pEnd) && !(_isValidMMDD(pStart) && _isValidMMDD(pEnd))) { alert('申請期間需兩欄皆填且格式為 MM-DD（如 07-01），或兩欄皆留空。'); return; }
   if (!Array.isArray(configData.leaveTypes)) configData.leaveTypes = getLeaveTypes().map(t => ({ ...t }));
   if (configData.leaveTypes.some(t => t.name === name)) { alert('已有同名假別'); return; }
-  configData.leaveTypes.push({
+  const nt = {
     id: 'lt_' + Date.now().toString(36), name, unit: 'hour',
     deductsQuota: deducts, defaultQuotaHours: deducts ? quota : 0,
     order: configData.leaveTypes.length + 1,
-  });
+  };
+  if (_isValidMMDD(pStart) && _isValidMMDD(pEnd)) { nt.periodStart = pStart; nt.periodEnd = pEnd; }
+  configData.leaveTypes.push(nt);
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); auditLog('新增假別', null, null, name); renderLeaveTypesAdmin(); showToast('已新增假別', 'success'); }
   catch (e) { showToast('新增失敗：' + e.message, 'error'); }
 }
@@ -20115,6 +20249,41 @@ async function deleteLeaveType(id) {
   configData.leaveTypes = configData.leaveTypes.filter(x => x.id !== id);
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); auditLog('刪除假別', null, null, t.name); renderLeaveTypesAdmin(); showToast('已刪除', 'success'); }
   catch (e) { showToast('刪除失敗：' + e.message, 'error'); }
+}
+
+// 扣抵額度勾選切換 → 預設額度輸入框啟用/停用
+function _ltRowToggle(id) {
+  const d = document.getElementById('lt_deducts_' + id)?.checked;
+  const q = document.getElementById('lt_quota_' + id);
+  if (q) { q.disabled = !d; if (!d) q.value = 0; }
+}
+
+// 儲存單一假別（名稱／扣抵額度／預設額度／申請期間一次存）；期間兩欄皆空＝清除限制
+async function saveLeaveType(id) {
+  const cur = getLeaveType(id);
+  if (!cur) { alert('找不到假別'); return; }
+  const name = (document.getElementById('lt_name_' + id)?.value || '').trim();
+  if (!name) { alert('假別名稱不可空白'); return; }
+  const isComp = !!cur.isComp;
+  const deducts = isComp ? true : !!document.getElementById('lt_deducts_' + id)?.checked;
+  const quota = Number(document.getElementById('lt_quota_' + id)?.value) || 0;
+  const pStart = (document.getElementById('ltp_start_' + id)?.value || '').trim();
+  const pEnd = (document.getElementById('ltp_end_' + id)?.value || '').trim();
+  if ((pStart || pEnd) && !(_isValidMMDD(pStart) && _isValidMMDD(pEnd))) { alert('申請期間需兩欄皆填且格式為 MM-DD（如 07-01），或兩欄皆留空以清除限制。'); return; }
+  if (!Array.isArray(configData.leaveTypes)) configData.leaveTypes = getLeaveTypes().map(x => ({ ...x }));
+  if (configData.leaveTypes.some(x => x.id !== id && x.name === name)) { alert('已有同名假別'); return; }
+  const t = configData.leaveTypes.find(x => x.id === id);
+  if (!t) { alert('找不到假別'); return; }
+  t.name = name;
+  if (!isComp) { t.deductsQuota = deducts; t.defaultQuotaHours = deducts ? quota : 0; }
+  if (_isValidMMDD(pStart) && _isValidMMDD(pEnd)) { t.periodStart = pStart; t.periodEnd = pEnd; }
+  else { delete t.periodStart; delete t.periodEnd; }
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('編輯假別', null, null, `${t.name}：${isComp ? '依加班認證' : (t.deductsQuota ? t.defaultQuotaHours + 'h' : '不扣抵')}／期間 ${_leavePeriodLabel(t)}`);
+    renderLeaveTypesAdmin();
+    showToast(`已儲存「${t.name}」`, 'success');
+  } catch (e) { showToast('儲存失敗：' + e.message, 'error'); }
 }
 
 async function saveInternQuota(email) {
@@ -20179,23 +20348,25 @@ function renderLeaveApplyPage() {
             <select id="la-kind" class="field-select" style="min-width:130px;" onchange="_laKindChange()">
               <option value="leave">請假 / 補休</option>
               <option value="overtime">加班登記</option>
+              <option value="manual">手動打卡</option>
             </select></div>
           <div id="la-type-row"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">假別</label>
             <select id="la-type" class="field-select" style="min-width:170px;" onchange="_laUpdateRemaining()">${typeOpts}</select></div>
-          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">開始（日期／時間）</label>
+          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;"><span id="la-from-label">開始（日期／時間）</span></label>
             <div style="display:flex;gap:4px;">
               <input id="la-from" type="date" class="field-input" value="${today}" onchange="_laAutoHours()">
               <input id="la-from-time" type="time" class="field-input" style="width:110px;" onchange="_laAutoHours()">
             </div></div>
-          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">結束（日期／時間）</label>
+          <div id="la-end-row"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">結束（日期／時間）</label>
             <div style="display:flex;gap:4px;">
               <input id="la-to" type="date" class="field-input" value="${today}" onchange="_laAutoHours()">
               <input id="la-to-time" type="time" class="field-input" style="width:110px;" onchange="_laAutoHours()">
             </div></div>
-          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">時數（小時）</label>
+          <div id="la-hours-row"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">時數（小時）</label>
             <input id="la-hours" type="number" min="0.5" step="0.5" class="field-input" style="width:110px;" placeholder="如 8"></div>
         </div>
-        <div style="font-size:.76rem;color:#a0aec0;margin-top:6px;">填入起訖時間可自動換算時數（例：08:00–12:00 = 4 小時）；亦可手動調整時數。整天請假可只填日期。</div>
+        <div id="la-hint-hours" style="font-size:.76rem;color:#a0aec0;margin-top:6px;">填入起訖時間可自動換算時數（例：08:00–12:00 = 4 小時）；亦可手動調整時數。整天請假可只填日期。</div>
+        <div id="la-hint-manual" style="display:none;font-size:.76rem;color:#a0aec0;margin-top:6px;">補登一筆打卡紀錄（如忘記簽到／簽退）。系統會依當日打卡時間先後自動判定簽到／簽退，如同打卡機。手動補登的紀錄會標記為「手動」供督導稽核。</div>
         <div id="la-remaining" style="font-size:.82rem;color:#2b6cb0;margin-top:10px;"></div>
         <div style="margin-top:10px;"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">事由</label>
           <textarea id="la-reason" class="field-input" rows="2" style="width:100%;max-width:520px;" placeholder="請簡述事由"></textarea></div>
@@ -20233,9 +20404,20 @@ function renderLeaveApplyPage() {
 
 function _laKindChange() {
   const kind = document.getElementById('la-kind')?.value || 'leave';
-  const typeRow = document.getElementById('la-type-row');
-  if (typeRow) typeRow.style.display = kind === 'overtime' ? 'none' : '';
-  _laUpdateRemaining();
+  const isManual = kind === 'manual';
+  const _show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+  _show('la-type-row', kind === 'leave');
+  _show('la-end-row', !isManual);       // 手動打卡只有單一時間點
+  _show('la-hours-row', !isManual);     // 手動打卡不需時數
+  _show('la-hint-hours', !isManual);
+  _show('la-hint-manual', isManual);
+  const fromLabel = document.getElementById('la-from-label');
+  if (fromLabel) fromLabel.textContent = isManual ? '打卡時間（日期／時間）' : '開始（日期／時間）';
+  const submitBtn = document.getElementById('la-submit-btn');
+  if (submitBtn) submitBtn.textContent = isManual ? '新增打卡' : '送出申請';
+  const rem = document.getElementById('la-remaining');
+  if (rem && isManual) { rem.textContent = ''; }
+  else _laUpdateRemaining();
 }
 
 // 依起訖日期＋時間自動換算時數（兩者皆填時數才自動帶入，使用者仍可手動覆蓋）
@@ -20272,13 +20454,19 @@ function _laUpdateRemaining() {
   }
   const typeId = document.getElementById('la-type')?.value;
   const t = getLeaveType(typeId);
-  if (!t || !t.deductsQuota) { el.textContent = '此假別不扣抵額度。'; el.style.color = '#718096'; return; }
+  // 期間限制提示（可申請期間 + 目前是否在期間內）
+  let periodTip = '';
+  if (t && _isValidMMDD(t.periodStart) && _isValidMMDD(t.periodEnd)) {
+    const inPeriod = _dateInLeavePeriod(t, _fmtDate(new Date()));
+    periodTip = `<div style="font-size:.78rem;margin-top:4px;color:${inPeriod ? '#718096' : '#c53030'};">📅 「${escHtml(t.name)}」申請期間：${t.periodStart} ~ ${t.periodEnd}${inPeriod ? '' : '（目前不在期間內，無法申請）'}</div>`;
+  }
+  if (!t || !t.deductsQuota) { el.innerHTML = '此假別不扣抵額度。' + periodTip; el.style.color = '#718096'; return; }
   const remaining = _leaveRemaining(currentUser.email, typeId);
   if (t.isComp) {
-    el.innerHTML = `可用補休：<strong>${remaining}</strong> 小時（已認證加班 − 已用補休，含待審核佔用）`;
+    el.innerHTML = `可用補休：<strong>${remaining}</strong> 小時（已認證加班 − 已用補休，含待審核佔用）` + periodTip;
   } else {
     const quota = _leaveQuotaHours(currentUser.email, typeId);
-    el.innerHTML = `剩餘額度：<strong>${remaining}</strong> / ${quota} 小時（含待審核佔用）`;
+    el.innerHTML = `剩餘額度：<strong>${remaining}</strong> / ${quota} 小時（含待審核佔用）` + periodTip;
   }
   el.style.color = remaining <= 0 ? '#c53030' : '#2b6cb0';
 }
@@ -20294,6 +20482,7 @@ function _laMsg(type, text) {
 async function submitLeave() {
   if (_leaveSubmitting) return; // 防重複提交
   const kind = document.getElementById('la-kind')?.value || 'leave';
+  if (kind === 'manual') { await submitManualPunch(); return; }
   const fromDate = document.getElementById('la-from')?.value;
   const toDate = document.getElementById('la-to')?.value || fromDate;
   const fromTime = document.getElementById('la-from-time')?.value || '';
@@ -20311,6 +20500,12 @@ async function submitLeave() {
     const t = getLeaveType(leaveTypeId);
     if (!t) { alert('請選擇假別'); return; }
     leaveTypeName = t.name; deductsQuota = !!t.deductsQuota;
+    if (_isValidMMDD(t.periodStart) && _isValidMMDD(t.periodEnd)) {
+      if (!_dateInLeavePeriod(t, fromDate) || !_dateInLeavePeriod(t, toDate)) {
+        alert(`「${t.name}」僅限每年 ${t.periodStart} ~ ${t.periodEnd} 期間申請，且起訖日期皆需落在此期間內。`);
+        return;
+      }
+    }
     if (t.deductsQuota) {
       const remaining = _leaveRemaining(currentUser.email, leaveTypeId);
       if (remaining != null && hours > remaining) {
@@ -20365,6 +20560,57 @@ async function submitLeave() {
     showToast('送出失敗：' + e.message, 'error');
   }
   _updateLeaveBadges();
+}
+
+// 手動補登打卡：只有單一時間點，寫入 attendanceData（與打卡機同一資料）；簽到/簽退由當日時間先後自動判定
+async function submitManualPunch() {
+  if (_leaveSubmitting) return;
+  const date = document.getElementById('la-from')?.value;
+  const time = document.getElementById('la-from-time')?.value || '';
+  const reason = (document.getElementById('la-reason')?.value || '').trim();
+  if (!date) { alert('請選擇打卡日期'); return; }
+  if (!time) { alert('請選擇打卡時間'); return; }
+  const when = new Date(`${date}T${time}`);
+  if (isNaN(when.getTime())) { alert('打卡時間格式不正確'); return; }
+  if (when.getTime() > Date.now() + 60000) { alert('打卡時間不可為未來時間'); return; }
+
+  _leaveSubmitting = true;
+  const btn = document.getElementById('la-submit-btn');
+  const _btnText = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.6'; btn.style.cursor = 'wait'; btn.textContent = '新增中…'; }
+  _laMsg('info', '⏳ 新增打卡中…');
+
+  const record = {
+    id: 'att_' + currentUser.email + '_' + when.getTime(),
+    email: currentUser.email,
+    name: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
+    type: 'punch',
+    timestamp: when.toISOString(),
+    date: _fmtDate(when),
+    manual: true,
+    manualBy: currentUser.email,
+    manualAt: new Date().toISOString(),
+    ...(reason ? { manualNote: reason } : {}),
+  };
+  if (!attendanceData || !Array.isArray(attendanceData.records)) attendanceData = { records: [] };
+  attendanceData.records.push(record);
+  const jobId = bgJobAdd('手動補登打卡');
+  try {
+    await saveAttendance();
+    auditLog('手動補登打卡', null, null, `${record.name || currentUser.email} ${date} ${time}${reason ? '（' + reason + '）' : ''}`);
+    bgJobDone(jobId);
+    _leaveSubmitting = false;
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; btn.textContent = _btnText; }
+    showToast('✅ 已補登打卡', 'success');
+    _laMsg('success', `✅ 已補登打卡：${date} ${time}`);
+  } catch (e) {
+    attendanceData.records.pop();
+    bgJobFail(jobId, e.message);
+    _leaveSubmitting = false;
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; btn.textContent = _btnText; }
+    _laMsg('error', '補登失敗：' + e.message);
+    showToast('補登失敗：' + e.message, 'error');
+  }
 }
 
 async function cancelLeave(id) {
@@ -20445,6 +20691,7 @@ function renderClockPage() {
                     <span style="font-size:1.1rem;">${icon}</span>
                     <span style="font-weight:600;color:#2d3748;min-width:36px;">${text}</span>
                     <span style="color:#4a5568;font-size:.9rem;">${_fmtTime(r.timestamp)}</span>
+                    ${r.manual ? '<span style="font-size:.7rem;color:#6b46c1;background:#e9d8fd;border-radius:4px;padding:0 5px;">手動</span>' : ''}
                     <span style="margin-left:auto;display:flex;align-items:center;gap:6px;">${locTag}${updBtn}</span>
                   </div>${hint}${origHint}
                 </div>`;
@@ -20689,9 +20936,9 @@ function renderAttendancePage() {
                 const { icon, text, color } = _punchLabel(r, records);
                 return `<tr>
                 <td>${r.name || r.email}</td>
-                <td><span style="font-weight:600;color:${color}">${icon} ${text}</span></td>
+                <td><span style="font-weight:600;color:${color}">${icon} ${text}</span>${r.manual ? ' <span style="font-size:.7rem;color:#6b46c1;background:#e9d8fd;border-radius:4px;padding:0 5px;" title="手動補登">手動</span>' : ''}</td>
                 <td>${new Date(r.timestamp).toLocaleString('zh-TW')}</td>
-                <td>${r.lat ? `<button class="btn btn-secondary btn-sm" onclick="renderAttendanceMapPoint(${r.lat},${r.lng})">📍</button> ${_isNearCampus(r.lat,r.lng)?'<span style="color:#276749">校區內</span>':'<span style="color:#c53030">校區外</span>'}${r.accuracyLow&&!r.locationUpdated?' <span style="color:#c05621" title="定位精度不足">⚠️</span>':''}${r.locationUpdated?` <span style="font-size:.72rem;color:#3182ce;">✏️已更新</span>`:''}${r.locationUpdated&&r.origLat!=null?`<br><span style="font-size:.72rem;color:#a0aec0;">原: ${_isNearCampus(r.origLat,r.origLng)?'校區內':'校區外'}</span>`:''}` : '—'}</td>
+                <td>${r.manual ? `<span style="color:#6b46c1;font-size:.8rem;">手動補登${r.manualNote ? '：' + escHtml(r.manualNote) : ''}</span>` : r.lat ? `<button class="btn btn-secondary btn-sm" onclick="renderAttendanceMapPoint(${r.lat},${r.lng})">📍</button> ${_isNearCampus(r.lat,r.lng)?'<span style="color:#276749">校區內</span>':'<span style="color:#c53030">校區外</span>'}${r.accuracyLow&&!r.locationUpdated?' <span style="color:#c05621" title="定位精度不足">⚠️</span>':''}${r.locationUpdated?` <span style="font-size:.72rem;color:#3182ce;">✏️已更新</span>`:''}${r.locationUpdated&&r.origLat!=null?`<br><span style="font-size:.72rem;color:#a0aec0;">原: ${_isNearCampus(r.origLat,r.origLng)?'校區內':'校區外'}</span>`:''}` : '—'}</td>
               </tr>`;}).join('')}
         </tbody>
       </table>
@@ -21874,6 +22121,23 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '個案載入：非管理者只下載自己有權檢視的個案（資料最小化）', isProd: true, items: [
+      item('安全', '非管理者（主責/心理師/實習生）啟動時只完整下載自己主責、個管、初次晤談、未派案的個案；他人敏感晤談紀錄不再進入無權者瀏覽器'),
+      item('效能', '啟動改為只載入「我的個案」所在區塊，下載量與記憶體大幅降低；主任/管理者維持載入全部'),
+      item('相容', 'index 新增 interviewerEmails 欄位以正確判定「非主責的初次晤談者」可見性；管理者登入時自動一次性補齊舊索引'),
+      item('保護', '非管理者只持有自己的資料時，禁止全量重建共享索引/hot 檔，避免覆蓋全體資料'),
+    ]},
+    { date: '2026-07-02', title: '差勤：新增「手動打卡」補登（單一時間點，簽到/簽退自動判定）', isProd: true, items: [
+      item('新功能', '差勤申請頁類型新增「手動打卡」：設定日期＋時間即可補登一筆打卡（如忘記簽到／簽退）'),
+      item('新功能', '如同打卡機只有單一時間點，簽到／簽退由當日打卡時間先後自動判定，無需選擇'),
+      item('稽核', '手動補登的紀錄標記為「手動」（含補登人、時間、備註），於打卡頁與差勤管理清楚顯示並寫入稽核日誌'),
+    ]},
+    { date: '2026-07-02', title: '差勤：假別可完整編輯（名稱／額度／申請期間）', isProd: true, items: [
+      item('新功能', '差勤管理 → 假別與額度：每個假別可直接編輯名稱、是否扣抵、預設額度（如調整暑休額度），按「儲存」即生效'),
+      item('新功能', '假別新增「申請期間」欄位（MM-DD ~ MM-DD）；暑休預設 07-01 ~ 08-31，僅該期間可申請，支援跨年區間（如 12-01 ~ 01-31）'),
+      item('新功能', '送出申請時檢查起訖日期是否落在假別的可申請期間內，逾期以提示阻擋送出'),
+      item('改善', '申請頁選取受限假別時，即時顯示可申請期間與「目前不在期間內」紅字提示'),
+    ]},
     { date: '2026-07-02', title: '緊急修復：ml 明細列表徹底收束到外層欄寬', isProd: true, items: [
       item('修復', '前版修正未生效——展開儲存格套用 max-width:0 + overflow:hidden 的 CSS 收束技巧，內層 div 帶 overflow-x:auto 於必要時提供橫向捲軸'),
       item('修復', '藍色連請三天邊框改由內層 div 承載（原本在 tr 上會被截斷）'),
