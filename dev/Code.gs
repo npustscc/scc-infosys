@@ -30,9 +30,16 @@ function doPost(e) {
     // 根據前端傳入的 rootFolderId 決定此次請求的資料根目錄與日曆名稱
     let ctx = { root: ROOT_FOLDER_ID, configOverride: CONFIG_FILE_ID_OVERRIDE, calendarName: CALENDAR_NAME };
     if (rootFolderId) {
-      if (!ALLOWED_ROOTS[rootFolderId]) return jsonResp_({ error: 'Unauthorized rootFolderId' });
-      const rootCfg = ALLOWED_ROOTS[rootFolderId];
-      ctx = { root: rootFolderId, configOverride: rootCfg.configOverride, calendarName: rootCfg.calendarName || CALENDAR_NAME, gmailLabel: rootCfg.gmailLabel || 'ml-processed-dev' };
+      if (ALLOWED_ROOTS[rootFolderId]) {
+        const rootCfg = ALLOWED_ROOTS[rootFolderId];
+        ctx = { root: rootFolderId, configOverride: rootCfg.configOverride, calendarName: rootCfg.calendarName || CALENDAR_NAME, gmailLabel: rootCfg.gmailLabel || 'ml-processed-dev' };
+      } else {
+        // 例外白名單：issues.json (許願池/錯誤回報) 允許跨環境（dev/prod 共用同一份）
+        const p = params.path || params.name || '';
+        const isIssuesOp = p === 'issues.json';
+        if (!isIssuesOp) return jsonResp_({ error: 'Unauthorized rootFolderId' });
+        ctx = { root: rootFolderId, configOverride: null, calendarName: CALENDAR_NAME };
+      }
     }
 
     let result;
