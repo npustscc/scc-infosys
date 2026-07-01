@@ -11796,7 +11796,7 @@ async function archiveCase(caseId) {
     auditLog('封存個案', caseId);
     bgJobDone(jobId);
   } catch (err) {
-    delete casesData[idx].archived;
+    casesData[idx].archived = false;
     bgJobFail(jobId, err.message);
     renderCases();
     if (_detailCaseId === caseId) showCaseDetail(caseId);
@@ -11808,7 +11808,7 @@ async function unarchiveCase(caseId) {
   if (!c) return;
   if (!confirm(`確定要解除封存個案「${c.name}（${c.id}）」？`)) return;
   const idx = casesData.findIndex(x => x.id === caseId);
-  delete casesData[idx].archived;
+  casesData[idx].archived = false;
   casesData[idx].updatedAt = new Date().toISOString();
   renderCases();
   if (_detailCaseId === caseId) showCaseDetail(caseId);
@@ -11860,7 +11860,7 @@ async function archiveNonCurrentOpenCases() {
     bgJobDone(jobId);
     showToast(`已封存 ${ids.length} 個個案；本學期開案中 ${keepHot.length} 個維持 hot。重新整理即可驗證載入速度。`, 'success');
   } catch (e) {
-    toArchive.forEach(c => { delete c.archived; });
+    toArchive.forEach(c => { c.archived = false; });
     bgJobFail(jobId, e.message);
     renderCases();
     showToast('批次封存失敗：' + e.message, 'error');
@@ -11893,7 +11893,7 @@ async function batchArchiveCases(ids) {
   } catch(e) {
     toArchive.forEach(id => {
       const idx = casesData.findIndex(x => x.id === id);
-      if (idx >= 0) delete casesData[idx].archived;
+      if (idx >= 0) casesData[idx].archived = false;
     });
     bgJobFail(jobId, e.message);
     renderCases();
@@ -11911,7 +11911,7 @@ async function batchUnarchiveCases(ids) {
   const now = new Date().toISOString();
   toUnarchive.forEach(id => {
     const idx = casesData.findIndex(x => x.id === id);
-    if (idx >= 0) { delete casesData[idx].archived; casesData[idx].updatedAt = now; }
+    if (idx >= 0) { casesData[idx].archived = false; casesData[idx].updatedAt = now; }
   });
   _cnSelected.clear();
   _casesSelected.clear();
@@ -18738,6 +18738,11 @@ async function driveSaveJsonInCases(fileName, content) {
 async function _batchWriteChunks(affectedIds, onProgress) {
   const affSet = new Set(affectedIds);
   const affChunks = new Set([...affSet].map(getCaseChunkName));
+  // 保護：affected chunks 內若有 cold case（含未在 affectedIds 但在同 chunk 者），先載入完整資料
+  const coldIdsInAffChunks = casesData
+    .filter(c => c?.id && c._indexOnly && !c._fullLoaded && affChunks.has(getCaseChunkName(c.id)))
+    .map(c => c.id);
+  if (coldIdsInAffChunks.length) await _ensureFullCases(coldIdsInAffChunks);
   const chunkMap = {};
   const deletedSet = new Set(casesManifest.deletedIds || []);
   casesData.forEach(c => {
@@ -18832,6 +18837,47 @@ async function _updateCasesIndexEntries(ids) {
   } catch (e) {
     _syslog('warn', `更新 cases-index 失敗：${e.message}`);
   }
+}
+
+// 確保給定的 caseIds 都是 _fullLoaded；cold case 先從 IndexedDB／Drive 補回完整資料
+// 保護 saveCasesChunks／_batchWriteChunks 不會用 _indexOnly 覆蓋 Drive 完整內容（records/attachments 等）
+// 合併語意：僅補上 c 未持有的欄位，呼叫者已修改的欄位（如 archived）不被覆蓋
+async function _ensureFullCases(caseIds) {
+  const ids = [...new Set((caseIds || []).filter(Boolean))];
+  const needLoad = ids
+    .map(id => casesData.find(x => x.id === id))
+    .filter(c => c && c._indexOnly && !c._fullLoaded);
+  if (!needLoad.length) return;
+  const byChunk = new Map();
+  needLoad.forEach(c => {
+    const name = getCaseChunkName(c.id);
+    if (!byChunk.has(name)) byChunk.set(name, []);
+    byChunk.get(name).push(c);
+  });
+  await Promise.all([...byChunk.entries()].map(async ([chunkName, cases]) => {
+    let data = await _ckLoadAny(chunkName).catch(() => null);
+    if (!data) {
+      try {
+        data = await driveReadJson(`cases/${chunkName}.json`);
+        if (data) _ckSave(chunkName, data, '');
+      } catch (e) {
+        _syslog('warn', `_ensureFullCases 讀取 ${chunkName} 失敗：${e.message}`);
+        cases.forEach(c => { c._fullLoaded = true; }); // 防死循環
+        return;
+      }
+    }
+    const byId = new Map((data?.cases || []).map(x => [x.id, x]));
+    cases.forEach(c => {
+      const full = byId.get(c.id);
+      if (full) {
+        for (const k of Object.keys(full)) if (!(k in c)) c[k] = full[k];
+        c._fullLoaded = true;
+        c._indexOnly = false;
+      } else {
+        c._fullLoaded = true;
+      }
+    });
+  }));
 }
 
 // 計算 hot chunks：含有「未封存且未刪除」個案的 chunk 名單（與 manifest 取交集）
@@ -18953,6 +18999,8 @@ async function saveCasesChunks(...args) {
   let onProgress = null;
   if (args.length && typeof args[args.length - 1] === 'function') onProgress = args.pop();
   const caseIds = args.filter(Boolean);
+  // 保護：cold case 寫入前補回完整資料，避免 _indexOnly 覆蓋 Drive（records/attachments 等）
+  await _ensureFullCases(caseIds);
   const chunkNames = [...new Set(caseIds.map(getCaseChunkName))];
   const modifiedIds = new Set(caseIds);
   let manifestChanged = false;
@@ -21600,6 +21648,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-01', title: '修正：批次解封／編輯封存個案不再遺失記錄', isProd: false, items: [
+      item('修復', 'Hot/Cold 分層載入下，對「封存個案（cold）」執行批次解封或任何寫入時，寫入前會先從 IndexedDB／Drive 補回完整資料，避免以輕量索引覆蓋 Drive 上的晤談紀錄、附件、精神科紀錄等內容'),
+      item('修復', '解封相關函式的內部旗標統一改為顯式 archived=false（原本使用 delete 會與 cold case 補資料流程產生衝突）'),
+    ]},
     { date: '2026-07-01', title: '打卡模式快速進入（手機打卡優化）', isProd: true, items: [
       item('改善', '透過 ?page=clock 進入時，登入後直接顯示打卡頁，不再載入個案等重資料、不顯示個案載入進度條，符合手機快速打卡的即時性'),
     ]},
