@@ -2227,6 +2227,11 @@
             <div id="nc-b-reasons-section" style="display:none;margin-top:8px;padding:10px 12px;background:#fffaf0;border:1px solid #fbd38d;border-radius:6px;">
               <div style="font-size:.85rem;color:#7c2d12;margin-bottom:6px;font-weight:600;">B 案原由（可複選，至少一項）<span class="req">*</span></div>
               <div id="nc-b-reasons-chips" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
+              <div style="display:flex;gap:6px;margin-top:8px;align-items:center;">
+                <input type="text" id="nc-b-reason-new" class="field-input" placeholder="新增其他原由…" style="flex:1;min-width:140px;max-width:260px;font-size:.85rem;padding:4px 8px;" onkeydown="if(event.key==='Enter'){event.preventDefault();_ncAddBReasonInline();}" />
+                <button type="button" class="btn btn-secondary btn-sm" onclick="_ncAddBReasonInline()" style="font-size:.8rem;padding:4px 10px;">＋ 加入</button>
+              </div>
+              <div style="font-size:.72rem;color:#7c2d12;margin-top:4px;">新增後同步存入後台快速選項，供之後開案共用。</div>
             </div>
           </div>
         </div>
@@ -21809,6 +21814,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-01', title: 'B 案 chips 可即席新增；列印無個管時不顯示標題', isProd: false, items: [
+      item('改善', '新開案表單的 B 案原由 chips 區加入「＋ 加入」輸入欄，可即席新增新原由並同步存到後台快速選項；不需切到後台'),
+      item('改善', '身心調適假列印通知單：若該個案未設個管，則不顯示「個管」標題（避免顯示「個管：—」）'),
+    ]},
     { date: '2026-07-01', title: '身心調適假：重新解析舊信件（補齊節次等欄位）', isProd: false, items: [
       item('新功能', '身心調適假頁面新增「🔄 重新解析舊信件」按鈕（主任/管理者/身心調適假窗口可用），將 Gmail 中已標記為 ml-processed 的信件重新解析，補上節次、課名等原本沒抓到的欄位'),
       item('保護', '使用者管理欄位（受理情況、已閱、已刪除等）不會被覆蓋'),
@@ -24604,14 +24613,13 @@ function mlPrintNotices() {
     const days = totalDays(recs);
     const maxRisk = Math.max(0, ...recs.map(l => _mlMatchKeywords(l.reason).maxLevel));
     const tagHtml = isConsec ? tagBadge('consec','連請三天') : days >= 3 ? tagBadge('accum',`累計 ${days} 天`) : '';
-    // 主責 + 個管（列印用，顯示姓名）
+    // 主責 + 個管（列印用，顯示姓名；無個管則不顯示個管標題）
     const counselorLbl = mc ? (formatCounselorLabel(mc.counselorEmail) || mc.counselorName || mc.counselorText || '—') : '—';
     const managers = mc ? Object.entries(configData?.users || {})
       .filter(([email, info]) => (info.allowedCases || []).includes(mc.id))
       .map(([email, info]) => info.name || email) : [];
-    const managersLbl = managers.length ? managers.join('、') : '—';
     const staffLine = mc
-      ? `<span style="font-size:12pt;font-weight:400;margin-left:8px;color:#4a5568;">主責：${escHtml(counselorLbl)}　個管：${escHtml(managersLbl)}</span>`
+      ? `<span style="font-size:12pt;font-weight:400;margin-left:8px;color:#4a5568;">主責：${escHtml(counselorLbl)}${managers.length ? `　個管：${escHtml(managers.join('、'))}` : ''}</span>`
       : '';
     const headerId = caseNum
       ? `${escHtml(caseNum)}（${escHtml(anonName(name))} / ${escHtml(sid)}）${staffLine}`
@@ -28301,6 +28309,28 @@ function _ncToggleBReason(val) {
   if (_ncBReasonsSelected.has(val)) _ncBReasonsSelected.delete(val);
   else _ncBReasonsSelected.add(val);
   _ncRenderBReasonChips();
+}
+// 表單內即席新增 B 案原由：即時可勾選 + 同步存到 config 供未來共用
+async function _ncAddBReasonInline() {
+  const input = document.getElementById('nc-b-reason-new');
+  if (!input) return;
+  const val = (input.value || '').trim();
+  if (!val) { alert('請輸入 B 案原由。'); return; }
+  const presets = _getBCaseReasonPresets();
+  if (presets.includes(val)) {
+    // 已存在：直接勾選、不重複寫入
+    _ncBReasonsSelected.add(val);
+    _ncRenderBReasonChips();
+    input.value = '';
+    return;
+  }
+  if (!configData.bCaseReasonPresets) configData.bCaseReasonPresets = [...presets];
+  configData.bCaseReasonPresets.push(val);
+  _ncBReasonsSelected.add(val);
+  _ncRenderBReasonChips();
+  input.value = '';
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); }
+  catch (e) { showToast('已加入本次選單，但同步至後台失敗：' + e.message, 'warn'); }
 }
 
 
