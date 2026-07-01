@@ -19746,7 +19746,7 @@ async function saveLeaves() {
 
 // 預設假別（首次無設定時用）；deductsQuota=是否扣抵額度
 const DEFAULT_LEAVE_TYPES = [
-  { id: 'summer',   name: '暑休',   unit: 'hour', deductsQuota: true,  defaultQuotaHours: 40, order: 1 },
+  { id: 'summer',   name: '暑休',   unit: 'hour', deductsQuota: true,  defaultQuotaHours: 40, order: 1, periodStart: '07-01', periodEnd: '08-31' },
   { id: 'personal', name: '事假',   unit: 'hour', deductsQuota: false, defaultQuotaHours: 0,  order: 2 },
   { id: 'sick',     name: '病假',   unit: 'hour', deductsQuota: false, defaultQuotaHours: 0,  order: 3 },
   { id: 'official', name: '公假',   unit: 'hour', deductsQuota: false, defaultQuotaHours: 0,  order: 4 },
@@ -19763,6 +19763,24 @@ function getLeaveTypes() {
 
 function getLeaveType(id) {
   return getLeaveTypes().find(t => t.id === id) || null;
+}
+
+// ── 假別申請期間限制（MM-DD）：如暑休僅 07-01 ~ 08-31 可申請 ──
+function _isValidMMDD(s) {
+  if (!/^\d{2}-\d{2}$/.test(s || '')) return false;
+  const mm = Number(s.slice(0, 2)), dd = Number(s.slice(3));
+  return mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31;
+}
+function _leavePeriodLabel(t) {
+  return (t && _isValidMMDD(t.periodStart) && _isValidMMDD(t.periodEnd)) ? `${t.periodStart} ~ ${t.periodEnd}` : '全年';
+}
+// 某日期（YYYY-MM-DD）是否落在假別的可申請期間內；無設定則全年皆可。支援跨年區間（如 12-01 ~ 01-31）
+function _dateInLeavePeriod(t, yyyymmdd) {
+  if (!t || !_isValidMMDD(t.periodStart) || !_isValidMMDD(t.periodEnd)) return true;
+  const md = (yyyymmdd || '').slice(5); // MM-DD
+  if (!/^\d{2}-\d{2}$/.test(md)) return true;
+  const s = t.periodStart, e = t.periodEnd;
+  return s <= e ? (md >= s && md <= e) : (md >= s || md <= e);
 }
 
 // 取得某實習生某假別的額度（小時）：優先 per-user 設定，否則用假別預設
@@ -20024,11 +20042,15 @@ function renderLeaveTypesAdmin() {
   const body = document.getElementById('attendance-body');
   if (!body) return;
   const types = getLeaveTypes();
+  const _pInput = (id, val) => `<input id="${id}" value="${escHtml(val || '')}" placeholder="MM-DD" maxlength="5" style="width:60px;padding:3px 5px;text-align:center;border:1px solid #cbd5e0;border-radius:6px;font-size:.8rem;">`;
   const typeRows = types.map(t => `
     <tr>
       <td>${escHtml(t.name)}${t.isComp ? ' <span style="font-size:.7rem;color:#92400e;background:#fef3c7;border-radius:4px;padding:0 5px;">加班補休</span>' : ''}</td>
       <td>${t.deductsQuota ? '是' : '否'}</td>
       <td style="text-align:right;">${t.isComp ? '依加班認證' : t.deductsQuota ? (Number(t.defaultQuotaHours) || 0) + ' 小時' : '—'}</td>
+      <td style="white-space:nowrap;">${_pInput('ltp_start_' + t.id, t.periodStart)} <span style="color:#a0aec0;">~</span> ${_pInput('ltp_end_' + t.id, t.periodEnd)}
+        <button class="btn btn-secondary btn-sm" style="font-size:.72rem;margin-left:4px;" onclick="saveLeaveTypePeriod('${t.id}')">儲存期間</button>
+        <div style="font-size:.68rem;color:#a0aec0;margin-top:2px;">留空＝全年；如暑休填 07-01 ~ 08-31</div></td>
       <td>${t.isComp ? '' : `<button class="btn btn-danger btn-sm" style="font-size:.76rem;" onclick="deleteLeaveType('${t.id}')">刪除</button>`}</td>
     </tr>`).join('');
 
@@ -20057,8 +20079,8 @@ function renderLeaveTypesAdmin() {
       <div class="card-header"><h3>可申請假別</h3></div>
       <div style="padding:16px 20px;">
         <div style="overflow-x:auto;margin-bottom:16px;">
-          <table class="data-table" style="min-width:420px;">
-            <thead><tr><th>假別名稱</th><th>扣抵額度</th><th style="text-align:right;">預設額度</th><th></th></tr></thead>
+          <table class="data-table" style="min-width:600px;">
+            <thead><tr><th>假別名稱</th><th>扣抵額度</th><th style="text-align:right;">預設額度</th><th>申請期間</th><th></th></tr></thead>
             <tbody>${typeRows}</tbody>
           </table>
         </div>
@@ -20069,6 +20091,11 @@ function renderLeaveTypesAdmin() {
             <label style="font-size:.85rem;display:flex;align-items:center;gap:4px;height:38px;"><input type="checkbox" id="lt-deducts"> 此假別會扣抵額度</label></div>
           <div><label style="font-size:.8rem;color:#718096;display:block;margin-bottom:4px;">預設額度（小時）</label>
             <input id="lt-quota" type="number" min="0" step="1" value="0" class="field-input" style="width:120px;"></div>
+          <div><label style="font-size:.8rem;color:#718096;display:block;margin-bottom:4px;">申請期間（MM-DD，可留空）</label>
+            <div style="display:flex;gap:4px;align-items:center;">
+              <input id="lt-period-start" class="field-input" placeholder="07-01" maxlength="5" style="width:80px;text-align:center;">
+              <span style="color:#a0aec0;">~</span>
+              <input id="lt-period-end" class="field-input" placeholder="08-31" maxlength="5" style="width:80px;text-align:center;"></div></div>
           <button class="btn btn-primary btn-sm" onclick="addLeaveType()">新增假別</button>
         </div>
       </div>
@@ -20096,13 +20123,18 @@ async function addLeaveType() {
   if (!name) { alert('請輸入假別名稱'); return; }
   const deducts = !!document.getElementById('lt-deducts')?.checked;
   const quota = Number(document.getElementById('lt-quota')?.value) || 0;
+  const pStart = (document.getElementById('lt-period-start')?.value || '').trim();
+  const pEnd = (document.getElementById('lt-period-end')?.value || '').trim();
+  if ((pStart || pEnd) && !(_isValidMMDD(pStart) && _isValidMMDD(pEnd))) { alert('申請期間需兩欄皆填且格式為 MM-DD（如 07-01），或兩欄皆留空。'); return; }
   if (!Array.isArray(configData.leaveTypes)) configData.leaveTypes = getLeaveTypes().map(t => ({ ...t }));
   if (configData.leaveTypes.some(t => t.name === name)) { alert('已有同名假別'); return; }
-  configData.leaveTypes.push({
+  const nt = {
     id: 'lt_' + Date.now().toString(36), name, unit: 'hour',
     deductsQuota: deducts, defaultQuotaHours: deducts ? quota : 0,
     order: configData.leaveTypes.length + 1,
-  });
+  };
+  if (_isValidMMDD(pStart) && _isValidMMDD(pEnd)) { nt.periodStart = pStart; nt.periodEnd = pEnd; }
+  configData.leaveTypes.push(nt);
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); auditLog('新增假別', null, null, name); renderLeaveTypesAdmin(); showToast('已新增假別', 'success'); }
   catch (e) { showToast('新增失敗：' + e.message, 'error'); }
 }
@@ -20115,6 +20147,24 @@ async function deleteLeaveType(id) {
   configData.leaveTypes = configData.leaveTypes.filter(x => x.id !== id);
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); auditLog('刪除假別', null, null, t.name); renderLeaveTypesAdmin(); showToast('已刪除', 'success'); }
   catch (e) { showToast('刪除失敗：' + e.message, 'error'); }
+}
+
+// 儲存某假別的申請期間限制（兩欄皆填＝設定期間；兩欄皆空＝清除限制，全年可申請）
+async function saveLeaveTypePeriod(id) {
+  const pStart = (document.getElementById('ltp_start_' + id)?.value || '').trim();
+  const pEnd = (document.getElementById('ltp_end_' + id)?.value || '').trim();
+  if ((pStart || pEnd) && !(_isValidMMDD(pStart) && _isValidMMDD(pEnd))) { alert('申請期間需兩欄皆填且格式為 MM-DD（如 07-01），或兩欄皆留空以清除限制。'); return; }
+  if (!Array.isArray(configData.leaveTypes)) configData.leaveTypes = getLeaveTypes().map(x => ({ ...x }));
+  const t = configData.leaveTypes.find(x => x.id === id);
+  if (!t) { alert('找不到假別'); return; }
+  if (_isValidMMDD(pStart) && _isValidMMDD(pEnd)) { t.periodStart = pStart; t.periodEnd = pEnd; }
+  else { delete t.periodStart; delete t.periodEnd; }
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('設定假別申請期間', null, null, `${t.name}：${_leavePeriodLabel(t)}`);
+    renderLeaveTypesAdmin();
+    showToast(`已儲存「${t.name}」申請期間：${_leavePeriodLabel(t)}`, 'success');
+  } catch (e) { showToast('儲存失敗：' + e.message, 'error'); }
 }
 
 async function saveInternQuota(email) {
@@ -20272,13 +20322,19 @@ function _laUpdateRemaining() {
   }
   const typeId = document.getElementById('la-type')?.value;
   const t = getLeaveType(typeId);
-  if (!t || !t.deductsQuota) { el.textContent = '此假別不扣抵額度。'; el.style.color = '#718096'; return; }
+  // 期間限制提示（可申請期間 + 目前是否在期間內）
+  let periodTip = '';
+  if (t && _isValidMMDD(t.periodStart) && _isValidMMDD(t.periodEnd)) {
+    const inPeriod = _dateInLeavePeriod(t, _fmtDate(new Date()));
+    periodTip = `<div style="font-size:.78rem;margin-top:4px;color:${inPeriod ? '#718096' : '#c53030'};">📅 「${escHtml(t.name)}」申請期間：${t.periodStart} ~ ${t.periodEnd}${inPeriod ? '' : '（目前不在期間內，無法申請）'}</div>`;
+  }
+  if (!t || !t.deductsQuota) { el.innerHTML = '此假別不扣抵額度。' + periodTip; el.style.color = '#718096'; return; }
   const remaining = _leaveRemaining(currentUser.email, typeId);
   if (t.isComp) {
-    el.innerHTML = `可用補休：<strong>${remaining}</strong> 小時（已認證加班 − 已用補休，含待審核佔用）`;
+    el.innerHTML = `可用補休：<strong>${remaining}</strong> 小時（已認證加班 − 已用補休，含待審核佔用）` + periodTip;
   } else {
     const quota = _leaveQuotaHours(currentUser.email, typeId);
-    el.innerHTML = `剩餘額度：<strong>${remaining}</strong> / ${quota} 小時（含待審核佔用）`;
+    el.innerHTML = `剩餘額度：<strong>${remaining}</strong> / ${quota} 小時（含待審核佔用）` + periodTip;
   }
   el.style.color = remaining <= 0 ? '#c53030' : '#2b6cb0';
 }
@@ -20311,6 +20367,12 @@ async function submitLeave() {
     const t = getLeaveType(leaveTypeId);
     if (!t) { alert('請選擇假別'); return; }
     leaveTypeName = t.name; deductsQuota = !!t.deductsQuota;
+    if (_isValidMMDD(t.periodStart) && _isValidMMDD(t.periodEnd)) {
+      if (!_dateInLeavePeriod(t, fromDate) || !_dateInLeavePeriod(t, toDate)) {
+        alert(`「${t.name}」僅限每年 ${t.periodStart} ~ ${t.periodEnd} 期間申請，且起訖日期皆需落在此期間內。`);
+        return;
+      }
+    }
     if (t.deductsQuota) {
       const remaining = _leaveRemaining(currentUser.email, leaveTypeId);
       if (remaining != null && hours > remaining) {
@@ -21874,6 +21936,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '差勤：假別可設定申請期間限制（暑休僅 7/1–8/31）', isProd: false, items: [
+      item('新功能', '假別新增「申請期間」欄位（MM-DD ~ MM-DD）；暑休預設 07-01 ~ 08-31，僅該期間可申請'),
+      item('新功能', '送出申請時檢查起訖日期是否落在假別的可申請期間內，逾期以提示阻擋送出'),
+      item('新功能', '差勤管理後台可逐一設定/清除各假別的申請期間（留空＝全年），支援跨年區間（如 12-01 ~ 01-31）'),
+      item('改善', '申請頁選取受限假別時，即時顯示可申請期間與「目前不在期間內」紅字提示'),
+    ]},
     { date: '2026-07-02', title: '緊急修復：ml 明細列表徹底收束到外層欄寬', isProd: true, items: [
       item('修復', '前版修正未生效——展開儲存格套用 max-width:0 + overflow:hidden 的 CSS 收束技巧，內層 div 帶 overflow-x:auto 於必要時提供橫向捲軸'),
       item('修復', '藍色連請三天邊框改由內層 div 承載（原本在 tr 上會被截斷）'),
