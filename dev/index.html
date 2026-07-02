@@ -3414,6 +3414,7 @@
       </div>
       <div id="todos-access-audit-section"></div>
       <div id="todos-ml-notif-section"></div>
+      <div id="todos-major-events-section"></div>
       <div id="todos-assignment-section"></div>
       <div id="todos-unclosed-summary"></div>
       <div id="todos-body"></div>
@@ -18113,6 +18114,81 @@ window._mlToggleSection = function() {
   _renderMlNotifSection();
 };
 
+// 待辦頁「重大事件」區塊：拉 configData notifications 中的重大類型顯示（如 Gmail 變更）
+// 資料來源與鈴鐺同一份（configData.users[me].notifications），無需額外 Drive 寫入
+const MAJOR_EVENT_NOTIF_TYPES = new Set(['gmail_changed']);
+function _renderMajorEventNotifs() {
+  const section = document.getElementById('todos-major-events-section');
+  if (!section) return;
+  // 僅在檢視自己的待辦時顯示
+  const viewingOwn = !_todosViewUser || _todosViewUser === currentUser?.email;
+  if (!viewingOwn) { section.innerHTML = ''; return; }
+  const me = configData?.users?.[currentUser?.email];
+  const notifs = (me?.notifications || []).filter(n => MAJOR_EVENT_NOTIF_TYPES.has(n.type));
+  const pending = notifs.filter(n => !n.read);
+  if (!notifs.length) { section.innerHTML = ''; return; }
+  const isCollapsed = !!window._majorEventsCollapsed;
+  const _fmt = iso => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return isNaN(d) ? '' : d.toLocaleString('zh-TW', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+  };
+  const _renderItem = n => `<div style="display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-top:1px solid #e9d8fd;${n.read?'opacity:.6;':''}">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:.72rem;color:#553c9a;background:#e9d8fd;border-radius:3px;padding:0 5px;display:inline-block;font-weight:700;">重大事件・Gmail 變更</div>
+        <div style="font-size:.86rem;color:#2d3748;margin-top:4px;line-height:1.5;">${escHtml(n.message || '')}</div>
+        <div style="font-size:.74rem;color:#718096;margin-top:3px;">
+          ${_fmt(n.createdAt)}${n.actorName ? `　・操作者：${escHtml(n.actorName)}` : ''}${n.read && n.readAt ? `　・已讀 ${_fmt(n.readAt)}` : ''}
+        </div>
+      </div>
+      ${!n.read ? `<button onclick="_majorEventMarkRead('${escHtml(n.id)}')" style="padding:3px 10px;background:#553c9a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;flex-shrink:0;" data-tip="標記為已讀；7 天後自動移除">標記已讀</button>` : ''}
+    </div>`;
+  const titleText = pending.length
+    ? `⚠ 重大事件通知（${pending.length} 筆未讀 / 共 ${notifs.length}）`
+    : `重大事件通知（${notifs.length} 筆，皆已讀）`;
+  section.innerHTML = `
+    <div style="background:#faf5ff;border:1px solid #d6bcfa;border-radius:8px;padding:14px 16px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${!isCollapsed && notifs.length ? '4px' : '0'};cursor:pointer;user-select:none;" onclick="_majorEventsToggle()" data-tip="${isCollapsed?'展開':'收起'}重大事件區塊">
+        <div style="font-weight:700;color:#553c9a;font-size:.95rem;">${titleText}</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          ${!isCollapsed && pending.length ? `<button onclick="event.stopPropagation();_majorEventMarkAllRead()" style="padding:2px 10px;font-size:.78rem;background:#fff;border:1px solid #b794f4;border-radius:4px;color:#553c9a;cursor:pointer;">全部標為已讀</button>` : ''}
+          <button style="background:none;border:none;cursor:pointer;font-size:.88rem;color:#553c9a;padding:0 2px;">${isCollapsed?'▶':'▼'}</button>
+        </div>
+      </div>
+      ${!isCollapsed ? `<div>${notifs.map(_renderItem).join('')}</div>` : ''}
+    </div>`;
+}
+window._majorEventsToggle = function() {
+  window._majorEventsCollapsed = !window._majorEventsCollapsed;
+  _renderMajorEventNotifs();
+};
+window._majorEventMarkRead = async function(notifId) {
+  const me = configData?.users?.[currentUser?.email];
+  if (!me?.notifications) return;
+  const n = me.notifications.find(x => x.id === notifId);
+  if (!n) return;
+  n.read = true;
+  if (!n.readAt) n.readAt = new Date().toISOString();
+  _renderMajorEventNotifs();
+  renderNotifBell?.();
+  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+};
+window._majorEventMarkAllRead = async function() {
+  const me = configData?.users?.[currentUser?.email];
+  if (!me?.notifications) return;
+  const nowIso = new Date().toISOString();
+  let changed = 0;
+  me.notifications.forEach(n => {
+    if (MAJOR_EVENT_NOTIF_TYPES.has(n.type) && !n.read) {
+      n.read = true; n.readAt = nowIso; changed++;
+    }
+  });
+  if (!changed) return;
+  _renderMajorEventNotifs();
+  renderNotifBell?.();
+  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+};
+
 function _mlUpdateBatchBtn() {
   const checked = document.querySelectorAll('.ml-notif-cb:checked').length;
   const btn = document.getElementById('ml-batch-btn');
@@ -18152,6 +18228,7 @@ function renderTodosPage() {
   _renderCaseAccessAuditSection();
   _renderAssignmentTodos();
   _renderMlNotifSection();
+  _renderMajorEventNotifs();
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
 
   // ── 管理者：初始化人員篩選下拉 ──
@@ -22712,6 +22789,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '重大事件通知也在待辦事項顯示（Gmail 變更）', isProd: false, items: [
+      item('新功能', '待辦頁新增「重大事件通知」區塊（紫色卡片），從 configData notifications 拉出 gmail_changed 類型顯示'),
+      item('新功能', '每筆顯示訊息、時間、操作者姓名、已讀狀態；含「標記已讀」與「全部標為已讀」按鈕'),
+      item('新功能', '整個標題列可點擊收合，未讀數量以「N 筆未讀 / 共 M」呈現'),
+      item('相容', '資料來源與右上鈴鐺相同（無額外 Drive 寫入），已讀 7 天後自動移除的機制不受影響'),
+    ]},
     { date: '2026-07-02', title: 'Gmail 通知含操作者身分 + 操作者本人也收到留痕', isProd: false, items: [
       item('改善', '通知訊息尾端補「（由 XX 姓名／email 執行）」，明確露出誰做的變更'),
       item('改善', '通知不再跳過操作者本人：執行者也會在自己鈴鐺看到留痕記錄，避免以為「沒有通知」'),
