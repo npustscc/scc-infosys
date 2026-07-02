@@ -3488,13 +3488,25 @@
         身心調適假窗口（可存取身心調適假資料庫與關鍵字設定）
       </label>
       <label class="form-check" style="margin-top:6px;">
-        <input type="checkbox" id="modal-is-intern-admin-sup" />
+        <input type="checkbox" id="modal-is-intern-admin-sup" onchange="_updateModalSuperviseesWrap()" />
         實習生行政督導（可查看實習生差勤、審核帳號申請）
       </label>
       <label class="form-check" style="margin-top:6px;">
-        <input type="checkbox" id="modal-is-intern-pro-sup" />
+        <input type="checkbox" id="modal-is-intern-pro-sup" onchange="_updateModalSuperviseesWrap()" />
         實習生專業督導（可查看實習生差勤、審核帳號申請）
       </label>
+      <label class="form-check" style="margin-top:6px;">
+        <input type="checkbox" id="modal-is-pt-contact" onchange="_updateModalSuperviseesWrap()" />
+        兼任心理師窗口（自動成為所負責兼任心理師之個案的當然個管）
+      </label>
+    </div>
+
+    <div id="modal-supervisees-wrap" class="form-row" style="display:none;">
+      <label id="modal-supervisees-label">負責的實習生</label>
+      <div id="modal-supervisees-picker" style="max-height:220px;overflow-y:auto;border:1px solid #cbd5e0;border-radius:6px;padding:8px 10px;background:#fafbfc;">
+        <span style="font-size:.82rem;color:#a0aec0;">請先勾選督導或窗口身分…</span>
+      </div>
+      <div style="font-size:.75rem;color:#718096;margin-top:4px;">已選人員（含其手上案）在您登入時會自動變成您的當然個管；解除後即失效。停用者以灰字顯示於下方。</div>
     </div>
 
     <div id="modal-error" class="alert alert-error"></div>
@@ -5968,6 +5980,63 @@ function _getInitialInterviewersForCase(c) {
   return [...emails];
 }
 
+// ══════════════════════════════════════════════
+//  當然個管（派生式）：實習生督導 / 兼任心理師窗口
+//  設計：只存 superviseeEmails 名單；每次渲染依名單推導個管關係
+//  好處：實習生新開案自動生效、關係解除自動失效、無需批次寫 allowedCases
+// ══════════════════════════════════════════════
+function _isPartTimeContact(email) {
+  return configData?.users?.[email]?.isPartTimeContact === true;
+}
+function _isInternSupervisor(email) {
+  const r = configData?.users?.[email]?.extraRole;
+  return r === '實習生行政督導' || r === '實習生專業督導';
+}
+function _getSuperviseeEmails(email) {
+  const arr = configData?.users?.[email]?.superviseeEmails;
+  return Array.isArray(arr) ? arr.filter(Boolean) : [];
+}
+// 每次計算：casesData 較小（<= 1500），supervisees 也小；避免快取失效複雜度。
+// 若日後效能吃緊，可再引入 supervisorEmail-scoped cache 並在 saveCase/changeCounselor/saveUser 呼叫 _invalidateAutoMgrCache()。
+function _invalidateAutoMgrCache() { /* placeholder — 目前無快取 */ }
+function _getAutoManagedCaseIds(supervisorEmail) {
+  if (!supervisorEmail) return new Set();
+  const supervisees = new Set(_getSuperviseeEmails(supervisorEmail));
+  const ids = new Set();
+  if (supervisees.size) {
+    (casesData || []).forEach(c => {
+      if (!c || c.deleted) return;
+      const lat = _getLatestCounselorEmail(c);
+      if (lat && supervisees.has(lat)) ids.add(c.id);
+    });
+  }
+  return ids;
+}
+// 反查：此案有哪些自動個管；回傳 [{email, reason:{kind,label,supervisee}}]
+function _getAutoManagersForCase(caseId) {
+  const c = (casesData || []).find(x => x.id === caseId);
+  if (!c) return [];
+  const lat = _getLatestCounselorEmail(c);
+  if (!lat) return [];
+  const supervisee = configData?.users?.[lat];
+  const supName = supervisee?.name || lat;
+  const supRole = supervisee?.role || '';
+  const out = [];
+  Object.entries(configData?.users || {}).forEach(([email, u]) => {
+    if (!u || u.disabled) return;
+    if (!_getSuperviseeEmails(email).includes(lat)) return;
+    let reason = null;
+    if (_isInternSupervisor(email) && supRole === '實習諮商心理師') {
+      const roleTag = u.extraRole === '實習生行政督導' ? '行政督導' : '專業督導';
+      reason = { kind: 'supervisor', label: `督導身份·${roleTag}`, supervisee: supName };
+    } else if (_isPartTimeContact(email) && typeof supRole === 'string' && supRole.startsWith('兼任')) {
+      reason = { kind: 'ptContact', label: '窗口身份', supervisee: supName };
+    }
+    if (reason) out.push({ email, reason });
+  });
+  return out;
+}
+
 // 個案（可為 index-only entry）對某使用者是否「屬於我／我可見的自有案」——非管理者可見性單一真相
 // 供 renderCases 過濾與 scoped 載入 chunk 計算共用，確保兩處判定一致
 function _caseVisibleToUser(c, email, allowedSet) {
@@ -5975,8 +6044,11 @@ function _caseVisibleToUser(c, email, allowedSet) {
   const lat = _getLatestCounselorEmail(c); // index-only 時 fallback 到 index.counselorEmail
   if (!lat) return true;                    // 未派案：全員可見
   if (lat === email) return true;           // 主責
-  if (allowedSet && allowedSet.has(c.id)) return true; // 個管
+  if (allowedSet && allowedSet.has(c.id)) return true; // 個管（手動）
   if (_isInitialInterviewerOfCase(c, email)) return true; // 初次晤談者（index 相容）
+  // 當然個管（派生：督導/窗口）——直接查 supervisee 名單，避免依賴 casesData（chunk 載入期 casesData 尚未 populate）
+  const supervisees = _getSuperviseeEmails(email);
+  if (supervisees.length && supervisees.includes(lat)) return true;
   return false;
 }
 
@@ -6432,12 +6504,29 @@ function renderCases() {
     return (b.updatedAt || '') > (a.updatedAt || '') ? 1 : -1;
   });
 
-  // 建立「個案ID → 管理員名單」反查表
+  // 建立「個案ID → 管理員名單」反查表（手動個管 + 派生的「當然個管」）
   const caseManagerMap = {};
+  const caseManagerAutoSet = {}; // caseId → Set(email) 標示派生
   Object.entries(configData.users || {}).forEach(([key, info]) => {
     (info.allowedCases || []).forEach(id => {
       if (!caseManagerMap[id]) caseManagerMap[id] = [];
-      caseManagerMap[id].push(formatCounselorLabel(key));
+      const label = formatCounselorLabel(key);
+      if (!caseManagerMap[id].some(x => x.email === key)) caseManagerMap[id].push({ email: key, label, auto: false });
+    });
+  });
+  visible.forEach(c => {
+    _getAutoManagersForCase(c.id).forEach(({ email, reason }) => {
+      if (!caseManagerMap[c.id]) caseManagerMap[c.id] = [];
+      const tag = reason.kind === 'supervisor' ? '督' : '窗';
+      const label = formatCounselorLabel(email) + tag;
+      const exist = caseManagerMap[c.id].find(x => x.email === email);
+      if (exist) {
+        // 手動+自動兼具 → 保留手動 label 但補標記
+        if (!exist.label.endsWith(tag)) exist.label += tag;
+      } else {
+        caseManagerMap[c.id].push({ email, label, auto: true });
+        (caseManagerAutoSet[c.id] = caseManagerAutoSet[c.id] || new Set()).add(email);
+      }
     });
   });
   // 建立「個案ID → 初談者名單」反查表（權限同個管，badge 不同）
@@ -6565,7 +6654,7 @@ function renderCases() {
         (caseManagerMap[c.id] || []).length
           ? `<div style="font-size:.72rem;margin-top:2px;color:#2471a3;">
                <span style="background:#d6eaf8;border-radius:3px;padding:0 4px;font-weight:700;letter-spacing:.02em;">管</span>
-               ${escHtml((caseManagerMap[c.id] || []).join('、'))}
+               ${(caseManagerMap[c.id] || []).map(x => escHtml(x.label || x)).join('、')}
              </div>`
           : ''
       }${
@@ -7656,6 +7745,77 @@ async function importBulkUsers() {
 //  使用者 Modal
 // ══════════════════════════════════════════════
 let _editingEmail = null;
+let _modalSuperviseeSelected = new Set(); // supervisee email 集合，儲存時寫回 superviseeEmails
+
+// 依當下勾選的督導/窗口身分決定候選者：
+//   實習生督導 → role === '實習諮商心理師'
+//   兼任窗口   → role.startsWith('兼任')
+function _modalSuperviseeCandidates() {
+  const isInternSup = document.getElementById('modal-is-intern-admin-sup')?.checked
+                    || document.getElementById('modal-is-intern-pro-sup')?.checked;
+  const isPt = document.getElementById('modal-is-pt-contact')?.checked;
+  const roles = new Set();
+  if (isInternSup) roles.add('實習諮商心理師');
+  return Object.entries(configData?.users || {}).filter(([, u]) => {
+    if (!u || !u.role) return false;
+    if (roles.has(u.role)) return true;
+    if (isPt && typeof u.role === 'string' && u.role.startsWith('兼任')) return true;
+    return false;
+  }).sort(([, a], [, b]) => (a.name || '').localeCompare(b.name || '', 'zh'));
+}
+function _updateModalSuperviseesWrap() {
+  const isInternSup = document.getElementById('modal-is-intern-admin-sup')?.checked
+                    || document.getElementById('modal-is-intern-pro-sup')?.checked;
+  const isPt = document.getElementById('modal-is-pt-contact')?.checked;
+  const wrap = document.getElementById('modal-supervisees-wrap');
+  const label = document.getElementById('modal-supervisees-label');
+  if (!wrap) return;
+  if (!isInternSup && !isPt) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+  if (label) {
+    label.textContent = (isInternSup && isPt) ? '負責的實習生與兼任心理師'
+                     : isInternSup ? '負責的實習生'
+                     : '負責的兼任心理師';
+  }
+  _renderModalSuperviseesPicker();
+}
+function _renderModalSuperviseesPicker() {
+  const picker = document.getElementById('modal-supervisees-picker');
+  if (!picker) return;
+  const cands = _modalSuperviseeCandidates();
+  const active   = cands.filter(([, u]) => !u.disabled);
+  const disabled = cands.filter(([,  u]) =>  u.disabled);
+  if (!cands.length) {
+    picker.innerHTML = '<span style="font-size:.82rem;color:#a0aec0;">目前無符合角色的候選人（實習諮商心理師/兼任心理師）。</span>';
+    return;
+  }
+  const row = ([email, u], greyOut) => {
+    const checked = _modalSuperviseeSelected.has(email) ? 'checked' : '';
+    const name = escHtml(u.name || email);
+    const roleTag = `<span style="font-size:.72rem;color:#718096;margin-left:6px;">${escHtml(u.role || '')}</span>`;
+    return `<label style="display:flex;align-items:center;gap:6px;padding:3px 0;${greyOut?'color:#a0aec0;':''}cursor:pointer;font-size:.85rem;">
+      <input type="checkbox" class="mspv-cb" data-email="${escHtml(email)}" ${checked} onchange="_onModalSuperviseeToggle(this)">
+      <span>${name}</span>${roleTag}
+      ${greyOut ? '<span style="font-size:.7rem;color:#c53030;margin-left:6px;">已停用</span>' : ''}
+    </label>`;
+  };
+  let html = '';
+  if (active.length) {
+    html += '<div style="font-size:.75rem;font-weight:700;color:#2b6cb0;margin-bottom:3px;">啟用中</div>';
+    html += active.map(x => row(x, false)).join('');
+  }
+  if (disabled.length) {
+    html += '<div style="font-size:.75rem;font-weight:700;color:#a0aec0;margin-top:8px;margin-bottom:3px;">已停用</div>';
+    html += disabled.map(x => row(x, true)).join('');
+  }
+  picker.innerHTML = html;
+}
+window._onModalSuperviseeToggle = function(cb) {
+  const email = cb.dataset.email;
+  if (!email) return;
+  if (cb.checked) _modalSuperviseeSelected.add(email);
+  else _modalSuperviseeSelected.delete(email);
+};
 
 
 function openUserModal(key) {
@@ -7684,8 +7844,11 @@ function openUserModal(key) {
     document.getElementById('modal-is-ml-contact').checked        = info.isMentalLeaveContact === true;
     document.getElementById('modal-is-intern-admin-sup').checked  = info.extraRole === '實習生行政督導';
     document.getElementById('modal-is-intern-pro-sup').checked    = info.extraRole === '實習生專業督導';
+    document.getElementById('modal-is-pt-contact').checked        = info.isPartTimeContact === true;
     document.getElementById('modal-intern-from').value = info.internFrom || '';
     document.getElementById('modal-intern-to').value   = info.internTo   || '';
+    _modalSuperviseeSelected = new Set(Array.isArray(info.superviseeEmails) ? info.superviseeEmails : []);
+    _updateModalSuperviseesWrap();
     _onRoleChange();
   } else {
     document.getElementById('modal-title').textContent = '新增使用者';
@@ -7700,8 +7863,11 @@ function openUserModal(key) {
     document.getElementById('modal-is-ml-contact').checked        = false;
     document.getElementById('modal-is-intern-admin-sup').checked  = false;
     document.getElementById('modal-is-intern-pro-sup').checked    = false;
+    document.getElementById('modal-is-pt-contact').checked        = false;
     document.getElementById('modal-intern-from').value = '';
     document.getElementById('modal-intern-to').value   = '';
+    _modalSuperviseeSelected = new Set();
+    _updateModalSuperviseesWrap();
     _onRoleChange();
   }
 
@@ -7724,6 +7890,8 @@ async function saveUser() {
   const isML           = document.getElementById('modal-is-ml-contact').checked;
   const isInternAdminS = document.getElementById('modal-is-intern-admin-sup').checked;
   const isInternProS   = document.getElementById('modal-is-intern-pro-sup').checked;
+  const isPtContact    = document.getElementById('modal-is-pt-contact').checked;
+  const supervisees    = (isInternAdminS || isInternProS || isPtContact) ? [..._modalSuperviseeSelected] : [];
   const errEl    = document.getElementById('modal-error');
   errEl.style.display = 'none';
 
@@ -7779,6 +7947,7 @@ async function saveUser() {
     if (isAdmin) merged.isAdmin = true; else delete merged.isAdmin;
     if (isTC)    merged.isTransferContact    = true; else delete merged.isTransferContact;
     if (isML)    merged.isMentalLeaveContact = true; else delete merged.isMentalLeaveContact;
+    if (isPtContact) merged.isPartTimeContact = true; else delete merged.isPartTimeContact;
     if (isInternAdminS)    merged.extraRole = '實習生行政督導';
     else if (isInternProS) merged.extraRole = '實習生專業督導';
     else if (!isAdmin)     delete merged.extraRole;
@@ -7786,6 +7955,7 @@ async function saveUser() {
       if (_internFrom) merged.internFrom = _internFrom; else delete merged.internFrom;
       if (_internTo)   merged.internTo   = _internTo;   else delete merged.internTo;
     } else { delete merged.internFrom; delete merged.internTo; }
+    if (supervisees.length) merged.superviseeEmails = supervisees; else delete merged.superviseeEmails;
     configData.users[newKey] = merged;
     delete configData.users[oldKey];
   } else {
@@ -7794,6 +7964,7 @@ async function saveUser() {
     if (isAdmin) entry.isAdmin = true; else delete entry.isAdmin;
     if (isTC)    entry.isTransferContact    = true; else delete entry.isTransferContact;
     if (isML)    entry.isMentalLeaveContact = true; else delete entry.isMentalLeaveContact;
+    if (isPtContact) entry.isPartTimeContact = true; else delete entry.isPartTimeContact;
     if (isInternAdminS)       entry.extraRole = '實習生行政督導';
     else if (isInternProS)    entry.extraRole = '實習生專業督導';
     else if (!isAdmin)        delete entry.extraRole;
@@ -7801,8 +7972,10 @@ async function saveUser() {
       if (_internFrom) entry.internFrom = _internFrom; else delete entry.internFrom;
       if (_internTo)   entry.internTo   = _internTo;   else delete entry.internTo;
     } else { delete entry.internFrom; delete entry.internTo; }
+    if (supervisees.length) entry.superviseeEmails = supervisees; else delete entry.superviseeEmails;
     configData.users[newKey] = entry;
   }
+  _invalidateAutoMgrCache();
 
   // Close modal and update UI immediately
   document.getElementById('user-modal').style.display = 'none';
@@ -8624,10 +8797,14 @@ async function showCaseDetail(caseId) {
 
   const mgrsEl = document.getElementById('detail-managers');
   const _mgrEmailsTop = _getManagersForCase(c.id);
+  const _autoMgrTopMap = new Map(); // email → reason
+  _getAutoManagersForCase(c.id).forEach(x => _autoMgrTopMap.set(x.email, x.reason));
   // 初談者：權限等同個管員，但獨立顯示、標籤不同（排除主責，避免重複）
   const _iiEmailsTop = _getInitialInterviewersForCase(c).filter(e => e && e !== c.counselorEmail);
+  const _mgrNameOf = e => escHtml(formatCounselorLabel(e) || configData?.users?.[e]?.name || e) +
+    (_autoMgrTopMap.has(e) ? `<span style="font-size:.7rem;color:#553c9a;background:#e9d8fd;border-radius:6px;padding:0 5px;margin-left:3px;" data-tip="當然個管：${escHtml(_autoMgrTopMap.get(e).label + ' · ' + _autoMgrTopMap.get(e).supervisee)}">當然</span>` : '');
   const _mgrLine = _mgrEmailsTop.length
-    ? `<div style="font-size:.82rem;color:#718096;">個案管理員：${_mgrEmailsTop.map(e => escHtml(formatCounselorLabel(e) || configData?.users?.[e]?.name || e)).join('、')}</div>`
+    ? `<div style="font-size:.82rem;color:#718096;">個案管理員：${_mgrEmailsTop.map(_mgrNameOf).join('、')}</div>`
     : '';
   const _iiLine = _iiEmailsTop.length
     ? `<div style="font-size:.82rem;color:#276749;">初談者：${_iiEmailsTop.map(e => escHtml(formatCounselorLabel(e) || configData?.users?.[e]?.name || e)).join('、')}</div>`
@@ -9138,6 +9315,11 @@ async function showCaseDetail(caseId) {
   } else {
   // ── 個案管理員區段 HTML ──
   const _mgrEmails = _getManagersForCase(c.id);
+  // 拆分手動個管與當然個管；同一人若兼有兩者 → 顯示手動 chip + 附註「亦為當然個管」
+  const _autoMgrMapDetail = new Map();
+  _getAutoManagersForCase(c.id).forEach(x => _autoMgrMapDetail.set(x.email, x.reason));
+  const _manualMgrEmails = _mgrEmails.filter(e => (configData?.users?.[e]?.allowedCases || []).includes(c.id));
+  const _autoOnlyEmails  = _mgrEmails.filter(e => !_manualMgrEmails.includes(e) && _autoMgrMapDetail.has(e));
   // 初談者：權限等同個管員，但獨立顯示為綠色 chips（排除主責及已列為個管者，避免重複）
   const _iiEmailsDetail = _getInitialInterviewersForCase(c).filter(e => e && e !== c.counselorEmail && !_mgrEmails.includes(e));
   const _mgrNonSet = new Set(
@@ -9145,18 +9327,29 @@ async function showCaseDetail(caseId) {
       .filter(([email, info]) => !_mgrEmails.includes(email) && email !== c.counselorEmail && info.role && info.role !== '系統管理者')
       .map(([email]) => email)
   );
-  const _mgrChips = _mgrEmails.length
-    ? _mgrEmails.map(email => {
+  const _mgrChips = _manualMgrEmails.length
+    ? _manualMgrEmails.map(email => {
         const _mSems = configData?.users?.[email]?.allowedCasesSems?.[c.id];
         const _semTag = _mSems?.length
           ? `<span style="font-size:.73rem;color:#2b6cb0;background:#bee3f8;border-radius:8px;padding:1px 5px;margin-left:3px;white-space:nowrap;">${_mSems.map(s => escHtml(semesterLabel(s))).join('、')}</span>`
           : `<span style="font-size:.73rem;color:#718096;margin-left:3px;">所有學期</span>`;
+        const _autoNote = _autoMgrMapDetail.has(email)
+          ? `<span style="font-size:.7rem;color:#553c9a;background:#e9d8fd;border-radius:6px;padding:1px 5px;margin-left:3px;" data-tip="亦是當然個管：${escHtml(_autoMgrMapDetail.get(email).label + ' · ' + _autoMgrMapDetail.get(email).supervisee)}">兼當然</span>`
+          : '';
         return `<span style="display:inline-flex;align-items:center;gap:2px;background:#ebf5fb;border:1px solid #aed6f1;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;">
-          ${escHtml(formatCounselorLabel(email))}${_semTag}
+          ${escHtml(formatCounselorLabel(email))}${_semTag}${_autoNote}
           ${_canEditMgrs ? `<button onclick="removeCaseManager('${escHtml(c.id)}','${escHtml(email)}')" style="border:none;background:none;cursor:pointer;color:#718096;font-size:.9rem;padding:0 0 0 4px;line-height:1;">✕</button>` : ''}
         </span>`;
       }).join('')
-    : `<span style="color:#718096;font-size:.85rem;">尚未指定</span>`;
+    : '';
+  const _autoChips = _autoOnlyEmails.map(email => {
+    const reason = _autoMgrMapDetail.get(email) || { label: '當然個管', supervisee: '' };
+    return `<span style="display:inline-flex;align-items:center;gap:2px;background:#faf5ff;border:1px solid #d6bcfa;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;color:#553c9a;" data-tip="當然個管（不可移除，依「督導/窗口 → 負責人員」設定推導；解除後即失效）">
+      ${escHtml(formatCounselorLabel(email))}
+      <span style="font-size:.72rem;color:#553c9a;background:#e9d8fd;border-radius:8px;padding:1px 5px;margin-left:3px;">${escHtml(reason.label)}${reason.supervisee?` · ${escHtml(reason.supervisee)}`:''}</span>
+    </span>`;
+  }).join('');
+  const _mgrChipsAll = (_mgrChips + _autoChips) || `<span style="color:#718096;font-size:.85rem;">尚未指定</span>`;
   const _iiChips = _iiEmailsDetail.length
     ? _iiEmailsDetail.map(email =>
         `<span style="display:inline-flex;align-items:center;gap:2px;background:#e6ffed;border:1px solid #86efac;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;color:#276749;" data-tip="初次晤談者，權限與個案管理員相同（不可移除，依初次晤談紀錄自動判定）">
@@ -9177,7 +9370,7 @@ async function showCaseDetail(caseId) {
         <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">個案管理員
           <span style="font-size:.75rem;font-weight:400;color:#718096;">（可閱讀此個案紀錄的輔導人員，主責以外）</span>
         </div>
-        <div style="margin-bottom:8px;">${_mgrChips}${_iiChips}</div>
+        <div style="margin-bottom:8px;">${_mgrChipsAll}${_iiChips}</div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <select id="cm-add-select" class="field-select" style="max-width:200px;">${_mgrAddOpts}</select>
           ${_mgrSemOpts}
@@ -9509,16 +9702,26 @@ async function removeCaseManager(caseId, email) {
 function _hasManagerAccess(email, caseId, semPrefix) {
   const info = configData?.users?.[email];
   if (!info) return false;
-  if (!(info.allowedCases || []).includes(caseId)) return false;
-  const sems = info.allowedCasesSems?.[caseId];
-  if (!sems || !semPrefix) return true;
-  return sems.includes(semPrefix);
+  // 手動個管路徑
+  if ((info.allowedCases || []).includes(caseId)) {
+    const sems = info.allowedCasesSems?.[caseId];
+    if (!sems || !semPrefix) return true;
+    if (sems.includes(semPrefix)) return true;
+    // 手動 allowedCases 存在但 sem 不在其範圍 → 落到派生路徑再檢一次（跨學期覆蓋）
+  }
+  // 派生路徑：督導/窗口對其 supervisee 的案有當然個管權
+  if (_getAutoManagedCaseIds(email).has(caseId)) return true;
+  return false;
 }
 
 function _getManagersForCase(caseId) {
-  return Object.entries(configData?.users || {})
-    .filter(([email]) => _hasManagerAccess(email, caseId))
+  // 手動個管
+  const manual = Object.entries(configData?.users || {})
+    .filter(([email, info]) => (info?.allowedCases || []).includes(caseId))
     .map(([email]) => email);
+  // 自動個管（去掉已在手動清單者，避免重複顯示；顯示端有需要另外標記）
+  const autoOnly = _getAutoManagersForCase(caseId).map(x => x.email).filter(e => !manual.includes(e));
+  return [...manual, ...autoOnly];
 }
 
 async function addCaseManagerInDetail(caseId) {
@@ -23068,6 +23271,15 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '當然個管：實習生督導 + 兼任心理師窗口自動成為個管', isProd: false, items: [
+      item('新功能', '實習生行政/專業督導、兼任心理師窗口（新增身分）自動成為其負責人員手上所有案的當然個管（可讀），無需管理員逐案指派'),
+      item('新功能', '編輯使用者 modal：勾選督導/窗口身分後自動出現「負責的實習生/兼任心理師」複選 picker；啟用者於前、停用者以灰字放於下方分組'),
+      item('新功能', '兼任心理師窗口為新 flag（isPartTimeContact），與轉銜窗口/身心調適假窗口同層，可與其他附加身分並存'),
+      item('新功能', '案詳情頂部「個案管理員」行內為當然個管者附紫色「當然」小標；個管員區塊顯示紫色不可移除的當然個管 chip（含理由「督導身份·行政督導 · 實習生 XX」）；手動+自動兼具者顯示手動 chip 並附「兼當然」小註'),
+      item('新功能', '案列表主責下方「管」prefix 行為當然個管者名字後綴「督」或「窗」符號區分'),
+      item('技術', '派生式實作：僅存 superviseeEmails 名單；每次渲染依名單從 casesData 動態推導 auto-managed 案號集合；實習生新開案自動生效、督導關係解除自動失效、無需批次寫 allowedCases'),
+      item('技術', '_caseVisibleToUser 加派生路徑（chunk 分層載入時亦生效，督導首次登入即載入 supervisee 的案 chunks）；_hasManagerAccess/_getManagersForCase 合併手動+自動去重'),
+    ]},
     { date: '2026-07-02', title: '拖曳 chips 調整系所學院/學制歸屬 + 過去學期未結案 bug 修（積極版）', isProd: false, items: [
       item('修復', '待辦頁「過去學期未結案」對舊資料誤判：`_isSemesterUnclosed` 新增多重證據判斷（semesterEvaluations 有 closure 條目、舊格式 closureEvaluation、最新學期 c.status===closed）。再加積極規則：整案 c.status===closed 且該學期無 semesterStatus 記錄 → 視為結案（舊資料補救）；已封存（archived）個案亦不再提醒'),
       item('新功能', '系統管理→系所與學院對照：系所 chip 可拖曳到其他學院區塊，drop 時更新 configData.deptToCollege 並存；即時反映到統計、新開案顯示；歷史個案的 c.college 是死欄位（未被讀取），實際顯示走 live lookup，不受影響'),
