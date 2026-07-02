@@ -1520,6 +1520,18 @@
         </div>
       </div>
 
+      <div id="admin-panel-gcsync" style="display:none;">
+        <div class="card">
+          <div class="card-header"><h3>GC 編輯權限同步</h3></div>
+          <div style="padding:16px 20px;">
+            <p style="font-size:.88rem;color:#718096;margin-bottom:14px;">
+              授與<strong>專任 / 主任 / 管理者</strong>對系統行事曆的 <strong>writer 權限</strong>，讓他們可在 Google Calendar 端直接編輯自己的預約（例如自訂事件顏色）。此操作僅追加尚未授權的帳號，已授權者略過。
+            </p>
+            <div id="admin-gcsync-wrap"><p style="font-size:.85rem;color:#a0aec0;">載入中…</p></div>
+          </div>
+        </div>
+      </div>
+
       <div id="admin-panel-workhours" style="display:none;">
         <div class="card">
           <div class="card-header"><h3>上班時間設定</h3></div>
@@ -1619,6 +1631,15 @@
           <div class="field-label" style="margin-bottom:6px;">使用頻率記憶（選項排序）</div>
           <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">系統記憶預約時最常選的輔導人員/事由，自動排到前面。</p>
           <button class="btn btn-secondary btn-sm" onclick="prefResetBkFreqs()">清除排序記憶</button>
+        </div>
+        <div style="padding:0 20px 16px;">
+          <div class="field-label" style="margin-bottom:6px;">空間預約顯示顏色</div>
+          <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">選一個屬於自己的顏色（32 色）。此顏色會用於：(1) 空間預約列表中你的預約 cell 底色與左邊條紋；(2) 推送到 Google Calendar 時對應到最接近的 GC 事件顏色（GC 只支援 11 種）。</p>
+          <div id="pref-bkcolor-grid" style="display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;max-width:340px;"></div>
+          <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" onclick="clearMyBkColor()">還原預設（無色）</button>
+            <span id="pref-bkcolor-current" style="font-size:.82rem;color:#4a5568;"></span>
+          </div>
         </div>
       </div>
       <div class="card">
@@ -3428,6 +3449,7 @@
       </div>
       <div id="todos-access-audit-section"></div>
       <div id="todos-off-hours-section"></div>
+      <div id="todos-gc-errors-section"></div>
       <div id="todos-ml-notif-section"></div>
       <div id="todos-major-events-section"></div>
       <div id="todos-assignment-section"></div>
@@ -3551,6 +3573,36 @@ const DEFAULT_WORK_HOURS = {
   holidays: [],                   // ['YYYY-MM-DD']；覆蓋 workDays（假日不上班）
   extraWorkDays: [],              // ['YYYY-MM-DD']；補班日（週末也算上班）
 };
+// 空間預約使用者顏色（32 色）+ GC 11 色映射
+const BK_USER_COLORS = [
+  '#EF476F','#F27B76','#F49A6B','#F6C453','#FFE066','#E4EE79','#B4E37D','#8ED89F',
+  '#5DCFAE','#3EB4B6','#3195B0','#4A78C4','#5F5AA2','#7A4FA0','#994893','#B04780',
+  '#7A6C5D','#95A69C','#B0BEB0','#C7D0C7','#66A182','#4EACAB','#3E85A6','#3E5A99',
+  '#8B5CF6','#D946EF','#EC4899','#F43F5E','#FB923C','#F59E0B','#84CC16','#22D3EE',
+];
+const GC_EVENT_COLORS = {
+  1:'#a4bdfc',2:'#7ae7bf',3:'#dbadff',4:'#ff887c',5:'#fbd75b',
+  6:'#ffb878',7:'#46d6db',8:'#e1e1e1',9:'#5484ed',10:'#51b749',11:'#dc2127'
+};
+function _hex2rgb(hex) {
+  if (!hex || hex[0] !== '#' || hex.length !== 7) return null;
+  return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)];
+}
+function _nearestGcColorId(hex) {
+  const c = _hex2rgb(hex);
+  if (!c) return null;
+  let best = null, bestD = Infinity;
+  for (const [id, gh] of Object.entries(GC_EVENT_COLORS)) {
+    const g = _hex2rgb(gh); if (!g) continue;
+    const d = (c[0]-g[0])**2 + (c[1]-g[1])**2 + (c[2]-g[2])**2;
+    if (d < bestD) { bestD = d; best = id; }
+  }
+  return best;
+}
+// GC 事件驗證錯誤 feed
+const GC_VALIDATION_ERRORS_FILE = 'gc_validation_errors.json';
+let _gcErrorsCache = { entries: [] };            // 記憶體快取
+let _gcErrorsBroadcastedThisSession = new Set(); // 本 session 已廣播的 eventId+kind 組合，避免刷屏
 const BOOKINGS_FILE   = 'bookings.json';
 const ISSUES_FILE        = 'issues.json';
 const ISSUES_FOLDER_ID   = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP'; // dev/prod 共用正式版資料夾
@@ -5399,6 +5451,7 @@ async function afterLogin() {
     loadPendingUsers().catch(() => {});
     loadAccessLog().catch(() => {}); // 危機閱讀監督 feed + 我今日的授權
     loadOffHoursLog().catch(() => {}); // 非上班時間監督 feed（主任/管理者/專任在待辦頁可見）
+    loadGcErrorsCache().catch(() => {}); // GC 事件錯誤 feed（同上可見範圍）
 
     // ── 非上班時間登入：寫入 feed + 首次觸發廣播通知（非 priv 才推）──
     if (_isOffHours()) {
@@ -7373,11 +7426,14 @@ function renderAdminPage() {
   document.getElementById('admin-panel-depts').style.display      = tab === 'depts'     ? '' : 'none';
   document.getElementById('admin-panel-presets').style.display    = tab === 'presets'   ? '' : 'none';
   document.getElementById('admin-panel-workhours').style.display  = tab === 'workhours' ? '' : 'none';
+  const gcPanel = document.getElementById('admin-panel-gcsync');
+  if (gcPanel) gcPanel.style.display = tab === 'gcsync' ? '' : 'none';
   if (tab === 'users')    { renderAdminUsers(); }
   else if (tab === 'apps')      renderPendingUsersTab();
   else if (tab === 'depts')     { renderAdminDegreeMapping(); renderAdminDeptCollege(); }
   else if (tab === 'presets')   { renderAdminPresets(); renderAdminBReasons(); }
   else if (tab === 'workhours') renderAdminWorkHours();
+  else if (tab === 'gcsync')    renderAdminGcSync();
 }
 
 function _renderAdminTabs() {
@@ -7394,7 +7450,7 @@ function _renderAdminTabs() {
   const badge = count > 0
     ? ` <span style="background:#e53e3e;color:#fff;border-radius:10px;padding:0 5px;font-size:.72rem;">${count}</span>`
     : '';
-  bar.innerHTML = _t('users','使用者列表') + _t('apps','帳號申請審核' + badge) + _t('depts','系所與學制') + _t('presets','快速選項') + _t('workhours','上班時間');
+  bar.innerHTML = _t('users','使用者列表') + _t('apps','帳號申請審核' + badge) + _t('depts','系所與學制') + _t('presets','快速選項') + _t('workhours','上班時間') + _t('gcsync','GC 同步');
 }
 
 function _adminTab(tab) {
@@ -7990,6 +8046,8 @@ async function saveUser() {
     auditLog(action, null, null, displayLabel + (isMigrating ? `（${oldKey} → ${newKey}）` : ''));
     bgJobDone(jobId);
     setAlert('admin-alert', 'success', `使用者 ${escHtml(displayLabel)} 已儲存。`);
+    // 增量：專任/主任/管理者且尚未同步過 → 背景授與 GC writer 權限
+    if (!newKey.startsWith('nomail_')) _gcAclAutoSyncOne(newKey).catch(() => {});
   } catch (err) {
     bgJobFail(jobId, err.message);
     setAlert('admin-alert', 'error', '儲存失敗：' + err.message);
@@ -18517,6 +18575,53 @@ function _renderOffHoursSection() {
     </div>`;
 }
 
+// ── GC 事件錯誤區塊（主任/管理者/專任可見）──
+function _gcErrorsSeenKey() { return 'scc_gc_errors_seen_' + DRIVE_FOLDER_ID.slice(-8); }
+function _toggleGcErrorsSection() { window._gcErrorsCollapsed = !window._gcErrorsCollapsed; _renderGcErrorsSection(); }
+function _markGcErrorsSeen() { localStorage.setItem(_gcErrorsSeenKey(), new Date().toISOString()); _renderGcErrorsSection(); }
+function _renderGcErrorsSection() {
+  const section = document.getElementById('todos-gc-errors-section');
+  if (!section) return;
+  if (!_canViewAccessAudit()) { section.innerHTML = ''; return; }
+  const entries = (_gcErrorsCache && Array.isArray(_gcErrorsCache.entries)) ? _gcErrorsCache.entries : [];
+  if (!entries.length) { section.innerHTML = ''; return; }
+  const kindLabel = { MISSING_SERIAL:'缺流水號', MISSING_CREATOR:'缺建立者註記', BAD_TITLE:'標題格式錯誤',
+    UNKNOWN_ROOM:'未知空間', UNKNOWN_COUNSELOR:'未知輔導人員', UNMATCHED:'無對應 INFOSYS 預約' };
+  const kindColor = { MISSING_SERIAL:'#dd6b20', MISSING_CREATOR:'#3182ce', BAD_TITLE:'#e53e3e',
+    UNKNOWN_ROOM:'#9333ea', UNKNOWN_COUNSELOR:'#c026d3', UNMATCHED:'#c05621' };
+  // 依 kind 分組
+  const byKind = {};
+  entries.forEach(e => { (byKind[e.kind] = byKind[e.kind] || []).push(e); });
+  const seenAt = localStorage.getItem(_gcErrorsSeenKey()) || '';
+  const unread = entries.filter(e => (e.t || '') > seenAt).length;
+  const isCollapsed = !!window._gcErrorsCollapsed;
+  const fmtT = t => t ? new Date(t).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' }) : '';
+  const kindHtml = kind => `<div style="padding:6px 0;border-top:1px solid #fbb6ce;">
+    <div style="font-weight:700;font-size:.85rem;color:${kindColor[kind]||'#c53030'};margin-bottom:4px;">
+      <span style="background:${kindColor[kind]||'#c53030'}22;color:${kindColor[kind]||'#c53030'};border-radius:6px;padding:2px 8px;">${escHtml(kindLabel[kind]||kind)}</span>
+      <span style="font-size:.75rem;color:#718096;font-weight:400;margin-left:6px;">（${byKind[kind].length} 筆）</span>
+    </div>
+    ${byKind[kind].slice(0, 10).map(e => `<div style="font-size:.78rem;color:#4a5568;padding:2px 0 2px 14px;border-left:2px solid ${kindColor[kind]||'#c53030'}44;margin-left:4px;">
+      → <span style="font-weight:600;">${escHtml(e.title || '(無標題)')}</span>
+      <span style="color:#a0aec0;margin-left:6px;">${escHtml(e.date||'')} ${escHtml((e.startTime||'').slice(0,5))}–${escHtml((e.endTime||'').slice(0,5))}</span>
+      ${e.creators?.[0] ? `<span style="color:#718096;margin-left:6px;font-family:monospace;font-size:.72rem;">建立者：${escHtml(e.creators[0])}</span>` : ''}
+      <span style="color:#a0aec0;margin-left:6px;">${fmtT(e.t)}</span>
+    </div>`).join('')}
+    ${byKind[kind].length > 10 ? `<div style="font-size:.72rem;color:#a0aec0;padding-left:14px;">…另 ${byKind[kind].length - 10} 筆</div>` : ''}
+  </div>`;
+  section.innerHTML = `
+    <div style="background:#fff5f5;border:1px solid #fc8181;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+        <span style="font-weight:700;font-size:.9rem;color:#c53030;">⚠ Google Calendar 事件異常（${entries.length}）${unread > 0 ? ` <span class="badge" style="background:#e53e3e;color:#fff;font-size:.72rem;">${unread} 則新</span>` : ''}</span>
+        <div style="display:flex;gap:6px;">
+          ${unread > 0 ? `<button class="btn btn-sm" style="font-size:.76rem;padding:2px 10px;" onclick="_markGcErrorsSeen()">標示已讀</button>` : ''}
+          <button class="btn btn-sm" style="font-size:.76rem;padding:2px 10px;background:#fff;" onclick="_toggleGcErrorsSection()">${isCollapsed ? '展開 ▼' : '收合 ▲'}</button>
+        </div>
+      </div>
+      ${isCollapsed ? '' : `<div style="margin-top:8px;">${Object.keys(byKind).sort().map(kindHtml).join('')}</div>`}
+    </div>`;
+}
+
 function _renderMlNotifSection() {
   const section = document.getElementById('todos-ml-notif-section');
   if (!section) return;
@@ -18572,10 +18677,11 @@ window._mlToggleSection = function() {
 
 // 待辦頁「重大事件」區塊：拉 configData notifications 中的重大類型顯示（如 Gmail 變更、非上班時間活動）
 // 資料來源與鈴鐺同一份（configData.users[me].notifications），無需額外 Drive 寫入
-const MAJOR_EVENT_NOTIF_TYPES = new Set(['gmail_changed', 'off_hours_activity']);
+const MAJOR_EVENT_NOTIF_TYPES = new Set(['gmail_changed', 'off_hours_activity', 'gc_validation_error']);
 const MAJOR_EVENT_TYPE_LABELS = {
-  gmail_changed:       '重大事件・Gmail 變更',
-  off_hours_activity:  '重大事件・非上班時間活動',
+  gmail_changed:        '重大事件・Gmail 變更',
+  off_hours_activity:   '重大事件・非上班時間活動',
+  gc_validation_error:  '重大事件・GC 事件異常',
 };
 function _renderMajorEventNotifs() {
   const section = document.getElementById('todos-major-events-section');
@@ -18687,6 +18793,7 @@ window._mlBatchAcknowledge = async function() {
 function renderTodosPage() {
   _renderCaseAccessAuditSection();
   _renderOffHoursSection();
+  _renderGcErrorsSection();
   _renderAssignmentTodos();
   _renderMlNotifSection();
   _renderMajorEventNotifs();
@@ -23271,6 +23378,17 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '空間預約 / GC 強化：使用者顏色 + GC 編輯權限 + 事件驗證 + 自動補註', isProd: false, items: [
+      item('新功能', '偏好設定新增「空間預約顯示顏色」卡片：32 色可選，選定後空間預約列表中自己的預約 cell 底色淡（12% 透明）+ 左邊 4px 條紋標示；不設沿用預設灰底'),
+      item('新功能', 'GC 事件推送時附帶 colorId（自 32 色映射至最接近的 GC 11 色），GC 端也顯示對應色'),
+      item('新功能', '系統管理新 tab「GC 同步」：一鍵授與專任/主任/管理者對系統行事曆的 writer 權限；saveUser 增量 hook 對新符合資格者自動追加；gcAclSynced flag 避免重複授權'),
+      item('新功能', 'GC 事件驗證：每次同步後檢查六類錯誤（缺流水號 / 缺建立者 / 標題格式錯 / 未知空間 / 未知輔導人員 / 無對應 INFOSYS 預約），寫入共享 feed（gc_validation_errors.json）'),
+      item('新功能', '待辦頁新增紅色「⚠ Google Calendar 事件異常」區塊（主任/管理者/專任可見），依錯誤類型分組顯示；未讀 badge、標示已讀、收合／展開'),
+      item('新功能', '新錯誤即時透過鈴鐺 + 待辦頁紫色重大事件卡通知全體專任/主任/管理者；session 內同錯誤只推一次避免刷屏'),
+      item('新功能', '自動補註：偵測 GC 事件缺「建立者」→ 用 event.creators[0] 反查系統使用者 → 補描述「[系統補註] 由 XXX（yyy@gmail.com）建立，於 YYYY/MM/DD HH:MM 補註」；非系統帳號則標「建立者為非本系統帳號」保留於 feed'),
+      item('技術', 'Code.gs 擴充：createCalendarEvent_/updateCalendarEvent_ 加 colorId 參數；listCalendarEvents_ 回傳 creators + colorId；新 shareCalendarWriters_ action 走 CalendarApp.addEditor'),
+      item('稽核', '一鍵 ACL 同步 + 增量授權皆記入稽核日誌（重大事件 major）'),
+    ]},
     { date: '2026-07-02', title: '當然個管：實習生督導 + 兼任心理師窗口自動成為個管', isProd: false, items: [
       item('新功能', '實習生行政/專業督導、兼任心理師窗口（新增身分）自動成為其負責人員手上所有案的當然個管（可讀），無需管理員逐案指派'),
       item('新功能', '編輯使用者 modal：勾選督導/窗口身分後自動出現「負責的實習生/兼任心理師」複選 picker；啟用者於前、停用者以灰字放於下方分組'),
@@ -23761,6 +23879,9 @@ function renderPrefsPage() {
       gmailCard.style.display = 'none';
     }
   }
+
+  // 空間預約顯示顏色 grid
+  _renderBkColorGrid();
 }
 
 function saveLeaveConfirmPref() {
@@ -23780,6 +23901,40 @@ function _prefChangeMyGmail() {
 }
 function toggleCustomTimeout(sel) {
   document.getElementById('pref-timeout-custom').style.display = sel.value === 'custom' ? '' : 'none';
+}
+function _renderBkColorGrid() {
+  const grid = document.getElementById('pref-bkcolor-grid');
+  const cur  = document.getElementById('pref-bkcolor-current');
+  if (!grid) return;
+  const my = configData?.users?.[currentUser?.email]?.bkColor || '';
+  grid.innerHTML = BK_USER_COLORS.map(hex => {
+    const sel = hex.toUpperCase() === (my || '').toUpperCase();
+    return `<div onclick="pickMyBkColor('${hex}')"
+      title="${escHtml(hex)}"
+      style="width:32px;height:32px;border-radius:6px;background:${hex};cursor:pointer;
+      box-shadow:${sel?'inset 0 0 0 3px #fff, 0 0 0 2px #2b6cb0':'inset 0 0 0 1px rgba(0,0,0,.08)'};transition:transform .1s;"
+      onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform=''"></div>`;
+  }).join('');
+  if (cur) cur.textContent = my ? `目前：${my}` : '目前：未設定（沿用預設灰底）';
+}
+async function pickMyBkColor(hex) {
+  const me = currentUser?.email;
+  if (!me || !configData?.users?.[me]) return;
+  configData.users[me].bkColor = hex;
+  _renderBkColorGrid();
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
+  if (document.getElementById('page-bookings')?.classList.contains('active')) renderBookingsPage();
+  showToast?.(`已設定顏色 ${hex}`, 'success');
+}
+async function clearMyBkColor() {
+  const me = currentUser?.email;
+  if (!me || !configData?.users?.[me]) return;
+  if (!confirm('要清除您的預約顯示顏色，改回預設灰底嗎？')) return;
+  delete configData.users[me].bkColor;
+  _renderBkColorGrid();
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
+  if (document.getElementById('page-bookings')?.classList.contains('active')) renderBookingsPage();
+  showToast?.('已清除自訂顏色', 'info');
 }
 function prefResetBkFreqs() {
   if (!confirm('確定清除空間預約使用頻率記憶？選項排序將回到預設。')) return;
@@ -25265,22 +25420,181 @@ async function syncFromCalendar(silent = false) {
         if (!bk?.calendarEventId) continue;
         try {
           const _isEdit = !!(bk.updatedAt && bk.updatedAt !== bk.createdAt);
+          const _bkClr = configData?.users?.[bk.counselorEmail]?.bkColor || '';
           await proxyCall('updateCalendarEvent', {
             eventId: bk.calendarEventId, room: bk.room, customRoom: bk.customRoom || '',
             date: bk.date, startTime: bk.startTime, endTime: bk.endTime,
             counselorName: bk.counselorName || '', notes: bk.notes || '',
             creatorName: bk.creatorName || bk.counselorName || '',
             createdAt: bk.createdAt, updatedAt: bk.updatedAt || bk.createdAt,
-            isEdit: _isEdit, bkSerial: bk.bkSerial });
+            isEdit: _isEdit, bkSerial: bk.bkSerial,
+            colorId: _bkClr ? _nearestGcColorId(_bkClr) : null });
         } catch (_) {}
       }
     }
+    // GC 事件驗證 + 自動補註 + 廣播（背景，不阻擋 sync 完成回報）
+    try { await _runGcValidationAndBackfill(gcEvents); } catch (e) { console.warn('gc validation failed', e); }
     if (jobId) bgJobDone(jobId);
   } catch (e) {
     if (jobId) bgJobFail(jobId, e.message);
     if (!silent) setAlert('bookings-alert', 'warn', '同步失敗：' + e.message);
     console.warn('syncFromCalendar failed', e);
   }
+}
+
+// ══════════════════════════════════════════════
+//  GC 事件驗證（六類錯誤 + 自動補註 + 廣播）
+// ══════════════════════════════════════════════
+async function loadGcErrorsCache() {
+  try { _gcErrorsCache = await driveReadJson(GC_VALIDATION_ERRORS_FILE); } catch { _gcErrorsCache = null; }
+  if (!_gcErrorsCache || !Array.isArray(_gcErrorsCache.entries)) _gcErrorsCache = { entries: [] };
+}
+async function _saveGcErrorsCache() {
+  _gcErrorsCache.updatedAt = new Date().toISOString();
+  try { await driveUpdateJsonFile(GC_VALIDATION_ERRORS_FILE, _gcErrorsCache); }
+  catch (e) {
+    try { await driveCreateJsonFile(GC_VALIDATION_ERRORS_FILE, _gcErrorsCache); }
+    catch (e2) { console.warn('_saveGcErrorsCache failed:', e2); }
+  }
+}
+function _gcValidateEvent(ev, bookingsIndex, usersByName, usersByEmail) {
+  const kinds = new Set();
+  const desc = ev.description || '';
+  const title = ev.title || '';
+  // 1. MISSING_SERIAL
+  if (!/\n#\d+\s*$/.test(desc)) kinds.add('MISSING_SERIAL');
+  // 2. MISSING_CREATOR
+  if (!/\S+\s+(建立|編輯)/.test(desc)) kinds.add('MISSING_CREATOR');
+  // 3. BAD_TITLE
+  const titleMatch = title.match(/^([^\.]+)\.(.+)$/);
+  if (!titleMatch) kinds.add('BAD_TITLE');
+  else {
+    const [, roomChar, personName] = titleMatch;
+    // 4. UNKNOWN_ROOM
+    const knownRooms = ROOMS.filter(r => r !== '其他').concat(_getBkCustomRooms());
+    const roomHit = knownRooms.some(r => r.charAt(0) === roomChar) || roomChar === '其他' || roomChar.length > 1;
+    if (!roomHit) kinds.add('UNKNOWN_ROOM');
+    // 5. UNKNOWN_COUNSELOR
+    if (personName && !usersByName.has(personName)) kinds.add('UNKNOWN_COUNSELOR');
+  }
+  // 6. UNMATCHED（無對應 INFOSYS booking）
+  if (!bookingsIndex.has(ev.id)) kinds.add('UNMATCHED');
+  return kinds;
+}
+async function _runGcValidationAndBackfill(gcEvents) {
+  if (!Array.isArray(gcEvents) || !gcEvents.length) return;
+  if (!_gcErrorsCache?.entries) await loadGcErrorsCache();
+  const bookingsIndex = new Map((bookingsData || []).map(b => [b.calendarEventId, b]));
+  const usersByName = new Map();
+  const usersByEmail = new Map();
+  Object.entries(configData?.users || {}).forEach(([email, u]) => {
+    if (u?.name) usersByName.set(u.name, { email, ...u });
+    usersByEmail.set(email, u);
+  });
+  // 上一次 feed 快照（key = eventId|kind）
+  const prevKeys = new Set((_gcErrorsCache.entries || []).map(e => `${e.eventId}|${e.kind}`));
+  const currentKeys = new Set();
+  const newErrors = []; // 本輪偵測新增（非快取內）
+  const survivedEntries = []; // 本輪仍存在的錯誤（舊+新）
+  const backfillCandidates = []; // MISSING_CREATOR 且有 creator email
+
+  for (const ev of gcEvents) {
+    const kinds = _gcValidateEvent(ev, bookingsIndex, usersByName, usersByEmail);
+    for (const kind of kinds) {
+      const key = `${ev.id}|${kind}`;
+      currentKeys.add(key);
+      const entry = {
+        id: `gce-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+        eventId: ev.id, kind,
+        title: ev.title, date: ev.date, startTime: ev.startTime, endTime: ev.endTime,
+        creators: ev.creators || [],
+        t: new Date().toISOString(),
+      };
+      // 若已存在於 feed 中，沿用舊 entry id 與時間戳
+      const existing = (_gcErrorsCache.entries || []).find(e => e.eventId === ev.id && e.kind === kind);
+      if (existing) survivedEntries.push(existing);
+      else { survivedEntries.push(entry); newErrors.push(entry); }
+    }
+    // 自動補註 candidates
+    if (kinds.has('MISSING_CREATOR') && (ev.creators || []).length) {
+      backfillCandidates.push(ev);
+    }
+  }
+
+  // 移除已消失的錯誤（GC 端已修正 → 從 feed 移除）
+  _gcErrorsCache.entries = survivedEntries;
+
+  // 自動補註（每輪最多 5 筆，避免長時間佔用）
+  const maxBackfill = 5;
+  let backfilled = 0;
+  for (const ev of backfillCandidates.slice(0, maxBackfill)) {
+    const creatorEmail = ev.creators[0];
+    const creatorUser = usersByEmail.get(creatorEmail);
+    const creatorName = creatorUser?.name || '';
+    const note = creatorName
+      ? `[系統補註] 由 ${creatorName}（${creatorEmail}）建立，於 ${new Date().toLocaleString('zh-TW')} 補註`
+      : `[系統補註] 建立者為非本系統帳號：${creatorEmail}，於 ${new Date().toLocaleString('zh-TW')} 標註`;
+    const newDesc = ((ev.description || '').trimEnd() + '\n---\n' + note).trim();
+    try {
+      // 沿用原標題/時間，只改 description
+      const titleMatch = (ev.title || '').match(/^([^\.]+)\.(.+)$/);
+      const roomChar = titleMatch ? titleMatch[1] : '其他';
+      const roomFull = ROOMS.find(r => r !== '其他' && r.charAt(0) === roomChar) || roomChar;
+      const counselorName = titleMatch ? titleMatch[2] : '';
+      await proxyCall('updateCalendarEvent', {
+        eventId: ev.id,
+        room: roomFull, customRoom: roomFull === roomChar ? roomChar : '',
+        date: ev.date, startTime: ev.startTime, endTime: ev.endTime,
+        counselorName, notes: newDesc, creatorName: '',
+        createdAt: '', updatedAt: '', isEdit: false, bkSerial: null,
+      });
+      backfilled++;
+      // 補完後從 feed 移除該 MISSING_CREATOR 記錄
+      _gcErrorsCache.entries = _gcErrorsCache.entries.filter(e => !(e.eventId === ev.id && e.kind === 'MISSING_CREATOR'));
+    } catch (e) { console.warn('backfill failed for', ev.id, e); }
+  }
+
+  // 儲存 feed（若有變動）
+  if (newErrors.length || backfilled > 0 || prevKeys.size !== currentKeys.size) {
+    await _saveGcErrorsCache();
+  }
+
+  // 廣播新錯誤通知（session 內同錯誤只推一次）
+  const trulyNew = newErrors.filter(e => !_gcErrorsBroadcastedThisSession.has(`${e.eventId}|${e.kind}`));
+  if (trulyNew.length) {
+    trulyNew.forEach(e => _gcErrorsBroadcastedThisSession.add(`${e.eventId}|${e.kind}`));
+    _broadcastGcValidationErrors(trulyNew);
+  }
+  // 重繪錯誤區塊（若在待辦頁）
+  if (document.getElementById('page-todos')?.classList.contains('active')) _renderGcErrorsSection?.();
+  renderNotifBell?.();
+}
+function _broadcastGcValidationErrors(newErrors) {
+  const kindLabel = { MISSING_SERIAL:'缺流水號', MISSING_CREATOR:'缺建立者註記', BAD_TITLE:'標題格式錯誤',
+    UNKNOWN_ROOM:'未知空間', UNKNOWN_COUNSELOR:'未知輔導人員', UNMATCHED:'無對應 INFOSYS 預約' };
+  const brief = newErrors.slice(0, 3).map(e => `${kindLabel[e.kind]||e.kind}：${e.title||'(無標題)'}`).join('；');
+  const more = newErrors.length > 3 ? `（另 ${newErrors.length - 3} 筆）` : '';
+  const msg = `⚠ Google Calendar 偵測到 ${newErrors.length} 筆新的異常事件：${brief}${more}。請至待辦頁「GC 事件錯誤」查看。`;
+  const nowIso = new Date().toISOString();
+  let pushed = 0;
+  Object.entries(configData?.users || {}).forEach(([email, u]) => {
+    if (!u || u.disabled) return;
+    if (email === currentUser?.email) return;
+    const r = u.role || '';
+    const recipient = r === '主任' || u.isAdmin === true || u.extraRole === '管理者' || (typeof r === 'string' && r.startsWith('專任'));
+    if (!recipient) return;
+    if (!u.notifications) u.notifications = [];
+    u.notifications.unshift({
+      id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+      type: 'gc_validation_error',
+      message: msg,
+      createdAt: nowIso, read: false,
+    });
+    _pruneOldReadNotifications(u);
+    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
+    pushed++;
+  });
+  if (pushed) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
 }
 
 function _initBkAuditDropdowns() {
@@ -27189,7 +27503,7 @@ function _bkRenderDayColumn(date) {
           ${calTag}
           <button class="btn btn-secondary btn-sm" style="padding:1px 6px;font-size:.72rem;" onclick="_bkCtxMenu(event,'${escHtml(b.id)}')">⋯</button>
         </span>`;
-        html += `<div style="padding:4px 6px;background:#edf2f7;border-radius:5px;margin-bottom:4px;">
+        html += `<div style="padding:4px 6px;${_bkCellStyle(b)}border-radius:5px;margin-bottom:4px;">
           <div style="font-size:.82rem;font-weight:600;color:#2d3748;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</div>
           <div style="font-size:.82rem;color:#4a5568;">${escHtml(b.counselorName || '—')}</div>
           ${caseTag}${noteTag}${actBtns}
@@ -27201,6 +27515,12 @@ function _bkRenderDayColumn(date) {
   return html;
 }
 
+// 依主責的 bkColor 產生 cell 樣式：淡背景（13% 透明）+ 左邊 4px 條紋；未設沿用現行灰底
+function _bkCellStyle(b) {
+  const hex = configData?.users?.[b?.counselorEmail]?.bkColor;
+  if (!hex || hex[0] !== '#') return 'background:#edf2f7;';
+  return `background:${hex}22;border-left:4px solid ${hex};`;
+}
 function renderBookingsPage() {
   const dateEl = document.getElementById('booking-date');
   if (!dateEl) return;
@@ -27249,7 +27569,7 @@ function renderBookingsPage() {
           const calTag = b.calendarEventId
             ? `<span title="已同步 Google Calendar" style="font-size:.85rem;">📅</span>`
             : `<button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:.75rem;" data-sync-id="${escHtml(b.id)}" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅 同步</button>`;
-          html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 8px;background:#edf2f7;border-radius:6px;margin-bottom:4px;cursor:grab;">
+          html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 8px;${_bkCellStyle(b)}border-radius:6px;margin-bottom:4px;cursor:grab;">
             <span style="font-size:.85rem;font-weight:600;color:#2d3748;min-width:105px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</span>
             <span style="font-size:.875rem;color:#4a5568;">${escHtml(b.counselorName || '—')}</span>
             ${caseTag}${noteTag}${calTag}
@@ -27294,7 +27614,7 @@ function renderBookingsPage() {
             const calTag = b.calendarEventId
               ? `<span title="已同步" style="font-size:.75rem;">📅</span>`
               : `<button class="btn btn-secondary btn-sm" style="padding:0 3px;font-size:.65rem;" data-sync-id="${escHtml(b.id)}" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅</button>`;
-            html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="padding:3px 5px;background:#edf2f7;border-radius:4px;margin-bottom:3px;font-size:.78rem;cursor:grab;">` +
+            html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="padding:3px 5px;${_bkCellStyle(b)}border-radius:4px;margin-bottom:3px;font-size:.78rem;cursor:grab;">` +
               `<div style="font-weight:600;color:#2d3748;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</div>` +
               `<div style="color:#4a5568;">${escHtml(b.counselorName||'—')}</div>` +
               (b.caseId ? `<div style="color:#2471a3;font-size:.72rem;">${escHtml(b.caseId)}</div>` : '') +
@@ -27464,6 +27784,7 @@ async function _bkGcFlush() {
     if (!snap.calendarEventId) continue;
     const creatorName = configData?.users?.[snap.creatorEmail]?.name || snap.creatorName || '';
     try {
+      const _snClr = configData?.users?.[snap.counselorEmail]?.bkColor || '';
       await proxyCall('updateCalendarEvent', {
         eventId: snap.calendarEventId,
         room: snap.room, customRoom: snap.customRoom,
@@ -27471,6 +27792,7 @@ async function _bkGcFlush() {
         counselorName: snap.counselorName, notes: snap.notes,
         creatorName, createdAt: snap.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(), isEdit: true, bkSerial: snap.bkSerial,
+        colorId: _snClr ? _nearestGcColorId(_snClr) : null,
       });
     } catch(_) { /* 靜默失敗，不影響本機資料 */ }
   }
@@ -27877,8 +28199,10 @@ async function syncBookingToCalendar(id) {
   modalEl.style.display = 'flex';
 
   try {
+    const _bColorRef = configData?.users?.[b.counselorEmail]?.bkColor || '';
     const calParams = { room: b.room, date: b.date, startTime: b.startTime, endTime: b.endTime,
-      counselorName: b.counselorName, caseId: b.caseId || '', caseName: b.caseName || '', notes: b.notes || '' };
+      counselorName: b.counselorName, caseId: b.caseId || '', caseName: b.caseName || '', notes: b.notes || '',
+      colorId: _bColorRef ? _nearestGcColorId(_bColorRef) : null };
     const calendarEventId = await proxyCall('createCalendarEvent', calParams);
     if (calendarEventId) {
       const idx = bookingsData.findIndex(x => x.id === id);
@@ -28222,10 +28546,12 @@ async function saveBooking() {
   // 先取舊的 calendarEventId 與舊狀態快照（編輯時用，供稽核日誌差異比對）
   const _oldBkSnap = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
   const newSerial = _editingBookingId ? (_oldBkSnap?.bkSerial) : _bkNextSerial();
+  const _bkCounselorColor = configData?.users?.[counselorEmail]?.bkColor || '';
   const calParams = { room, customRoom, date, startTime: start, endTime: end, counselorName, notes, creatorName,
     createdAt: _editingBookingId ? (_oldBkSnap?.createdAt || now) : now,
     updatedAt: now, isEdit: !!_editingBookingId,
-    bkSerial: newSerial };
+    bkSerial: newSerial,
+    colorId: _bkCounselorColor ? _nearestGcColorId(_bkCounselorColor) : null };
   const existingCalEventId = _oldBkSnap?.calendarEventId;
   const newId = _editingBookingId || `bk_${Date.now()}`;
 
@@ -30288,6 +30614,81 @@ async function _adminSaveWorkHours() {
     if (st) st.textContent = '';
     alert('儲存失敗：' + e.message);
   }
+}
+
+// ── GC 編輯權限一鍵同步 UI ──────────────────────────
+function _gcSyncEligibleUsers() {
+  return Object.entries(configData?.users || {}).filter(([email, u]) => {
+    if (!u || u.disabled || !email || email.startsWith('nomail_')) return false;
+    const r = u.role || '';
+    return r === '主任' || u.isAdmin === true || u.extraRole === '管理者' || (typeof r === 'string' && r.startsWith('專任'));
+  });
+}
+function renderAdminGcSync() {
+  const el = document.getElementById('admin-gcsync-wrap');
+  if (!el) return;
+  const eligible = _gcSyncEligibleUsers();
+  const pending = eligible.filter(([, u]) => !u.gcAclSynced);
+  const done    = eligible.filter(([,  u]) =>  u.gcAclSynced);
+  const rowsPending = pending.length
+    ? pending.map(([email, u]) => `<li style="font-size:.85rem;padding:2px 0;">${escHtml(u.name || email)} <span style="color:#718096;">（${escHtml(email)} · ${escHtml(u.role || '')}${u.extraRole?'/'+escHtml(u.extraRole):''}${u.isAdmin?' · 管理者':''}）</span></li>`).join('')
+    : '<li style="font-size:.85rem;color:#a0aec0;">（無）</li>';
+  const rowsDone = done.length
+    ? done.map(([email, u]) => `<li style="font-size:.83rem;padding:2px 0;color:#276749;">✓ ${escHtml(u.name || email)} <span style="color:#718096;">（${escHtml(email)}）</span></li>`).join('')
+    : '<li style="font-size:.83rem;color:#a0aec0;">（無）</li>';
+  el.innerHTML = `
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;">
+      <div style="flex:1;min-width:260px;background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;padding:10px 14px;">
+        <div style="font-size:.9rem;font-weight:700;color:#9c4221;margin-bottom:6px;">待授權（${pending.length}）</div>
+        <ul style="list-style:none;padding:0;margin:0;">${rowsPending}</ul>
+      </div>
+      <div style="flex:1;min-width:260px;background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:10px 14px;">
+        <div style="font-size:.9rem;font-weight:700;color:#276749;margin-bottom:6px;">已授權（${done.length}）</div>
+        <ul style="list-style:none;padding:0;margin:0;max-height:200px;overflow-y:auto;">${rowsDone}</ul>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button class="btn btn-primary" ${pending.length?'':'disabled'} onclick="_adminGcAclSyncAll()">一鍵授權待授權者（${pending.length}）</button>
+      <span id="admin-gcsync-status" style="font-size:.82rem;color:#718096;"></span>
+    </div>`;
+}
+async function _adminGcAclSyncAll() {
+  const eligible = _gcSyncEligibleUsers().filter(([, u]) => !u.gcAclSynced);
+  if (!eligible.length) return;
+  const emails = eligible.map(([email]) => email);
+  const st = document.getElementById('admin-gcsync-status');
+  if (st) st.textContent = `授權中… (${emails.length} 位)`;
+  const jobId = bgJobAdd(`GC ACL 同步：${emails.length} 位`);
+  try {
+    const res = await proxyCall('shareCalendarWriters', { emails });
+    (res?.granted || []).forEach(em => { if (configData.users[em]) configData.users[em].gcAclSynced = true; });
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('同步 GC 編輯權限', null, null, `授權 ${res?.granted?.length || 0} 位；錯誤 ${res?.errors?.length || 0} 位`, { major: true });
+    bgJobDone(jobId);
+    if (st) { st.textContent = `✓ 完成：${res?.granted?.length||0} 授權；${res?.errors?.length||0} 錯誤`; setTimeout(() => { if (st) st.textContent = ''; }, 5000); }
+    if (res?.errors?.length) console.warn('GC ACL errors:', res.errors);
+    renderAdminGcSync();
+  } catch (e) {
+    bgJobFail(jobId, e.message);
+    if (st) st.textContent = '';
+    alert('授權失敗：' + e.message);
+  }
+}
+// saveUser 增量 hook：儲存為專任/主任/管理者且尚未同步 → 背景授權該一位
+async function _gcAclAutoSyncOne(email) {
+  const u = configData?.users?.[email];
+  if (!u || u.disabled || !email || email.startsWith('nomail_')) return;
+  const r = u.role || '';
+  const eligible = r === '主任' || u.isAdmin === true || u.extraRole === '管理者' || (typeof r === 'string' && r.startsWith('專任'));
+  if (!eligible || u.gcAclSynced) return;
+  try {
+    const res = await proxyCall('shareCalendarWriters', { emails: [email] });
+    if ((res?.granted || []).includes(email)) {
+      u.gcAclSynced = true;
+      driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+      auditLog('同步 GC 編輯權限（增量）', null, null, email);
+    }
+  } catch (_) { /* 靜默 */ }
 }
 
 function _computeGradStatus(c, curSemStr) {
