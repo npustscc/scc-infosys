@@ -1839,8 +1839,6 @@
               <option value="week">週</option>
               <option value="list">列表檢視</option>
             </select>
-            <button id="bk-prev-week" class="btn btn-secondary btn-sm" onclick="shiftBkWeek(-1)" style="display:none;">上週</button>
-            <button id="bk-next-week" class="btn btn-secondary btn-sm" onclick="shiftBkWeek(1)" style="display:none;">下週</button>
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
             <button class="btn btn-secondary btn-sm" onclick="refreshBookings()" data-tip="從 Drive 重新讀取最新預約資料，若其他人剛更新可點此同步。">重新整理</button>
@@ -6081,9 +6079,10 @@ function _getAutoManagersForCase(caseId) {
     let reason = null;
     if (_isInternSupervisor(email) && supRole === '實習諮商心理師') {
       const roleTag = u.extraRole === '實習生行政督導' ? '行政督導' : '專業督導';
-      reason = { kind: 'supervisor', label: `督導身份·${roleTag}`, supervisee: supName };
+      const shortTag = u.extraRole === '實習生行政督導' ? '行督' : '專督';
+      reason = { kind: 'supervisor', label: `督導身份·${roleTag}`, shortTag, supervisee: supName };
     } else if (_isPartTimeContact(email) && typeof supRole === 'string' && supRole.startsWith('兼任')) {
-      reason = { kind: 'ptContact', label: '窗口身份', supervisee: supName };
+      reason = { kind: 'ptContact', label: '窗口身份', shortTag: '窗', supervisee: supName };
     }
     if (reason) out.push({ email, reason });
   });
@@ -6422,9 +6421,10 @@ function renderCases() {
   // ── 僅主責/個管篩選 ──
   if (_casesMyOnly) {
     const myAllowed = new Set(configData?.users?.[currentUser?.email]?.allowedCases || []);
+    const myAutoManaged = _getAutoManagedCaseIds(currentUser?.email);
     visible = visible.filter(c => {
       const lat = _getLatestCounselorEmail(c);
-      return lat === currentUser?.email || myAllowed.has(c.id);
+      return lat === currentUser?.email || myAllowed.has(c.id) || myAutoManaged.has(c.id);
     });
   }
   const _isPrivilegedCases = currentRole === '主任' || extraRole === '管理者';
@@ -6570,7 +6570,7 @@ function renderCases() {
   visible.forEach(c => {
     _getAutoManagersForCase(c.id).forEach(({ email, reason }) => {
       if (!caseManagerMap[c.id]) caseManagerMap[c.id] = [];
-      const tag = reason.kind === 'supervisor' ? '督' : '窗';
+      const tag = reason.shortTag || (reason.kind === 'supervisor' ? '督' : '窗');
       const label = formatCounselorLabel(email) + tag;
       const exist = caseManagerMap[c.id].find(x => x.email === email);
       if (exist) {
@@ -23378,6 +23378,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-03', title: '當然個管驗證修正：僅主責/個管篩選補上督導/窗口案 + badge 細分 + 空間預約週切換整合', isProd: false, items: [
+      item('修復', '個案列表「僅主責/個管」篩選 checkbox 未納入督導/窗口派生的當然個管案，導致督導登入後看不到 supervisee 的案；改用 `_getAutoManagedCaseIds` 一併納入'),
+      item('改善', '案列表當然個管 badge 由單一「督」再細分為「專督」（實習生專業督導）/「行督」（實習生行政督導），窗口身份維持「窗」'),
+      item('改善', '空間預約：篩選為「週」檢視時，移除獨立的「上週」/「下週」按鈕，改由原本的「‹」/「›」按鈕直接切換整週（維持對齊週一）'),
+    ]},
     { date: '2026-07-02', title: '空間預約 / GC 強化：使用者顏色 + GC 編輯權限 + 事件驗證 + 自動補註', isProd: false, items: [
       item('新功能', '偏好設定新增「空間預約顯示顏色」卡片：32 色可選，選定後空間預約列表中自己的預約 cell 底色淡（12% 透明）+ 左邊 4px 條紋標示；不設沿用預設灰底'),
       item('新功能', 'GC 事件推送時附帶 colorId（自 32 色映射至最接近的 GC 11 色），GC 端也顯示對應色'),
@@ -23394,7 +23399,7 @@ function renderChangelogPage() {
       item('新功能', '編輯使用者 modal：勾選督導/窗口身分後自動出現「負責的實習生/兼任心理師」複選 picker；啟用者於前、停用者以灰字放於下方分組'),
       item('新功能', '兼任心理師窗口為新 flag（isPartTimeContact），與轉銜窗口/身心調適假窗口同層，可與其他附加身分並存'),
       item('新功能', '案詳情頂部「個案管理員」行內為當然個管者附紫色「當然」小標；個管員區塊顯示紫色不可移除的當然個管 chip（含理由「督導身份·行政督導 · 實習生 XX」）；手動+自動兼具者顯示手動 chip 並附「兼當然」小註'),
-      item('新功能', '案列表主責下方「管」prefix 行為當然個管者名字後綴「督」或「窗」符號區分'),
+      item('新功能', '案列表主責下方「管」prefix 行為當然個管者名字後綴「專督」/「行督」（依督導身分）或「窗」符號區分'),
       item('技術', '派生式實作：僅存 superviseeEmails 名單；每次渲染依名單從 casesData 動態推導 auto-managed 案號集合；實習生新開案自動生效、督導關係解除自動失效、無需批次寫 allowedCases'),
       item('技術', '_caseVisibleToUser 加派生路徑（chunk 分層載入時亦生效，督導首次登入即載入 supervisee 的案 chunks）；_hasManagerAccess/_getManagersForCase 合併手動+自動去重'),
     ]},
@@ -27532,10 +27537,6 @@ function renderBookingsPage() {
   // 更新下拉選單與控制項顯示
   const viewSel = document.getElementById('bk-view-select');
   if (viewSel) viewSel.value = _bkListView ? 'list' : _bkWeekMode ? 'week' : String(_bkDaySpan);
-  const prevWeekBtn = document.getElementById('bk-prev-week');
-  const nextWeekBtn = document.getElementById('bk-next-week');
-  if (prevWeekBtn) prevWeekBtn.style.display = (!_bkListView && _bkWeekMode) ? '' : 'none';
-  if (nextWeekBtn) nextWeekBtn.style.display = (!_bkListView && _bkWeekMode) ? '' : 'none';
   const dateCtrl = document.getElementById('bk-date-controls');
   if (dateCtrl) dateCtrl.style.display = _bkListView ? 'none' : '';
   const filterBar = document.getElementById('bk-list-filter-bar');
@@ -27834,6 +27835,7 @@ async function bkDrop(event, newRoom, newDate) {
 }
 
 function shiftBookingDate(delta) {
+  if (_bkWeekMode) { shiftBkWeek(delta); return; }
   const el = document.getElementById('booking-date');
   if (!el) return;
   const d = new Date(el.value || new Date());
