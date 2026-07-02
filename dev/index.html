@@ -9619,6 +9619,8 @@ function _detailChangeCounselor(caseId) {
 function _showCounselorChangeConfirm(caseId, newEmail, c) {
   const newName = configData?.users?.[newEmail]?.name || newEmail;
   const caseName = c.name || caseId;
+  const sem = _caseDetailActiveSem;
+  const semLine = sem ? `<p style="font-size:.88rem;color:#4a5568;margin-bottom:6px;">學期：<strong>${escHtml(semesterLabel(sem))}</strong></p>` : '';
   const canDirect = currentRole === '主任' || extraRole === '管理者' || extraRole === '個案管理員';
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
@@ -9628,6 +9630,7 @@ function _showCounselorChangeConfirm(caseId, newEmail, c) {
       <div class="modal-header"><h3>確認變更主責輔導人員</h3></div>
       <div class="modal-body" style="padding:12px 0 16px;">
         <p style="font-size:.88rem;color:#4a5568;margin-bottom:6px;">個案：<strong>${escHtml(caseName)}（${escHtml(caseId)}）</strong></p>
+        ${semLine}
         <p style="font-size:.88rem;color:#4a5568;margin-bottom:14px;">將主責改為：<strong style="color:#3182ce;">${escHtml(newName)}</strong></p>
         <div style="background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;padding:10px 12px;font-size:.82rem;color:#2b6cb0;">
           確定後，系統將在您的待辦事項建立「內部轉案」任務。<br>
@@ -9636,14 +9639,14 @@ function _showCounselorChangeConfirm(caseId, newEmail, c) {
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="document.getElementById('counselor-change-confirm-modal').remove()">取消</button>
-        ${canDirect ? `<button class="btn btn-warning" onclick="document.getElementById('counselor-change-confirm-modal').remove();_directChangeCounselor('${escHtml(caseId)}','${escHtml(newEmail)}')">直接轉派</button>` : ''}
-        <button class="btn btn-primary" onclick="document.getElementById('counselor-change-confirm-modal').remove();_doDetailChangeCounselor('${escHtml(caseId)}','${escHtml(newEmail)}')">確定，建立待辦</button>
+        ${canDirect ? `<button class="btn btn-warning" onclick="document.getElementById('counselor-change-confirm-modal').remove();_directChangeCounselor('${escHtml(caseId)}','${escHtml(newEmail)}','${escHtml(sem||'')}')">直接轉派</button>` : ''}
+        <button class="btn btn-primary" onclick="document.getElementById('counselor-change-confirm-modal').remove();_doDetailChangeCounselor('${escHtml(caseId)}','${escHtml(newEmail)}','${escHtml(sem||'')}')">確定，建立待辦</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
 }
 
-function _doDetailChangeCounselor(caseId, newEmail) {
+function _doDetailChangeCounselor(caseId, newEmail, semester) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
   const newName = configData?.users?.[newEmail]?.name || newEmail;
@@ -9655,6 +9658,7 @@ function _doDetailChangeCounselor(caseId, newEmail) {
     assignedCounselorName: newName,
     fromCounselor: currentUser.email,
     fromCounselorName: configData?.users?.[currentUser.email]?.name || currentUser.name,
+    semester: semester || undefined,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     done: false, notifRead: false,
   });
@@ -9662,19 +9666,24 @@ function _doDetailChangeCounselor(caseId, newEmail) {
   showToast('已建立轉案待辦，請至待辦頁確認後執行。', 'success');
 }
 
-async function _directChangeCounselor(caseId, newEmail) {
+async function _directChangeCounselor(caseId, newEmail, semester) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
   const newName = configData?.users?.[newEmail]?.name || newEmail;
   const oldName = configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '';
   c.counselorEmail = newEmail;
   c.counselorName = newName;
+  if (semester && c.basicInfoSnapshots?.[semester]) {
+    c.basicInfoSnapshots[semester].counselorEmail = newEmail;
+    c.basicInfoSnapshots[semester].counselorName  = newName;
+  }
+  const semLabel = semester ? `（${semesterLabel(semester)}）` : '';
   const jobId = bgJobAdd(`直接轉派主責 → ${newName}`);
   try {
     await saveCasesChunks(caseId);
-    auditLog('變更主責輔導人員（直接轉派）', caseId, null, `${oldName} → ${newName}（${newEmail}）`);
+    auditLog('變更主責輔導人員（直接轉派）', caseId, null, `${oldName} → ${newName}（${newEmail}）${semLabel}`);
     bgJobDone(jobId);
-    showToast(`已直接變更主責為 ${newName}`, 'success', 3000);
+    showToast(`已直接變更主責為 ${newName}${semLabel}`, 'success', 3000);
     showCaseDetail(caseId);
   } catch(e) {
     bgJobFail(jobId, e.message);
@@ -18397,10 +18406,11 @@ async function _confirmInternalTransfer(todoId) {
   casesData[cidx].counselorName  = counselorName;
   const sems = (Array.isArray(casesData[cidx].semesters) && casesData[cidx].semesters.length
     ? [...casesData[cidx].semesters] : [openDateToSemPrefix(casesData[cidx].openDate)].filter(Boolean)).sort();
-  const latestSem = sems[sems.length - 1];
-  if (latestSem && casesData[cidx].basicInfoSnapshots?.[latestSem]) {
-    casesData[cidx].basicInfoSnapshots[latestSem].counselorEmail = counselorEmail;
-    casesData[cidx].basicInfoSnapshots[latestSem].counselorName  = counselorName;
+  // 優先用建立 todo 當下記錄的目標學期（t.semester）；舊格式沒有此欄位才退回「最新學期」猜測
+  const targetSem = t.semester || sems[sems.length - 1];
+  if (targetSem && casesData[cidx].basicInfoSnapshots?.[targetSem]) {
+    casesData[cidx].basicInfoSnapshots[targetSem].counselorEmail = counselorEmail;
+    casesData[cidx].basicInfoSnapshots[targetSem].counselorName  = counselorName;
   }
   t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
   _syncTodoBadge();
@@ -18425,15 +18435,16 @@ async function _confirmCaseAssignment(todoId) {
   const counselorName = configData?.users?.[counselorEmail]?.name || counselorEmail;
   const _cardEl2 = document.getElementById('todo-card-' + todoId);
   if (_cardEl2) { _cardEl2.style.background='#c6f6d5'; _cardEl2.style.borderColor='#68d391'; _cardEl2.style.opacity='.7'; const _b=_cardEl2.querySelector('.btn-primary'); if(_b){_b.disabled=true;_b.textContent='確認中…';} }
-  // 更新個案主責（全案層級 + 最新學期快照）
+  // 更新個案主責（全案層級 + 目標學期快照）
   casesData[cidx].counselorEmail = counselorEmail;
   casesData[cidx].counselorName  = counselorName;
   const sems = (Array.isArray(casesData[cidx].semesters) && casesData[cidx].semesters.length
     ? [...casesData[cidx].semesters] : [openDateToSemPrefix(casesData[cidx].openDate)].filter(Boolean)).sort();
-  const latestSem = sems[sems.length - 1];
-  if (latestSem && casesData[cidx].basicInfoSnapshots?.[latestSem]) {
-    casesData[cidx].basicInfoSnapshots[latestSem].counselorEmail = counselorEmail;
-    casesData[cidx].basicInfoSnapshots[latestSem].counselorName  = counselorName;
+  // 優先用建立 todo 當下記錄的目標學期（t.semester，來自初次晤談表當時的學期）；舊格式沒有此欄位才退回「最新學期」猜測
+  const targetSem = t.semester || sems[sems.length - 1];
+  if (targetSem && casesData[cidx].basicInfoSnapshots?.[targetSem]) {
+    casesData[cidx].basicInfoSnapshots[targetSem].counselorEmail = counselorEmail;
+    casesData[cidx].basicInfoSnapshots[targetSem].counselorName  = counselorName;
   }
   // 標記 todo 完成
   t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
@@ -23397,6 +23408,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-03', v: 72, title: '個案詳情頁「變更主責」也補上學期說明與正確寫入（回應問題回報 #026 追加）', isProd: false, items: [
+      item('改善', '個案詳情頁點「儲存變更」/「直接轉派」變更主責時，確認視窗新增顯示目前所在學期'),
+      item('修復', '「直接轉派」（跳過待辦、立即生效）先前只更新全案層級主責，未同步更新該學期的 basicInfoSnapshots，若該學期已有快照會導致畫面仍顯示舊主責；改為連同目前所在學期的快照一併更新'),
+      item('修復', '個案詳情頁建立的「內部轉案」待辦、初次晤談派案待辦，先前未記錄目標學期，確認時一律以「最新學期」猜測寫入快照；改為記錄建立當下的實際學期，確認時優先採用'),
+    ]},
     { date: '2026-07-03', v: 71, title: '待辦事項「確認派案」補上學期說明（回應問題回報 #026）', isProd: false, items: [
       item('改善', '待辦事項「待派案」卡片（初談派案）新增顯示該案是哪個學期，與既有「內部轉案」卡片一致；避免點選「確認派案」時不清楚是替哪個學期指派主責'),
     ]},
