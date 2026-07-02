@@ -7588,15 +7588,23 @@ async function saveUser() {
   const isMigrating = oldKey?.startsWith('nomail_') && !!rawEmail; // nomail_ → Gmail
   // Gmail → Gmail 遷移（新增流程）：跨檔重寫個案 refs、通知全員、稽核重大事件
   const isEmailChange = !isNew && !isMigrating && !oldKey.startsWith('nomail_') && !!rawEmail && rawEmail !== oldKey;
-  const newKey = isMigrating ? rawEmail : (isEmailChange ? rawEmail : (oldKey || rawEmail || `nomail_${Date.now()}`));
+  // Gmail → 清空：從有 Gmail 的帳號改為無 Gmail，遷移至新 nomail_ key 並走與 Gmail 變更相同的全套通知/稽核路徑
+  const isEmailRemoval = !isNew && !oldKey.startsWith('nomail_') && !rawEmail;
+  const removalNewKey = isEmailRemoval
+    ? `nomail_${Date.now()}_${Math.random().toString(36).slice(2,5)}`
+    : null;
+  const newKey = isMigrating ? rawEmail
+               : isEmailChange ? rawEmail
+               : isEmailRemoval ? removalNewKey
+               : (oldKey || rawEmail || `nomail_${Date.now()}`);
 
   // Duplicate check for Gmail migration/change
   if ((isMigrating || isEmailChange) && configData.users[newKey]) {
     errEl.textContent = '此 Gmail 帳號已存在，請確認後再試。'; errEl.style.display = ''; return;
   }
 
-  // Gmail → Gmail 走專屬遷移路徑
-  if (isEmailChange) {
+  // Gmail → Gmail / Gmail → 清空 走專屬遷移路徑（同一 helper）
+  if (isEmailChange || isEmailRemoval) {
     const _internFromV = document.getElementById('modal-intern-from').value;
     const _internToV   = document.getElementById('modal-intern-to').value;
     document.getElementById('user-modal').style.display = 'none';
@@ -7604,7 +7612,7 @@ async function saveUser() {
       name, role,
       isAdmin, isTC, isML, isInternAdminS, isInternProS,
       internFrom: _internFromV, internTo: _internToV,
-    });
+    }, { removal: isEmailRemoval });
     return;
   }
 
@@ -7666,28 +7674,31 @@ async function saveUser() {
   }
 }
 
-// Gmail → Gmail 遷移：跨檔重寫個案 refs、通知全員、稽核重大事件
+// Gmail → Gmail 遷移 或 Gmail → 清空（→ nomail_）：跨檔重寫個案 refs、通知全員、稽核重大事件
 // 呼叫者：admin 從編輯 modal（saveUser 分派）或使用者本人從偏好設定
-async function _migrateUserEmail(oldEmail, newEmail, entryPatches = {}) {
-  const isSelf   = oldEmail === currentUser?.email;
-  const isPriv   = currentRole === '主任' || extraRole === '管理者';
-  if (!isSelf && !isPriv) { alert('只有主任、管理者或本人才能更改 Gmail 帳號。'); return; }
+async function _migrateUserEmail(oldEmail, newEmail, entryPatches = {}, opts = {}) {
+  const isSelf     = oldEmail === currentUser?.email;
+  const isPriv     = currentRole === '主任' || extraRole === '管理者';
+  const isRemoval  = !!opts.removal; // Gmail → nomail_（清空 email）
+  if (!isSelf && !isPriv) { alert('只有主任、管理者或本人才能變更 Gmail 帳號。'); return; }
   if (!oldEmail || !newEmail || oldEmail === newEmail) return;
   if (!configData.users[oldEmail]) { alert('找不到原帳號。'); return; }
-  if (configData.users[newEmail]) { alert('目標 Gmail 帳號已存在於系統，無法遷移。'); return; }
+  if (!isRemoval && configData.users[newEmail]) { alert('目標 Gmail 帳號已存在於系統，無法遷移。'); return; }
 
   const oldName = configData.users[oldEmail]?.name || oldEmail;
+  const actionVerb = isRemoval ? '清空' : '更改';
+  const targetLabel = isRemoval ? '（無 Gmail 帳號）' : newEmail;
   const confirmMsg =
-    `即將把「${oldName}」的 Gmail 由\n  ${oldEmail}\n更改為\n  ${newEmail}\n\n此操作將：\n` +
+    `即將把「${oldName}」的 Gmail 由\n  ${oldEmail}\n${actionVerb}為\n  ${targetLabel}\n\n此操作將：\n` +
     `1. 遷移該帳號所有系統設定（角色、附加身分、allowedCases 等）\n` +
     `2. 重寫所有相關個案的主責 / 初談者 / interviewerEmails\n` +
     `3. 發送通知給全體使用者\n` +
     `4. 於稽核日誌記錄為重大事件` +
-    (isSelf ? `\n5. 完成後系統會自動登出，請以新 Gmail 重新登入` : '') +
+    (isSelf ? `\n5. 完成後系統會自動登出${isRemoval ? '（本帳號已無 Gmail，將無法自行登入，需由管理者補填後才能再次使用）' : '，請以新 Gmail 重新登入'}` : '') +
     `\n\n確定要繼續嗎？`;
   if (!confirm(confirmMsg)) return;
 
-  const jobId = bgJobAdd(`Gmail 遷移：${oldEmail} → ${newEmail}`);
+  const jobId = bgJobAdd(`Gmail ${actionVerb}：${oldEmail} → ${targetLabel}`);
   const usersBackup = JSON.parse(JSON.stringify(configData.users || {}));
 
   try {
@@ -7734,8 +7745,9 @@ async function _migrateUserEmail(oldEmail, newEmail, entryPatches = {}) {
     bgJobProgress(jobId, 40);
 
     // 3. 全員通知（露出舊 email 便於對接；7 天後自動移除）
-    const gmailNoticeMsg =
-      `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 更改為 ${newEmail}`;
+    const gmailNoticeMsg = isRemoval
+      ? `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 清空（改為無 Gmail 帳號）`
+      : `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 更改為 ${newEmail}`;
     const nowIso = new Date().toISOString();
     Object.entries(configData.users).forEach(([email, u]) => {
       if (email === currentUser?.email) return; // 操作者本人不塞
@@ -7764,20 +7776,24 @@ async function _migrateUserEmail(oldEmail, newEmail, entryPatches = {}) {
     }
 
     // 6. 稽核日誌（重大事件）
-    auditLog('更改使用者 Gmail', null, null,
-      `${oldName}：${oldEmail} → ${newEmail}（更新 ${affectedIds.size} 筆個案）`,
+    auditLog(isRemoval ? '清空使用者 Gmail' : '更改使用者 Gmail', null, null,
+      `${oldName}：${oldEmail} → ${isRemoval ? '（無 Gmail 帳號）' : newEmail}（更新 ${affectedIds.size} 筆個案）`,
       { major: true });
 
     bgJobDone(jobId);
     setAlert?.('admin-alert', 'success',
-      `Gmail 已由 ${escHtml(oldEmail)} 遷移至 ${escHtml(newEmail)}（更新 ${affectedIds.size} 筆個案，通知已送出）。`);
+      isRemoval
+        ? `Gmail 已由 ${escHtml(oldEmail)} 清空（更新 ${affectedIds.size} 筆個案，通知已送出）。`
+        : `Gmail 已由 ${escHtml(oldEmail)} 遷移至 ${escHtml(newEmail)}（更新 ${affectedIds.size} 筆個案，通知已送出）。`);
     renderAdminUsers?.();
     if (typeof renderCases === 'function') renderCases();
     renderNotifBell?.();
 
     // 7. 自己遷移 → 強制登出（session 綁在舊 Gmail）
     if (isSelf) {
-      alert('您的 Gmail 已成功更改。系統將登出，請以新 Gmail 帳號重新登入。');
+      alert(isRemoval
+        ? '您的 Gmail 已清空。系統將登出，由於本帳號已無 Gmail，將無法再自行登入，需由管理者補填後才能再次使用。'
+        : '您的 Gmail 已成功更改。系統將登出，請以新 Gmail 帳號重新登入。');
       if (typeof signOut === 'function') signOut();
     }
   } catch (err) {
@@ -18225,14 +18241,14 @@ function renderTodosPage() {
         caseRows.sort((a, b) => a.sem.localeCompare(b.sem) || a.c.name.localeCompare(b.c.name, 'zh'));
         const collapsed = _userPref_('todosUnclosedCollapsed', false);
         summaryHtml = `<div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${collapsed?'0':'10px'};gap:8px;flex-wrap:wrap;">
-            <span onclick="_toggleUnclosedSummary()" style="font-weight:600;font-size:.9rem;color:#9c4221;cursor:pointer;user-select:none;" data-tip="點選收起/展開明細">
+          <div onclick="_toggleUnclosedSummary()" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${collapsed?'0':'10px'};gap:8px;flex-wrap:wrap;cursor:pointer;user-select:none;" data-tip="點選整列可收起/展開明細">
+            <span style="font-weight:600;font-size:.9rem;color:#9c4221;">
               <span style="display:inline-block;width:14px;">${collapsed?'▶':'▼'}</span>
               ⚠ 過去學期未結案（${caseRows.length} 筆）
             </span>
             <div style="display:flex;gap:6px;">
-              <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;background:#fff;border-color:#ed8936;color:#c05621;" onclick="goCasesPastUnclosed()">前往個案列表</button>
-              <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;" onclick="_dismissUnclosedReminder()">已讀，不再提醒</button>
+              <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;background:#fff;border-color:#ed8936;color:#c05621;" onclick="event.stopPropagation();goCasesPastUnclosed()">前往個案列表</button>
+              <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;" onclick="event.stopPropagation();_dismissUnclosedReminder()">已讀，不再提醒</button>
             </div>
           </div>
           ${collapsed ? '' : `<div style="overflow-x:auto;">
@@ -22690,6 +22706,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: 'Gmail 清空亦走遷移路徑；過去學期未結案卡片整列可點擊收合', isProd: false, items: [
+      item('改善', '使用者管理頁：清空 Gmail 欄位 → 遷移至新 nomail_ key，走與 Gmail 更改相同的全員通知/稽核重大事件路徑；如清空自己的 Gmail 會強制登出並提醒需管理者補填才能再次使用'),
+      item('改善', '待辦頁「過去學期未結案」摘要卡片：整個標題列（含空白區）皆可點擊收合，不再限於文字；兩個按鈕加 event.stopPropagation() 避免誤觸'),
+    ]},
     { date: '2026-07-02', title: 'Gmail 更改 + 通知 7 天自動清理 + auditLog 重大事件旗標', isProd: false, items: [
       item('新功能', '使用者管理頁：主任/管理者可於編輯 modal 更改任一使用者的 Gmail 帳號（B 級遷移）'),
       item('新功能', '偏好設定頁新增「更改我的 Gmail」卡片，使用者本人可自助更改（完成後強制登出，以新帳號重新登入）'),
