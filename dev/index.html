@@ -12414,15 +12414,36 @@ async function softDeleteEval(caseId, evalId) {
     }
   })();
 }
+// 判斷某學期是否「未結案」——不再單靠 semesterStatus 的預設 'active'，改為多重證據判斷
+// Bug 背景：舊資料 c.semesterStatus 缺該學期的 key 時，舊邏輯 || 'active' 會誤判為未結案，
+// 即便 c.semesterEvaluations 已有該學期的 closure 或 c.status 已經 'closed'。
+function _isSemesterUnclosed(c, sem) {
+  const semSt = c.semesterStatus?.[sem];
+  if (semSt === 'closed') return false;               // 明確結案
+  if (semSt === 'active') return true;                // 明確進行中
+  // ── semesterStatus 該學期為 undefined（舊資料）→ 其他線索 ──
+  const evals = Array.isArray(c.semesterEvaluations) ? c.semesterEvaluations : [];
+  const hasClosureEvalForSem = evals.some(e =>
+    e && e.type === 'closure' && !e.deletedAt && !e.replacedBy && e.semester === sem
+  );
+  if (hasClosureEvalForSem) return false;             // 有明確該學期的結案評估
+  // 舊格式 closureEvaluation（不帶學期）+ 案僅一個學期 → 視為該學期已結案
+  const semList = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)].filter(Boolean);
+  if (c.closureEvaluation && !evals.length && semList.length === 1) return false;
+  // 這個學期是最新學期，且案本身 c.status === 'closed'（_recomputeCaseStatus 由最新學期推導）→ 已結案
+  const latestSem = [...semList].sort().pop();
+  if (sem === latestSem && c.status === 'closed') return false;
+  return true; // 無任何結案證據 → 仍需提醒
+}
 function _hasPastUnclosed(c) {
   const curSem = currentSemesterPrefix();
   const sems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)];
-  return sems.some(s => s && s < curSem && (c.semesterStatus?.[s] || 'active') !== 'closed');
+  return sems.some(s => s && s < curSem && _isSemesterUnclosed(c, s));
 }
 function _pastUnclosedSems(c) {
   const curSem = currentSemesterPrefix();
   const sems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)];
-  return sems.filter(s => s && s < curSem && (c.semesterStatus?.[s] || 'active') !== 'closed');
+  return sems.filter(s => s && s < curSem && _isSemesterUnclosed(c, s));
 }
 function _dismissUnclosedReminder() {
   const reminders = todosData.filter(t => t.type === 'unclosed_reminder' && !t.done);
@@ -23041,6 +23062,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '拖曳 chips 調整系所學院/學制歸屬 + 過去學期未結案 bug 修', isProd: false, items: [
+      item('修復', '待辦頁「過去學期未結案」對舊資料誤判：`_isSemesterUnclosed` 新增多重證據判斷（semesterEvaluations 有 closure 條目、舊格式 closureEvaluation、最新學期 c.status===closed），不再單靠 `semesterStatus[sem] || active` 的預設值錯報'),
+      item('新功能', '系統管理→系所與學院對照：系所 chip 可拖曳到其他學院區塊，drop 時更新 configData.deptToCollege 並存；即時反映到統計、新開案顯示；歷史個案的 c.college 是死欄位（未被讀取），實際顯示走 live lookup，不受影響'),
+      item('新功能', '系統管理→學制學號前綴：字母 chip 可跨學制拖曳（學士/碩士/博士），drop 時更新 configData.degreeMapping 並存；由於 `_buildDegreeMaps` 是 live 從 studentId 前綴推導，無需批次更新個案'),
+      item('稽核', '拖曳成功時記入稽核日誌（「調整系所學院歸屬」/「調整學制前綴對應」），詳情含來源→目標'),
+    ]},
     { date: '2026-07-02', title: '上班時間設定支援每日不同時段（滿足晚班需求）', isProd: true, items: [
       item('改善', '設定 UI 改為「每個星期一列」：週一~週日各自可 checkbox 上班/不上班、獨立設定開始/結束時數（如週一週四 8-21 晚班、週二三五 8-18）'),
       item('相容', '舊格式（startHour/endHour/workDays）自動 migrate 為 weeklyHours；saveHandler 儲存後清除舊欄位避免混淆'),
@@ -29578,14 +29605,22 @@ function renderAdminDegreeMapping() {
     { key: 'master',   label: '碩士班', years: 2, color: '#6b46c1' },
     { key: 'phd',      label: '博士班', years: 3, color: '#c05621' },
   ];
-  el.innerHTML = sections.map(s => {
+  el.innerHTML = `
+    <div style="font-size:.78rem;color:#718096;margin-bottom:10px;padding:6px 10px;background:#f7fafc;border-radius:5px;">
+      💡 提示：字母 chip 可拖曳到其他學制列以改變歸屬（等同修改前綴對應）。
+    </div>` + sections.map(s => {
     const chips = (dm[s.key] || []).map(c =>
-      `<span style="display:inline-flex;align-items:center;gap:2px;background:${s.color}18;color:${s.color};border:1px solid ${s.color}50;border-radius:12px;padding:2px 8px 2px 10px;font-size:.85rem;font-weight:700;">${escHtml(c)}<button onclick="_adminRemovePrefix('${escHtml(s.key)}','${escHtml(c)}')" title="移除" style="background:none;border:none;cursor:pointer;color:${s.color};font-size:1rem;line-height:1;padding:0 0 0 3px;margin:0;">×</button></span>`
+      `<span draggable="true" data-char="${escHtml(c)}" data-src-key="${escHtml(s.key)}"
+        ondragstart="_dmDragStart(event)" ondragend="_dmDragEnd(event)"
+        style="display:inline-flex;align-items:center;gap:2px;background:${s.color}18;color:${s.color};border:1px solid ${s.color}50;border-radius:12px;padding:2px 8px 2px 10px;font-size:.85rem;font-weight:700;cursor:grab;"
+        title="拖曳至其他學制以變更歸屬">${escHtml(c)}<button onclick="_adminRemovePrefix('${escHtml(s.key)}','${escHtml(c)}')" title="移除" style="background:none;border:none;cursor:pointer;color:${s.color};font-size:1rem;line-height:1;padding:0 0 0 3px;margin:0;">×</button></span>`
     ).join(' ');
-    return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 0;border-bottom:1px solid #f0f4f8;">
+    return `<div class="dm-drop-row" data-key="${escHtml(s.key)}"
+      ondragover="_dmDragOver(event)" ondragleave="_dmDragLeave(event)" ondrop="_dmDrop(event)"
+      style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 8px;border-bottom:1px solid #f0f4f8;border-radius:6px;transition:background .15s;">
       <span style="font-weight:600;font-size:.88rem;width:92px;color:${s.color};flex-shrink:0;">${escHtml(s.label)}（${s.years}年）</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;">
-        ${chips || '<span style="font-size:.82rem;color:#a0aec0;">（尚未設定）</span>'}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;min-height:28px;">
+        ${chips || '<span style="font-size:.82rem;color:#a0aec0;">（尚未設定；可從其他學制拖曳字母過來）</span>'}
       </div>
       <div style="display:inline-flex;gap:4px;align-items:center;flex-shrink:0;">
         <input type="text" id="dm-input-${s.key}" maxlength="1" placeholder="字母" style="width:44px;padding:4px 6px;border:1px solid #cbd5e0;border-radius:6px;font-size:.85rem;text-align:center;text-transform:uppercase;" oninput="this.value=this.value.toUpperCase()">
@@ -29593,6 +29628,49 @@ function renderAdminDegreeMapping() {
       </div>
     </div>`;
   }).join('');
+}
+// ── 學制前綴拖曳 handlers ──
+function _dmDragStart(ev) {
+  const el = ev.currentTarget;
+  ev.dataTransfer.setData('text/plain', JSON.stringify({ ch: el.dataset.char, src: el.dataset.srcKey }));
+  ev.dataTransfer.effectAllowed = 'move';
+  el.style.opacity = '.5';
+}
+function _dmDragEnd(ev) { ev.currentTarget.style.opacity = ''; }
+function _dmDragOver(ev) {
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'move';
+  ev.currentTarget.style.background = '#ebf8ff';
+}
+function _dmDragLeave(ev) { ev.currentTarget.style.background = ''; }
+async function _dmDrop(ev) {
+  ev.preventDefault();
+  const row = ev.currentTarget;
+  row.style.background = '';
+  const destKey = row.dataset.key;
+  let payload = {};
+  try { payload = JSON.parse(ev.dataTransfer.getData('text/plain') || '{}'); } catch (_) {}
+  const { ch, src } = payload;
+  if (!ch || !src || !destKey) return;
+  if (src === destKey) return; // 同一學制內拖曳無意義
+  if (!configData.degreeMapping) configData.degreeMapping = { bachelor:['B','E','F','K'], master:['M','N'], phd:['P'] };
+  const dm = configData.degreeMapping;
+  if (!Array.isArray(dm[src])) dm[src] = [];
+  if (!Array.isArray(dm[destKey])) dm[destKey] = [];
+  dm[src] = dm[src].filter(x => x !== ch);
+  if (!dm[destKey].includes(ch)) dm[destKey].push(ch);
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('調整學制前綴對應', null, null, `字母 ${ch}：${src} → ${destKey}`);
+    renderAdminDegreeMapping();
+    showToast?.(`已將字母「${ch}」改為 ${({bachelor:'學士',master:'碩士',phd:'博士'})[destKey]||destKey}`, 'success');
+  } catch (e) {
+    alert('儲存失敗：' + e.message);
+    // 回滾
+    dm[destKey] = dm[destKey].filter(x => x !== ch);
+    if (!dm[src].includes(ch)) dm[src].push(ch);
+    renderAdminDegreeMapping();
+  }
 }
 
 async function _adminAddPrefix(degreeKey) {
@@ -29629,6 +29707,9 @@ function renderAdminDeptCollege() {
     <div style="margin-bottom:12px;font-size:.82rem;color:${usingConfig?'#276749':'#718096'};background:${usingConfig?'#f0fff4':'#f7fafc'};border:1px solid ${usingConfig?'#9ae6b4':'#e2e8f0'};padding:8px 12px;border-radius:6px;">
       ${usingConfig ? '✓ 目前使用 config.json 中的自訂對照表。' : '⚠ 目前使用系統內建對照表（未自訂），修改後將寫入 config.json。'}
     </div>
+    <div style="font-size:.78rem;color:#718096;margin-bottom:10px;padding:6px 10px;background:#f7fafc;border-radius:5px;">
+      💡 提示：系所 chip 可拖曳到其他學院區塊以改變歸屬（等同修改對照表）。統計、新開案的學院顯示會即時反映；歷史個案的顯示因走 live lookup 也會一併更新。
+    </div>
     <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;">
       <input type="text" id="dc-input-dept" class="field-input" placeholder="系所名稱" style="flex:1;min-width:180px;max-width:280px;" />
       <input type="text" id="dc-input-college" class="field-input" placeholder="學院名稱" style="flex:1;min-width:140px;max-width:200px;" list="dc-college-list" />
@@ -29637,16 +29718,60 @@ function renderAdminDeptCollege() {
       ${usingConfig ? '' : `<button class="btn btn-secondary btn-sm" onclick="_adminInitDeptCollegeFromDefault()">匯入系統預設</button>`}
     </div>
     ${colleges.map(col => `
-      <div style="margin-bottom:14px;">
+      <div class="dc-drop-group" data-college="${escHtml(col)}"
+        ondragover="_dcDragOver(event)" ondragleave="_dcDragLeave(event)" ondrop="_dcDrop(event)"
+        style="margin-bottom:14px;border-radius:6px;padding:2px;transition:background .15s;">
         <div style="font-weight:700;font-size:.88rem;color:#2b6cb0;background:#ebf8ff;padding:5px 10px;border-radius:6px;margin-bottom:6px;">${escHtml(col)}</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;padding:0 4px;">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;padding:0 4px;min-height:28px;">
           ${(byCollege[col]||[]).map(dept =>
-            `<span style="display:inline-flex;align-items:center;gap:2px;background:#edf2f7;color:#2d3748;border:1px solid #cbd5e0;border-radius:12px;padding:2px 8px 2px 10px;font-size:.83rem;">
+            `<span draggable="true" data-dept="${escHtml(dept)}" data-src-college="${escHtml(col)}"
+              ondragstart="_dcDragStart(event)" ondragend="_dcDragEnd(event)"
+              style="display:inline-flex;align-items:center;gap:2px;background:#edf2f7;color:#2d3748;border:1px solid #cbd5e0;border-radius:12px;padding:2px 8px 2px 10px;font-size:.83rem;cursor:grab;"
+              title="拖曳至其他學院區塊以變更歸屬">
               ${escHtml(dept)}<button onclick="_adminRemoveDeptCollege('${escHtml(dept)}')" title="移除" style="background:none;border:none;cursor:pointer;color:#718096;font-size:1rem;line-height:1;padding:0 0 0 3px;">×</button>
-            </span>`).join('')}
+            </span>`).join('') || '<span style="font-size:.78rem;color:#a0aec0;">（可從其他學院拖曳系所過來）</span>'}
         </div>
       </div>`).join('')}
     ${Object.keys(dc).length === 0 ? '<div style="color:#a0aec0;font-size:.85rem;">尚無對應資料。</div>' : ''}`;
+}
+// ── 系所→學院 拖曳 handlers ──
+function _dcDragStart(ev) {
+  const el = ev.currentTarget;
+  ev.dataTransfer.setData('text/plain', JSON.stringify({ dept: el.dataset.dept, src: el.dataset.srcCollege }));
+  ev.dataTransfer.effectAllowed = 'move';
+  el.style.opacity = '.5';
+}
+function _dcDragEnd(ev) { ev.currentTarget.style.opacity = ''; }
+function _dcDragOver(ev) {
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'move';
+  ev.currentTarget.style.background = '#f0fff4';
+}
+function _dcDragLeave(ev) { ev.currentTarget.style.background = ''; }
+async function _dcDrop(ev) {
+  ev.preventDefault();
+  const grp = ev.currentTarget;
+  grp.style.background = '';
+  const destCollege = grp.dataset.college;
+  let payload = {};
+  try { payload = JSON.parse(ev.dataTransfer.getData('text/plain') || '{}'); } catch (_) {}
+  const { dept, src } = payload;
+  if (!dept || !destCollege) return;
+  if (src === destCollege) return;
+  if (!configData.deptToCollege) configData.deptToCollege = { ..._getDeptToCollege() };
+  const prev = configData.deptToCollege[dept];
+  configData.deptToCollege[dept] = destCollege;
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('調整系所學院歸屬', null, null, `${dept}：${prev||'（未設）'} → ${destCollege}`);
+    renderAdminDeptCollege();
+    showToast?.(`已將「${dept}」歸入「${destCollege}」`, 'success');
+  } catch (e) {
+    alert('儲存失敗：' + e.message);
+    // 回滾
+    if (prev) configData.deptToCollege[dept] = prev; else delete configData.deptToCollege[dept];
+    renderAdminDeptCollege();
+  }
 }
 
 async function _adminAddDeptCollege() {
