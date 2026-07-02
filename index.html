@@ -253,8 +253,10 @@
       font-size: .8rem;
       color: #1a5276;
     }
-    #sidebar-role-box .role-name { font-weight: 700; margin-bottom: 2px; }
-    #sidebar-role-box .extra-role { color: #2980b9; font-size: .75rem; }
+    #sidebar-role-box .role-name { font-weight: 700; margin-bottom: 4px; }
+    #sidebar-role-box .extra-role { display: flex; flex-wrap: wrap; gap: 4px; font-size: .72rem; }
+    #sidebar-role-box .extra-role:empty { display: none; }
+    #sidebar-role-box .extra-role .badge { font-size: .7rem; padding: 1px 6px; }
 
     /* Content area */
     #content {
@@ -739,6 +741,11 @@
     }
     .case-deleted-row td { opacity: .6; background: #fff5f5; }
     .case-deleted-row:hover td { background: #fee; }
+    /* 已封存 → 灰底；已結案 → 淡藍底（優先權：deleted > archived > closed > active） */
+    .case-archived-row td { background: #edf2f7; color: #4a5568; }
+    .case-archived-row:hover td { background: #e2e8f0; }
+    .case-closed-row td { background: #f7fbff; }
+    .case-closed-row:hover td { background: #ebf4fb; }
     .badge-case-deleted {
       display: inline-block; padding: 2px 8px; border-radius: 12px;
       background: #fde8e8; color: #c0392b; border: 1px solid #f5c6c6;
@@ -1612,6 +1619,25 @@
           </label>
           <div style="margin-top:10px;">
             <button class="btn btn-primary btn-sm" onclick="saveLeaveConfirmPref()">儲存</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="pref-gmail-card">
+        <div class="card-header"><h3>更改我的 Gmail</h3></div>
+        <div style="padding:16px 20px;">
+          <div id="pref-gmail-current" style="font-size:.85rem;color:#4a5568;margin-bottom:10px;">目前 Gmail：<strong id="pref-gmail-current-val">—</strong></div>
+          <label class="field-label">新的 Gmail 帳號</label>
+          <input type="email" id="pref-gmail-new" class="field-input" placeholder="new-email@gmail.com" autocomplete="off" />
+          <div style="font-size:.78rem;color:#9c4221;margin-top:8px;line-height:1.5;">
+            ⚠ 更改後：<br>
+            ・所有相關個案的主責/初談者/interviewerEmails 將同步更新<br>
+            ・所有使用者會收到通知（包含舊 email 對照）<br>
+            ・稽核日誌記錄為<strong>重大事件</strong><br>
+            ・完成後系統會自動登出，請以新 Gmail 重新登入
+          </div>
+          <div style="margin-top:12px;">
+            <button class="btn btn-primary btn-sm" onclick="_prefChangeMyGmail()">更改 Gmail</button>
           </div>
         </div>
       </div>
@@ -3388,6 +3414,7 @@
       </div>
       <div id="todos-access-audit-section"></div>
       <div id="todos-ml-notif-section"></div>
+      <div id="todos-major-events-section"></div>
       <div id="todos-assignment-section"></div>
       <div id="todos-unclosed-summary"></div>
       <div id="todos-body"></div>
@@ -5274,6 +5301,8 @@ async function afterLogin() {
     resolveUserRole();
     // 許願池燈號：需在 resolveUserRole 之後才知道是否 admin，過濾邏輯才正確
     if (typeof renderIssuesBadge === 'function') renderIssuesBadge();
+    // 許願池 30 分鐘自動輪詢（避免只有 F5 才看到新意見）
+    if (typeof scheduleIssuesAutoRefresh === 'function') scheduleIssuesAutoRefresh();
     // 檢查帳號是否停用（bootstrap admin 不受限制）
     if (configData?.users?.[currentUser.email]?.disabled && currentUser.email !== BOOTSTRAP_ADMIN_EMAIL) {
       hideLoading();
@@ -5396,7 +5425,15 @@ function resolveUserRole() {
 
   // Sidebar 角色顯示
   document.getElementById('sb-role').textContent  = currentRole || '（未設定角色）';
-  document.getElementById('sb-extra').textContent = extraRole   || '';
+  // 附加身分 badges：與使用者管理頁的 badge 呈現一致
+  const _sbExtraBadges = [];
+  if (extraRole === '管理者')                _sbExtraBadges.push(`<span class="badge badge-orange">管理者</span>`);
+  else if (extraRole === '個案管理員')       _sbExtraBadges.push(`<span class="badge badge-gray">個案管理員</span>`);
+  else if (extraRole === '實習生行政督導')   _sbExtraBadges.push(`<span class="badge badge-gray">實習生行政督導</span>`);
+  else if (extraRole === '實習生專業督導')   _sbExtraBadges.push(`<span class="badge badge-gray">實習生專業督導</span>`);
+  if (isTransferContact)    _sbExtraBadges.push(`<span class="badge badge-teal">轉銜窗口</span>`);
+  if (isMentalLeaveContact) _sbExtraBadges.push(`<span class="badge badge-blue">身心調適假窗口</span>`);
+  document.getElementById('sb-extra').innerHTML = _sbExtraBadges.join(' ');
 
   // 管理者才顯示使用者管理頁
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
@@ -5870,6 +5907,18 @@ function _isInitialInterviewerOfCase(c, email) {
   }
   return false;
 }
+// 列出此案所有初談者 email（去重）；權限等同個管員但 badge 顯示「初談者」
+function _getInitialInterviewersForCase(c) {
+  const emails = new Set();
+  if (c?.initialInterview?.interviewerEmail) emails.add(c.initialInterview.interviewerEmail);
+  if (c?.initialInterviews) {
+    Object.values(c.initialInterviews).forEach(ii => { if (ii?.interviewerEmail) emails.add(ii.interviewerEmail); });
+  }
+  if (c && !c.initialInterview && !c.initialInterviews && Array.isArray(c.interviewerEmails)) {
+    c.interviewerEmails.forEach(e => e && emails.add(e));
+  }
+  return [...emails];
+}
 
 // 個案（可為 index-only entry）對某使用者是否「屬於我／我可見的自有案」——非管理者可見性單一真相
 // 供 renderCases 過濾與 scoped 載入 chunk 計算共用，確保兩處判定一致
@@ -5886,10 +5935,14 @@ function _caseVisibleToUser(c, email, allowedSet) {
 // ══════════════════════════════════════════════
 //  危機案件個案閱讀（申請即通過、全員監督）
 // ══════════════════════════════════════════════
-// 可申請者：專任（角色以「專任」開頭）或實習諮商心理師；主任/管理者本就全可見不需申請
+// 可申請者：專任 / 實習諮商心理師；主任 / 系統管理者 / 管理者亦可申請以形式留痕
+// （主任/管理者本可全案可見，申請流程供合理狀況下正式登記閱讀目的）
 function _canApplyCrisisAccess() {
-  if (currentRole === '主任' || extraRole === '管理者') return false;
-  return (typeof currentRole === 'string' && currentRole.startsWith('專任')) || currentRole === '實習諮商心理師';
+  return currentRole === '主任'
+    || currentRole === '系統管理者'
+    || extraRole === '管理者'
+    || (typeof currentRole === 'string' && currentRole.startsWith('專任'))
+    || currentRole === '實習諮商心理師';
 }
 // 監督區可見者：主任/管理者/專任（依需求；實習生被監督但不看 feed）
 function _canViewAccessAudit() {
@@ -5946,7 +5999,7 @@ async function _logCrisisRead(c, sem) {
     email: currentUser.email, name: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
     caseId: c.id, caseName: c.name || '', sem: sem || '', blocks, t: new Date().toISOString(),
   };
-  auditLog('危機案件閱讀', c.id, null, blocks.map(b => _crisisBlockLabel(b.k) + '×' + b.n).join('、'));
+  auditLog('危機案件閱讀', c.id, null, blocks.map(b => _crisisBlockLabel(b.k) + '×' + b.n).join('、'), { major: true });
   _appendAccessLog(entry).catch(e => _syslog('warn', '危機閱讀記錄寫入失敗：' + e.message));
 }
 function _crisisBlockLabel(k) {
@@ -6062,7 +6115,7 @@ async function submitCrisisAccess() {
   };
   try {
     await _appendAccessLog(entry);
-    auditLog('危機案件閱讀申請', caseId, null, reason);
+    auditLog('危機案件閱讀申請', caseId, null, reason, { major: true });
     _crisisSubmitting = false;
     _crisisApplyTarget = null;
     showToast('✅ 已取得當日閱讀權限，開啟中…', 'success');
@@ -6239,6 +6292,15 @@ function renderCases() {
       caseManagerMap[id].push(formatCounselorLabel(key));
     });
   });
+  // 建立「個案ID → 初談者名單」反查表（權限同個管，badge 不同）
+  const caseInitInterviewerMap = {};
+  visible.forEach(c => {
+    _getInitialInterviewersForCase(c).forEach(email => {
+      if (!email || email === c.counselorEmail) return; // 排除主責，避免重複
+      if (!caseInitInterviewerMap[c.id]) caseInitInterviewerMap[c.id] = [];
+      caseInitInterviewerMap[c.id].push(formatCounselorLabel(email));
+    });
+  });
 
   const _semMs = caseFilters.semester ? semesterMonths(caseFilters.semester) : null;
   const transferCaseIds = new Set((transferData||[]).filter(t => t.type === 'incoming' && t.caseId).map(t => t.caseId));
@@ -6338,10 +6400,15 @@ function renderCases() {
     const statusCell = c.deleted
       ? `<span class="badge-case-deleted">已刪除</span>`
       : statusBadge(c.status) + archivedBadge + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '') + mlRecentBadge;
-    const rowBg = !c.deleted && pastUnclosedSems.length ? 'background:#fffbeb;' : '';
+    const rowBg = !c.deleted && !c.archived && c.status !== 'closed' && pastUnclosedSems.length ? 'background:#fffbeb;' : '';
     const canCheckCase = !c.deleted; // 封存個案也可勾選，以便批次解封
+    // 底色優先順序：deleted > archived > closed > pastUnclosed(warm) > active(白)
+    const _rowClass = c.deleted ? 'case-deleted-row'
+                    : c.archived ? 'case-archived-row'
+                    : c.status === 'closed' ? 'case-closed-row'
+                    : '';
     return `
-    <tr class="${c.deleted ? 'case-deleted-row' : ''}" style="cursor:pointer;${rowBg}" onclick="showCaseDetail('${cid}')">
+    <tr class="${_rowClass}" style="cursor:pointer;${rowBg}" onclick="showCaseDetail('${cid}')">
       <td style="width:36px;text-align:center;" onclick="event.stopPropagation()">${canCheckCase ? `<input type="checkbox" class="case-row-chk" data-id="${cid}" ${_casesSelected.has(c.id)?'checked':''} onchange="_caseChkChange(this)">` : ''}</td>
       <td>${escHtml(c.id || '—')}${abBadge ? `<br>${abBadge}` : ''}</td>
       <td>${escHtml(c.name  || '—')}</td>
@@ -6351,6 +6418,13 @@ function renderCases() {
           ? `<div style="font-size:.72rem;margin-top:2px;color:#2471a3;">
                <span style="background:#d6eaf8;border-radius:3px;padding:0 4px;font-weight:700;letter-spacing:.02em;">管</span>
                ${escHtml((caseManagerMap[c.id] || []).join('、'))}
+             </div>`
+          : ''
+      }${
+        (caseInitInterviewerMap[c.id] || []).length
+          ? `<div style="font-size:.72rem;margin-top:2px;color:#276749;">
+               <span style="background:#d4edda;border-radius:3px;padding:0 4px;font-weight:700;letter-spacing:.02em;">初</span>
+               ${escHtml((caseInitInterviewerMap[c.id] || []).join('、'))}
              </div>`
           : ''
       }</td>
@@ -6479,8 +6553,20 @@ function addNotificationToUser(toEmail, type, caseId, caseName, customMsg) {
     createdAt: new Date().toISOString(),
     read: false,
   });
+  // 已讀存 7 天後自動永久移除；同時保留上限 100 筆
+  _pruneOldReadNotifications(user);
   if (user.notifications.length > 100) user.notifications = user.notifications.slice(0, 100);
   return true;
+}
+// 已讀通知：readAt 超過 7 天後自動永久移除
+function _pruneOldReadNotifications(user) {
+  if (!user?.notifications?.length) return;
+  const cutoff = Date.now() - 7 * 86400 * 1000;
+  user.notifications = user.notifications.filter(n => {
+    if (!n.read) return true;
+    const t = n.readAt ? new Date(n.readAt).getTime() : new Date(n.createdAt || 0).getTime();
+    return !isFinite(t) || t >= cutoff;
+  });
 }
 
 function _hasNewCounselorAlert(c) {
@@ -6738,7 +6824,12 @@ async function notifDismiss(notifId) {
   const me = configData?.users?.[currentUser?.email];
   if (!me?.notifications) return;
   const n = me.notifications.find(x => x.id === notifId);
-  if (n) { n.read = true; renderNotifBell(); renderNotifList(); driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {}); }
+  if (n) {
+    n.read = true;
+    if (!n.readAt) n.readAt = new Date().toISOString();
+    renderNotifBell(); renderNotifList();
+    driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  }
 }
 
 async function notifClick(notifId, caseId) {
@@ -6747,6 +6838,7 @@ async function notifClick(notifId, caseId) {
     const n = me.notifications.find(x => x.id === notifId);
     if (n && !n.read) {
       n.read = true;
+      n.readAt = new Date().toISOString();
       renderNotifBell();
       renderNotifList();
       driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
@@ -6777,7 +6869,8 @@ async function notifClick(notifId, caseId) {
 async function markAllNotifRead() {
   const me = configData?.users?.[currentUser?.email];
   if (!me?.notifications?.length) return;
-  me.notifications.forEach(n => { n.read = true; });
+  const nowIso = new Date().toISOString();
+  me.notifications.forEach(n => { if (!n.read) { n.read = true; n.readAt = nowIso; } });
   renderNotifBell();
   renderNotifList();
   await driveUpdateJsonFile(CONFIG_FILE, configData);
@@ -7429,11 +7522,11 @@ function openUserModal(key) {
     const isNomail = _editingEmail.startsWith('nomail_');
     document.getElementById('modal-title').textContent = '編輯使用者';
     emailEl.value    = isNomail ? '' : _editingEmail;
-    emailEl.disabled = !isNomail; // nomail_ 使用者可補填 Gmail；已有 Gmail 者鎖定
+    emailEl.disabled = false; // 主任/管理者可更改；使用者本人另有偏好設定入口
     emailEl.placeholder = isNomail ? '可補填 Gmail 帳號（選填）' : '';
     hintEl.textContent = isNomail
       ? '補填 Gmail 後將以該帳號作為識別碼，原無 Gmail 識別碼將移除。'
-      : '帳號建立後無法更改電子郵件。';
+      : '⚠ 更改 Gmail 將同步更新所有個案的主責/初談者/個管指派，並發送通知給全體使用者，於稽核日誌記錄為重大事件。';
     document.getElementById('modal-name').value     = info.name  || '';
     sel.value = info.role || '';
     document.getElementById('modal-is-admin').checked            = info.isAdmin === true || info.extraRole === '管理者';
@@ -7494,11 +7587,34 @@ async function saveUser() {
   const isNew = !_editingEmail;
   const oldKey = _editingEmail; // null for new users
   const isMigrating = oldKey?.startsWith('nomail_') && !!rawEmail; // nomail_ → Gmail
-  const newKey = isMigrating ? rawEmail : (oldKey || rawEmail || `nomail_${Date.now()}`);
+  // Gmail → Gmail 遷移（新增流程）：跨檔重寫個案 refs、通知全員、稽核重大事件
+  const isEmailChange = !isNew && !isMigrating && !oldKey.startsWith('nomail_') && !!rawEmail && rawEmail !== oldKey;
+  // Gmail → 清空：從有 Gmail 的帳號改為無 Gmail，遷移至新 nomail_ key 並走與 Gmail 變更相同的全套通知/稽核路徑
+  const isEmailRemoval = !isNew && !oldKey.startsWith('nomail_') && !rawEmail;
+  const removalNewKey = isEmailRemoval
+    ? `nomail_${Date.now()}_${Math.random().toString(36).slice(2,5)}`
+    : null;
+  const newKey = isMigrating ? rawEmail
+               : isEmailChange ? rawEmail
+               : isEmailRemoval ? removalNewKey
+               : (oldKey || rawEmail || `nomail_${Date.now()}`);
 
-  // Duplicate check for Gmail migration
-  if (isMigrating && configData.users[newKey]) {
+  // Duplicate check for Gmail migration/change
+  if ((isMigrating || isEmailChange) && configData.users[newKey]) {
     errEl.textContent = '此 Gmail 帳號已存在，請確認後再試。'; errEl.style.display = ''; return;
+  }
+
+  // Gmail → Gmail / Gmail → 清空 走專屬遷移路徑（同一 helper）
+  if (isEmailChange || isEmailRemoval) {
+    const _internFromV = document.getElementById('modal-intern-from').value;
+    const _internToV   = document.getElementById('modal-intern-to').value;
+    document.getElementById('user-modal').style.display = 'none';
+    _migrateUserEmail(oldKey, newKey, {
+      name, role,
+      isAdmin, isTC, isML, isInternAdminS, isInternProS,
+      internFrom: _internFromV, internTo: _internToV,
+    }, { removal: isEmailRemoval });
+    return;
   }
 
   // Snapshot for revert
@@ -7556,6 +7672,143 @@ async function saveUser() {
     setAlert('admin-alert', 'error', '儲存失敗：' + err.message);
     configData.users = usersBackup; // revert
     renderAdminUsers();
+  }
+}
+
+// Gmail → Gmail 遷移 或 Gmail → 清空（→ nomail_）：跨檔重寫個案 refs、通知全員、稽核重大事件
+// 呼叫者：admin 從編輯 modal（saveUser 分派）或使用者本人從偏好設定
+async function _migrateUserEmail(oldEmail, newEmail, entryPatches = {}, opts = {}) {
+  const isSelf     = oldEmail === currentUser?.email;
+  const isPriv     = currentRole === '主任' || extraRole === '管理者';
+  const isRemoval  = !!opts.removal; // Gmail → nomail_（清空 email）
+  if (!isSelf && !isPriv) { alert('只有主任、管理者或本人才能變更 Gmail 帳號。'); return; }
+  if (!oldEmail || !newEmail || oldEmail === newEmail) return;
+  if (!configData.users[oldEmail]) { alert('找不到原帳號。'); return; }
+  if (!isRemoval && configData.users[newEmail]) { alert('目標 Gmail 帳號已存在於系統，無法遷移。'); return; }
+
+  const oldName = configData.users[oldEmail]?.name || oldEmail;
+  const actionVerb = isRemoval ? '清空' : '更改';
+  const targetLabel = isRemoval ? '（無 Gmail 帳號）' : newEmail;
+  const confirmMsg =
+    `即將把「${oldName}」的 Gmail 由\n  ${oldEmail}\n${actionVerb}為\n  ${targetLabel}\n\n此操作將：\n` +
+    `1. 遷移該帳號所有系統設定（角色、附加身分、allowedCases 等）\n` +
+    `2. 重寫所有相關個案的主責 / 初談者 / interviewerEmails\n` +
+    `3. 發送通知給全體使用者\n` +
+    `4. 於稽核日誌記錄為重大事件` +
+    (isSelf ? `\n5. 完成後系統會自動登出${isRemoval ? '（本帳號已無 Gmail，將無法自行登入，需由管理者補填後才能再次使用）' : '，請以新 Gmail 重新登入'}` : '') +
+    `\n\n確定要繼續嗎？`;
+  if (!confirm(confirmMsg)) return;
+
+  const jobId = bgJobAdd(`Gmail ${actionVerb}：${oldEmail} → ${targetLabel}`);
+  const usersBackup = JSON.parse(JSON.stringify(configData.users || {}));
+
+  try {
+    // 1. 遷移 users key + patch 屬性 + 紀錄舊 email 供未來查詢
+    const oldEntry = configData.users[oldEmail] || {};
+    const merged = { ...oldEntry };
+    Object.keys(entryPatches || {}).forEach(k => {
+      const v = entryPatches[k];
+      if (k === 'name' || k === 'role') { if (v) merged[k] = v; return; }
+      if (k === 'isAdmin')       { if (v) merged.isAdmin = true; else delete merged.isAdmin; return; }
+      if (k === 'isTC')          { if (v) merged.isTransferContact = true; else delete merged.isTransferContact; return; }
+      if (k === 'isML')          { if (v) merged.isMentalLeaveContact = true; else delete merged.isMentalLeaveContact; return; }
+      if (k === 'isInternAdminS'){ if (v) merged.extraRole = '實習生行政督導'; return; }
+      if (k === 'isInternProS')  { if (v) merged.extraRole = '實習生專業督導'; return; }
+      if (k === 'internFrom')    { if (v) merged.internFrom = v; else delete merged.internFrom; return; }
+      if (k === 'internTo')      { if (v) merged.internTo   = v; else delete merged.internTo; return; }
+    });
+    if (!Array.isArray(merged.previousEmails)) merged.previousEmails = [];
+    merged.previousEmails.push({ email: oldEmail, changedAt: new Date().toISOString(), by: currentUser?.email || '' });
+    configData.users[newEmail] = merged;
+    delete configData.users[oldEmail];
+    bgJobProgress(jobId, 20);
+
+    // 2. 重寫 casesData（counselorEmail / initialInterview / interviewerEmails / basicInfoSnapshots）
+    const affectedIds = new Set();
+    (casesData || []).forEach(c => {
+      let changed = false;
+      if (c.counselorEmail === oldEmail) { c.counselorEmail = newEmail; changed = true; }
+      Object.values(c.basicInfoSnapshots || {}).forEach(snap => {
+        if (snap && snap.counselorEmail === oldEmail) { snap.counselorEmail = newEmail; changed = true; }
+      });
+      if (c.initialInterview?.interviewerEmail === oldEmail) { c.initialInterview.interviewerEmail = newEmail; changed = true; }
+      if (c.initialInterviews) {
+        Object.values(c.initialInterviews).forEach(ii => {
+          if (ii && ii.interviewerEmail === oldEmail) { ii.interviewerEmail = newEmail; changed = true; }
+        });
+      }
+      if (Array.isArray(c.interviewerEmails) && c.interviewerEmails.includes(oldEmail)) {
+        c.interviewerEmails = c.interviewerEmails.map(e => e === oldEmail ? newEmail : e);
+        changed = true;
+      }
+      if (changed) affectedIds.add(c.id);
+    });
+    bgJobProgress(jobId, 40);
+
+    // 3. 全員通知（露出舊 email + 操作者身分便於對接；7 天後自動移除；操作者本人也塞一份作留痕確認）
+    const _actorEmail = currentUser?.email || '';
+    const _actorName  = configData.users[_actorEmail]?.name || currentUser?.name || _actorEmail || '未知操作者';
+    const _actorTag   = _actorName && _actorEmail && _actorName !== _actorEmail
+                          ? `（由 ${_actorName}／${_actorEmail} 執行）`
+                          : `（由 ${_actorName || _actorEmail || '未知操作者'} 執行）`;
+    const gmailNoticeMsg = isRemoval
+      ? `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 清空（改為無 Gmail 帳號）${_actorTag}`
+      : `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 更改為 ${newEmail}${_actorTag}`;
+    const nowIso = new Date().toISOString();
+    Object.entries(configData.users).forEach(([email, u]) => {
+      if (!u.notifications) u.notifications = [];
+      u.notifications.unshift({
+        id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+        type: 'gmail_changed',
+        message: gmailNoticeMsg,
+        actorEmail: _actorEmail,
+        actorName:  _actorName,
+        createdAt: nowIso,
+        read: false,
+      });
+      _pruneOldReadNotifications(u);
+      if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
+    });
+    bgJobProgress(jobId, 55);
+
+    // 4. 儲存 configData（一次 Drive 寫入，含所有通知）
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    bgJobProgress(jobId, 70);
+
+    // 5. 儲存受影響的個案 chunks（無則跳過）
+    if (affectedIds.size) {
+      await saveCasesChunks(...affectedIds, (done, total) =>
+        bgJobProgress(jobId, 70 + Math.round(25 * done / total))
+      );
+    }
+
+    // 6. 稽核日誌（重大事件）
+    auditLog(isRemoval ? '清空使用者 Gmail' : '更改使用者 Gmail', null, null,
+      `${oldName}：${oldEmail} → ${isRemoval ? '（無 Gmail 帳號）' : newEmail}（更新 ${affectedIds.size} 筆個案）`,
+      { major: true });
+
+    bgJobDone(jobId);
+    setAlert?.('admin-alert', 'success',
+      isRemoval
+        ? `Gmail 已由 ${escHtml(oldEmail)} 清空（更新 ${affectedIds.size} 筆個案；已通知全體 ${Object.keys(configData.users).length} 位使用者，含您本人；由 ${escHtml(_actorName)} 執行）。`
+        : `Gmail 已由 ${escHtml(oldEmail)} 遷移至 ${escHtml(newEmail)}（更新 ${affectedIds.size} 筆個案；已通知全體 ${Object.keys(configData.users).length} 位使用者，含您本人；由 ${escHtml(_actorName)} 執行）。`);
+    renderAdminUsers?.();
+    if (typeof renderCases === 'function') renderCases();
+    renderNotifBell?.();
+
+    // 7. 自己遷移 → 強制登出（session 綁在舊 Gmail）
+    if (isSelf) {
+      alert(isRemoval
+        ? '您的 Gmail 已清空。系統將登出，由於本帳號已無 Gmail，將無法再自行登入，需由管理者補填後才能再次使用。'
+        : '您的 Gmail 已成功更改。系統將登出，請以新 Gmail 帳號重新登入。');
+      if (typeof signOut === 'function') signOut();
+    }
+  } catch (err) {
+    console.error('Gmail migration failed:', err);
+    configData.users = usersBackup;
+    bgJobFail(jobId, err.message || String(err));
+    alert('Gmail 遷移失敗：' + (err.message || err) +
+      '\n\n記憶體已回復到操作前狀態。請重新整理頁面並再次確認。');
   }
 }
 
@@ -8221,9 +8474,16 @@ async function showCaseDetail(caseId) {
 
   const mgrsEl = document.getElementById('detail-managers');
   const _mgrEmailsTop = _getManagersForCase(c.id);
-  if (_mgrEmailsTop.length) {
-    const _mgrNamesTop = _mgrEmailsTop.map(e => escHtml(formatCounselorLabel(e) || configData?.users?.[e]?.name || e)).join('、');
-    mgrsEl.innerHTML = `<div style="font-size:.82rem;color:#718096;margin-top:2px;">個案管理員：${_mgrNamesTop}</div>`;
+  // 初談者：權限等同個管員，但獨立顯示、標籤不同（排除主責，避免重複）
+  const _iiEmailsTop = _getInitialInterviewersForCase(c).filter(e => e && e !== c.counselorEmail);
+  const _mgrLine = _mgrEmailsTop.length
+    ? `<div style="font-size:.82rem;color:#718096;">個案管理員：${_mgrEmailsTop.map(e => escHtml(formatCounselorLabel(e) || configData?.users?.[e]?.name || e)).join('、')}</div>`
+    : '';
+  const _iiLine = _iiEmailsTop.length
+    ? `<div style="font-size:.82rem;color:#276749;">初談者：${_iiEmailsTop.map(e => escHtml(formatCounselorLabel(e) || configData?.users?.[e]?.name || e)).join('、')}</div>`
+    : '';
+  if (_mgrLine || _iiLine) {
+    mgrsEl.innerHTML = `<div style="margin-top:2px;display:flex;flex-direction:column;gap:2px;">${_mgrLine}${_iiLine}</div>`;
     mgrsEl.style.display = '';
   } else {
     mgrsEl.style.display = 'none';
@@ -8728,6 +8988,8 @@ async function showCaseDetail(caseId) {
   } else {
   // ── 個案管理員區段 HTML ──
   const _mgrEmails = _getManagersForCase(c.id);
+  // 初談者：權限等同個管員，但獨立顯示為綠色 chips（排除主責及已列為個管者，避免重複）
+  const _iiEmailsDetail = _getInitialInterviewersForCase(c).filter(e => e && e !== c.counselorEmail && !_mgrEmails.includes(e));
   const _mgrNonSet = new Set(
     Object.entries(configData?.users || {})
       .filter(([email, info]) => !_mgrEmails.includes(email) && email !== c.counselorEmail && info.role && info.role !== '系統管理者')
@@ -8745,6 +9007,14 @@ async function showCaseDetail(caseId) {
         </span>`;
       }).join('')
     : `<span style="color:#718096;font-size:.85rem;">尚未指定</span>`;
+  const _iiChips = _iiEmailsDetail.length
+    ? _iiEmailsDetail.map(email =>
+        `<span style="display:inline-flex;align-items:center;gap:2px;background:#e6ffed;border:1px solid #86efac;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;color:#276749;" data-tip="初次晤談者，權限與個案管理員相同（不可移除，依初次晤談紀錄自動判定）">
+          ${escHtml(formatCounselorLabel(email))}
+          <span style="font-size:.72rem;color:#276749;background:#d4edda;border-radius:8px;padding:1px 5px;margin-left:3px;">初談者</span>
+        </span>`
+      ).join('')
+    : '';
   const _mgrAddOpts = buildCounselorOptgroups(([email]) => _mgrNonSet.has(email), '— 選擇輔導人員 —');
   const _mgrHasMulSems = _csems && _csems.length > 1;
   const _mgrSemOpts = _mgrHasMulSems
@@ -8757,15 +9027,18 @@ async function showCaseDetail(caseId) {
         <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">個案管理員
           <span style="font-size:.75rem;font-weight:400;color:#718096;">（可閱讀此個案紀錄的輔導人員，主責以外）</span>
         </div>
-        <div style="margin-bottom:8px;">${_mgrChips}</div>
+        <div style="margin-bottom:8px;">${_mgrChips}${_iiChips}</div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <select id="cm-add-select" class="field-select" style="max-width:200px;">${_mgrAddOpts}</select>
           ${_mgrSemOpts}
           <button class="btn btn-secondary btn-sm" onclick="addCaseManagerInDetail('${escHtml(caseId)}')">新增</button>
         </div>
       </div>`
-    : (_mgrEmails.length
-        ? `<div style="margin-top:10px;font-size:.82rem;color:#718096;">個案管理員：${_mgrEmails.map(e=>escHtml(formatCounselorLabel(e)||configData?.users?.[e]?.name||e)).join('、')}</div>`
+    : (_mgrEmails.length || _iiEmailsDetail.length
+        ? `<div style="margin-top:10px;font-size:.82rem;color:#718096;">
+            ${_mgrEmails.length ? `個案管理員：${_mgrEmails.map(e=>escHtml(formatCounselorLabel(e)||configData?.users?.[e]?.name||e)).join('、')}` : ''}
+            ${_iiEmailsDetail.length ? `<div style="color:#276749;">初談者：${_iiEmailsDetail.map(e=>escHtml(formatCounselorLabel(e)||configData?.users?.[e]?.name||e)).join('、')}</div>` : ''}
+          </div>`
         : '');
 
   document.getElementById('detail-body').innerHTML =
@@ -12008,6 +12281,11 @@ function _dismissUnclosedReminder() {
   _syncTodoBadge();
   renderTodosPage();
 }
+function _toggleUnclosedSummary() {
+  const cur = _userPref_('todosUnclosedCollapsed', false);
+  syncUserPref_({ todosUnclosedCollapsed: !cur });
+  renderTodosPage();
+}
 
 function goCasesPastUnclosed() {
   caseFilters.status = 'past_unclosed';
@@ -12455,8 +12733,12 @@ function renderCaseNums(resetPage) {
     const chk = canCheck
       ? `<input type="checkbox" class="cn-row-chk" data-id="${escHtml(c.id)}" ${_cnSelected.has(c.id) ? 'checked' : ''} onchange="event.stopPropagation();_cnChkChange(this)">`
       : '';
+    const _cnRowClass = c.deleted ? 'case-deleted-row'
+                      : c.archived ? 'case-archived-row'
+                      : c.status === 'closed' ? 'case-closed-row'
+                      : '';
     return `
-    <tr class="${c.deleted ? 'case-deleted-row' : ''}" style="cursor:${c.deleted?'default':'pointer'};" ${c.deleted?'':` onclick="showCaseDetail('${escHtml(c.id)}')"`}>
+    <tr class="${_cnRowClass}" style="cursor:${c.deleted?'default':'pointer'};" ${c.deleted?'':` onclick="showCaseDetail('${escHtml(c.id)}')"`}>
       <td style="width:36px;text-align:center;" onclick="event.stopPropagation()">${chk}</td>
       <td><strong style="color:#1a5276;">${escHtml(c.id || '—')}</strong></td>
       <td>${escHtml(c.name || '—')}</td>
@@ -17832,6 +18114,81 @@ window._mlToggleSection = function() {
   _renderMlNotifSection();
 };
 
+// 待辦頁「重大事件」區塊：拉 configData notifications 中的重大類型顯示（如 Gmail 變更）
+// 資料來源與鈴鐺同一份（configData.users[me].notifications），無需額外 Drive 寫入
+const MAJOR_EVENT_NOTIF_TYPES = new Set(['gmail_changed']);
+function _renderMajorEventNotifs() {
+  const section = document.getElementById('todos-major-events-section');
+  if (!section) return;
+  // 僅在檢視自己的待辦時顯示
+  const viewingOwn = !_todosViewUser || _todosViewUser === currentUser?.email;
+  if (!viewingOwn) { section.innerHTML = ''; return; }
+  const me = configData?.users?.[currentUser?.email];
+  const notifs = (me?.notifications || []).filter(n => MAJOR_EVENT_NOTIF_TYPES.has(n.type));
+  const pending = notifs.filter(n => !n.read);
+  if (!notifs.length) { section.innerHTML = ''; return; }
+  const isCollapsed = !!window._majorEventsCollapsed;
+  const _fmt = iso => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    return isNaN(d) ? '' : d.toLocaleString('zh-TW', { year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
+  };
+  const _renderItem = n => `<div style="display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-top:1px solid #e9d8fd;${n.read?'opacity:.6;':''}">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:.72rem;color:#553c9a;background:#e9d8fd;border-radius:3px;padding:0 5px;display:inline-block;font-weight:700;">重大事件・Gmail 變更</div>
+        <div style="font-size:.86rem;color:#2d3748;margin-top:4px;line-height:1.5;">${escHtml(n.message || '')}</div>
+        <div style="font-size:.74rem;color:#718096;margin-top:3px;">
+          ${_fmt(n.createdAt)}${n.actorName ? `　・操作者：${escHtml(n.actorName)}` : ''}${n.read && n.readAt ? `　・已讀 ${_fmt(n.readAt)}` : ''}
+        </div>
+      </div>
+      ${!n.read ? `<button onclick="_majorEventMarkRead('${escHtml(n.id)}')" style="padding:3px 10px;background:#553c9a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;flex-shrink:0;" data-tip="標記為已讀；7 天後自動移除">標記已讀</button>` : ''}
+    </div>`;
+  const titleText = pending.length
+    ? `⚠ 重大事件通知（${pending.length} 筆未讀 / 共 ${notifs.length}）`
+    : `重大事件通知（${notifs.length} 筆，皆已讀）`;
+  section.innerHTML = `
+    <div style="background:#faf5ff;border:1px solid #d6bcfa;border-radius:8px;padding:14px 16px;margin-bottom:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${!isCollapsed && notifs.length ? '4px' : '0'};cursor:pointer;user-select:none;" onclick="_majorEventsToggle()" data-tip="${isCollapsed?'展開':'收起'}重大事件區塊">
+        <div style="font-weight:700;color:#553c9a;font-size:.95rem;">${titleText}</div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          ${!isCollapsed && pending.length ? `<button onclick="event.stopPropagation();_majorEventMarkAllRead()" style="padding:2px 10px;font-size:.78rem;background:#fff;border:1px solid #b794f4;border-radius:4px;color:#553c9a;cursor:pointer;">全部標為已讀</button>` : ''}
+          <button style="background:none;border:none;cursor:pointer;font-size:.88rem;color:#553c9a;padding:0 2px;">${isCollapsed?'▶':'▼'}</button>
+        </div>
+      </div>
+      ${!isCollapsed ? `<div>${notifs.map(_renderItem).join('')}</div>` : ''}
+    </div>`;
+}
+window._majorEventsToggle = function() {
+  window._majorEventsCollapsed = !window._majorEventsCollapsed;
+  _renderMajorEventNotifs();
+};
+window._majorEventMarkRead = async function(notifId) {
+  const me = configData?.users?.[currentUser?.email];
+  if (!me?.notifications) return;
+  const n = me.notifications.find(x => x.id === notifId);
+  if (!n) return;
+  n.read = true;
+  if (!n.readAt) n.readAt = new Date().toISOString();
+  _renderMajorEventNotifs();
+  renderNotifBell?.();
+  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+};
+window._majorEventMarkAllRead = async function() {
+  const me = configData?.users?.[currentUser?.email];
+  if (!me?.notifications) return;
+  const nowIso = new Date().toISOString();
+  let changed = 0;
+  me.notifications.forEach(n => {
+    if (MAJOR_EVENT_NOTIF_TYPES.has(n.type) && !n.read) {
+      n.read = true; n.readAt = nowIso; changed++;
+    }
+  });
+  if (!changed) return;
+  _renderMajorEventNotifs();
+  renderNotifBell?.();
+  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+};
+
 function _mlUpdateBatchBtn() {
   const checked = document.querySelectorAll('.ml-notif-cb:checked').length;
   const btn = document.getElementById('ml-batch-btn');
@@ -17871,6 +18228,7 @@ function renderTodosPage() {
   _renderCaseAccessAuditSection();
   _renderAssignmentTodos();
   _renderMlNotifSection();
+  _renderMajorEventNotifs();
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
 
   // ── 管理者：初始化人員篩選下拉 ──
@@ -17964,15 +18322,19 @@ function renderTodosPage() {
           });
         });
         caseRows.sort((a, b) => a.sem.localeCompare(b.sem) || a.c.name.localeCompare(b.c.name, 'zh'));
+        const collapsed = _userPref_('todosUnclosedCollapsed', false);
         summaryHtml = `<div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-            <span style="font-weight:600;font-size:.9rem;color:#9c4221;">⚠ 過去學期未結案（${caseRows.length} 筆）</span>
+          <div onclick="_toggleUnclosedSummary()" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${collapsed?'0':'10px'};gap:8px;flex-wrap:wrap;cursor:pointer;user-select:none;" data-tip="點選整列可收起/展開明細">
+            <span style="font-weight:600;font-size:.9rem;color:#9c4221;">
+              <span style="display:inline-block;width:14px;">${collapsed?'▶':'▼'}</span>
+              ⚠ 過去學期未結案（${caseRows.length} 筆）
+            </span>
             <div style="display:flex;gap:6px;">
-              <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;background:#fff;border-color:#ed8936;color:#c05621;" onclick="goCasesPastUnclosed()">前往個案列表</button>
-              <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;" onclick="_dismissUnclosedReminder()">已讀，不再提醒</button>
+              <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;background:#fff;border-color:#ed8936;color:#c05621;" onclick="event.stopPropagation();goCasesPastUnclosed()">前往個案列表</button>
+              <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;" onclick="event.stopPropagation();_dismissUnclosedReminder()">已讀，不再提醒</button>
             </div>
           </div>
-          <div style="overflow-x:auto;">
+          ${collapsed ? '' : `<div style="overflow-x:auto;">
             <table style="width:100%;border-collapse:collapse;font-size:.83rem;">
               <thead><tr style="background:#fef3c7;">
                 <th style="padding:5px 8px;text-align:left;border-bottom:1px solid #f6ad55;white-space:nowrap;">案名</th>
@@ -17989,7 +18351,7 @@ function renderTodosPage() {
                 </tr>`).join('')}
               </tbody>
             </table>
-          </div>
+          </div>`}
         </div>`;
       }
     }
@@ -21467,7 +21829,7 @@ async function rejectUserApp(appId) {
 // ══════════════════════════════════════════════
 //  稽核日誌
 // ══════════════════════════════════════════════
-function auditLog(action, caseId = null, recordId = null, detail = null) {
+function auditLog(action, caseId = null, recordId = null, detail = null, opts = {}) {
   if (!currentUser) return;
   const entry = {
     t:      new Date().toISOString(),
@@ -21477,6 +21839,7 @@ function auditLog(action, caseId = null, recordId = null, detail = null) {
     ...(caseId   ? { caseId }   : {}),
     ...(recordId ? { recordId } : {}),
     ...(detail   ? { detail }   : {}),
+    ...(opts.major ? { major: true } : {}),
   };
   // 立即更新本地快取，讓 renderBookingsAuditLog 可即時顯示
   if (!Array.isArray(window._auditLogsCache)) window._auditLogsCache = [];
@@ -22426,6 +22789,54 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '重大事件通知也在待辦事項顯示（Gmail 變更）', isProd: true, items: [
+      item('新功能', '待辦頁新增「重大事件通知」區塊（紫色卡片），從 configData notifications 拉出 gmail_changed 類型顯示'),
+      item('新功能', '每筆顯示訊息、時間、操作者姓名、已讀狀態；含「標記已讀」與「全部標為已讀」按鈕'),
+      item('新功能', '整個標題列可點擊收合，未讀數量以「N 筆未讀 / 共 M」呈現'),
+      item('相容', '資料來源與右上鈴鐺相同（無額外 Drive 寫入），已讀 7 天後自動移除的機制不受影響'),
+    ]},
+    { date: '2026-07-02', title: 'Gmail 通知含操作者身分 + 操作者本人也收到留痕', isProd: true, items: [
+      item('改善', '通知訊息尾端補「（由 XX 姓名／email 執行）」，明確露出誰做的變更'),
+      item('改善', '通知不再跳過操作者本人：執行者也會在自己鈴鐺看到留痕記錄，避免以為「沒有通知」'),
+      item('改善', 'notification 條目加 actorEmail / actorName 欄位，便於後續稽核統計'),
+      item('改善', 'setAlert 成功訊息說明「已通知全體 N 位使用者，含您本人；由 XX 執行」，資訊更完整'),
+    ]},
+    { date: '2026-07-02', title: 'Gmail 清空亦走遷移路徑；過去學期未結案卡片整列可點擊收合', isProd: true, items: [
+      item('改善', '使用者管理頁：清空 Gmail 欄位 → 遷移至新 nomail_ key，走與 Gmail 更改相同的全員通知/稽核重大事件路徑；如清空自己的 Gmail 會強制登出並提醒需管理者補填才能再次使用'),
+      item('改善', '待辦頁「過去學期未結案」摘要卡片：整個標題列（含空白區）皆可點擊收合，不再限於文字；兩個按鈕加 event.stopPropagation() 避免誤觸'),
+    ]},
+    { date: '2026-07-02', title: 'Gmail 更改 + 通知 7 天自動清理 + auditLog 重大事件旗標', isProd: true, items: [
+      item('新功能', '使用者管理頁：主任/管理者可於編輯 modal 更改任一使用者的 Gmail 帳號（B 級遷移）'),
+      item('新功能', '偏好設定頁新增「更改我的 Gmail」卡片，使用者本人可自助更改（完成後強制登出，以新帳號重新登入）'),
+      item('新功能', 'Gmail 更改會同步重寫：casesData 主責 / 初談者 / interviewerEmails / basicInfoSnapshots；歷史稽核日誌保留舊 email'),
+      item('新功能', '全員收到 notifications 通知（含舊 email 對照）；7 天已讀後自動永久移除'),
+      item('稽核', 'auditLog 新增 major 旗標；危機案件閱讀、閱讀申請、Gmail 更改皆記錄為重大事件'),
+      item('相容', '被更改的 users entry 保留 previousEmails 陣列（含 changedAt、by），供日後查詢'),
+    ]},
+    { date: '2026-07-02', title: '許願池：新增「待驗證」狀態、回報者可改狀態、30 分鐘自動更新', isProd: true, items: [
+      item('新功能', '狀態選單新增「待驗證」（紫色 badge）：改到此狀態時，若操作者非回報者，會通知原回報者驗證'),
+      item('新功能', '回報者本人也能更新自己回報的狀態（原本僅管理員可改）'),
+      item('新功能', '許願池每 30 分鐘自動輪詢後端；分頁隱藏時暫停、切回前景立即補一次；如已開啟許願池頁面，資料異動時自動重繪'),
+      item('改善', '側邊燈號新增紫色「待驗證」計數（管理者看全部、使用者看自己的）'),
+    ]},
+    { date: '2026-07-02', title: '個案列表 UX：初談者 badge、封存/結案 row 底色、初談者權限同個管', isProd: true, items: [
+      item('新功能', '個案列表主責下方新增綠色「初」badge，列出該案的所有初談者（權限已等同個管員）'),
+      item('新功能', '個案詳情頂部及「個案管理員」區塊顯示綠色「初談者」chips，主責者不重複顯示；chips 不可移除（依初次晤談紀錄自動判定）'),
+      item('新功能', '個案列表與案號查詢：已封存 row → 灰底、已結案 row → 淡藍底、進行中 → 白底；優先權：deleted > archived > closed > active'),
+      item('改善', '過去學期未結案的暖底色僅套用於進行中、未封存個案，避免遮蓋結案/封存底色'),
+    ]},
+    { date: '2026-07-02', title: '危機閱讀：主任/管理者/系統管理者也可申請（供正式留痕）', isProd: true, items: [
+      item('新功能', '_canApplyCrisisAccess 擴增：主任、系統管理者、管理者亦可申請危機個案閱讀（不強制，但可留下正式紀錄）'),
+      item('改善', '這些身分本就可全案可見；申請流程供合理狀況下正式登記閱讀目的，於監督區可見'),
+    ]},
+    { date: '2026-07-02', title: 'Sidebar 附加身分 badges + 待辦頁「過去學期未結案」可收合', isProd: true, items: [
+      item('改善', 'Sidebar 職稱下方顯示所有附加身分 badges（管理者橘、督導灰、轉銜窗口綠、身心調適假窗口藍），與使用者管理頁一致'),
+      item('新功能', '待辦頁「⚠ 過去學期未結案」摘要卡片可點擊標題收合明細；收合狀態存 todosUnclosedCollapsed 跨裝置記憶'),
+    ]},
+    { date: '2026-07-02', title: '修復：空間預約自訂空間 chips 輸入欄無法輸入', isProd: true, items: [
+      item('修復', '原本 oninput 觸發 wrap 整段 innerHTML 重繪，導致輸入欄被銷毀失焦、每次打字即中斷；改為骨架（含穩定 input）+ 內層 chip list 拆分'),
+      item('修復', '新增 IME composition 保護（compositionstart/end），中文輸入法組字期間不再誤觸重繪'),
+    ]},
     { date: '2026-07-02', title: '危機案件個案閱讀（申請即通過 + 全員監督）', isProd: true, items: [
       item('新功能', '專任/實習人員可於「危機個案閱讀」頁搜尋（姓名/學號/案號）並申請閱讀他人個案，填寫申請目的後立即取得該案「當日唯讀」權限（隔日失效需重新申請）'),
       item('新功能', '危機途徑開啟他人個案為唯讀：隱藏所有編輯/新增/刪除/結案按鈕，頂部顯示唯讀警示'),
@@ -22829,12 +23240,36 @@ function renderPrefsPage() {
   const immLockBtn = document.getElementById('pref-immediate-lock-btn');
   if (immLockBtn) immLockBtn.style.display = hasPIN ? '' : 'none';
 
+  // 更改 Gmail 卡片：顯示目前 email；nomail_ 使用者隱藏（需管理者補填）
+  const gmailCard = document.getElementById('pref-gmail-card');
+  if (gmailCard) {
+    const me = currentUser?.email || '';
+    if (me && !me.startsWith('nomail_')) {
+      gmailCard.style.display = '';
+      const cur = document.getElementById('pref-gmail-current-val');
+      if (cur) cur.textContent = me;
+      const inp = document.getElementById('pref-gmail-new');
+      if (inp) inp.value = '';
+    } else {
+      gmailCard.style.display = 'none';
+    }
+  }
 }
 
 function saveLeaveConfirmPref() {
   const val = document.getElementById('pref-confirm-leave')?.checked ?? true;
   syncUserPref_({ confirmBeforeLeave: val });
   showToast(val ? '已啟用離開確認提示' : '已關閉離開確認提示');
+}
+function _prefChangeMyGmail() {
+  const me = currentUser?.email;
+  if (!me) return;
+  if (me.startsWith('nomail_')) { alert('無 Gmail 帳號者請由主任/管理者於使用者管理頁補填。'); return; }
+  const raw = (document.getElementById('pref-gmail-new')?.value || '').trim().toLowerCase();
+  if (!raw) { alert('請輸入新的 Gmail 帳號。'); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) { alert('Gmail 格式不正確。'); return; }
+  if (raw === me) { alert('新 Gmail 與目前相同。'); return; }
+  _migrateUserEmail(me, raw, {}); // 自身遷移不改動其他屬性
 }
 function toggleCustomTimeout(sel) {
   document.getElementById('pref-timeout-custom').style.display = sel.value === 'custom' ? '' : 'none';
@@ -26586,11 +27021,25 @@ function setBookingDateToday() {
 
 // ── 空間預約「空間」選擇器（chips）──────────────────
 let _bkSelectedRoom = '';
+let _bkRoomChipComposing = false;
 function _getBkCustomRooms()       { return [...(_userPref_('bkCustomRooms', []))]; }
 function _saveBkCustomRooms(rooms) { syncUserPref_({ bkCustomRooms: rooms }); }
 
 function _populateBookingRoomChips(restoreRoom) {
   if (restoreRoom !== undefined) _bkSelectedRoom = restoreRoom;
+  const wrap = document.getElementById('bk-room-chips-wrap');
+  if (!wrap) return;
+  // 骨架僅建立一次；重繪時只更新 chips 內層，避免打字時 input 被銷毀失焦
+  if (!document.getElementById('bk-room-chip-list')) {
+    wrap.innerHTML =
+      `<div id="bk-room-chip-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>` +
+      `<div style="display:flex;gap:6px;"><input type="text" id="bk-room-chip-inp" class="field-input" placeholder="新增自訂空間…" style="flex:1;font-size:.82rem;padding:5px 9px;" oninput="if(!_bkRoomChipComposing)_populateBookingRoomChipsList()" oncompositionstart="_bkRoomChipComposing=true" oncompositionend="_bkRoomChipComposing=false;_populateBookingRoomChipsList()" onkeydown="if(event.key==='Enter'){event.preventDefault();_bkAddCustomRoom();}"/><button type="button" onclick="_bkAddCustomRoom()" style="padding:5px 14px;background:#edf2f7;border:1px solid #cbd5e0;border-radius:6px;cursor:pointer;font-size:.82rem;white-space:nowrap;">新增</button></div>`;
+  }
+  _populateBookingRoomChipsList();
+}
+function _populateBookingRoomChipsList() {
+  const list = document.getElementById('bk-room-chip-list');
+  if (!list) return;
   const builtIn = ROOMS.filter(r => r !== '其他');
   const custom  = _getBkCustomRooms();
   const all     = [...builtIn, ...custom];
@@ -26602,11 +27051,7 @@ function _populateBookingRoomChips(restoreRoom) {
     const del = isC ? `<span class="bk-opt-chip-del" onclick="event.stopPropagation();_bkDelCustomRoom(${escHtml(JSON.stringify(r))})">✕</span>` : '';
     return `<div class="bk-opt-chip${sel?' bk-opt-chip-sel':''}${hi?' bk-room-chip-match':''}" onclick="_bkPickRoom(${escHtml(JSON.stringify(r))})">${escHtml(r)}${del}</div>`;
   }).join('');
-  const wrap = document.getElementById('bk-room-chips-wrap');
-  if (!wrap) return;
-  wrap.innerHTML =
-    `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">${chips||'<span style="color:#a0aec0;font-size:.82rem;">（無空間）</span>'}</div>`+
-    `<div style="display:flex;gap:6px;"><input type="text" id="bk-room-chip-inp" class="field-input" placeholder="新增自訂空間…" style="flex:1;font-size:.82rem;padding:5px 9px;" oninput="_populateBookingRoomChips()" onkeydown="if(event.key==='Enter'){event.preventDefault();_bkAddCustomRoom();}"/><button type="button" onclick="_bkAddCustomRoom()" style="padding:5px 14px;background:#edf2f7;border:1px solid #cbd5e0;border-radius:6px;cursor:pointer;font-size:.82rem;white-space:nowrap;">新增</button></div>`;
+  list.innerHTML = chips || '<span style="color:#a0aec0;font-size:.82rem;">（無空間）</span>';
 }
 function _bkPickRoom(room) { _bkSelectedRoom = room; _populateBookingRoomChips(room); _checkBkConflict(); }
 function _bkAddCustomRoom() {
@@ -34511,6 +34956,25 @@ async function loadIssues() {
   }
   if (typeof renderIssuesBadge === 'function') renderIssuesBadge();
 }
+// 每 30 分鐘自動輪詢一次許願池；分頁隱藏時跳過，回到前景後立即補一次
+let _issuesPollTimer = null;
+function scheduleIssuesAutoRefresh() {
+  if (_issuesPollTimer) return;
+  const _tick = async () => {
+    if (document.visibilityState !== 'visible') return;
+    if (!currentUser?.email) return;
+    const _prevJson = JSON.stringify(issuesData);
+    await loadIssues();
+    // 若 issues 有異動且目前正在許願池頁面，重繪
+    if (_prevJson !== JSON.stringify(issuesData)
+        && document.getElementById('page-issues')?.classList.contains('active')
+        && typeof renderIssuesPage === 'function') {
+      renderIssuesPage();
+    }
+  };
+  _issuesPollTimer = setInterval(_tick, 30 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') _tick(); });
+}
 
 async function _saveIssues() {
   try {
@@ -34836,6 +35300,17 @@ async function updateIssueStatus(issueId, newStatus) {
   const jobId = bgJobAdd(`更新回報狀態（#${String(issue.serial).padStart(3,'0')}）`);
   try {
     await _saveIssues();
+    // 改到「待驗證」時通知原回報者
+    if (newStatus === 'pending_verification'
+        && issue.submittedBy
+        && issue.submittedBy !== currentUser?.email) {
+      const _serialStr = `#${String(issue.serial).padStart(3,'0')}`;
+      const notified = addNotificationToUser(
+        issue.submittedBy, 'issue_pending_verification', issue.id, _serialStr,
+        `您回報的 ${_serialStr} 已改為「待驗證」，請至錯誤回報/許願池頁面驗證`
+      );
+      if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    }
     bgJobDone(jobId);
     auditLog('更新回報狀態', null, null, `#${String(issue.serial).padStart(3,'0')}：${prev} → ${newStatus}`);
     renderIssuesPage();
@@ -34980,12 +35455,13 @@ function renderIssuesPage() {
   const F = window._issueFilters;
 
   const statusBadge = s => {
-    if (s === 'resolved')    return '<span class="badge" style="background:#c6f6d5;color:#276749;border:1px solid #9ae6b4;">已解決</span>';
-    if (s === 'in_progress') return '<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;">處理中</span>';
+    if (s === 'resolved')             return '<span class="badge" style="background:#c6f6d5;color:#276749;border:1px solid #9ae6b4;">已解決</span>';
+    if (s === 'pending_verification') return '<span class="badge" style="background:#e9d8fd;color:#553c9a;border:1px solid #d6bcfa;">待驗證</span>';
+    if (s === 'in_progress')          return '<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;">處理中</span>';
     return '<span class="badge" style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;">待處理</span>';
   };
-  const statusOrder = { open: 0, in_progress: 1, resolved: 2 };
-  const statusLabel = { open: '待處理', in_progress: '處理中', resolved: '已解決' };
+  const statusOrder = { open: 0, in_progress: 1, pending_verification: 2, resolved: 3 };
+  const statusLabel = { open: '待處理', in_progress: '處理中', pending_verification: '待驗證', resolved: '已解決' };
 
   // 篩選
   let filtered = [...issuesData];
@@ -35002,10 +35478,11 @@ function renderIssuesPage() {
   const filterBar = `
     <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <select style="padding:4px 8px;border:1px solid #e2e8f0;border-radius:5px;font-size:.83rem;" onchange="window._issueFilters.status=this.value;renderIssuesPage()">
-        <option value="all"        ${F.status==='all'?'selected':''}>全部狀態</option>
-        <option value="open"       ${F.status==='open'?'selected':''}>待處理</option>
-        <option value="in_progress"${F.status==='in_progress'?'selected':''}>處理中</option>
-        <option value="resolved"   ${F.status==='resolved'?'selected':''}>已解決</option>
+        <option value="all"                  ${F.status==='all'?'selected':''}>全部狀態</option>
+        <option value="open"                 ${F.status==='open'?'selected':''}>待處理</option>
+        <option value="in_progress"          ${F.status==='in_progress'?'selected':''}>處理中</option>
+        <option value="pending_verification" ${F.status==='pending_verification'?'selected':''}>待驗證</option>
+        <option value="resolved"             ${F.status==='resolved'?'selected':''}>已解決</option>
       </select>
       <label style="font-size:.82rem;color:#718096;display:flex;gap:4px;align-items:center;">
         日期
@@ -35070,12 +35547,14 @@ function renderIssuesPage() {
         }).join('<br>')}
       </div>` : '';
 
-    const adminStatusControl = isAdmin ? `
+    const canChangeStatus = isAdmin || issue.submittedBy === currentUser?.email;
+    const statusControl = canChangeStatus ? `
       <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-top:8px;border-top:1px solid #e2e8f0;">
         <select id="issue-status-${sid}" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;background:#fff;">
-          <option value="open"        ${issue.status==='open'?'selected':''}>待處理</option>
-          <option value="in_progress" ${issue.status==='in_progress'?'selected':''}>處理中</option>
-          <option value="resolved"    ${issue.status==='resolved'?'selected':''}>已解決</option>
+          <option value="open"                  ${issue.status==='open'?'selected':''}>待處理</option>
+          <option value="in_progress"           ${issue.status==='in_progress'?'selected':''}>處理中</option>
+          <option value="pending_verification"  ${issue.status==='pending_verification'?'selected':''}>待驗證</option>
+          <option value="resolved"              ${issue.status==='resolved'?'selected':''}>已解決</option>
         </select>
         <button class="btn btn-secondary btn-sm"
           onclick="updateIssueStatus('${sid}',document.getElementById('issue-status-${sid}').value)">更新狀態</button>
@@ -35110,7 +35589,7 @@ function renderIssuesPage() {
         ${renderAttachChips(issue.attachments)}
         ${commentsHtml}
         ${statusHistoryHtml}
-        ${adminStatusControl}
+        ${statusControl}
         ${commentInput}
       </div>`;
   }).join('');
@@ -35160,6 +35639,7 @@ function renderIssuesBadge() {
 
   const redCount    = relevant.filter(x => x.status === 'open').length;
   const orangeCount = relevant.filter(x => x.status === 'in_progress').length;
+  const purpleCount = relevant.filter(x => x.status === 'pending_verification').length;
   const onIssuesPage = !!document.getElementById('page-issues')?.classList.contains('active');
   const greenCount  = onIssuesPage ? 0 : relevant.filter(x => x.status === 'resolved' && !seen.has(x.id)).length;
 
@@ -35167,7 +35647,7 @@ function renderIssuesBadge() {
     ? `<span style="display:inline-block;background:${bg};color:#fff;border-radius:10px;font-size:.68rem;font-weight:700;padding:1px 6px;min-width:18px;text-align:center;line-height:1.5;">${count}</span>`
     : '';
 
-  const content = badge(redCount,'#e53e3e') + badge(orangeCount,'#dd6b20') + badge(greenCount,'#38a169');
+  const content = badge(redCount,'#e53e3e') + badge(orangeCount,'#dd6b20') + badge(purpleCount,'#805ad5') + badge(greenCount,'#38a169');
   wrap.innerHTML  = content;
   wrap.style.display = content ? 'flex' : 'none';
 }
