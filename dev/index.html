@@ -1623,6 +1623,25 @@
         </div>
       </div>
 
+      <div class="card" id="pref-gmail-card">
+        <div class="card-header"><h3>更改我的 Gmail</h3></div>
+        <div style="padding:16px 20px;">
+          <div id="pref-gmail-current" style="font-size:.85rem;color:#4a5568;margin-bottom:10px;">目前 Gmail：<strong id="pref-gmail-current-val">—</strong></div>
+          <label class="field-label">新的 Gmail 帳號</label>
+          <input type="email" id="pref-gmail-new" class="field-input" placeholder="new-email@gmail.com" autocomplete="off" />
+          <div style="font-size:.78rem;color:#9c4221;margin-top:8px;line-height:1.5;">
+            ⚠ 更改後：<br>
+            ・所有相關個案的主責/初談者/interviewerEmails 將同步更新<br>
+            ・所有使用者會收到通知（包含舊 email 對照）<br>
+            ・稽核日誌記錄為<strong>重大事件</strong><br>
+            ・完成後系統會自動登出，請以新 Gmail 重新登入
+          </div>
+          <div style="margin-top:12px;">
+            <button class="btn btn-primary btn-sm" onclick="_prefChangeMyGmail()">更改 Gmail</button>
+          </div>
+        </div>
+      </div>
+
       </div><!-- /prefs-grid -->
     </div>
 
@@ -5979,7 +5998,7 @@ async function _logCrisisRead(c, sem) {
     email: currentUser.email, name: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
     caseId: c.id, caseName: c.name || '', sem: sem || '', blocks, t: new Date().toISOString(),
   };
-  auditLog('危機案件閱讀', c.id, null, blocks.map(b => _crisisBlockLabel(b.k) + '×' + b.n).join('、'));
+  auditLog('危機案件閱讀', c.id, null, blocks.map(b => _crisisBlockLabel(b.k) + '×' + b.n).join('、'), { major: true });
   _appendAccessLog(entry).catch(e => _syslog('warn', '危機閱讀記錄寫入失敗：' + e.message));
 }
 function _crisisBlockLabel(k) {
@@ -6095,7 +6114,7 @@ async function submitCrisisAccess() {
   };
   try {
     await _appendAccessLog(entry);
-    auditLog('危機案件閱讀申請', caseId, null, reason);
+    auditLog('危機案件閱讀申請', caseId, null, reason, { major: true });
     _crisisSubmitting = false;
     _crisisApplyTarget = null;
     showToast('✅ 已取得當日閱讀權限，開啟中…', 'success');
@@ -6533,8 +6552,20 @@ function addNotificationToUser(toEmail, type, caseId, caseName, customMsg) {
     createdAt: new Date().toISOString(),
     read: false,
   });
+  // 已讀存 7 天後自動永久移除；同時保留上限 100 筆
+  _pruneOldReadNotifications(user);
   if (user.notifications.length > 100) user.notifications = user.notifications.slice(0, 100);
   return true;
+}
+// 已讀通知：readAt 超過 7 天後自動永久移除
+function _pruneOldReadNotifications(user) {
+  if (!user?.notifications?.length) return;
+  const cutoff = Date.now() - 7 * 86400 * 1000;
+  user.notifications = user.notifications.filter(n => {
+    if (!n.read) return true;
+    const t = n.readAt ? new Date(n.readAt).getTime() : new Date(n.createdAt || 0).getTime();
+    return !isFinite(t) || t >= cutoff;
+  });
 }
 
 function _hasNewCounselorAlert(c) {
@@ -6792,7 +6823,12 @@ async function notifDismiss(notifId) {
   const me = configData?.users?.[currentUser?.email];
   if (!me?.notifications) return;
   const n = me.notifications.find(x => x.id === notifId);
-  if (n) { n.read = true; renderNotifBell(); renderNotifList(); driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {}); }
+  if (n) {
+    n.read = true;
+    if (!n.readAt) n.readAt = new Date().toISOString();
+    renderNotifBell(); renderNotifList();
+    driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  }
 }
 
 async function notifClick(notifId, caseId) {
@@ -6801,6 +6837,7 @@ async function notifClick(notifId, caseId) {
     const n = me.notifications.find(x => x.id === notifId);
     if (n && !n.read) {
       n.read = true;
+      n.readAt = new Date().toISOString();
       renderNotifBell();
       renderNotifList();
       driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
@@ -6831,7 +6868,8 @@ async function notifClick(notifId, caseId) {
 async function markAllNotifRead() {
   const me = configData?.users?.[currentUser?.email];
   if (!me?.notifications?.length) return;
-  me.notifications.forEach(n => { n.read = true; });
+  const nowIso = new Date().toISOString();
+  me.notifications.forEach(n => { if (!n.read) { n.read = true; n.readAt = nowIso; } });
   renderNotifBell();
   renderNotifList();
   await driveUpdateJsonFile(CONFIG_FILE, configData);
@@ -7483,11 +7521,11 @@ function openUserModal(key) {
     const isNomail = _editingEmail.startsWith('nomail_');
     document.getElementById('modal-title').textContent = '編輯使用者';
     emailEl.value    = isNomail ? '' : _editingEmail;
-    emailEl.disabled = !isNomail; // nomail_ 使用者可補填 Gmail；已有 Gmail 者鎖定
+    emailEl.disabled = false; // 主任/管理者可更改；使用者本人另有偏好設定入口
     emailEl.placeholder = isNomail ? '可補填 Gmail 帳號（選填）' : '';
     hintEl.textContent = isNomail
       ? '補填 Gmail 後將以該帳號作為識別碼，原無 Gmail 識別碼將移除。'
-      : '帳號建立後無法更改電子郵件。';
+      : '⚠ 更改 Gmail 將同步更新所有個案的主責/初談者/個管指派，並發送通知給全體使用者，於稽核日誌記錄為重大事件。';
     document.getElementById('modal-name').value     = info.name  || '';
     sel.value = info.role || '';
     document.getElementById('modal-is-admin').checked            = info.isAdmin === true || info.extraRole === '管理者';
@@ -7548,11 +7586,26 @@ async function saveUser() {
   const isNew = !_editingEmail;
   const oldKey = _editingEmail; // null for new users
   const isMigrating = oldKey?.startsWith('nomail_') && !!rawEmail; // nomail_ → Gmail
-  const newKey = isMigrating ? rawEmail : (oldKey || rawEmail || `nomail_${Date.now()}`);
+  // Gmail → Gmail 遷移（新增流程）：跨檔重寫個案 refs、通知全員、稽核重大事件
+  const isEmailChange = !isNew && !isMigrating && !oldKey.startsWith('nomail_') && !!rawEmail && rawEmail !== oldKey;
+  const newKey = isMigrating ? rawEmail : (isEmailChange ? rawEmail : (oldKey || rawEmail || `nomail_${Date.now()}`));
 
-  // Duplicate check for Gmail migration
-  if (isMigrating && configData.users[newKey]) {
+  // Duplicate check for Gmail migration/change
+  if ((isMigrating || isEmailChange) && configData.users[newKey]) {
     errEl.textContent = '此 Gmail 帳號已存在，請確認後再試。'; errEl.style.display = ''; return;
+  }
+
+  // Gmail → Gmail 走專屬遷移路徑
+  if (isEmailChange) {
+    const _internFromV = document.getElementById('modal-intern-from').value;
+    const _internToV   = document.getElementById('modal-intern-to').value;
+    document.getElementById('user-modal').style.display = 'none';
+    _migrateUserEmail(oldKey, newKey, {
+      name, role,
+      isAdmin, isTC, isML, isInternAdminS, isInternProS,
+      internFrom: _internFromV, internTo: _internToV,
+    });
+    return;
   }
 
   // Snapshot for revert
@@ -7610,6 +7663,129 @@ async function saveUser() {
     setAlert('admin-alert', 'error', '儲存失敗：' + err.message);
     configData.users = usersBackup; // revert
     renderAdminUsers();
+  }
+}
+
+// Gmail → Gmail 遷移：跨檔重寫個案 refs、通知全員、稽核重大事件
+// 呼叫者：admin 從編輯 modal（saveUser 分派）或使用者本人從偏好設定
+async function _migrateUserEmail(oldEmail, newEmail, entryPatches = {}) {
+  const isSelf   = oldEmail === currentUser?.email;
+  const isPriv   = currentRole === '主任' || extraRole === '管理者';
+  if (!isSelf && !isPriv) { alert('只有主任、管理者或本人才能更改 Gmail 帳號。'); return; }
+  if (!oldEmail || !newEmail || oldEmail === newEmail) return;
+  if (!configData.users[oldEmail]) { alert('找不到原帳號。'); return; }
+  if (configData.users[newEmail]) { alert('目標 Gmail 帳號已存在於系統，無法遷移。'); return; }
+
+  const oldName = configData.users[oldEmail]?.name || oldEmail;
+  const confirmMsg =
+    `即將把「${oldName}」的 Gmail 由\n  ${oldEmail}\n更改為\n  ${newEmail}\n\n此操作將：\n` +
+    `1. 遷移該帳號所有系統設定（角色、附加身分、allowedCases 等）\n` +
+    `2. 重寫所有相關個案的主責 / 初談者 / interviewerEmails\n` +
+    `3. 發送通知給全體使用者\n` +
+    `4. 於稽核日誌記錄為重大事件` +
+    (isSelf ? `\n5. 完成後系統會自動登出，請以新 Gmail 重新登入` : '') +
+    `\n\n確定要繼續嗎？`;
+  if (!confirm(confirmMsg)) return;
+
+  const jobId = bgJobAdd(`Gmail 遷移：${oldEmail} → ${newEmail}`);
+  const usersBackup = JSON.parse(JSON.stringify(configData.users || {}));
+
+  try {
+    // 1. 遷移 users key + patch 屬性 + 紀錄舊 email 供未來查詢
+    const oldEntry = configData.users[oldEmail] || {};
+    const merged = { ...oldEntry };
+    Object.keys(entryPatches || {}).forEach(k => {
+      const v = entryPatches[k];
+      if (k === 'name' || k === 'role') { if (v) merged[k] = v; return; }
+      if (k === 'isAdmin')       { if (v) merged.isAdmin = true; else delete merged.isAdmin; return; }
+      if (k === 'isTC')          { if (v) merged.isTransferContact = true; else delete merged.isTransferContact; return; }
+      if (k === 'isML')          { if (v) merged.isMentalLeaveContact = true; else delete merged.isMentalLeaveContact; return; }
+      if (k === 'isInternAdminS'){ if (v) merged.extraRole = '實習生行政督導'; return; }
+      if (k === 'isInternProS')  { if (v) merged.extraRole = '實習生專業督導'; return; }
+      if (k === 'internFrom')    { if (v) merged.internFrom = v; else delete merged.internFrom; return; }
+      if (k === 'internTo')      { if (v) merged.internTo   = v; else delete merged.internTo; return; }
+    });
+    if (!Array.isArray(merged.previousEmails)) merged.previousEmails = [];
+    merged.previousEmails.push({ email: oldEmail, changedAt: new Date().toISOString(), by: currentUser?.email || '' });
+    configData.users[newEmail] = merged;
+    delete configData.users[oldEmail];
+    bgJobProgress(jobId, 20);
+
+    // 2. 重寫 casesData（counselorEmail / initialInterview / interviewerEmails / basicInfoSnapshots）
+    const affectedIds = new Set();
+    (casesData || []).forEach(c => {
+      let changed = false;
+      if (c.counselorEmail === oldEmail) { c.counselorEmail = newEmail; changed = true; }
+      Object.values(c.basicInfoSnapshots || {}).forEach(snap => {
+        if (snap && snap.counselorEmail === oldEmail) { snap.counselorEmail = newEmail; changed = true; }
+      });
+      if (c.initialInterview?.interviewerEmail === oldEmail) { c.initialInterview.interviewerEmail = newEmail; changed = true; }
+      if (c.initialInterviews) {
+        Object.values(c.initialInterviews).forEach(ii => {
+          if (ii && ii.interviewerEmail === oldEmail) { ii.interviewerEmail = newEmail; changed = true; }
+        });
+      }
+      if (Array.isArray(c.interviewerEmails) && c.interviewerEmails.includes(oldEmail)) {
+        c.interviewerEmails = c.interviewerEmails.map(e => e === oldEmail ? newEmail : e);
+        changed = true;
+      }
+      if (changed) affectedIds.add(c.id);
+    });
+    bgJobProgress(jobId, 40);
+
+    // 3. 全員通知（露出舊 email 便於對接；7 天後自動移除）
+    const gmailNoticeMsg =
+      `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 更改為 ${newEmail}`;
+    const nowIso = new Date().toISOString();
+    Object.entries(configData.users).forEach(([email, u]) => {
+      if (email === currentUser?.email) return; // 操作者本人不塞
+      if (!u.notifications) u.notifications = [];
+      u.notifications.unshift({
+        id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+        type: 'gmail_changed',
+        message: gmailNoticeMsg,
+        createdAt: nowIso,
+        read: false,
+      });
+      _pruneOldReadNotifications(u);
+      if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
+    });
+    bgJobProgress(jobId, 55);
+
+    // 4. 儲存 configData（一次 Drive 寫入，含所有通知）
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    bgJobProgress(jobId, 70);
+
+    // 5. 儲存受影響的個案 chunks（無則跳過）
+    if (affectedIds.size) {
+      await saveCasesChunks(...affectedIds, (done, total) =>
+        bgJobProgress(jobId, 70 + Math.round(25 * done / total))
+      );
+    }
+
+    // 6. 稽核日誌（重大事件）
+    auditLog('更改使用者 Gmail', null, null,
+      `${oldName}：${oldEmail} → ${newEmail}（更新 ${affectedIds.size} 筆個案）`,
+      { major: true });
+
+    bgJobDone(jobId);
+    setAlert?.('admin-alert', 'success',
+      `Gmail 已由 ${escHtml(oldEmail)} 遷移至 ${escHtml(newEmail)}（更新 ${affectedIds.size} 筆個案，通知已送出）。`);
+    renderAdminUsers?.();
+    if (typeof renderCases === 'function') renderCases();
+    renderNotifBell?.();
+
+    // 7. 自己遷移 → 強制登出（session 綁在舊 Gmail）
+    if (isSelf) {
+      alert('您的 Gmail 已成功更改。系統將登出，請以新 Gmail 帳號重新登入。');
+      if (typeof signOut === 'function') signOut();
+    }
+  } catch (err) {
+    console.error('Gmail migration failed:', err);
+    configData.users = usersBackup;
+    bgJobFail(jobId, err.message || String(err));
+    alert('Gmail 遷移失敗：' + (err.message || err) +
+      '\n\n記憶體已回復到操作前狀態。請重新整理頁面並再次確認。');
   }
 }
 
@@ -21554,7 +21730,7 @@ async function rejectUserApp(appId) {
 // ══════════════════════════════════════════════
 //  稽核日誌
 // ══════════════════════════════════════════════
-function auditLog(action, caseId = null, recordId = null, detail = null) {
+function auditLog(action, caseId = null, recordId = null, detail = null, opts = {}) {
   if (!currentUser) return;
   const entry = {
     t:      new Date().toISOString(),
@@ -21564,6 +21740,7 @@ function auditLog(action, caseId = null, recordId = null, detail = null) {
     ...(caseId   ? { caseId }   : {}),
     ...(recordId ? { recordId } : {}),
     ...(detail   ? { detail }   : {}),
+    ...(opts.major ? { major: true } : {}),
   };
   // 立即更新本地快取，讓 renderBookingsAuditLog 可即時顯示
   if (!Array.isArray(window._auditLogsCache)) window._auditLogsCache = [];
@@ -22916,12 +23093,36 @@ function renderPrefsPage() {
   const immLockBtn = document.getElementById('pref-immediate-lock-btn');
   if (immLockBtn) immLockBtn.style.display = hasPIN ? '' : 'none';
 
+  // 更改 Gmail 卡片：顯示目前 email；nomail_ 使用者隱藏（需管理者補填）
+  const gmailCard = document.getElementById('pref-gmail-card');
+  if (gmailCard) {
+    const me = currentUser?.email || '';
+    if (me && !me.startsWith('nomail_')) {
+      gmailCard.style.display = '';
+      const cur = document.getElementById('pref-gmail-current-val');
+      if (cur) cur.textContent = me;
+      const inp = document.getElementById('pref-gmail-new');
+      if (inp) inp.value = '';
+    } else {
+      gmailCard.style.display = 'none';
+    }
+  }
 }
 
 function saveLeaveConfirmPref() {
   const val = document.getElementById('pref-confirm-leave')?.checked ?? true;
   syncUserPref_({ confirmBeforeLeave: val });
   showToast(val ? '已啟用離開確認提示' : '已關閉離開確認提示');
+}
+function _prefChangeMyGmail() {
+  const me = currentUser?.email;
+  if (!me) return;
+  if (me.startsWith('nomail_')) { alert('無 Gmail 帳號者請由主任/管理者於使用者管理頁補填。'); return; }
+  const raw = (document.getElementById('pref-gmail-new')?.value || '').trim().toLowerCase();
+  if (!raw) { alert('請輸入新的 Gmail 帳號。'); return; }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw)) { alert('Gmail 格式不正確。'); return; }
+  if (raw === me) { alert('新 Gmail 與目前相同。'); return; }
+  _migrateUserEmail(me, raw, {}); // 自身遷移不改動其他屬性
 }
 function toggleCustomTimeout(sel) {
   document.getElementById('pref-timeout-custom').style.display = sel.value === 'custom' ? '' : 'none';
