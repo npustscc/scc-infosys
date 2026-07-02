@@ -12416,11 +12416,11 @@ async function softDeleteEval(caseId, evalId) {
 }
 // 判斷某學期是否「未結案」——不再單靠 semesterStatus 的預設 'active'，改為多重證據判斷
 // Bug 背景：舊資料 c.semesterStatus 缺該學期的 key 時，舊邏輯 || 'active' 會誤判為未結案，
-// 即便 c.semesterEvaluations 已有該學期的 closure 或 c.status 已經 'closed'。
+// 即便 c.semesterEvaluations 已有該學期的 closure、c.status 已經 'closed'，或整案已被視為 archived。
 function _isSemesterUnclosed(c, sem) {
   const semSt = c.semesterStatus?.[sem];
   if (semSt === 'closed') return false;               // 明確結案
-  if (semSt === 'active') return true;                // 明確進行中
+  if (semSt === 'active') return true;                // 明確進行中（就算 c.status=closed 也優先顯示為活動）
   // ── semesterStatus 該學期為 undefined（舊資料）→ 其他線索 ──
   const evals = Array.isArray(c.semesterEvaluations) ? c.semesterEvaluations : [];
   const hasClosureEvalForSem = evals.some(e =>
@@ -12430,9 +12430,15 @@ function _isSemesterUnclosed(c, sem) {
   // 舊格式 closureEvaluation（不帶學期）+ 案僅一個學期 → 視為該學期已結案
   const semList = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)].filter(Boolean);
   if (c.closureEvaluation && !evals.length && semList.length === 1) return false;
-  // 這個學期是最新學期，且案本身 c.status === 'closed'（_recomputeCaseStatus 由最新學期推導）→ 已結案
   const latestSem = [...semList].sort().pop();
+  // 最新學期 + c.status='closed' → 該學期已結案
   if (sem === latestSem && c.status === 'closed') return false;
+  // 積極規則：整案 c.status='closed' 且該學期無任何 semesterStatus 記錄
+  //   通常代表資料為舊資料（老案在系統升級前結案，未逐學期回填 semesterStatus）
+  //   為避免持續無意義提醒，一律視為結案。若確實有未結案需求，可透過重開案／建立 closure eval 明確覆寫。
+  if (c.status === 'closed' && semSt === undefined) return false;
+  // 個案被封存（archived）通常表示不再服務 → 也不再提醒未結案
+  if (c.archived) return false;
   return true; // 無任何結案證據 → 仍需提醒
 }
 function _hasPastUnclosed(c) {
@@ -23062,8 +23068,8 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
-    { date: '2026-07-02', title: '拖曳 chips 調整系所學院/學制歸屬 + 過去學期未結案 bug 修', isProd: false, items: [
-      item('修復', '待辦頁「過去學期未結案」對舊資料誤判：`_isSemesterUnclosed` 新增多重證據判斷（semesterEvaluations 有 closure 條目、舊格式 closureEvaluation、最新學期 c.status===closed），不再單靠 `semesterStatus[sem] || active` 的預設值錯報'),
+    { date: '2026-07-02', title: '拖曳 chips 調整系所學院/學制歸屬 + 過去學期未結案 bug 修（積極版）', isProd: false, items: [
+      item('修復', '待辦頁「過去學期未結案」對舊資料誤判：`_isSemesterUnclosed` 新增多重證據判斷（semesterEvaluations 有 closure 條目、舊格式 closureEvaluation、最新學期 c.status===closed）。再加積極規則：整案 c.status===closed 且該學期無 semesterStatus 記錄 → 視為結案（舊資料補救）；已封存（archived）個案亦不再提醒'),
       item('新功能', '系統管理→系所與學院對照：系所 chip 可拖曳到其他學院區塊，drop 時更新 configData.deptToCollege 並存；即時反映到統計、新開案顯示；歷史個案的 c.college 是死欄位（未被讀取），實際顯示走 live lookup，不受影響'),
       item('新功能', '系統管理→學制學號前綴：字母 chip 可跨學制拖曳（學士/碩士/博士），drop 時更新 configData.degreeMapping 並存；由於 `_buildDegreeMaps` 是 live 從 studentId 前綴推導，無需批次更新個案'),
       item('稽核', '拖曳成功時記入稽核日誌（「調整系所學院歸屬」/「調整學制前綴對應」），詳情含來源→目標'),
