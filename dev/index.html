@@ -1519,6 +1519,20 @@
           </div>
         </div>
       </div>
+
+      <div id="admin-panel-workhours" style="display:none;">
+        <div class="card">
+          <div class="card-header"><h3>上班時間設定</h3></div>
+          <div style="padding:16px 20px;">
+            <p style="font-size:.88rem;color:#718096;margin-bottom:14px;">
+              定義本中心的上班時段與假日。非上班時段（含假日、深夜）若有同仁登入或看/改個案，會自動記入
+              <strong>待辦頁「非上班時間監督」</strong>共享 feed，並於首次觸發時透過鈴鐺與待辦頁重大事件卡通知所有主任／專任。
+              主任／管理者的活動仍會入 feed（供同儕互相監督），但不會觸發對他人的推送通知。
+            </p>
+            <div id="admin-workhours-wrap"><p style="font-size:.85rem;color:#a0aec0;">載入中…</p></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 案號管理 -->
@@ -3413,6 +3427,7 @@
         <button class="btn btn-sm" id="todos-show-archived-btn" onclick="_toggleTodosArchived()" style="background:#f7fafc;border-color:#cbd5e0;color:#4a5568;" data-tip="查看已封存的待辦事項">📦 封存紀錄</button>
       </div>
       <div id="todos-access-audit-section"></div>
+      <div id="todos-off-hours-section"></div>
       <div id="todos-ml-notif-section"></div>
       <div id="todos-major-events-section"></div>
       <div id="todos-assignment-section"></div>
@@ -3508,6 +3523,15 @@ const AUDIT_LOG_FILE  = 'audit_log.json';
 const CASE_ACCESS_LOG_FILE = 'case_access_log.json'; // 危機案件閱讀：授權+閱讀共享稽核 feed
 let _accessLogCache = { entries: [] };               // case_access_log.json 記憶體快取
 let _detailReadOnly = false;                          // 目前個案詳情是否為危機唯讀檢視
+const OFF_HOURS_LOG_FILE = 'off_hours_log.json';    // 非上班時間個案存取監督：共享稽核 feed
+let _offHoursLogCache = { entries: [] };             // off_hours_log.json 記憶體快取
+let _offHoursNotifiedThisSession = false;            // 一 session 只推一次通知，避免刷屏
+const DEFAULT_WORK_HOURS = {
+  startHour: 8, endHour: 18,     // 24 小時制；例：8~18 表示 08:00–17:59:59 為上班
+  workDays: [1, 2, 3, 4, 5],     // 週日=0；預設週一~週五
+  holidays: [],                   // ['YYYY-MM-DD']；覆蓋 workDays（假日不上班）
+  extraWorkDays: [],              // ['YYYY-MM-DD']；補班日（週末也算上班）
+};
 const BOOKINGS_FILE   = 'bookings.json';
 const ISSUES_FILE        = 'issues.json';
 const ISSUES_FOLDER_ID   = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP'; // dev/prod 共用正式版資料夾
@@ -5355,6 +5379,23 @@ async function afterLogin() {
     loadLeaves().catch(() => {});
     loadPendingUsers().catch(() => {});
     loadAccessLog().catch(() => {}); // 危機閱讀監督 feed + 我今日的授權
+    loadOffHoursLog().catch(() => {}); // 非上班時間監督 feed（主任/管理者/專任在待辦頁可見）
+
+    // ── 非上班時間登入：寫入 feed + 首次觸發廣播通知（非 priv 才推）──
+    if (_isOffHours()) {
+      const _isPriv = currentRole === '主任' || extraRole === '管理者';
+      _appendOffHoursLog({
+        id:    `oh-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+        type:  'login',
+        email: currentUser.email,
+        name:  configData?.users?.[currentUser.email]?.name || '',
+        currentRole, extraRole, isPriv: _isPriv,
+        t: new Date().toISOString(),
+      }).catch(() => {});
+      if (!_isPriv) {
+        _broadcastOffHoursSession(currentUser.email, 'login', null).catch(() => {});
+      }
+    }
 
     // URL routing：?page=clock 等
     _checkInitialPage();
@@ -5977,6 +6018,88 @@ async function _appendAccessLog(entry) {
   latest.updatedAt = new Date().toISOString();
   await driveUpdateJsonFile(CASE_ACCESS_LOG_FILE, latest);
   _accessLogCache = latest;
+}
+
+// ══════════════════════════════════════════════
+//  非上班時間個案存取監督
+//  目的：非上班時間有人上線看/改個案 → 全員（專任+主任）都看得到 feed，避免機密洩漏
+//  概念與危機閱讀 feed 同：單一共享 log 檔 + 主任/管理者/專任可見
+// ══════════════════════════════════════════════
+function _isOffHours(isoOrDate) {
+  const cfg = { ...DEFAULT_WORK_HOURS, ...(configData?.workHoursConfig || {}) };
+  const d = isoOrDate ? new Date(isoOrDate) : new Date();
+  if (isNaN(d)) return false;
+  const ymd = _fmtDate(d);
+  if ((cfg.holidays || []).includes(ymd)) return true;               // 假日 → 一律 off-hours
+  const isWorkDay = (cfg.extraWorkDays || []).includes(ymd)
+                 || (cfg.workDays || []).includes(d.getDay());
+  if (!isWorkDay) return true;                                        // 週末（未列入補班）→ off-hours
+  const hh = d.getHours();
+  return hh < cfg.startHour || hh >= cfg.endHour;                     // 時區以本機為準
+}
+// 判斷 auditLog 的 action 是否屬於「看/改個案相關」——排除 PIN 解鎖、偏好設定等純系統事件
+function _isCaseRelatedAction(a) {
+  if (!a || typeof a !== 'string') return false;
+  const kw = [
+    '查閱個案','編輯個案','新增個案','刪除個案','復原個案','再次開案','批次匯入個案','修改案號',
+    '晤談紀錄','晤談記錄','初次晤談','初談',
+    '執行結案','取消結案','結案評估','學期評估','不開案',
+    '精神科','事件處理','轉銜評估','轉銜','身心調適假','心理測驗',
+    '危機案件閱讀','列印個案',
+  ];
+  return kw.some(k => a.includes(k));
+}
+async function loadOffHoursLog() {
+  try { _offHoursLogCache = await driveReadJson(OFF_HOURS_LOG_FILE); } catch { _offHoursLogCache = null; }
+  if (!_offHoursLogCache || !Array.isArray(_offHoursLogCache.entries)) _offHoursLogCache = { entries: [] };
+}
+async function _appendOffHoursLog(entry) {
+  let latest;
+  try { latest = await driveReadJson(OFF_HOURS_LOG_FILE); } catch { latest = null; }
+  if (!latest || !Array.isArray(latest.entries)) latest = { entries: [] };
+  latest.entries.push(entry);
+  latest.updatedAt = new Date().toISOString();
+  try { await driveUpdateJsonFile(OFF_HOURS_LOG_FILE, latest); }
+  catch (e) {
+    try { await driveCreateJsonFile(OFF_HOURS_LOG_FILE, latest); }
+    catch (e2) { console.warn('_appendOffHoursLog failed:', e2); return; }
+  }
+  _offHoursLogCache = latest;
+}
+// 推播「首次非上班時間活動」通知給所有主任/管理者/專任（本人與 non-priv 已排除）
+// 呼叫者需在呼叫前先確認 !_offHoursNotifiedThisSession；本函式再次守衛
+async function _broadcastOffHoursSession(actorEmail, kind, actionText) {
+  if (_offHoursNotifiedThisSession) return;
+  _offHoursNotifiedThisSession = true;
+  const actor = configData?.users?.[actorEmail] || {};
+  const kindLabel = kind === 'login' ? '登入' : '進行個案操作';
+  const msg = `⚠ 使用者 ${actor.name || actorEmail} 於非上班時間${kindLabel}${actionText ? `（${actionText}）` : ''}，請至待辦頁「非上班時間監督」查看詳情`;
+  const nowIso = new Date().toISOString();
+  let pushed = 0;
+  Object.entries(configData?.users || {}).forEach(([email, u]) => {
+    if (!u || u.disabled) return;
+    if (email === actorEmail) return; // 不推給行為人自己
+    const r = u.role || '';
+    const isRecipient = r === '主任'
+      || u.isAdmin === true || u.extraRole === '管理者'
+      || (typeof r === 'string' && r.startsWith('專任'));
+    if (!isRecipient) return;
+    if (!u.notifications) u.notifications = [];
+    u.notifications.unshift({
+      id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+      type: 'off_hours_activity',
+      message: msg,
+      actorEmail, actorName: actor.name || actorEmail,
+      createdAt: nowIso, read: false,
+    });
+    _pruneOldReadNotifications(u);
+    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
+    pushed++;
+  });
+  if (pushed) {
+    try { await driveUpdateJsonFile(CONFIG_FILE, configData); }
+    catch (e) { console.warn('off-hours broadcast save failed:', e); }
+  }
 }
 // 危機閱讀區塊級記錄（session 內以 caseId|sem|區塊簽章去重，避免同一次瀏覽重複記）
 const _crisisReadLogged = new Set();
@@ -7131,14 +7254,16 @@ let _adminActiveTab  = 'users';
 function renderAdminPage() {
   _renderAdminTabs();
   const tab = _adminActiveTab;
-  document.getElementById('admin-panel-users').style.display   = tab === 'users'   ? '' : 'none';
-  document.getElementById('admin-panel-apps').style.display    = tab === 'apps'    ? '' : 'none';
-  document.getElementById('admin-panel-depts').style.display   = tab === 'depts'   ? '' : 'none';
-  document.getElementById('admin-panel-presets').style.display = tab === 'presets' ? '' : 'none';
+  document.getElementById('admin-panel-users').style.display      = tab === 'users'     ? '' : 'none';
+  document.getElementById('admin-panel-apps').style.display       = tab === 'apps'      ? '' : 'none';
+  document.getElementById('admin-panel-depts').style.display      = tab === 'depts'     ? '' : 'none';
+  document.getElementById('admin-panel-presets').style.display    = tab === 'presets'   ? '' : 'none';
+  document.getElementById('admin-panel-workhours').style.display  = tab === 'workhours' ? '' : 'none';
   if (tab === 'users')    { renderAdminUsers(); }
-  else if (tab === 'apps')    renderPendingUsersTab();
-  else if (tab === 'depts')   { renderAdminDegreeMapping(); renderAdminDeptCollege(); }
-  else if (tab === 'presets') { renderAdminPresets(); renderAdminBReasons(); }
+  else if (tab === 'apps')      renderPendingUsersTab();
+  else if (tab === 'depts')     { renderAdminDegreeMapping(); renderAdminDeptCollege(); }
+  else if (tab === 'presets')   { renderAdminPresets(); renderAdminBReasons(); }
+  else if (tab === 'workhours') renderAdminWorkHours();
 }
 
 function _renderAdminTabs() {
@@ -7155,7 +7280,7 @@ function _renderAdminTabs() {
   const badge = count > 0
     ? ` <span style="background:#e53e3e;color:#fff;border-radius:10px;padding:0 5px;font-size:.72rem;">${count}</span>`
     : '';
-  bar.innerHTML = _t('users','使用者列表') + _t('apps','帳號申請審核' + badge) + _t('depts','系所與學制') + _t('presets','快速選項');
+  bar.innerHTML = _t('users','使用者列表') + _t('apps','帳號申請審核' + badge) + _t('depts','系所與學制') + _t('presets','快速選項') + _t('workhours','上班時間');
 }
 
 function _adminTab(tab) {
@@ -18061,6 +18186,82 @@ function _renderCaseAccessAuditSection() {
     </div>`;
 }
 
+// ── 非上班時間監督（同仁在非上班時間看/改個案時的完整 feed；主任/管理者/專任可見）──
+function _offHoursSeenKey() { return 'scc_off_hours_seen_' + DRIVE_FOLDER_ID.slice(-8); }
+function _toggleOffHoursSection() { window._offHoursSectionCollapsed = !window._offHoursSectionCollapsed; _renderOffHoursSection(); }
+function _markOffHoursSeen() { localStorage.setItem(_offHoursSeenKey(), new Date().toISOString()); _renderOffHoursSection(); }
+function _renderOffHoursSection() {
+  const section = document.getElementById('todos-off-hours-section');
+  if (!section) return;
+  if (!_canViewAccessAudit()) { section.innerHTML = ''; return; }
+  const entries = (_offHoursLogCache && Array.isArray(_offHoursLogCache.entries)) ? _offHoursLogCache.entries : [];
+  if (!entries.length) { section.innerHTML = ''; return; }
+  // 依 email|day 分組：一組 = 該同仁該日的所有非上班時間活動（登入 + 所有 case action）
+  const groups = {};
+  entries.forEach(e => {
+    const day = (e.t || '').slice(0, 10);
+    const key = `${e.email}|${day}`;
+    if (!groups[key]) groups[key] = {
+      email: e.email, name: e.name, day,
+      isPriv: !!e.isPriv, currentRole: e.currentRole, extraRole: e.extraRole,
+      loginT: '', actions: [], latest: '',
+    };
+    const g = groups[key];
+    if (e.type === 'login') { if (!g.loginT || (e.t || '') < g.loginT) g.loginT = e.t || ''; if (e.currentRole) g.currentRole = e.currentRole; if (e.extraRole) g.extraRole = e.extraRole; }
+    else if (e.type === 'case_action') g.actions.push(e);
+    if ((e.t || '') > g.latest) g.latest = e.t || '';
+    if (e.isPriv) g.isPriv = true;
+  });
+  const list = Object.values(groups).sort((a, b) => (b.latest || '').localeCompare(a.latest || ''));
+  const seenAt = localStorage.getItem(_offHoursSeenKey()) || '';
+  const unread = entries.filter(e => (e.t || '') > seenAt).length;
+  const isCollapsed = !!window._offHoursSectionCollapsed;
+  const showAll = !!window._offHoursShowAll;
+  const shown = showAll ? list : list.slice(0, 20);
+  const fmtT = t => t ? new Date(t).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' }) : '';
+  const _roleTag = g => {
+    const parts = [];
+    if (g.currentRole) parts.push(g.currentRole);
+    if (g.extraRole)   parts.push(g.extraRole);
+    return parts.length ? `<span style="font-size:.72rem;color:#553c9a;background:#e9d8fd;border-radius:8px;padding:1px 6px;margin-left:4px;">${escHtml(parts.join('・'))}</span>` : '';
+  };
+  const groupHtml = g => {
+    const acts = g.actions.slice().sort((a, b) => (a.t || '').localeCompare(b.t || ''));
+    const actsHtml = acts.map(a => {
+      const detail = a.detail ? `：${escHtml(String(a.detail).slice(0, 80))}${String(a.detail).length > 80 ? '…' : ''}` : '';
+      const caseTag = a.caseName || a.caseId
+        ? `<span style="font-family:monospace;font-size:.74rem;color:#4a5568;">${escHtml(a.caseName || '')}${a.caseName && a.caseId ? '（' : ''}${escHtml(a.caseId || '')}${a.caseName && a.caseId ? '）' : ''}</span>`
+        : '';
+      return `<div style="font-size:.78rem;color:#4a5568;padding:2px 0 2px 14px;border-left:2px solid #d6bcfa;margin-left:4px;">
+        → <span style="color:#553c9a;font-weight:600;">${escHtml(a.action)}</span>${detail} ${caseTag}
+        <span style="color:#a0aec0;">${fmtT(a.t)}</span>
+      </div>`;
+    }).join('');
+    const privBadge = g.isPriv ? `<span style="font-size:.7rem;color:#c05621;background:#fed7aa;border-radius:8px;padding:1px 6px;margin-left:6px;">主任／管理者</span>` : '';
+    return `<div style="padding:8px 0;border-top:1px solid #e9d8fd;">
+      <div style="font-size:.86rem;color:#2d3748;">
+        <span style="font-weight:700;">${escHtml(g.name || g.email)}</span>${_roleTag(g)}${privBadge}
+        <span style="color:#a0aec0;font-size:.76rem;margin-left:6px;">${escHtml(g.day)}${g.loginT ? `　登入 ${fmtT(g.loginT)}` : ''}</span>
+      </div>
+      ${actsHtml || '<div style="font-size:.76rem;color:#a0aec0;padding-left:14px;">（僅登入，未進行個案動作）</div>'}
+    </div>`;
+  };
+  section.innerHTML = `
+    <div style="background:#faf5ff;border:1px solid #d6bcfa;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+        <span style="font-weight:700;font-size:.9rem;color:#553c9a;">🌙 非上班時間監督（${list.length}）${unread > 0 ? ` <span class="badge" style="background:#e53e3e;color:#fff;font-size:.72rem;">${unread} 則新</span>` : ''}</span>
+        <div style="display:flex;gap:6px;">
+          ${unread > 0 ? `<button class="btn btn-sm" style="font-size:.76rem;padding:2px 10px;" onclick="_markOffHoursSeen()">標示已讀</button>` : ''}
+          <button class="btn btn-sm" style="font-size:.76rem;padding:2px 10px;background:#fff;" onclick="_toggleOffHoursSection()">${isCollapsed ? '展開 ▼' : '收合 ▲'}</button>
+        </div>
+      </div>
+      ${isCollapsed ? '' : `<div style="margin-top:8px;">
+        ${shown.map(groupHtml).join('')}
+        ${!showAll && list.length > shown.length ? `<div style="text-align:center;margin-top:8px;"><button class="btn btn-sm" style="font-size:.76rem;" onclick="window._offHoursShowAll=true;_renderOffHoursSection()">顯示全部 ${list.length} 筆</button></div>` : ''}
+      </div>`}
+    </div>`;
+}
+
 function _renderMlNotifSection() {
   const section = document.getElementById('todos-ml-notif-section');
   if (!section) return;
@@ -18114,9 +18315,13 @@ window._mlToggleSection = function() {
   _renderMlNotifSection();
 };
 
-// 待辦頁「重大事件」區塊：拉 configData notifications 中的重大類型顯示（如 Gmail 變更）
+// 待辦頁「重大事件」區塊：拉 configData notifications 中的重大類型顯示（如 Gmail 變更、非上班時間活動）
 // 資料來源與鈴鐺同一份（configData.users[me].notifications），無需額外 Drive 寫入
-const MAJOR_EVENT_NOTIF_TYPES = new Set(['gmail_changed']);
+const MAJOR_EVENT_NOTIF_TYPES = new Set(['gmail_changed', 'off_hours_activity']);
+const MAJOR_EVENT_TYPE_LABELS = {
+  gmail_changed:       '重大事件・Gmail 變更',
+  off_hours_activity:  '重大事件・非上班時間活動',
+};
 function _renderMajorEventNotifs() {
   const section = document.getElementById('todos-major-events-section');
   if (!section) return;
@@ -18135,7 +18340,7 @@ function _renderMajorEventNotifs() {
   };
   const _renderItem = n => `<div style="display:flex;gap:8px;align-items:flex-start;padding:8px 0;border-top:1px solid #e9d8fd;${n.read?'opacity:.6;':''}">
       <div style="flex:1;min-width:0;">
-        <div style="font-size:.72rem;color:#553c9a;background:#e9d8fd;border-radius:3px;padding:0 5px;display:inline-block;font-weight:700;">重大事件・Gmail 變更</div>
+        <div style="font-size:.72rem;color:#553c9a;background:#e9d8fd;border-radius:3px;padding:0 5px;display:inline-block;font-weight:700;">${escHtml(MAJOR_EVENT_TYPE_LABELS[n.type] || '重大事件')}</div>
         <div style="font-size:.86rem;color:#2d3748;margin-top:4px;line-height:1.5;">${escHtml(n.message || '')}</div>
         <div style="font-size:.74rem;color:#718096;margin-top:3px;">
           ${_fmt(n.createdAt)}${n.actorName ? `　・操作者：${escHtml(n.actorName)}` : ''}${n.read && n.readAt ? `　・已讀 ${_fmt(n.readAt)}` : ''}
@@ -18226,6 +18431,7 @@ window._mlBatchAcknowledge = async function() {
 
 function renderTodosPage() {
   _renderCaseAccessAuditSection();
+  _renderOffHoursSection();
   _renderAssignmentTodos();
   _renderMlNotifSection();
   _renderMajorEventNotifs();
@@ -21865,6 +22071,27 @@ function auditLog(action, caseId = null, recordId = null, detail = null, opts = 
       await driveUpdateJsonFile(AUDIT_LOG_FILE, data);
     } catch (e) { console.warn('audit log failed:', e); }
   })();
+
+  // 非上班時間 + 看/改個案相關 → 追加到 off_hours_log 共享 feed，並於首次觸發廣播通知
+  if (_isCaseRelatedAction(action) && _isOffHours(entry.t)) {
+    const _isPriv = currentRole === '主任' || extraRole === '管理者';
+    _appendOffHoursLog({
+      id:      `oh-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+      type:    'case_action',
+      email:   entry.email,
+      name:    entry.name,
+      action,
+      caseId:  caseId  || null,
+      recordId: recordId || null,
+      detail:  detail  || null,
+      isPriv:  _isPriv,
+      t:       entry.t,
+    }).catch(() => {});
+    // 主任/管理者本身活動仍入 feed（供同儕互相監督），但不再向全員推送鈴鐺通知
+    if (!_isPriv && !_offHoursNotifiedThisSession) {
+      _broadcastOffHoursSession(currentUser.email, 'case_action', action).catch(() => {});
+    }
+  }
 }
 
 const AUDIT_PAGE_CATEGORIES = {
@@ -22789,6 +23016,14 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: '非上班時間個案存取監督（feed + 通知）', isProd: false, items: [
+      item('新功能', '待辦頁新增紫色「🌙 非上班時間監督」區塊，顯示所有同仁在非上班時間登入或看/改個案的完整 feed（依人員×日期分組，含登入時間+每項動作+對應案號）'),
+      item('新功能', '首次觸發時透過鈴鐺+待辦頁重大事件卡通知所有主任/管理者/專任（同一 session 只推一次通知，避免刷屏）'),
+      item('新功能', '主任/管理者本身活動仍入 feed（供同儕互相監督，含灰橘 badge 標記），但不對他人發送鈴鐺通知（避免正當夜間工作的雜訊）'),
+      item('新功能', '系統管理→上班時間 tab：可設定開始/結束時數、正常上班日 (checkbox 週日~週六)、假日、補班日；儲存時記入稽核日誌（重大事件）'),
+      item('技術', '新增 off_hours_log.json 共享 feed 檔（結構同 case_access_log），走現有 proxyCall；MAJOR_EVENT_NOTIF_TYPES 擴增 off_hours_activity 使自動出現於重大事件卡'),
+      item('技術', '_isOffHours 支援 holidays (覆蓋 workDays) 與 extraWorkDays (補班日視為上班)；_isCaseRelatedAction 白名單涵蓋查閱/編輯/晤談/結案/精神科/事件/轉銜/身心調適假/心測/危機閱讀/列印'),
+    ]},
     { date: '2026-07-02', title: '重大事件通知也在待辦事項顯示（Gmail 變更）', isProd: true, items: [
       item('新功能', '待辦頁新增「重大事件通知」區塊（紫色卡片），從 configData notifications 拉出 gmail_changed 類型顯示'),
       item('新功能', '每筆顯示訊息、時間、操作者姓名、已讀狀態；含「標記已讀」與「全部標為已讀」按鈕'),
@@ -29546,6 +29781,104 @@ async function _adminRemoveEmgRelPreset(val) {
   configData.emgRelationPresets = configData.emgRelationPresets.filter(r => r !== val);
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminPresets(); }
   catch (e) { alert('儲存失敗：' + e.message); }
+}
+
+// ── 上班時間設定 UI ──────────────────────────────
+function renderAdminWorkHours() {
+  const el = document.getElementById('admin-workhours-wrap');
+  if (!el) return;
+  const cfg = { ...DEFAULT_WORK_HOURS, ...(configData?.workHoursConfig || {}) };
+  const hourOptions = n => Array.from({ length: 24 }, (_, h) =>
+    `<option value="${h}"${h === n ? ' selected' : ''}>${String(h).padStart(2,'0')}:00</option>`
+  ).join('');
+  const dowLabels = ['週日','週一','週二','週三','週四','週五','週六'];
+  const dowChecks = dowLabels.map((lbl, i) =>
+    `<label style="display:inline-flex;align-items:center;gap:4px;margin-right:14px;font-size:.88rem;cursor:pointer;">
+      <input type="checkbox" class="wh-dow" data-dow="${i}" ${(cfg.workDays || []).includes(i) ? 'checked' : ''}> ${lbl}
+    </label>`
+  ).join('');
+  const dateChips = (arr, id) => (arr && arr.length)
+    ? arr.map(d => `<span style="display:inline-flex;align-items:center;gap:2px;background:#faf5ff;color:#553c9a;border:1px solid #d6bcfa;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;">
+        ${escHtml(d)}<button onclick="_adminWhRemoveDate('${id}','${escHtml(d)}')" style="background:none;border:none;cursor:pointer;color:#553c9a;font-size:1rem;line-height:1;padding:0 0 0 3px;">×</button>
+      </span>`).join('')
+    : '<span style="font-size:.83rem;color:#a0aec0;">（尚無）</span>';
+  el.innerHTML = `
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;align-items:center;">
+      <label style="font-size:.88rem;">上班開始：<select id="wh-start" class="field-select" style="margin-left:6px;">${hourOptions(cfg.startHour)}</select></label>
+      <label style="font-size:.88rem;">上班結束：<select id="wh-end" class="field-select" style="margin-left:6px;">${hourOptions(cfg.endHour)}</select></label>
+      <span style="font-size:.78rem;color:#718096;">（例：8~18 表示 08:00 以前及 18:00 以後為非上班時間；時區以本機為準）</span>
+    </div>
+    <div style="margin-bottom:16px;">
+      <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">正常上班日</div>
+      ${dowChecks}
+    </div>
+    <div style="margin-bottom:16px;">
+      <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">假日（覆蓋上班日）</div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap;">
+        <input type="date" id="wh-holiday-input" class="field-input" style="max-width:180px;">
+        <button class="btn btn-secondary btn-sm" onclick="_adminWhAddDate('holidays','wh-holiday-input')">加入假日</button>
+      </div>
+      <div id="wh-holidays-chips">${dateChips(cfg.holidays, 'holidays')}</div>
+    </div>
+    <div style="margin-bottom:16px;">
+      <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">補班日（週末視為上班）</div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap;">
+        <input type="date" id="wh-extra-input" class="field-input" style="max-width:180px;">
+        <button class="btn btn-secondary btn-sm" onclick="_adminWhAddDate('extraWorkDays','wh-extra-input')">加入補班日</button>
+      </div>
+      <div id="wh-extras-chips">${dateChips(cfg.extraWorkDays, 'extraWorkDays')}</div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;padding-top:12px;border-top:1px solid #e2e8f0;">
+      <button class="btn btn-primary" onclick="_adminSaveWorkHours()">儲存上班時間設定</button>
+      <span id="wh-status" style="font-size:.82rem;color:#718096;"></span>
+    </div>`;
+}
+function _adminWhCurrent() { return { ...DEFAULT_WORK_HOURS, ...(configData?.workHoursConfig || {}) }; }
+async function _adminWhAddDate(field, inputId) {
+  const val = (document.getElementById(inputId)?.value || '').trim();
+  if (!val) { alert('請先選擇日期。'); return; }
+  const cur = _adminWhCurrent();
+  const arr = [...(cur[field] || [])];
+  if (arr.includes(val)) { alert('此日期已存在。'); return; }
+  arr.push(val); arr.sort();
+  const next = { ...cur, [field]: arr };
+  configData.workHoursConfig = next;
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminWorkHours(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+async function _adminWhRemoveDate(field, val) {
+  if (!confirm(`確認移除「${val}」？`)) return;
+  const cur = _adminWhCurrent();
+  const arr = (cur[field] || []).filter(d => d !== val);
+  const next = { ...cur, [field]: arr };
+  configData.workHoursConfig = next;
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminWorkHours(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+async function _adminSaveWorkHours() {
+  const startHour = parseInt(document.getElementById('wh-start')?.value, 10);
+  const endHour   = parseInt(document.getElementById('wh-end')?.value, 10);
+  if (!Number.isFinite(startHour) || !Number.isFinite(endHour) || startHour < 0 || endHour < 0 || startHour > 23 || endHour > 23) {
+    alert('開始/結束時間格式錯誤。'); return;
+  }
+  if (endHour <= startHour) { alert('上班結束時間必須大於開始時間。'); return; }
+  const workDays = [...document.querySelectorAll('.wh-dow:checked')]
+    .map(cb => parseInt(cb.dataset.dow, 10)).filter(Number.isFinite).sort();
+  if (!workDays.length) { alert('請至少勾選一個上班日。'); return; }
+  const cur = _adminWhCurrent();
+  const next = { ...cur, startHour, endHour, workDays };
+  configData.workHoursConfig = next;
+  const st = document.getElementById('wh-status');
+  if (st) st.textContent = '儲存中…';
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('更新上班時間設定', null, null, `startHour=${startHour}, endHour=${endHour}, workDays=[${workDays.join(',')}]`, { major: true });
+    if (st) { st.textContent = '✓ 已儲存'; setTimeout(() => { if (st) st.textContent = ''; }, 3000); }
+    renderAdminWorkHours();
+  } catch (e) {
+    if (st) st.textContent = '';
+    alert('儲存失敗：' + e.message);
+  }
 }
 
 function _computeGradStatus(c, curSemStr) {
