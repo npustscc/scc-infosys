@@ -5414,6 +5414,8 @@ async function afterLogin() {
     if (typeof renderIssuesBadge === 'function') renderIssuesBadge();
     // 許願池 30 分鐘自動輪詢（避免只有 F5 才看到新意見）
     if (typeof scheduleIssuesAutoRefresh === 'function') scheduleIssuesAutoRefresh();
+    // 系統管理者登入時檢查是否有待發布的自動回覆（Claude Code 開發流程用）
+    if (typeof _checkAutoIssueReplies === 'function') _checkAutoIssueReplies().catch(() => {});
     // 檢查帳號是否停用（bootstrap admin 不受限制）
     if (configData?.users?.[currentUser.email]?.disabled && currentUser.email !== BOOTSTRAP_ADMIN_EMAIL) {
       hideLoading();
@@ -23394,6 +23396,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-03', v: 70, title: '問題回報：Claude Code 自動回覆佇列機制', isProd: false, items: [
+      item('新功能', '新增 `pending-issue-replies.json`（隨 repo 部署，公開讀取）作為待發布回覆佇列；系統管理者登入時自動檢查並以 npust.scc 身份寫入對應 issue 的留言，留言區以紫色「系統自動回覆」標記區隔真人留言'),
+      item('技術', '走既有已驗證的 issues.json 儲存路徑（`_saveIssues`），不新增任何 Code.gs 後端權限；以 `autoReplyId` 比對避免重複回覆'),
+    ]},
     { date: '2026-07-03', v: 69, title: '版本更新紀錄加上版本編號', isProd: false, items: [
       item('新功能', '每筆更新紀錄新增全域遞增的版本編號（v1 起，最舊為 v1），日期旁以紫色 badge 顯示；方便日後用「日期＋版本代號」快速對應到特定更新'),
     ]},
@@ -36195,6 +36201,49 @@ async function _saveIssues() {
   }
 }
 
+// ══════════════════════════════════════════════
+//  問題回報：自動回覆佇列（Claude Code 開發流程用）
+//  機制：pending-issue-replies.json 隨 repo 部署在 GitHub Pages（公開讀取，不經 GAS 驗證）；
+//  系統管理者登入時抓取此檔，逐筆比對該 issue 是否已有相同 autoReplyId 的留言，
+//  沒有則以 npust.scc 身份寫入留言（走既有已驗證的 issues.json 儲存路徑，不新增任何後端權限）。
+// ══════════════════════════════════════════════
+const AUTO_ISSUE_REPLY_QUEUE_URL = 'https://npustscc.github.io/scc-infosys/pending-issue-replies.json';
+const AUTO_ISSUE_REPLY_EMAIL     = 'npust.scc@heartnpust.tw';
+async function _checkAutoIssueReplies() {
+  const isSysAdminTrigger = extraRole === '管理者' || currentRole === '系統管理者';
+  if (!isSysAdminTrigger) return;
+  let queue;
+  try {
+    const r = await fetch(AUTO_ISSUE_REPLY_QUEUE_URL + '?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return;
+    queue = await r.json();
+  } catch (_) { return; }
+  if (!Array.isArray(queue) || !queue.length) return;
+  let changed = false;
+  for (const q of queue) {
+    if (!q || !q.id || !q.issueSerial || !q.text) continue;
+    const issue = issuesData.find(x => x.serial === q.issueSerial);
+    if (!issue) continue;
+    if (!issue.comments) issue.comments = [];
+    if (issue.comments.some(c => c.autoReplyId === q.id)) continue; // 已回覆過，避免重複
+    issue.comments.push({
+      id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      content: q.text,
+      attachments: [],
+      authorEmail: AUTO_ISSUE_REPLY_EMAIL,
+      authorName: configData?.users?.[AUTO_ISSUE_REPLY_EMAIL]?.name || '系統管理者',
+      createdAt: new Date().toISOString(),
+      autoReplyId: q.id,
+    });
+    changed = true;
+  }
+  if (!changed) return;
+  try {
+    await _saveIssues();
+    if (document.getElementById('page-issues')?.classList.contains('active') && typeof renderIssuesPage === 'function') renderIssuesPage();
+  } catch (e) { console.warn('[_checkAutoIssueReplies] 儲存失敗:', e.message); }
+}
+
 // ── @提及：解析內文中 @名字，回傳符合的 email 陣列 ──
 function _parseIssueMentions(content) {
   const tokens = (content.match(/@([^\s@,，。！？\n]+)/g) || []).map(m => m.slice(1));
@@ -36732,10 +36781,12 @@ function renderIssuesPage() {
             ${canDelete ? `<button class="btn btn-danger btn-sm" style="padding:0 5px;font-size:.7rem;" onclick="deleteIssueComment('${sid}','${cid}')">刪除</button>` : ''}
           </span>` : '';
           const editedMark = c.editedAt ? `<span style="font-size:.7rem;color:#a0aec0;">（已編輯）</span>` : '';
+          const autoMark = c.autoReplyId ? `<span style="font-size:.68rem;font-weight:700;color:#805ad5;background:#faf5ff;border:1px solid #d6bcfa;border-radius:4px;padding:0 5px;">系統自動回覆</span>` : '';
           return `
           <div id="issue-comment-card-${sid}-${cid}" style="margin-bottom:6px;padding:7px 10px;background:#f7fafc;border-radius:6px;font-size:.85rem;">
             <div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;font-size:.78rem;color:#718096;">
               <span style="font-weight:600;color:#4a5568;">${escHtml(c.authorName||c.authorEmail||'—')}</span>
+              ${autoMark}
               <span>${c.createdAt ? new Date(c.createdAt).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : ''}</span>
               ${editedMark}${actBtns}
             </div>
