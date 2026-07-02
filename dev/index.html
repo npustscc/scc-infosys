@@ -253,8 +253,10 @@
       font-size: .8rem;
       color: #1a5276;
     }
-    #sidebar-role-box .role-name { font-weight: 700; margin-bottom: 2px; }
-    #sidebar-role-box .extra-role { color: #2980b9; font-size: .75rem; }
+    #sidebar-role-box .role-name { font-weight: 700; margin-bottom: 4px; }
+    #sidebar-role-box .extra-role { display: flex; flex-wrap: wrap; gap: 4px; font-size: .72rem; }
+    #sidebar-role-box .extra-role:empty { display: none; }
+    #sidebar-role-box .extra-role .badge { font-size: .7rem; padding: 1px 6px; }
 
     /* Content area */
     #content {
@@ -739,6 +741,11 @@
     }
     .case-deleted-row td { opacity: .6; background: #fff5f5; }
     .case-deleted-row:hover td { background: #fee; }
+    /* 已封存 → 灰底；已結案 → 淡藍底（優先權：deleted > archived > closed > active） */
+    .case-archived-row td { background: #edf2f7; color: #4a5568; }
+    .case-archived-row:hover td { background: #e2e8f0; }
+    .case-closed-row td { background: #f7fbff; }
+    .case-closed-row:hover td { background: #ebf4fb; }
     .badge-case-deleted {
       display: inline-block; padding: 2px 8px; border-radius: 12px;
       background: #fde8e8; color: #c0392b; border: 1px solid #f5c6c6;
@@ -5274,6 +5281,8 @@ async function afterLogin() {
     resolveUserRole();
     // 許願池燈號：需在 resolveUserRole 之後才知道是否 admin，過濾邏輯才正確
     if (typeof renderIssuesBadge === 'function') renderIssuesBadge();
+    // 許願池 30 分鐘自動輪詢（避免只有 F5 才看到新意見）
+    if (typeof scheduleIssuesAutoRefresh === 'function') scheduleIssuesAutoRefresh();
     // 檢查帳號是否停用（bootstrap admin 不受限制）
     if (configData?.users?.[currentUser.email]?.disabled && currentUser.email !== BOOTSTRAP_ADMIN_EMAIL) {
       hideLoading();
@@ -5396,7 +5405,15 @@ function resolveUserRole() {
 
   // Sidebar 角色顯示
   document.getElementById('sb-role').textContent  = currentRole || '（未設定角色）';
-  document.getElementById('sb-extra').textContent = extraRole   || '';
+  // 附加身分 badges：與使用者管理頁的 badge 呈現一致
+  const _sbExtraBadges = [];
+  if (extraRole === '管理者')                _sbExtraBadges.push(`<span class="badge badge-orange">管理者</span>`);
+  else if (extraRole === '個案管理員')       _sbExtraBadges.push(`<span class="badge badge-gray">個案管理員</span>`);
+  else if (extraRole === '實習生行政督導')   _sbExtraBadges.push(`<span class="badge badge-gray">實習生行政督導</span>`);
+  else if (extraRole === '實習生專業督導')   _sbExtraBadges.push(`<span class="badge badge-gray">實習生專業督導</span>`);
+  if (isTransferContact)    _sbExtraBadges.push(`<span class="badge badge-teal">轉銜窗口</span>`);
+  if (isMentalLeaveContact) _sbExtraBadges.push(`<span class="badge badge-blue">身心調適假窗口</span>`);
+  document.getElementById('sb-extra').innerHTML = _sbExtraBadges.join(' ');
 
   // 管理者才顯示使用者管理頁
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
@@ -5870,6 +5887,18 @@ function _isInitialInterviewerOfCase(c, email) {
   }
   return false;
 }
+// 列出此案所有初談者 email（去重）；權限等同個管員但 badge 顯示「初談者」
+function _getInitialInterviewersForCase(c) {
+  const emails = new Set();
+  if (c?.initialInterview?.interviewerEmail) emails.add(c.initialInterview.interviewerEmail);
+  if (c?.initialInterviews) {
+    Object.values(c.initialInterviews).forEach(ii => { if (ii?.interviewerEmail) emails.add(ii.interviewerEmail); });
+  }
+  if (c && !c.initialInterview && !c.initialInterviews && Array.isArray(c.interviewerEmails)) {
+    c.interviewerEmails.forEach(e => e && emails.add(e));
+  }
+  return [...emails];
+}
 
 // 個案（可為 index-only entry）對某使用者是否「屬於我／我可見的自有案」——非管理者可見性單一真相
 // 供 renderCases 過濾與 scoped 載入 chunk 計算共用，確保兩處判定一致
@@ -5886,10 +5915,14 @@ function _caseVisibleToUser(c, email, allowedSet) {
 // ══════════════════════════════════════════════
 //  危機案件個案閱讀（申請即通過、全員監督）
 // ══════════════════════════════════════════════
-// 可申請者：專任（角色以「專任」開頭）或實習諮商心理師；主任/管理者本就全可見不需申請
+// 可申請者：專任 / 實習諮商心理師；主任 / 系統管理者 / 管理者亦可申請以形式留痕
+// （主任/管理者本可全案可見，申請流程供合理狀況下正式登記閱讀目的）
 function _canApplyCrisisAccess() {
-  if (currentRole === '主任' || extraRole === '管理者') return false;
-  return (typeof currentRole === 'string' && currentRole.startsWith('專任')) || currentRole === '實習諮商心理師';
+  return currentRole === '主任'
+    || currentRole === '系統管理者'
+    || extraRole === '管理者'
+    || (typeof currentRole === 'string' && currentRole.startsWith('專任'))
+    || currentRole === '實習諮商心理師';
 }
 // 監督區可見者：主任/管理者/專任（依需求；實習生被監督但不看 feed）
 function _canViewAccessAudit() {
@@ -6239,6 +6272,15 @@ function renderCases() {
       caseManagerMap[id].push(formatCounselorLabel(key));
     });
   });
+  // 建立「個案ID → 初談者名單」反查表（權限同個管，badge 不同）
+  const caseInitInterviewerMap = {};
+  visible.forEach(c => {
+    _getInitialInterviewersForCase(c).forEach(email => {
+      if (!email || email === c.counselorEmail) return; // 排除主責，避免重複
+      if (!caseInitInterviewerMap[c.id]) caseInitInterviewerMap[c.id] = [];
+      caseInitInterviewerMap[c.id].push(formatCounselorLabel(email));
+    });
+  });
 
   const _semMs = caseFilters.semester ? semesterMonths(caseFilters.semester) : null;
   const transferCaseIds = new Set((transferData||[]).filter(t => t.type === 'incoming' && t.caseId).map(t => t.caseId));
@@ -6338,10 +6380,15 @@ function renderCases() {
     const statusCell = c.deleted
       ? `<span class="badge-case-deleted">已刪除</span>`
       : statusBadge(c.status) + archivedBadge + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '') + mlRecentBadge;
-    const rowBg = !c.deleted && pastUnclosedSems.length ? 'background:#fffbeb;' : '';
+    const rowBg = !c.deleted && !c.archived && c.status !== 'closed' && pastUnclosedSems.length ? 'background:#fffbeb;' : '';
     const canCheckCase = !c.deleted; // 封存個案也可勾選，以便批次解封
+    // 底色優先順序：deleted > archived > closed > pastUnclosed(warm) > active(白)
+    const _rowClass = c.deleted ? 'case-deleted-row'
+                    : c.archived ? 'case-archived-row'
+                    : c.status === 'closed' ? 'case-closed-row'
+                    : '';
     return `
-    <tr class="${c.deleted ? 'case-deleted-row' : ''}" style="cursor:pointer;${rowBg}" onclick="showCaseDetail('${cid}')">
+    <tr class="${_rowClass}" style="cursor:pointer;${rowBg}" onclick="showCaseDetail('${cid}')">
       <td style="width:36px;text-align:center;" onclick="event.stopPropagation()">${canCheckCase ? `<input type="checkbox" class="case-row-chk" data-id="${cid}" ${_casesSelected.has(c.id)?'checked':''} onchange="_caseChkChange(this)">` : ''}</td>
       <td>${escHtml(c.id || '—')}${abBadge ? `<br>${abBadge}` : ''}</td>
       <td>${escHtml(c.name  || '—')}</td>
@@ -6351,6 +6398,13 @@ function renderCases() {
           ? `<div style="font-size:.72rem;margin-top:2px;color:#2471a3;">
                <span style="background:#d6eaf8;border-radius:3px;padding:0 4px;font-weight:700;letter-spacing:.02em;">管</span>
                ${escHtml((caseManagerMap[c.id] || []).join('、'))}
+             </div>`
+          : ''
+      }${
+        (caseInitInterviewerMap[c.id] || []).length
+          ? `<div style="font-size:.72rem;margin-top:2px;color:#276749;">
+               <span style="background:#d4edda;border-radius:3px;padding:0 4px;font-weight:700;letter-spacing:.02em;">初</span>
+               ${escHtml((caseInitInterviewerMap[c.id] || []).join('、'))}
              </div>`
           : ''
       }</td>
@@ -8221,9 +8275,16 @@ async function showCaseDetail(caseId) {
 
   const mgrsEl = document.getElementById('detail-managers');
   const _mgrEmailsTop = _getManagersForCase(c.id);
-  if (_mgrEmailsTop.length) {
-    const _mgrNamesTop = _mgrEmailsTop.map(e => escHtml(formatCounselorLabel(e) || configData?.users?.[e]?.name || e)).join('、');
-    mgrsEl.innerHTML = `<div style="font-size:.82rem;color:#718096;margin-top:2px;">個案管理員：${_mgrNamesTop}</div>`;
+  // 初談者：權限等同個管員，但獨立顯示、標籤不同（排除主責，避免重複）
+  const _iiEmailsTop = _getInitialInterviewersForCase(c).filter(e => e && e !== c.counselorEmail);
+  const _mgrLine = _mgrEmailsTop.length
+    ? `<div style="font-size:.82rem;color:#718096;">個案管理員：${_mgrEmailsTop.map(e => escHtml(formatCounselorLabel(e) || configData?.users?.[e]?.name || e)).join('、')}</div>`
+    : '';
+  const _iiLine = _iiEmailsTop.length
+    ? `<div style="font-size:.82rem;color:#276749;">初談者：${_iiEmailsTop.map(e => escHtml(formatCounselorLabel(e) || configData?.users?.[e]?.name || e)).join('、')}</div>`
+    : '';
+  if (_mgrLine || _iiLine) {
+    mgrsEl.innerHTML = `<div style="margin-top:2px;display:flex;flex-direction:column;gap:2px;">${_mgrLine}${_iiLine}</div>`;
     mgrsEl.style.display = '';
   } else {
     mgrsEl.style.display = 'none';
@@ -8728,6 +8789,8 @@ async function showCaseDetail(caseId) {
   } else {
   // ── 個案管理員區段 HTML ──
   const _mgrEmails = _getManagersForCase(c.id);
+  // 初談者：權限等同個管員，但獨立顯示為綠色 chips（排除主責及已列為個管者，避免重複）
+  const _iiEmailsDetail = _getInitialInterviewersForCase(c).filter(e => e && e !== c.counselorEmail && !_mgrEmails.includes(e));
   const _mgrNonSet = new Set(
     Object.entries(configData?.users || {})
       .filter(([email, info]) => !_mgrEmails.includes(email) && email !== c.counselorEmail && info.role && info.role !== '系統管理者')
@@ -8745,6 +8808,14 @@ async function showCaseDetail(caseId) {
         </span>`;
       }).join('')
     : `<span style="color:#718096;font-size:.85rem;">尚未指定</span>`;
+  const _iiChips = _iiEmailsDetail.length
+    ? _iiEmailsDetail.map(email =>
+        `<span style="display:inline-flex;align-items:center;gap:2px;background:#e6ffed;border:1px solid #86efac;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;color:#276749;" data-tip="初次晤談者，權限與個案管理員相同（不可移除，依初次晤談紀錄自動判定）">
+          ${escHtml(formatCounselorLabel(email))}
+          <span style="font-size:.72rem;color:#276749;background:#d4edda;border-radius:8px;padding:1px 5px;margin-left:3px;">初談者</span>
+        </span>`
+      ).join('')
+    : '';
   const _mgrAddOpts = buildCounselorOptgroups(([email]) => _mgrNonSet.has(email), '— 選擇輔導人員 —');
   const _mgrHasMulSems = _csems && _csems.length > 1;
   const _mgrSemOpts = _mgrHasMulSems
@@ -8757,15 +8828,18 @@ async function showCaseDetail(caseId) {
         <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">個案管理員
           <span style="font-size:.75rem;font-weight:400;color:#718096;">（可閱讀此個案紀錄的輔導人員，主責以外）</span>
         </div>
-        <div style="margin-bottom:8px;">${_mgrChips}</div>
+        <div style="margin-bottom:8px;">${_mgrChips}${_iiChips}</div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <select id="cm-add-select" class="field-select" style="max-width:200px;">${_mgrAddOpts}</select>
           ${_mgrSemOpts}
           <button class="btn btn-secondary btn-sm" onclick="addCaseManagerInDetail('${escHtml(caseId)}')">新增</button>
         </div>
       </div>`
-    : (_mgrEmails.length
-        ? `<div style="margin-top:10px;font-size:.82rem;color:#718096;">個案管理員：${_mgrEmails.map(e=>escHtml(formatCounselorLabel(e)||configData?.users?.[e]?.name||e)).join('、')}</div>`
+    : (_mgrEmails.length || _iiEmailsDetail.length
+        ? `<div style="margin-top:10px;font-size:.82rem;color:#718096;">
+            ${_mgrEmails.length ? `個案管理員：${_mgrEmails.map(e=>escHtml(formatCounselorLabel(e)||configData?.users?.[e]?.name||e)).join('、')}` : ''}
+            ${_iiEmailsDetail.length ? `<div style="color:#276749;">初談者：${_iiEmailsDetail.map(e=>escHtml(formatCounselorLabel(e)||configData?.users?.[e]?.name||e)).join('、')}</div>` : ''}
+          </div>`
         : '');
 
   document.getElementById('detail-body').innerHTML =
@@ -12008,6 +12082,11 @@ function _dismissUnclosedReminder() {
   _syncTodoBadge();
   renderTodosPage();
 }
+function _toggleUnclosedSummary() {
+  const cur = _userPref_('todosUnclosedCollapsed', false);
+  syncUserPref_({ todosUnclosedCollapsed: !cur });
+  renderTodosPage();
+}
 
 function goCasesPastUnclosed() {
   caseFilters.status = 'past_unclosed';
@@ -12455,8 +12534,12 @@ function renderCaseNums(resetPage) {
     const chk = canCheck
       ? `<input type="checkbox" class="cn-row-chk" data-id="${escHtml(c.id)}" ${_cnSelected.has(c.id) ? 'checked' : ''} onchange="event.stopPropagation();_cnChkChange(this)">`
       : '';
+    const _cnRowClass = c.deleted ? 'case-deleted-row'
+                      : c.archived ? 'case-archived-row'
+                      : c.status === 'closed' ? 'case-closed-row'
+                      : '';
     return `
-    <tr class="${c.deleted ? 'case-deleted-row' : ''}" style="cursor:${c.deleted?'default':'pointer'};" ${c.deleted?'':` onclick="showCaseDetail('${escHtml(c.id)}')"`}>
+    <tr class="${_cnRowClass}" style="cursor:${c.deleted?'default':'pointer'};" ${c.deleted?'':` onclick="showCaseDetail('${escHtml(c.id)}')"`}>
       <td style="width:36px;text-align:center;" onclick="event.stopPropagation()">${chk}</td>
       <td><strong style="color:#1a5276;">${escHtml(c.id || '—')}</strong></td>
       <td>${escHtml(c.name || '—')}</td>
@@ -17964,15 +18047,19 @@ function renderTodosPage() {
           });
         });
         caseRows.sort((a, b) => a.sem.localeCompare(b.sem) || a.c.name.localeCompare(b.c.name, 'zh'));
+        const collapsed = _userPref_('todosUnclosedCollapsed', false);
         summaryHtml = `<div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-            <span style="font-weight:600;font-size:.9rem;color:#9c4221;">⚠ 過去學期未結案（${caseRows.length} 筆）</span>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${collapsed?'0':'10px'};gap:8px;flex-wrap:wrap;">
+            <span onclick="_toggleUnclosedSummary()" style="font-weight:600;font-size:.9rem;color:#9c4221;cursor:pointer;user-select:none;" data-tip="點選收起/展開明細">
+              <span style="display:inline-block;width:14px;">${collapsed?'▶':'▼'}</span>
+              ⚠ 過去學期未結案（${caseRows.length} 筆）
+            </span>
             <div style="display:flex;gap:6px;">
               <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;background:#fff;border-color:#ed8936;color:#c05621;" onclick="goCasesPastUnclosed()">前往個案列表</button>
               <button class="btn btn-sm" style="font-size:.78rem;padding:2px 10px;" onclick="_dismissUnclosedReminder()">已讀，不再提醒</button>
             </div>
           </div>
-          <div style="overflow-x:auto;">
+          ${collapsed ? '' : `<div style="overflow-x:auto;">
             <table style="width:100%;border-collapse:collapse;font-size:.83rem;">
               <thead><tr style="background:#fef3c7;">
                 <th style="padding:5px 8px;text-align:left;border-bottom:1px solid #f6ad55;white-space:nowrap;">案名</th>
@@ -17989,7 +18076,7 @@ function renderTodosPage() {
                 </tr>`).join('')}
               </tbody>
             </table>
-          </div>
+          </div>`}
         </div>`;
       }
     }
@@ -26586,11 +26673,25 @@ function setBookingDateToday() {
 
 // ── 空間預約「空間」選擇器（chips）──────────────────
 let _bkSelectedRoom = '';
+let _bkRoomChipComposing = false;
 function _getBkCustomRooms()       { return [...(_userPref_('bkCustomRooms', []))]; }
 function _saveBkCustomRooms(rooms) { syncUserPref_({ bkCustomRooms: rooms }); }
 
 function _populateBookingRoomChips(restoreRoom) {
   if (restoreRoom !== undefined) _bkSelectedRoom = restoreRoom;
+  const wrap = document.getElementById('bk-room-chips-wrap');
+  if (!wrap) return;
+  // 骨架僅建立一次；重繪時只更新 chips 內層，避免打字時 input 被銷毀失焦
+  if (!document.getElementById('bk-room-chip-list')) {
+    wrap.innerHTML =
+      `<div id="bk-room-chip-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;"></div>` +
+      `<div style="display:flex;gap:6px;"><input type="text" id="bk-room-chip-inp" class="field-input" placeholder="新增自訂空間…" style="flex:1;font-size:.82rem;padding:5px 9px;" oninput="if(!_bkRoomChipComposing)_populateBookingRoomChipsList()" oncompositionstart="_bkRoomChipComposing=true" oncompositionend="_bkRoomChipComposing=false;_populateBookingRoomChipsList()" onkeydown="if(event.key==='Enter'){event.preventDefault();_bkAddCustomRoom();}"/><button type="button" onclick="_bkAddCustomRoom()" style="padding:5px 14px;background:#edf2f7;border:1px solid #cbd5e0;border-radius:6px;cursor:pointer;font-size:.82rem;white-space:nowrap;">新增</button></div>`;
+  }
+  _populateBookingRoomChipsList();
+}
+function _populateBookingRoomChipsList() {
+  const list = document.getElementById('bk-room-chip-list');
+  if (!list) return;
   const builtIn = ROOMS.filter(r => r !== '其他');
   const custom  = _getBkCustomRooms();
   const all     = [...builtIn, ...custom];
@@ -26602,11 +26703,7 @@ function _populateBookingRoomChips(restoreRoom) {
     const del = isC ? `<span class="bk-opt-chip-del" onclick="event.stopPropagation();_bkDelCustomRoom(${escHtml(JSON.stringify(r))})">✕</span>` : '';
     return `<div class="bk-opt-chip${sel?' bk-opt-chip-sel':''}${hi?' bk-room-chip-match':''}" onclick="_bkPickRoom(${escHtml(JSON.stringify(r))})">${escHtml(r)}${del}</div>`;
   }).join('');
-  const wrap = document.getElementById('bk-room-chips-wrap');
-  if (!wrap) return;
-  wrap.innerHTML =
-    `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;">${chips||'<span style="color:#a0aec0;font-size:.82rem;">（無空間）</span>'}</div>`+
-    `<div style="display:flex;gap:6px;"><input type="text" id="bk-room-chip-inp" class="field-input" placeholder="新增自訂空間…" style="flex:1;font-size:.82rem;padding:5px 9px;" oninput="_populateBookingRoomChips()" onkeydown="if(event.key==='Enter'){event.preventDefault();_bkAddCustomRoom();}"/><button type="button" onclick="_bkAddCustomRoom()" style="padding:5px 14px;background:#edf2f7;border:1px solid #cbd5e0;border-radius:6px;cursor:pointer;font-size:.82rem;white-space:nowrap;">新增</button></div>`;
+  list.innerHTML = chips || '<span style="color:#a0aec0;font-size:.82rem;">（無空間）</span>';
 }
 function _bkPickRoom(room) { _bkSelectedRoom = room; _populateBookingRoomChips(room); _checkBkConflict(); }
 function _bkAddCustomRoom() {
@@ -34511,6 +34608,25 @@ async function loadIssues() {
   }
   if (typeof renderIssuesBadge === 'function') renderIssuesBadge();
 }
+// 每 30 分鐘自動輪詢一次許願池；分頁隱藏時跳過，回到前景後立即補一次
+let _issuesPollTimer = null;
+function scheduleIssuesAutoRefresh() {
+  if (_issuesPollTimer) return;
+  const _tick = async () => {
+    if (document.visibilityState !== 'visible') return;
+    if (!currentUser?.email) return;
+    const _prevJson = JSON.stringify(issuesData);
+    await loadIssues();
+    // 若 issues 有異動且目前正在許願池頁面，重繪
+    if (_prevJson !== JSON.stringify(issuesData)
+        && document.getElementById('page-issues')?.classList.contains('active')
+        && typeof renderIssuesPage === 'function') {
+      renderIssuesPage();
+    }
+  };
+  _issuesPollTimer = setInterval(_tick, 30 * 60 * 1000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') _tick(); });
+}
 
 async function _saveIssues() {
   try {
@@ -34836,6 +34952,17 @@ async function updateIssueStatus(issueId, newStatus) {
   const jobId = bgJobAdd(`更新回報狀態（#${String(issue.serial).padStart(3,'0')}）`);
   try {
     await _saveIssues();
+    // 改到「待驗證」時通知原回報者
+    if (newStatus === 'pending_verification'
+        && issue.submittedBy
+        && issue.submittedBy !== currentUser?.email) {
+      const _serialStr = `#${String(issue.serial).padStart(3,'0')}`;
+      const notified = addNotificationToUser(
+        issue.submittedBy, 'issue_pending_verification', issue.id, _serialStr,
+        `您回報的 ${_serialStr} 已改為「待驗證」，請至錯誤回報/許願池頁面驗證`
+      );
+      if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    }
     bgJobDone(jobId);
     auditLog('更新回報狀態', null, null, `#${String(issue.serial).padStart(3,'0')}：${prev} → ${newStatus}`);
     renderIssuesPage();
@@ -34980,12 +35107,13 @@ function renderIssuesPage() {
   const F = window._issueFilters;
 
   const statusBadge = s => {
-    if (s === 'resolved')    return '<span class="badge" style="background:#c6f6d5;color:#276749;border:1px solid #9ae6b4;">已解決</span>';
-    if (s === 'in_progress') return '<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;">處理中</span>';
+    if (s === 'resolved')             return '<span class="badge" style="background:#c6f6d5;color:#276749;border:1px solid #9ae6b4;">已解決</span>';
+    if (s === 'pending_verification') return '<span class="badge" style="background:#e9d8fd;color:#553c9a;border:1px solid #d6bcfa;">待驗證</span>';
+    if (s === 'in_progress')          return '<span class="badge" style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;">處理中</span>';
     return '<span class="badge" style="background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;">待處理</span>';
   };
-  const statusOrder = { open: 0, in_progress: 1, resolved: 2 };
-  const statusLabel = { open: '待處理', in_progress: '處理中', resolved: '已解決' };
+  const statusOrder = { open: 0, in_progress: 1, pending_verification: 2, resolved: 3 };
+  const statusLabel = { open: '待處理', in_progress: '處理中', pending_verification: '待驗證', resolved: '已解決' };
 
   // 篩選
   let filtered = [...issuesData];
@@ -35002,10 +35130,11 @@ function renderIssuesPage() {
   const filterBar = `
     <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <select style="padding:4px 8px;border:1px solid #e2e8f0;border-radius:5px;font-size:.83rem;" onchange="window._issueFilters.status=this.value;renderIssuesPage()">
-        <option value="all"        ${F.status==='all'?'selected':''}>全部狀態</option>
-        <option value="open"       ${F.status==='open'?'selected':''}>待處理</option>
-        <option value="in_progress"${F.status==='in_progress'?'selected':''}>處理中</option>
-        <option value="resolved"   ${F.status==='resolved'?'selected':''}>已解決</option>
+        <option value="all"                  ${F.status==='all'?'selected':''}>全部狀態</option>
+        <option value="open"                 ${F.status==='open'?'selected':''}>待處理</option>
+        <option value="in_progress"          ${F.status==='in_progress'?'selected':''}>處理中</option>
+        <option value="pending_verification" ${F.status==='pending_verification'?'selected':''}>待驗證</option>
+        <option value="resolved"             ${F.status==='resolved'?'selected':''}>已解決</option>
       </select>
       <label style="font-size:.82rem;color:#718096;display:flex;gap:4px;align-items:center;">
         日期
@@ -35070,12 +35199,14 @@ function renderIssuesPage() {
         }).join('<br>')}
       </div>` : '';
 
-    const adminStatusControl = isAdmin ? `
+    const canChangeStatus = isAdmin || issue.submittedBy === currentUser?.email;
+    const statusControl = canChangeStatus ? `
       <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-top:8px;border-top:1px solid #e2e8f0;">
         <select id="issue-status-${sid}" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;background:#fff;">
-          <option value="open"        ${issue.status==='open'?'selected':''}>待處理</option>
-          <option value="in_progress" ${issue.status==='in_progress'?'selected':''}>處理中</option>
-          <option value="resolved"    ${issue.status==='resolved'?'selected':''}>已解決</option>
+          <option value="open"                  ${issue.status==='open'?'selected':''}>待處理</option>
+          <option value="in_progress"           ${issue.status==='in_progress'?'selected':''}>處理中</option>
+          <option value="pending_verification"  ${issue.status==='pending_verification'?'selected':''}>待驗證</option>
+          <option value="resolved"              ${issue.status==='resolved'?'selected':''}>已解決</option>
         </select>
         <button class="btn btn-secondary btn-sm"
           onclick="updateIssueStatus('${sid}',document.getElementById('issue-status-${sid}').value)">更新狀態</button>
@@ -35110,7 +35241,7 @@ function renderIssuesPage() {
         ${renderAttachChips(issue.attachments)}
         ${commentsHtml}
         ${statusHistoryHtml}
-        ${adminStatusControl}
+        ${statusControl}
         ${commentInput}
       </div>`;
   }).join('');
@@ -35160,6 +35291,7 @@ function renderIssuesBadge() {
 
   const redCount    = relevant.filter(x => x.status === 'open').length;
   const orangeCount = relevant.filter(x => x.status === 'in_progress').length;
+  const purpleCount = relevant.filter(x => x.status === 'pending_verification').length;
   const onIssuesPage = !!document.getElementById('page-issues')?.classList.contains('active');
   const greenCount  = onIssuesPage ? 0 : relevant.filter(x => x.status === 'resolved' && !seen.has(x.id)).length;
 
@@ -35167,7 +35299,7 @@ function renderIssuesBadge() {
     ? `<span style="display:inline-block;background:${bg};color:#fff;border-radius:10px;font-size:.68rem;font-weight:700;padding:1px 6px;min-width:18px;text-align:center;line-height:1.5;">${count}</span>`
     : '';
 
-  const content = badge(redCount,'#e53e3e') + badge(orangeCount,'#dd6b20') + badge(greenCount,'#38a169');
+  const content = badge(redCount,'#e53e3e') + badge(orangeCount,'#dd6b20') + badge(purpleCount,'#805ad5') + badge(greenCount,'#38a169');
   wrap.innerHTML  = content;
   wrap.style.display = content ? 'flex' : 'none';
 }
