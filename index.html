@@ -5414,6 +5414,8 @@ async function afterLogin() {
     if (typeof renderIssuesBadge === 'function') renderIssuesBadge();
     // 許願池 30 分鐘自動輪詢（避免只有 F5 才看到新意見）
     if (typeof scheduleIssuesAutoRefresh === 'function') scheduleIssuesAutoRefresh();
+    // 系統管理者登入時檢查是否有待發布的自動回覆（Claude Code 開發流程用）
+    if (typeof _checkAutoIssueReplies === 'function') _checkAutoIssueReplies().catch(() => {});
     // 檢查帳號是否停用（bootstrap admin 不受限制）
     if (configData?.users?.[currentUser.email]?.disabled && currentUser.email !== BOOTSTRAP_ADMIN_EMAIL) {
       hideLoading();
@@ -9617,6 +9619,8 @@ function _detailChangeCounselor(caseId) {
 function _showCounselorChangeConfirm(caseId, newEmail, c) {
   const newName = configData?.users?.[newEmail]?.name || newEmail;
   const caseName = c.name || caseId;
+  const sem = _caseDetailActiveSem;
+  const semLine = sem ? `<p style="font-size:.88rem;color:#4a5568;margin-bottom:6px;">學期：<strong>${escHtml(semesterLabel(sem))}</strong></p>` : '';
   const canDirect = currentRole === '主任' || extraRole === '管理者' || extraRole === '個案管理員';
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
@@ -9626,6 +9630,7 @@ function _showCounselorChangeConfirm(caseId, newEmail, c) {
       <div class="modal-header"><h3>確認變更主責輔導人員</h3></div>
       <div class="modal-body" style="padding:12px 0 16px;">
         <p style="font-size:.88rem;color:#4a5568;margin-bottom:6px;">個案：<strong>${escHtml(caseName)}（${escHtml(caseId)}）</strong></p>
+        ${semLine}
         <p style="font-size:.88rem;color:#4a5568;margin-bottom:14px;">將主責改為：<strong style="color:#3182ce;">${escHtml(newName)}</strong></p>
         <div style="background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;padding:10px 12px;font-size:.82rem;color:#2b6cb0;">
           確定後，系統將在您的待辦事項建立「內部轉案」任務。<br>
@@ -9634,14 +9639,14 @@ function _showCounselorChangeConfirm(caseId, newEmail, c) {
       </div>
       <div class="modal-footer">
         <button class="btn btn-secondary" onclick="document.getElementById('counselor-change-confirm-modal').remove()">取消</button>
-        ${canDirect ? `<button class="btn btn-warning" onclick="document.getElementById('counselor-change-confirm-modal').remove();_directChangeCounselor('${escHtml(caseId)}','${escHtml(newEmail)}')">直接轉派</button>` : ''}
-        <button class="btn btn-primary" onclick="document.getElementById('counselor-change-confirm-modal').remove();_doDetailChangeCounselor('${escHtml(caseId)}','${escHtml(newEmail)}')">確定，建立待辦</button>
+        ${canDirect ? `<button class="btn btn-warning" onclick="document.getElementById('counselor-change-confirm-modal').remove();_directChangeCounselor('${escHtml(caseId)}','${escHtml(newEmail)}','${escHtml(sem||'')}')">直接轉派</button>` : ''}
+        <button class="btn btn-primary" onclick="document.getElementById('counselor-change-confirm-modal').remove();_doDetailChangeCounselor('${escHtml(caseId)}','${escHtml(newEmail)}','${escHtml(sem||'')}')">確定，建立待辦</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
 }
 
-function _doDetailChangeCounselor(caseId, newEmail) {
+function _doDetailChangeCounselor(caseId, newEmail, semester) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
   const newName = configData?.users?.[newEmail]?.name || newEmail;
@@ -9653,6 +9658,7 @@ function _doDetailChangeCounselor(caseId, newEmail) {
     assignedCounselorName: newName,
     fromCounselor: currentUser.email,
     fromCounselorName: configData?.users?.[currentUser.email]?.name || currentUser.name,
+    semester: semester || undefined,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     done: false, notifRead: false,
   });
@@ -9660,19 +9666,24 @@ function _doDetailChangeCounselor(caseId, newEmail) {
   showToast('已建立轉案待辦，請至待辦頁確認後執行。', 'success');
 }
 
-async function _directChangeCounselor(caseId, newEmail) {
+async function _directChangeCounselor(caseId, newEmail, semester) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
   const newName = configData?.users?.[newEmail]?.name || newEmail;
   const oldName = configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '';
   c.counselorEmail = newEmail;
   c.counselorName = newName;
+  if (semester && c.basicInfoSnapshots?.[semester]) {
+    c.basicInfoSnapshots[semester].counselorEmail = newEmail;
+    c.basicInfoSnapshots[semester].counselorName  = newName;
+  }
+  const semLabel = semester ? `（${semesterLabel(semester)}）` : '';
   const jobId = bgJobAdd(`直接轉派主責 → ${newName}`);
   try {
     await saveCasesChunks(caseId);
-    auditLog('變更主責輔導人員（直接轉派）', caseId, null, `${oldName} → ${newName}（${newEmail}）`);
+    auditLog('變更主責輔導人員（直接轉派）', caseId, null, `${oldName} → ${newName}（${newEmail}）${semLabel}`);
     bgJobDone(jobId);
-    showToast(`已直接變更主責為 ${newName}`, 'success', 3000);
+    showToast(`已直接變更主責為 ${newName}${semLabel}`, 'success', 3000);
     showCaseDetail(caseId);
   } catch(e) {
     bgJobFail(jobId, e.message);
@@ -16069,6 +16080,7 @@ async function saveInitialInterview() {
       assignedCounselor: snap.resultCounselor || '',
       filledBy: snap.filledBy,
       filledByName: snap.filledByName,
+      semester: _initialInterviewSem,
       createdAt: _existAssign?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       done: false, notifRead: false,
@@ -18340,7 +18352,7 @@ function _renderAssignmentTodos() {
       : `<span class="badge" style="background:#e9d8fd;color:#553c9a;font-size:.72rem;">初談派案</span>`;
     const subInfo = isTransfer
       ? `${t.semester ? `<div style="font-size:.82rem;color:#718096;margin-bottom:4px;">學期：${escHtml(semesterLabel(t.semester))}</div>` : ''}${t.fromCounselorName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">原主責：${escHtml(t.fromCounselorName)}</div>` : ''}`
-      : (t.filledByName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">初談者：${escHtml(t.filledByName)}</div>` : '');
+      : `${t.semester ? `<div style="font-size:.82rem;color:#718096;margin-bottom:4px;">學期：${escHtml(semesterLabel(t.semester))}</div>` : ''}${t.filledByName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">初談者：${escHtml(t.filledByName)}</div>` : ''}`;
     const confirmFn = isTransfer ? '_confirmInternalTransfer' : '_confirmCaseAssignment';
     return `<div id="todo-card-${escHtml(t.id)}" style="background:${bgCol};border:1px solid ${borderCol};border-radius:8px;padding:12px 14px;margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
@@ -18394,10 +18406,11 @@ async function _confirmInternalTransfer(todoId) {
   casesData[cidx].counselorName  = counselorName;
   const sems = (Array.isArray(casesData[cidx].semesters) && casesData[cidx].semesters.length
     ? [...casesData[cidx].semesters] : [openDateToSemPrefix(casesData[cidx].openDate)].filter(Boolean)).sort();
-  const latestSem = sems[sems.length - 1];
-  if (latestSem && casesData[cidx].basicInfoSnapshots?.[latestSem]) {
-    casesData[cidx].basicInfoSnapshots[latestSem].counselorEmail = counselorEmail;
-    casesData[cidx].basicInfoSnapshots[latestSem].counselorName  = counselorName;
+  // 優先用建立 todo 當下記錄的目標學期（t.semester）；舊格式沒有此欄位才退回「最新學期」猜測
+  const targetSem = t.semester || sems[sems.length - 1];
+  if (targetSem && casesData[cidx].basicInfoSnapshots?.[targetSem]) {
+    casesData[cidx].basicInfoSnapshots[targetSem].counselorEmail = counselorEmail;
+    casesData[cidx].basicInfoSnapshots[targetSem].counselorName  = counselorName;
   }
   t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
   _syncTodoBadge();
@@ -18422,15 +18435,16 @@ async function _confirmCaseAssignment(todoId) {
   const counselorName = configData?.users?.[counselorEmail]?.name || counselorEmail;
   const _cardEl2 = document.getElementById('todo-card-' + todoId);
   if (_cardEl2) { _cardEl2.style.background='#c6f6d5'; _cardEl2.style.borderColor='#68d391'; _cardEl2.style.opacity='.7'; const _b=_cardEl2.querySelector('.btn-primary'); if(_b){_b.disabled=true;_b.textContent='確認中…';} }
-  // 更新個案主責（全案層級 + 最新學期快照）
+  // 更新個案主責（全案層級 + 目標學期快照）
   casesData[cidx].counselorEmail = counselorEmail;
   casesData[cidx].counselorName  = counselorName;
   const sems = (Array.isArray(casesData[cidx].semesters) && casesData[cidx].semesters.length
     ? [...casesData[cidx].semesters] : [openDateToSemPrefix(casesData[cidx].openDate)].filter(Boolean)).sort();
-  const latestSem = sems[sems.length - 1];
-  if (latestSem && casesData[cidx].basicInfoSnapshots?.[latestSem]) {
-    casesData[cidx].basicInfoSnapshots[latestSem].counselorEmail = counselorEmail;
-    casesData[cidx].basicInfoSnapshots[latestSem].counselorName  = counselorName;
+  // 優先用建立 todo 當下記錄的目標學期（t.semester，來自初次晤談表當時的學期）；舊格式沒有此欄位才退回「最新學期」猜測
+  const targetSem = t.semester || sems[sems.length - 1];
+  if (targetSem && casesData[cidx].basicInfoSnapshots?.[targetSem]) {
+    casesData[cidx].basicInfoSnapshots[targetSem].counselorEmail = counselorEmail;
+    casesData[cidx].basicInfoSnapshots[targetSem].counselorName  = counselorName;
   }
   // 標記 todo 完成
   t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
@@ -23372,15 +23386,17 @@ function renderChangelogPage() {
   const item = (type, text) => `<li style="margin:5px 0;line-height:1.6;">${tag(type, type)}${escHtml(text)}</li>`;
   const mkSection = (prefix) => {
     let idx = 0;
-    return (date, title, isProd, items) => {
+    return (date, v, title, isProd, items) => {
       const id = `cl-${prefix}-${++idx}`;
       const borderColor = isProd ? '#276749' : '#3182ce';
       const prodBadge = isProd
         ? '<span style="font-size:.72rem;font-weight:700;color:#276749;background:#f0fff4;border:1px solid #9ae6b4;border-radius:4px;padding:1px 7px;flex-shrink:0;">✓ 正式版</span>'
         : '<span style="font-size:.72rem;font-weight:700;color:#3182ce;background:#ebf8ff;border:1px solid #bee3f8;border-radius:4px;padding:1px 7px;flex-shrink:0;">dev</span>';
+      const vBadge = v ? `<span style="font-size:.72rem;font-weight:700;color:#805ad5;background:#faf5ff;border:1px solid #d6bcfa;border-radius:4px;padding:1px 7px;flex-shrink:0;">v${v}</span>` : '';
       return `<div style="margin-bottom:10px;border-left:3px solid ${borderColor};padding-left:16px;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;cursor:pointer;user-select:none;padding:5px 0;" onclick="_clToggle('${id}')">
           <span style="font-size:.78rem;font-weight:700;color:#718096;flex-shrink:0;">${escHtml(date)}</span>
+          ${vBadge}
           ${prodBadge}
           <strong style="font-size:.93rem;flex:1;">${escHtml(title)}</strong>
           <span id="${id}-chev" style="font-size:.78rem;color:#a0aec0;flex-shrink:0;">▶</span>
@@ -23392,20 +23408,35 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
-    { date: '2026-07-03', title: '當然個管驗證修正：僅主責/個管篩選補上督導/窗口案 + badge 細分 + 空間預約週切換整合', isProd: true, items: [
+    { date: '2026-07-03', v: 72, title: '個案詳情頁「變更主責」也補上學期說明與正確寫入（回應問題回報 #026 追加）', isProd: true, items: [
+      item('改善', '個案詳情頁點「儲存變更」/「直接轉派」變更主責時，確認視窗新增顯示目前所在學期'),
+      item('修復', '「直接轉派」（跳過待辦、立即生效）先前只更新全案層級主責，未同步更新該學期的 basicInfoSnapshots，若該學期已有快照會導致畫面仍顯示舊主責；改為連同目前所在學期的快照一併更新'),
+      item('修復', '個案詳情頁建立的「內部轉案」待辦、初次晤談派案待辦，先前未記錄目標學期，確認時一律以「最新學期」猜測寫入快照；改為記錄建立當下的實際學期，確認時優先採用'),
+    ]},
+    { date: '2026-07-03', v: 71, title: '待辦事項「確認派案」補上學期說明（回應問題回報 #026）', isProd: true, items: [
+      item('改善', '待辦事項「待派案」卡片（初談派案）新增顯示該案是哪個學期，與既有「內部轉案」卡片一致；避免點選「確認派案」時不清楚是替哪個學期指派主責'),
+    ]},
+    { date: '2026-07-03', v: 70, title: '問題回報：Claude Code 自動回覆佇列機制', isProd: true, items: [
+      item('新功能', '新增 `pending-issue-replies.json`（隨 repo 部署，公開讀取）作為待發布回覆佇列；系統管理者登入時自動檢查並以 npust.scc 身份寫入對應 issue 的留言，留言區以紫色「系統自動回覆」標記區隔真人留言'),
+      item('技術', '走既有已驗證的 issues.json 儲存路徑（`_saveIssues`），不新增任何 Code.gs 後端權限；以 `autoReplyId` 比對避免重複回覆'),
+    ]},
+    { date: '2026-07-03', v: 69, title: '版本更新紀錄加上版本編號', isProd: true, items: [
+      item('新功能', '每筆更新紀錄新增全域遞增的版本編號（v1 起，最舊為 v1），日期旁以紫色 badge 顯示；方便日後用「日期＋版本代號」快速對應到特定更新'),
+    ]},
+    { date: '2026-07-03', v: 68, title: '當然個管驗證修正：僅主責/個管篩選補上督導/窗口案 + badge 細分 + 空間預約週切換整合', isProd: true, items: [
       item('修復', '個案列表「僅主責/個管」篩選 checkbox 未納入督導/窗口派生的當然個管案，導致督導登入後看不到 supervisee 的案；改用 `_getAutoManagedCaseIds` 一併納入'),
       item('改善', '案列表當然個管 badge 由單一「督」再細分為「專督」（實習生專業督導）/「行督」（實習生行政督導），窗口身份維持「窗」'),
       item('改善', '空間預約：篩選為「週」檢視時，移除獨立的「上週」/「下週」按鈕，改由原本的「‹」/「›」按鈕直接切換整週（維持對齊週一）'),
       item('修復', '登入時若瀏覽器 localStorage 已滿導致寫入配額超出（QuotaExceededError），先前會被當成未知錯誤整個登入失敗（signOut）；改為該處寫入失敗僅略過，不影響登入'),
     ]},
-    { date: '2026-07-03', title: '個案列表個管徽章統一改版 + 空間預約顏色補強 + 編輯使用者視窗排版修正', isProd: true, items: [
+    { date: '2026-07-03', v: 67, title: '個案列表個管徽章統一改版 + 空間預約顏色補強 + 編輯使用者視窗排版修正', isProd: true, items: [
       item('改善', '個案列表「個管/初談」徽章統一改為「每人各自的色塊徽章＋姓名職稱」格式：手動個管＝「管」（藍）、督導身份＝「專督」（紫）/「行督」（粉）、窗口身份＝「窗」（青）、初次晤談者＝「初」（綠）；同一人身兼多重身分時會並列顯示多個徽章'),
       item('新功能', '空間預約頁新增「🎨 我的顏色」按鈕，點開彈窗即可直接設定自己的預約顯示顏色，不必再繞去偏好設定頁'),
       item('新功能', '偏好設定「空間預約顯示顏色」色盤：已被其他使用者選用的顏色會加粗框標示，滑鼠移過去顯示「由 OOO 使用」（僅姓名）'),
       item('改善', '編輯使用者視窗加寬（480px→640px），並修正「負責的實習生/兼任心理師」清單排版：姓名/角色改為不換行、已停用標籤靠右對齊、清單可捲動高度加大'),
       item('改善', '待辦頁「非上班時間監督」的特權 badge 由籠統的「主任／管理者」拆分為精確的「主任」／「系統管理者」（可同時顯示兩者）；使用者管理頁、Sidebar、編輯使用者勾選框的「管理者」附加身分字樣統一改稱「系統管理者」'),
     ]},
-    { date: '2026-07-02', title: '空間預約 / GC 強化：使用者顏色 + GC 編輯權限 + 事件驗證 + 自動補註', isProd: true, items: [
+    { date: '2026-07-02', v: 66, title: '空間預約 / GC 強化：使用者顏色 + GC 編輯權限 + 事件驗證 + 自動補註', isProd: true, items: [
       item('新功能', '偏好設定新增「空間預約顯示顏色」卡片：32 色可選，選定後空間預約列表中自己的預約 cell 底色淡（12% 透明）+ 左邊 4px 條紋標示；不設沿用預設灰底'),
       item('新功能', 'GC 事件推送時附帶 colorId（自 32 色映射至最接近的 GC 11 色），GC 端也顯示對應色'),
       item('新功能', '系統管理新 tab「GC 同步」：一鍵授與專任/主任/管理者對系統行事曆的 writer 權限；saveUser 增量 hook 對新符合資格者自動追加；gcAclSynced flag 避免重複授權'),
@@ -23416,7 +23447,7 @@ function renderChangelogPage() {
       item('技術', 'Code.gs 擴充：createCalendarEvent_/updateCalendarEvent_ 加 colorId 參數；listCalendarEvents_ 回傳 creators + colorId；新 shareCalendarWriters_ action 走 CalendarApp.addEditor'),
       item('稽核', '一鍵 ACL 同步 + 增量授權皆記入稽核日誌（重大事件 major）'),
     ]},
-    { date: '2026-07-02', title: '當然個管：實習生督導 + 兼任心理師窗口自動成為個管', isProd: true, items: [
+    { date: '2026-07-02', v: 65, title: '當然個管：實習生督導 + 兼任心理師窗口自動成為個管', isProd: true, items: [
       item('新功能', '實習生行政/專業督導、兼任心理師窗口（新增身分）自動成為其負責人員手上所有案的當然個管（可讀），無需管理員逐案指派'),
       item('新功能', '編輯使用者 modal：勾選督導/窗口身分後自動出現「負責的實習生/兼任心理師」複選 picker；啟用者於前、停用者以灰字放於下方分組'),
       item('新功能', '兼任心理師窗口為新 flag（isPartTimeContact），與轉銜窗口/身心調適假窗口同層，可與其他附加身分並存'),
@@ -23425,19 +23456,19 @@ function renderChangelogPage() {
       item('技術', '派生式實作：僅存 superviseeEmails 名單；每次渲染依名單從 casesData 動態推導 auto-managed 案號集合；實習生新開案自動生效、督導關係解除自動失效、無需批次寫 allowedCases'),
       item('技術', '_caseVisibleToUser 加派生路徑（chunk 分層載入時亦生效，督導首次登入即載入 supervisee 的案 chunks）；_hasManagerAccess/_getManagersForCase 合併手動+自動去重'),
     ]},
-    { date: '2026-07-02', title: '拖曳 chips 調整系所學院/學制歸屬 + 過去學期未結案 bug 修（積極版）', isProd: true, items: [
+    { date: '2026-07-02', v: 64, title: '拖曳 chips 調整系所學院/學制歸屬 + 過去學期未結案 bug 修（積極版）', isProd: true, items: [
       item('修復', '待辦頁「過去學期未結案」對舊資料誤判：`_isSemesterUnclosed` 新增多重證據判斷（semesterEvaluations 有 closure 條目、舊格式 closureEvaluation、最新學期 c.status===closed）。再加積極規則：整案 c.status===closed 且該學期無 semesterStatus 記錄 → 視為結案（舊資料補救）；已封存（archived）個案亦不再提醒'),
       item('新功能', '系統管理→系所與學院對照：系所 chip 可拖曳到其他學院區塊，drop 時更新 configData.deptToCollege 並存；即時反映到統計、新開案顯示；歷史個案的 c.college 是死欄位（未被讀取），實際顯示走 live lookup，不受影響'),
       item('新功能', '系統管理→學制學號前綴：字母 chip 可跨學制拖曳（學士/碩士/博士），drop 時更新 configData.degreeMapping 並存；由於 `_buildDegreeMaps` 是 live 從 studentId 前綴推導，無需批次更新個案'),
       item('稽核', '拖曳成功時記入稽核日誌（「調整系所學院歸屬」/「調整學制前綴對應」），詳情含來源→目標'),
     ]},
-    { date: '2026-07-02', title: '上班時間設定支援每日不同時段（滿足晚班需求）', isProd: true, items: [
+    { date: '2026-07-02', v: 63, title: '上班時間設定支援每日不同時段（滿足晚班需求）', isProd: true, items: [
       item('改善', '設定 UI 改為「每個星期一列」：週一~週日各自可 checkbox 上班/不上班、獨立設定開始/結束時數（如週一週四 8-21 晚班、週二三五 8-18）'),
       item('相容', '舊格式（startHour/endHour/workDays）自動 migrate 為 weeklyHours；saveHandler 儲存後清除舊欄位避免混淆'),
       item('相容', '補班日的時段沿用該日對應星期的 weeklyHours；若該星期未設，則沿用其他星期的第一組時段'),
       item('稽核', '「更新上班時間設定」detail 改為可讀格式：「週一 08:00–21:00、週二 08:00–18:00…」；仍記為 major 事件'),
     ]},
-    { date: '2026-07-02', title: '非上班時間個案存取監督（feed + 通知）', isProd: true, items: [
+    { date: '2026-07-02', v: 62, title: '非上班時間個案存取監督（feed + 通知）', isProd: true, items: [
       item('新功能', '待辦頁新增紫色「🌙 非上班時間監督」區塊，顯示所有同仁在非上班時間登入或看/改個案的完整 feed（依人員×日期分組，含登入時間+每項動作+對應案號）'),
       item('新功能', '首次觸發時透過鈴鐺+待辦頁重大事件卡通知所有主任/管理者/專任（同一 session 只推一次通知，避免刷屏）'),
       item('新功能', '主任/管理者本身活動仍入 feed（供同儕互相監督，含灰橘 badge 標記），但不對他人發送鈴鐺通知（避免正當夜間工作的雜訊）'),
@@ -23445,23 +23476,23 @@ function renderChangelogPage() {
       item('技術', '新增 off_hours_log.json 共享 feed 檔（結構同 case_access_log），走現有 proxyCall；MAJOR_EVENT_NOTIF_TYPES 擴增 off_hours_activity 使自動出現於重大事件卡'),
       item('技術', '_isOffHours 支援 holidays (覆蓋 workDays) 與 extraWorkDays (補班日視為上班)；_isCaseRelatedAction 白名單涵蓋查閱/編輯/晤談/結案/精神科/事件/轉銜/身心調適假/心測/危機閱讀/列印'),
     ]},
-    { date: '2026-07-02', title: '重大事件通知也在待辦事項顯示（Gmail 變更）', isProd: true, items: [
+    { date: '2026-07-02', v: 61, title: '重大事件通知也在待辦事項顯示（Gmail 變更）', isProd: true, items: [
       item('新功能', '待辦頁新增「重大事件通知」區塊（紫色卡片），從 configData notifications 拉出 gmail_changed 類型顯示'),
       item('新功能', '每筆顯示訊息、時間、操作者姓名、已讀狀態；含「標記已讀」與「全部標為已讀」按鈕'),
       item('新功能', '整個標題列可點擊收合，未讀數量以「N 筆未讀 / 共 M」呈現'),
       item('相容', '資料來源與右上鈴鐺相同（無額外 Drive 寫入），已讀 7 天後自動移除的機制不受影響'),
     ]},
-    { date: '2026-07-02', title: 'Gmail 通知含操作者身分 + 操作者本人也收到留痕', isProd: true, items: [
+    { date: '2026-07-02', v: 60, title: 'Gmail 通知含操作者身分 + 操作者本人也收到留痕', isProd: true, items: [
       item('改善', '通知訊息尾端補「（由 XX 姓名／email 執行）」，明確露出誰做的變更'),
       item('改善', '通知不再跳過操作者本人：執行者也會在自己鈴鐺看到留痕記錄，避免以為「沒有通知」'),
       item('改善', 'notification 條目加 actorEmail / actorName 欄位，便於後續稽核統計'),
       item('改善', 'setAlert 成功訊息說明「已通知全體 N 位使用者，含您本人；由 XX 執行」，資訊更完整'),
     ]},
-    { date: '2026-07-02', title: 'Gmail 清空亦走遷移路徑；過去學期未結案卡片整列可點擊收合', isProd: true, items: [
+    { date: '2026-07-02', v: 59, title: 'Gmail 清空亦走遷移路徑；過去學期未結案卡片整列可點擊收合', isProd: true, items: [
       item('改善', '使用者管理頁：清空 Gmail 欄位 → 遷移至新 nomail_ key，走與 Gmail 更改相同的全員通知/稽核重大事件路徑；如清空自己的 Gmail 會強制登出並提醒需管理者補填才能再次使用'),
       item('改善', '待辦頁「過去學期未結案」摘要卡片：整個標題列（含空白區）皆可點擊收合，不再限於文字；兩個按鈕加 event.stopPropagation() 避免誤觸'),
     ]},
-    { date: '2026-07-02', title: 'Gmail 更改 + 通知 7 天自動清理 + auditLog 重大事件旗標', isProd: true, items: [
+    { date: '2026-07-02', v: 58, title: 'Gmail 更改 + 通知 7 天自動清理 + auditLog 重大事件旗標', isProd: true, items: [
       item('新功能', '使用者管理頁：主任/管理者可於編輯 modal 更改任一使用者的 Gmail 帳號（B 級遷移）'),
       item('新功能', '偏好設定頁新增「更改我的 Gmail」卡片，使用者本人可自助更改（完成後強制登出，以新帳號重新登入）'),
       item('新功能', 'Gmail 更改會同步重寫：casesData 主責 / 初談者 / interviewerEmails / basicInfoSnapshots；歷史稽核日誌保留舊 email'),
@@ -23469,124 +23500,124 @@ function renderChangelogPage() {
       item('稽核', 'auditLog 新增 major 旗標；危機案件閱讀、閱讀申請、Gmail 更改皆記錄為重大事件'),
       item('相容', '被更改的 users entry 保留 previousEmails 陣列（含 changedAt、by），供日後查詢'),
     ]},
-    { date: '2026-07-02', title: '許願池：新增「待驗證」狀態、回報者可改狀態、30 分鐘自動更新', isProd: true, items: [
+    { date: '2026-07-02', v: 57, title: '許願池：新增「待驗證」狀態、回報者可改狀態、30 分鐘自動更新', isProd: true, items: [
       item('新功能', '狀態選單新增「待驗證」（紫色 badge）：改到此狀態時，若操作者非回報者，會通知原回報者驗證'),
       item('新功能', '回報者本人也能更新自己回報的狀態（原本僅管理員可改）'),
       item('新功能', '許願池每 30 分鐘自動輪詢後端；分頁隱藏時暫停、切回前景立即補一次；如已開啟許願池頁面，資料異動時自動重繪'),
       item('改善', '側邊燈號新增紫色「待驗證」計數（管理者看全部、使用者看自己的）'),
     ]},
-    { date: '2026-07-02', title: '個案列表 UX：初談者 badge、封存/結案 row 底色、初談者權限同個管', isProd: true, items: [
+    { date: '2026-07-02', v: 56, title: '個案列表 UX：初談者 badge、封存/結案 row 底色、初談者權限同個管', isProd: true, items: [
       item('新功能', '個案列表主責下方新增綠色「初」badge，列出該案的所有初談者（權限已等同個管員）'),
       item('新功能', '個案詳情頂部及「個案管理員」區塊顯示綠色「初談者」chips，主責者不重複顯示；chips 不可移除（依初次晤談紀錄自動判定）'),
       item('新功能', '個案列表與案號查詢：已封存 row → 灰底、已結案 row → 淡藍底、進行中 → 白底；優先權：deleted > archived > closed > active'),
       item('改善', '過去學期未結案的暖底色僅套用於進行中、未封存個案，避免遮蓋結案/封存底色'),
     ]},
-    { date: '2026-07-02', title: '危機閱讀：主任/管理者/系統管理者也可申請（供正式留痕）', isProd: true, items: [
+    { date: '2026-07-02', v: 55, title: '危機閱讀：主任/管理者/系統管理者也可申請（供正式留痕）', isProd: true, items: [
       item('新功能', '_canApplyCrisisAccess 擴增：主任、系統管理者、管理者亦可申請危機個案閱讀（不強制，但可留下正式紀錄）'),
       item('改善', '這些身分本就可全案可見；申請流程供合理狀況下正式登記閱讀目的，於監督區可見'),
     ]},
-    { date: '2026-07-02', title: 'Sidebar 附加身分 badges + 待辦頁「過去學期未結案」可收合', isProd: true, items: [
+    { date: '2026-07-02', v: 54, title: 'Sidebar 附加身分 badges + 待辦頁「過去學期未結案」可收合', isProd: true, items: [
       item('改善', 'Sidebar 職稱下方顯示所有附加身分 badges（管理者橘、督導灰、轉銜窗口綠、身心調適假窗口藍），與使用者管理頁一致'),
       item('新功能', '待辦頁「⚠ 過去學期未結案」摘要卡片可點擊標題收合明細；收合狀態存 todosUnclosedCollapsed 跨裝置記憶'),
     ]},
-    { date: '2026-07-02', title: '修復：空間預約自訂空間 chips 輸入欄無法輸入', isProd: true, items: [
+    { date: '2026-07-02', v: 53, title: '修復：空間預約自訂空間 chips 輸入欄無法輸入', isProd: true, items: [
       item('修復', '原本 oninput 觸發 wrap 整段 innerHTML 重繪，導致輸入欄被銷毀失焦、每次打字即中斷；改為骨架（含穩定 input）+ 內層 chip list 拆分'),
       item('修復', '新增 IME composition 保護（compositionstart/end），中文輸入法組字期間不再誤觸重繪'),
     ]},
-    { date: '2026-07-02', title: '危機案件個案閱讀（申請即通過 + 全員監督）', isProd: true, items: [
+    { date: '2026-07-02', v: 52, title: '危機案件個案閱讀（申請即通過 + 全員監督）', isProd: true, items: [
       item('新功能', '專任/實習人員可於「危機個案閱讀」頁搜尋（姓名/學號/案號）並申請閱讀他人個案，填寫申請目的後立即取得該案「當日唯讀」權限（隔日失效需重新申請）'),
       item('新功能', '危機途徑開啟他人個案為唯讀：隱藏所有編輯/新增/刪除/結案按鈕，頂部顯示唯讀警示'),
       item('稽核', '待辦頁新增「同仁個案閱讀監督」區塊（主任/管理者/專任可見，可收合）：公開每筆申請的目的與該人閱讀了哪些資料區塊（晤談×N、精神科×N…），形成彼此監督'),
       item('安全', '監督記錄採單一共享 feed（case_access_log.json），非管理者不因此取得他人常態存取權；主任/管理者不受影響'),
     ]},
-    { date: '2026-07-02', title: '差勤：暑休額度年度自動化（每年 7/1 自動回滿 40hr）', isProd: true, items: [
+    { date: '2026-07-02', v: 51, title: '差勤：暑休額度年度自動化（每年 7/1 自動回滿 40hr）', isProd: true, items: [
       item('新功能', '有申請期間的假別（如暑休）額度改為年度制：「已用時數」只計本次期間內的申請，每年自動回滿，無需管理者手動重配、無重複配風險'),
       item('新功能', '支援跨年期間（如寒休 12/1–1/31）正確歸屬同一年度視窗'),
       item('改善', '申請頁顯示「（2026 年暑休期間，每年自動回滿）」；差勤管理額度表註明年度制'),
     ]},
-    { date: '2026-07-02', title: '個案載入：非管理者只下載自己有權檢視的個案（資料最小化）', isProd: true, items: [
+    { date: '2026-07-02', v: 50, title: '個案載入：非管理者只下載自己有權檢視的個案（資料最小化）', isProd: true, items: [
       item('安全', '非管理者（主責/心理師/實習生）啟動時只完整下載自己主責、個管、初次晤談、未派案的個案；他人敏感晤談紀錄不再進入無權者瀏覽器'),
       item('效能', '啟動改為只載入「我的個案」所在區塊，下載量與記憶體大幅降低；主任/管理者維持載入全部'),
       item('相容', 'index 新增 interviewerEmails 欄位以正確判定「非主責的初次晤談者」可見性；管理者登入時自動一次性補齊舊索引'),
       item('保護', '非管理者只持有自己的資料時，禁止全量重建共享索引/hot 檔，避免覆蓋全體資料'),
     ]},
-    { date: '2026-07-02', title: '差勤：新增「手動打卡」補登（單一時間點，簽到/簽退自動判定）', isProd: true, items: [
+    { date: '2026-07-02', v: 49, title: '差勤：新增「手動打卡」補登（單一時間點，簽到/簽退自動判定）', isProd: true, items: [
       item('新功能', '差勤申請頁類型新增「手動打卡」：設定日期＋時間即可補登一筆打卡（如忘記簽到／簽退）'),
       item('新功能', '如同打卡機只有單一時間點，簽到／簽退由當日打卡時間先後自動判定，無需選擇'),
       item('稽核', '手動補登的紀錄標記為「手動」（含補登人、時間、備註），於打卡頁與差勤管理清楚顯示並寫入稽核日誌'),
     ]},
-    { date: '2026-07-02', title: '差勤：假別可完整編輯（名稱／額度／申請期間）', isProd: true, items: [
+    { date: '2026-07-02', v: 48, title: '差勤：假別可完整編輯（名稱／額度／申請期間）', isProd: true, items: [
       item('新功能', '差勤管理 → 假別與額度：每個假別可直接編輯名稱、是否扣抵、預設額度（如調整暑休額度），按「儲存」即生效'),
       item('新功能', '假別新增「申請期間」欄位（MM-DD ~ MM-DD）；暑休預設 07-01 ~ 08-31，僅該期間可申請，支援跨年區間（如 12-01 ~ 01-31）'),
       item('新功能', '送出申請時檢查起訖日期是否落在假別的可申請期間內，逾期以提示阻擋送出'),
       item('改善', '申請頁選取受限假別時，即時顯示可申請期間與「目前不在期間內」紅字提示'),
     ]},
-    { date: '2026-07-02', title: '緊急修復：ml 明細列表徹底收束到外層欄寬', isProd: true, items: [
+    { date: '2026-07-02', v: 47, title: '緊急修復：ml 明細列表徹底收束到外層欄寬', isProd: true, items: [
       item('修復', '前版修正未生效——展開儲存格套用 max-width:0 + overflow:hidden 的 CSS 收束技巧，內層 div 帶 overflow-x:auto 於必要時提供橫向捲軸'),
       item('修復', '藍色連請三天邊框改由內層 div 承載（原本在 tr 上會被截斷）'),
       item('修復', 'colspan 從 99 改為動態計算實際欄位數（9 或 10），配合 max-width:0 的行為'),
       item('修復', '內層表格所有 cell 改用 word-break:break-all（原 break-word 對純數字/英文串效果不足）'),
     ]},
-    { date: '2026-07-02', title: '新開案：儲存時偵測學號/姓名/身分證字號欄位變動', isProd: true, items: [
+    { date: '2026-07-02', v: 46, title: '新開案：儲存時偵測學號/姓名/身分證字號欄位變動', isProd: true, items: [
       item('新功能', '儲存新個案時，若學號、姓名或身分證字號與既有個案「部分相符」（有一項相同、另有一項不同），彈出對話詢問「是否為同一學生（欄位有異動）？」'),
       item('新功能', '若確認為同一學生 → 逐項詢問「是否於本學期起更新此項目？」，全部確認後同步更新既有個案的 root-level 欄位（學號/姓名/身分證），並記錄稽核日誌'),
       item('新功能', '若拒絕為同一學生 → 該筆比對忽略，繼續儲存為新個案'),
       item('保護', '任一項目未確認更新即中止儲存，提示使用者恢復原值或改為「否」'),
     ]},
-    { date: '2026-07-02', title: '修正：明細排序陷阱與展開列邊界溢出', isProd: true, items: [
+    { date: '2026-07-02', v: 45, title: '修正：明細排序陷阱與展開列邊界溢出', isProd: true, items: [
       item('修復', '明細排序改用數值比較：原本以字串比對 date，「6/10」被誤判小於「6/8」；改為 YYYY*10000+MM*100+DD 排序鍵'),
       item('修復', '課程明細 table 加 table-layout:fixed，節次/課名欄改用 word-break 允許換行，避免長字串撐爆版面'),
       item('修復', '展開列繼承外列的 border-left（藍色連請三天群組線）並改為 td padding:0 + 內層 div 套 padding，避免視覺寬突'),
     ]},
-    { date: '2026-07-02', title: '身心調適假課程展開表格：排序、星期國字化、節次含時段', isProd: true, items: [
+    { date: '2026-07-02', v: 44, title: '身心調適假課程展開表格：排序、星期國字化、節次含時段', isProd: true, items: [
       item('改善', '展開表格排序改為請假日 → 星期 → 節次遞增排列，同批請假讀起來更順'),
       item('改善', '星期欄位統一為單字國字（一/二/三/四/五/六/日）；資料若含「星期一/週一」等前綴會自動去除'),
       item('新功能', '節次欄位顯示對應時段，如「第 3 節 (10:15-11:05)」；多節課「3,4」自動展開為「第 3 節 (…)、第 4 節 (…)」'),
       item('修復', '展開列的左右 padding 從 20px 改為 10px，與外層資料列一致，避免視覺上比原卡片寬'),
     ]},
-    { date: '2026-07-02', title: '附件貼法擴充：可直接拖曳/貼上到文字框', isProd: true, items: [
+    { date: '2026-07-02', v: 43, title: '附件貼法擴充：可直接拖曳/貼上到文字框', isProd: true, items: [
       item('新功能', '原本要拖曳/Ctrl+V 到附件區才能貼附件，現在可以直接拖曳或貼在該表單的文字框（textarea 或富文字編輯區）上'),
       item('新功能', '涵蓋：晤談紀錄（rec）、初談（ii）、事件處理（evr）、差勤申請（la）、精神科（psy）、問題回報/許願池（issue_new）、留言（ic）'),
       item('技術', '新增 attachBindDropPaste(el, pid) helper；attachInit 接受 opts.dropTargets 陣列指定額外綁定的元素 ID'),
     ]},
-    { date: '2026-07-02', title: '身心調適假：風險篩選「無命中」改為「無燈號」', isProd: true, items: [
+    { date: '2026-07-02', v: 42, title: '身心調適假：風險篩選「無命中」改為「無燈號」', isProd: true, items: [
       item('改善', '風險篩選勾選欄的「無命中」文字改為「無燈號」，用語一致'),
     ]},
-    { date: '2026-07-02', title: '修正：問題回報送出無回饋且可重複送出', isProd: true, items: [
+    { date: '2026-07-02', v: 41, title: '修正：問題回報送出無回饋且可重複送出', isProd: true, items: [
       item('修復', '問題回報送出時新增 _issueSubmitting 旗標防止重複點擊；按鈕鎖定並顯示「送出中…」；完成後 toast「已送出問題回報 #XXX」；描述欄位清空'),
     ]},
-    { date: '2026-07-02', title: '修正：身心調適假信件節次擷取邏輯（改為直接解析 HTML 表格）', isProd: true, items: [
+    { date: '2026-07-02', v: 40, title: '修正：身心調適假信件節次擷取邏輯（改為直接解析 HTML 表格）', isProd: true, items: [
       item('修復', '原本用純文字 regex 解析課程明細，對「星期一/週一/禮拜一」等非單字星期或含 HTML span 的欄位抓不到；改為優先解析信件內文 HTML 表格結構（流水號/課程名稱/請假日/星期/節次 5 欄），純文字 regex 作為 fallback'),
       item('改善', 'fallback regex 放寬：星期接受星期/週/禮拜前綴，節次接受 - 分隔符'),
       item('使用', '執行「🔄 重新解析舊信件」即可補齊既有紀錄的節次；使用者狀態（受理情況、已閱、已刪除）不受影響'),
     ]},
-    { date: '2026-07-01', title: 'B 案 chips 可即席新增；列印無個管時不顯示標題', isProd: true, items: [
+    { date: '2026-07-01', v: 39, title: 'B 案 chips 可即席新增；列印無個管時不顯示標題', isProd: true, items: [
       item('改善', '新開案表單的 B 案原由 chips 區加入「＋ 加入」輸入欄，可即席新增新原由並同步存到後台快速選項；不需切到後台'),
       item('改善', '身心調適假列印通知單：若該個案未設個管，則不顯示「個管」標題（避免顯示「個管：—」）'),
     ]},
-    { date: '2026-07-01', title: '身心調適假：重新解析舊信件（補齊節次等欄位）', isProd: true, items: [
+    { date: '2026-07-01', v: 38, title: '身心調適假：重新解析舊信件（補齊節次等欄位）', isProd: true, items: [
       item('新功能', '身心調適假頁面新增「🔄 重新解析舊信件」按鈕（主任/管理者/身心調適假窗口可用），將 Gmail 中已標記為 ml-processed 的信件重新解析，補上節次、課名等原本沒抓到的欄位'),
       item('保護', '使用者管理欄位（受理情況、已閱、已刪除等）不會被覆蓋'),
       item('後端', 'Code.gs fetchMentalLeaves action 新增 reparse 模式；查詢含 label 的信件、以 emailId 對應既有紀錄做 merge 而非跳過'),
     ]},
-    { date: '2026-07-01', title: '身心調適假列印新增主責/個管欄位', isProd: true, items: [
+    { date: '2026-07-01', v: 37, title: '身心調適假列印新增主責/個管欄位', isProd: true, items: [
       item('新功能', '列印通知單的個案案號那行新增「主責」與「個管」欄位，12pt 字級並列顯示'),
     ]},
-    { date: '2026-07-01', title: '修正：許願池燈號啟動後不顯示，需點選才顯示', isProd: true, items: [
+    { date: '2026-07-01', v: 36, title: '修正：許願池燈號啟動後不顯示，需點選才顯示', isProd: true, items: [
       item('修復', '啟動時 renderIssuesBadge() 呼叫時機過早，currentRole/extraRole 尚未由 resolveUserRole() 設定，導致管理者身分被誤判為非管理者而過濾掉大部分燈號；改為在 resolveUserRole() 之後呼叫'),
     ]},
-    { date: '2026-07-01', title: '身心調適假列表顯示請假節次摘要（含 fallback）', isProd: true, items: [
+    { date: '2026-07-01', v: 35, title: '身心調適假列表顯示請假節次摘要（含 fallback）', isProd: true, items: [
       item('改善', '身心調適假管理列表的「課程」欄位下方新增節次摘要（如「第 2、3、4 節」），不需展開就能看到請了哪幾節'),
       item('改善', '舊資料若無節次資訊，自動 fallback 顯示課名清單（如「國文、英文」）'),
     ]},
-    { date: '2026-07-01', title: 'B 案原由 chips（撤除「性平無主案」來源選項）', isProd: true, items: [
+    { date: '2026-07-01', v: 34, title: 'B 案原由 chips（撤除「性平無主案」來源選項）', isProd: true, items: [
       item('新功能', '新開案表單選擇 B 案時，出現「B 案原由」複選 chips（至少勾一項），如性平無主案、霸凌轉介等'),
       item('新功能', '後台管理 → 快速選項 新增「B 案原由 快速選項」卡片，可增/修/刪選項；預設 [性平無主案]'),
       item('改善', '個案詳細頁「案別」欄位下方顯示已選 B 案原由 chips'),
       item('新增', '案別的 B 案原由紀錄於 basicInfoSnapshots 中，可跨學期保留該學期選擇'),
       item('撤除', '前一版將「性平無主案」直接加到「來源」radio 的做法撤回，改以更彈性的 chips 方案'),
     ]},
-    { date: '2026-07-01', title: 'Hot/Cold Phase 2：本學期開案完整資料集中，啟動 66 chunk → 2 檔案', isProd: true, items: [
+    { date: '2026-07-01', v: 33, title: 'Hot/Cold Phase 2：本學期開案完整資料集中，啟動 66 chunk → 2 檔案', isProd: true, items: [
       item('效能', '新增 cases/cases-hot.json：本學期開案（未結案、未封存、未刪除）的完整資料集中一檔。啟動時只需讀 cases-index.json + cases-hot.json，跳過所有 chunk 讀取'),
       item('效能', '啟動時間預估：66 chunk reads → 2 file reads，從 5-10s 降至 2-3s；GAS 呼叫次數從 66+ 降至 2'),
       item('併發安全', 'GAS 新增 casesUpsert action（LockService 保護）：cases-hot.json 與 cases-index.json 的 patch 寫入改由 GAS 端在 lock 內做 RMW，避免多人同時寫入時互相覆蓋'),
@@ -23595,53 +23626,53 @@ function renderChangelogPage() {
       item('重頁面 defensive', '進入統計頁 / 精神科頁 / 學期批次刪除時，自動 bulk 補載封存與舊學期個案完整資料（首次進入顯示 loading，同工作階段不再重載）'),
       item('打卡模式改善', '?page=clock 快速啟動後，點選其他 nav（如個案列表）時自動觸發完整 INFOSYS 載入（原本會被鎖在打卡頁）'),
     ]},
-    { date: '2026-07-01', title: '修正：批次解封／編輯封存個案不再遺失記錄', isProd: true, items: [
+    { date: '2026-07-01', v: 32, title: '修正：批次解封／編輯封存個案不再遺失記錄', isProd: true, items: [
       item('修復', 'Hot/Cold 分層載入下，對「封存個案（cold）」執行批次解封或任何寫入時，寫入前會先從 IndexedDB／Drive 補回完整資料，避免以輕量索引覆蓋 Drive 上的晤談紀錄、附件、精神科紀錄等內容'),
       item('修復', '解封相關函式的內部旗標統一改為顯式 archived=false（原本使用 delete 會與 cold case 補資料流程產生衝突）'),
     ]},
-    { date: '2026-07-01', title: '打卡模式快速進入（手機打卡優化）', isProd: true, items: [
+    { date: '2026-07-01', v: 31, title: '打卡模式快速進入（手機打卡優化）', isProd: true, items: [
       item('改善', '透過 ?page=clock 進入時，登入後直接顯示打卡頁，不再載入個案等重資料、不顯示個案載入進度條，符合手機快速打卡的即時性'),
     ]},
-    { date: '2026-07-01', title: '差勤申請/審核回饋感強化（防重複點擊）', isProd: true, items: [
+    { date: '2026-07-01', v: 30, title: '差勤申請/審核回饋感強化（防重複點擊）', isProd: true, items: [
       item('改善', '送出差勤申請時按鈕立即鎖定並顯示「送出中…」，表單上即時顯示送出中/成功/失敗訊息，並防止重複送出造成多筆申請'),
       item('改善', '督導審核（核准/認證/駁回）時按鈕立即鎖定並顯示處理中狀態，完成後顯示明確結果，避免重複點擊'),
     ]},
-    { date: '2026-07-01', title: '差勤申請可指定起訖時間（時段請假）', isProd: true, items: [
+    { date: '2026-07-01', v: 29, title: '差勤申請可指定起訖時間（時段請假）', isProd: true, items: [
       item('新功能', '差勤申請的開始/結束可加填時間，支援請特定時段（如 08:00–12:00）；填入起訖時間會自動換算時數（仍可手動調整），整天請假可只填日期'),
       item('改善', '申請列表、審核畫面與通知皆顯示含時間的起訖範圍'),
     ]},
-    { date: '2026-06-30', title: '管理者/督導可檢視實習生差勤全部功能（驗證用）', isProd: true, items: [
+    { date: '2026-06-30', v: 28, title: '管理者/督導可檢視實習生差勤全部功能（驗證用）', isProd: true, items: [
       item('改善', '管理者與督導也可看到「差勤打卡」與「差勤申請」頁，並可送出申請與打卡（以自己帳號建立），方便驗證實習生流程；非實習生身分時頁面會標示為驗證用途'),
     ]},
-    { date: '2026-06-30', title: '修正：已封存個案可勾選以批次解封', isProd: true, items: [
+    { date: '2026-06-30', v: 27, title: '修正：已封存個案可勾選以批次解封', isProd: true, items: [
       item('修復', '個案列表的已封存個案現在可勾選，並依勾選內容自動顯示「批次封存／批次解封」按鈕，解決封存後無法批次解封的問題'),
     ]},
-    { date: '2026-06-30', title: '彈性工時與加班補休（打卡工時自動計算、加班登記認證）', isProd: true, items: [
+    { date: '2026-06-30', v: 26, title: '彈性工時與加班補休（打卡工時自動計算、加班登記認證）', isProd: true, items: [
       item('新功能', '差勤申請頁顯示「本月打卡工時」：自動以當日最後一次打卡減第一次打卡計算工時，滿 9 小時標示正常、未滿標示不足（午休不另扣）'),
       item('新功能', '差勤申請新增「加班登記」類型：實習生登記加班時數，由督導認證後才累積為可用補休時數（不自動累積）'),
       item('新功能', '加班補休假別改為動態餘額：可用補休 = 已認證加班 − 已用補休；申請補休時自動檢查並扣抵此餘額'),
       item('改善', '督導審核畫面區分「請假」與「加班登記」，加班登記以「認證／不予認證」處理；通知文案同步調整'),
     ]},
-    { date: '2026-06-30', title: '差勤申請可上傳佐證文件', isProd: true, items: [
+    { date: '2026-06-30', v: 25, title: '差勤申請可上傳佐證文件', isProd: true, items: [
       item('新功能', '實習生差勤申請可上傳佐證文件（圖片／PDF／Word，支援拖曳與貼上）；申請紀錄與督導審核畫面皆可檢視附件'),
     ]},
-    { date: '2026-06-30', title: '登入初始化誤判修正、批次封存非本學期開案個案', isProd: true, items: [
+    { date: '2026-06-30', v: 24, title: '登入初始化誤判修正、批次封存非本學期開案個案', isProd: true, items: [
       item('修復', '修正登入時偶發進入「初始化」畫面的問題：啟動批次（startupBatch）因 GAS 冷啟動暫時未帶回 config 時，改為重讀一次 config.json 確認，只有真的找不到才視為未初始化（不再需要 F5 重試）'),
       item('新功能', '個案列表（管理者）新增「封存非本學期開案」按鈕：一鍵將本學期沒有開案中的個案全部封存，使其成為 cold data，方便驗證 Hot/Cold 載入速度'),
     ]},
-    { date: '2026-06-30', title: '實習生差勤申請（請假/補休、假別額度、督導審核）', isProd: true, items: [
+    { date: '2026-06-30', v: 23, title: '實習生差勤申請（請假/補休、假別額度、督導審核）', isProd: true, items: [
       item('新功能', '實習生新增「差勤申請」頁：選假別、日期、時數、事由送出申請，並顯示扣抵型假別的剩餘額度（含待審核佔用）；可查看「我的申請紀錄」並取消待審核申請'),
       item('新功能', '差勤管理後台改為分頁：打卡紀錄／請假審核／假別與額度'),
       item('新功能', '假別與額度設定：管理者/督導可新增、刪除可申請假別（可設定是否扣抵額度與預設額度），並逐位設定在任實習生的各假別額度（顯示已用時數）'),
       item('新功能', '請假審核：任一督導（行政或專業）核准即生效；核准/駁回後以待辦事項通知申請人，核准時並通知行政督導、專業督導與主任'),
       item('新功能', '額度控管：扣抵型假別於申請時檢查剩餘額度並擋下超額（待審核亦佔用額度），核准時再次確認'),
     ]},
-    { date: '2026-06-30', title: '個案載入效能：Hot/Cold 分層載入', isProd: true, items: [
+    { date: '2026-06-30', v: 22, title: '個案載入效能：Hot/Cold 分層載入', isProd: true, items: [
       item('改善', '啟動改為輕量索引（cases-index.json）+ 只載入含使用中個案的區塊（hot chunks）；個案列表在完整資料載入前即可見，封存個案所在的封存區塊不再每次載入'),
       item('改善', '點開封存個案時才即時讀取其完整資料（on-demand，含「正在讀取資料」提示），IndexedDB 快取後再次開啟近乎即時'),
       item('改善', '首次部署當次仍會完整載入一次以建立索引，之後每次啟動皆走快速路徑'),
     ]},
-    { date: '2026-06-30', title: '開案流程強化、緊急聯絡人快速選項、系所後台', isProd: true, items: [
+    { date: '2026-06-30', v: 21, title: '開案流程強化、緊急聯絡人快速選項、系所後台', isProd: true, items: [
       item('改善', '新增個案：案號重複檢查改為三段式——同學期同學生顯示紅色警告「此學生本學期已開案」並提供「是，另外開案」按鈕；舊學期同學生顯示藍色提示「此案號為舊學期案號」；不同學生顯示黃色警告，儲存時進入是否同一學生的確認流程'),
       item('改善', '「填入歷史資料」（再次開案）：案號改為自動產生本學期新案號，不再帶入舊案號'),
       item('改善', '儲存個案時若學號／身分證字號與本學期既有開案重複，彈出確認「確定要本學期重複開案？」，取消即中止'),
@@ -23650,18 +23681,18 @@ function renderChangelogPage() {
       item('新功能', '使用者管理後台新增「快速選項」頁籤：可新增／刪除緊急聯絡人關係預設 chips'),
       item('新功能', '使用者管理後台新增「系所與學制」頁籤：可管理系所與學院的對照關係；學制學號前綴設定移至此頁籤'),
     ]},
-    { date: '2026-06-30', title: '效能強化：GAS 重試機制、manifest 重建路徑優化', isProd: true, items: [
+    { date: '2026-06-30', v: 20, title: '效能強化：GAS 重試機制、manifest 重建路徑優化', isProd: true, items: [
       item('改善', 'GAS 呼叫遭遇 404／503（冷啟動）時自動重試最多 2 次（等待 1.2s／2.4s），減少因 Apps Script 冷啟動造成的操作失敗'),
       item('改善', 'cases 資料夾 manifest 遺失時的重建路徑改為分批讀取（每批 5 個 chunk），並只重寫 manifest.json 而非重新上傳所有 chunk，多人同時重建時的 GAS 呼叫數從 N×109 降至 N×1'),
     ]},
-    { date: '2026-06-30', title: '晤談紀錄必填、使用者管理badge改善、編輯限制移除', isProd: true, items: [
+    { date: '2026-06-30', v: 19, title: '晤談紀錄必填、使用者管理badge改善、編輯限制移除', isProd: true, items: [
       item('改善', '晤談紀錄「問題評估」與「後續處遇計畫」改為必填，儲存時驗證並提示'),
       item('改善', '使用者管理附加身分欄位：身心調適假窗口補上 badge，多重身分（管理者＋督導＋窗口）並列顯示，不再互相遮蓋'),
       item('改善', '左側選單釘選 bar 點擊區域加寬（3px → 14px），更易點選'),
       item('改善', '移除晤談紀錄、初次晤談表、精神科評估的兩週不可編輯限制'),
       item('改善', '新增個案「再次開案」帶入歷史資料後自動重新產生案號，提示文字改為「案號已自動產生」'),
     ]},
-    { date: '2026-06-29', title: '伴侶諮商記錄共用', isProd: true, items: [
+    { date: '2026-06-29', v: 18, title: '伴侶諮商記錄共用', isProd: true, items: [
       item('新功能', '新增晤談記錄時可點選「＋ 增加晤談對象」搜尋並選入另一位個案，兩邊記錄自動同步（Full Copy + coupleId）'),
       item('新功能', '搜尋結果標示「本學期已開案 / 未開案」；本學期未開案者可一鍵快速開案（自動建立最小化個案並新增待辦）'),
       item('新功能', '找不到個案時可直接輸入姓名與學號快速新增並開案'),
@@ -23669,7 +23700,7 @@ function renderChangelogPage() {
       item('新功能', '編輯共用記錄 → 兩方個案同步更新；刪除 / 徹底移除 → 兩方同步'),
       item('改善', '介入方式自動填入「伴侶諮商」；伴侶關係儲存後鎖定（唯讀，不可更換）'),
     ]},
-    { date: '2026-06-29', title: '實習生管理強化、帳號申請修復、使用者管理改善', isProd: true, items: [
+    { date: '2026-06-29', v: 17, title: '實習生管理強化、帳號申請修復、使用者管理改善', isProd: true, items: [
       item('新功能', '使用者管理「清除 PIN」按鈕：管理者可替使用者清除 PIN 碼（操作記入稽核日誌）'),
       item('新功能', '在任期間欄位：實習諮商心理師可設定 internFrom/internTo，差勤下拉選單依在任/非在任/已停用分群顯示'),
       item('新功能', '打卡精度標記：PC 定位精度 > 200m 時顯示 ⚠️ 警示；實習生可事後更新打卡定位（保留原始紀錄）'),
@@ -23680,7 +23711,7 @@ function renderChangelogPage() {
       item('修復', 'proxyCall 攔截應用層錯誤：GAS 回傳 { error } 格式時前端正確拋出，不再靜默顯示成功'),
       item('修復', '稽核日誌：帳號核准/拒絕操作現在正確寫入日誌'),
     ]},
-    { date: '2026-06-29', title: '實習生出勤打卡平台（Phase 1）、OAuth 架構簡化、通知修復', isProd: true, items: [
+    { date: '2026-06-29', v: 16, title: '實習生出勤打卡平台（Phase 1）、OAuth 架構簡化、通知修復', isProd: true, items: [
       item('新功能', '實習生出勤打卡：實習生可從 ?page=clock 直接進入打卡頁，記錄上班/下班時間（需在屏科大校園 800m 範圍內，Leaflet.js 地圖顯示位置）'),
       item('新功能', '出勤管理後台：督導/管理者可查看出勤記錄、下載 CSV、審核帳號申請'),
       item('新功能', '帳號自助申請：未被授權的 Google 帳號可填寫申請表，等待督導/管理者審核；Apps Script 白名單控管存取'),
@@ -23689,14 +23720,14 @@ function renderChangelogPage() {
       item('修復', '版本更新提醒：正式版不再因為測試版 push 而誤觸「重新整理頁面」通知（改用 last-modified 而非 ETag）'),
       item('修復', '通知鈴鐺：點選「收到」後鈴鐺面板維持開啟，不再意外關閉'),
     ]},
-    { date: '2026-06-24', title: '左側選單收束/釘選、身心調適假列印與多選篩選、欄位調整、許願池修復', isProd: true, items: [
+    { date: '2026-06-24', v: 15, title: '左側選單收束/釘選、身心調適假列印與多選篩選、欄位調整、許願池修復', isProd: true, items: [
       item('新功能', '左側選單：個案管理 / 系統管理 / 設定與工具 三個分類可收束/展開；各項目可釘選（收束後仍顯示）；偏好自動儲存至 Drive'),
       item('新功能', '身心調適假：列印通知單（A4、依學生分卡、姓名去識別化、燈號/累計/連請標記、卡片間虛線剪裁線）'),
       item('改善', '身心調適假：風險篩選從下拉單選改為複選勾選（紅/黃/藍/無命中）'),
       item('改善', '個案列表：主責人員欄位可拖曳調整寬度，hover 顯示調整提示'),
       item('修復', '錯誤回報/許願池：點進頁面後綠燈徽章即時消失（修正已讀狀態未即時反映的問題）'),
     ]},
-    { date: '2026-06-24', title: '統計分析分頁、@提及強化、身心調適假版面調整', isProd: true, items: [
+    { date: '2026-06-24', v: 14, title: '統計分析分頁、@提及強化、身心調適假版面調整', isProd: true, items: [
       item('新功能', '統計分析：以頁籤方式分類（📊 個案概況 / 📋 服務狀況 / 🌿 身心調適假 / 📚 課程統計），減少捲動'),
       item('改善', '統計分析：課程統計從身心調適假管理移入統計分析頁籤'),
       item('改善', '錯誤回報/許願池：@提及下拉最多顯示 8 人；最近提及者優先排序'),
@@ -23706,7 +23737,7 @@ function renderChangelogPage() {
       item('改善', '左側選單：錯誤回報/許願池徽章寬度不足時優先換行，避免文字被擠壓'),
       item('修復', '身心調適假清單：一般列移除左側藍框，藍框僅保留連假群組；群組底部改為藍色邊框完整圍合'),
     ]},
-    { date: '2026-06-23', title: '錯誤回報強化、身心調適假統計', isProd: true, items: [
+    { date: '2026-06-23', v: 13, title: '錯誤回報強化、身心調適假統計', isProd: true, items: [
       item('新功能', '錯誤回報/許願池：篩選（處理狀態 + 日期區間），自動排序'),
       item('新功能', '錯誤回報/許願池：狀態變更歷程紀錄'),
       item('新功能', '錯誤回報/許願池：新留言 → 通知創建者 + 建立待辦'),
@@ -23714,7 +23745,7 @@ function renderChangelogPage() {
       item('改善', '錯誤回報/許願池：dev/prod 共用 issues.json'),
       item('新功能', '統計分析：身心調適假統計區塊'),
     ]},
-    { date: '2026-06-23', title: '轉銜評估流程調整、通知 UI 強化', isProd: true, items: [
+    { date: '2026-06-23', v: 12, title: '轉銜評估流程調整、通知 UI 強化', isProd: true, items: [
       item('新功能', '轉銜評估：「轉銜類型」與「質性描述」卡片可收束，預設收束'),
       item('新功能', '轉銜評估：選「綠燈結案」或「同意」→ 兩卡片自動收束並切換為非必填；選其他 → 自動展開並恢復必填'),
       item('改善', '轉銜管理卡片：意願／建議摘要版面改以 Sub-group 版型，精準定位於「查看個案／編輯評估」按鈕正下方'),
@@ -23724,7 +23755,7 @@ function renderChangelogPage() {
       item('新功能', '通知鈴鐺：提醒頁籤標題新增藍色計數 Badge（顯示未讀提醒總數，歸零時自動隱藏）'),
       item('新功能', '設定與工具：新增「版本更新紀錄」頁面（本頁），含 dev 版與正式版兩個頁籤'),
     ]},
-    { date: '2026-06-22', title: 'Sidebar 修復、轉銜直接轉派、身心調適假強化', isProd: true, items: [
+    { date: '2026-06-22', v: 11, title: 'Sidebar 修復、轉銜直接轉派、身心調適假強化', isProd: true, items: [
       item('修復', 'Sidebar 拖曳根治：視窗外放開滑鼠鍵或 Alt+Tab 時拖曳正確停止（第五次修復）'),
       item('改善', 'Sidebar 寬度可拖曳調整，並記憶設定'),
       item('新功能', '轉銜管理：窗口／主任／管理者可「直接轉派」評估者（跳過待辦流程，直接執行並通知被轉派者）'),
@@ -23735,7 +23766,7 @@ function renderChangelogPage() {
       item('改善', '個案列表：「僅主責／個管」篩選 checkbox 僅主任／管理者可見'),
       item('修復', '轉銜管理：更新學號欄位顯示、操作後顯示確認訊息'),
     ]},
-    { date: '2026-06-18 ~ 06-19', title: '身心調適假完整功能上線', isProd: true, items: [
+    { date: '2026-06-18 ~ 06-19', v: 10, title: '身心調適假完整功能上線', isProd: true, items: [
       item('新功能', '身心調適假自動擷取：登入時靜默從 Gmail 擷取，完成後顯示 badge'),
       item('新功能', '主責通知系統：有新筆資料時個別通知主責諮商師（鈴鐺＋待辦＋收到確認）'),
       item('新功能', '連假分組顯示、受輔生頁籤（個案已開案標示）、個案詳情卡整合'),
@@ -23744,7 +23775,7 @@ function renderChangelogPage() {
       item('新功能', '個案列表 A/B case badge'),
       item('修復', '連請三天判斷邏輯：依 leaveDate 日期區間展開計算'),
     ]},
-    { date: '2026-06-17', title: 'OAuth2 Gmail 連接、教務處轉退學強化、轉銜資源回收筒', isProd: true, items: [
+    { date: '2026-06-17', v: 9, title: 'OAuth2 Gmail 連接、教務處轉退學強化、轉銜資源回收筒', isProd: true, items: [
       item('新功能', '身心調適假 OAuth2：連接 npust5 Gmail 信箱（Script Properties 儲存憑證）'),
       item('修復', 'OAuth2 回調改用 GitHub Pages callback + postMessage 流程，修正 & 字元解析問題'),
       item('新功能', '教務處轉退學：4-tab 匯入預覽對話框（DRY 重用架構）'),
@@ -23753,39 +23784,39 @@ function renderChangelogPage() {
       item('修復', '修復 localStorage 空間洩漏：草稿遷移 Drive 後立即清除原始草稿'),
       item('修復', '修復側邊欄排序：localStorage QuotaExceeded 例外處理'),
     ]},
-    { date: '2026-06-16', title: '教務處轉/退學名單全功能、轉銜評估改版', isProd: true, items: [
+    { date: '2026-06-16', v: 8, title: '教務處轉/退學名單全功能、轉銜評估改版', isProd: true, items: [
       item('新功能', '教務處轉/退學名單：完整功能（Excel 匯入、record-card、篩選、批次設定決議、與畢業轉銜連動）'),
       item('新功能', '轉銜評估：當事人意願欄位（未告知理由／告知後意願）'),
       item('新功能', '轉銜評估：離校原因 chip 顯示於卡片列'),
       item('改善', '轉銜管理：首案來源 chip、歷史 chip 加服務次數與 hover 說明'),
       item('改善', '轉銜管理：按鈕更名、頁籤更名，操作流程更直觀'),
     ]},
-    { date: '2026-06-15 ~ 06-16', title: 'Google Calendar 進階同步', isProd: true, items: [
+    { date: '2026-06-15 ~ 06-16', v: 7, title: 'Google Calendar 進階同步', isProd: true, items: [
       item('新功能', 'Google Calendar 進階同步：晤談紀錄儲存含下次預約時，直接建立 Calendar 活動'),
       item('新功能', '主責人員衝突檢查：新增預約前即時提醒時段衝突'),
       item('改善', '稽核日誌帶預約變更紀錄'),
       item('改善', 'dev/prod Calendar 行事曆分離（環境隔離）'),
     ]},
-    { date: '2026-06-12 ~ 06-13', title: '家族圖升級、列印改善', isProd: true, items: [
+    { date: '2026-06-12 ~ 06-13', v: 6, title: '家族圖升級、列印改善', isProd: true, items: [
       item('新功能', '家族圖（Bowen Genogram）：全頁面模式、框選多選、手繪、完整元件庫（多胞胎、收養、虛線、自訂）'),
       item('新功能', '家族圖標籤字級可調整，localStorage 持久化'),
       item('改善', '列印字體升至 12pt、富文字 Tab 縮排、初談日期預設今日'),
       item('修復', '還原初談日期為原生 date picker（三欄拆分體驗不佳撤回）'),
       item('修復', '預作畢業年數公式：入學年算第1年修正'),
     ]},
-    { date: '2026-06-11', title: '富文字評估表、轉銜評估整頁式表單', isProd: true, items: [
+    { date: '2026-06-11', v: 5, title: '富文字評估表、轉銜評估整頁式表單', isProd: true, items: [
       item('新功能', '結案評估表／學期評估：主訴、介入、描述、建議四個欄位改用富文字編輯器'),
       item('新功能', '轉銜評估：整頁式表單、評估日期、八向度 hover 說明文字'),
       item('改善', '列印全面改善：iframe 消除阻塞、移除「下載 PDF」改用瀏覽器另存'),
       item('改善', '轉銜評估卡片 UI 全面調整：八向度置頂、人名+職稱顯示、列印更新'),
     ]},
-    { date: '2026-06-10', title: '轉銜評估卡片、校級轉銜匯入', isProd: true, items: [
+    { date: '2026-06-10', v: 4, title: '轉銜評估卡片、校級轉銜匯入', isProd: true, items: [
       item('新功能', '個案詳細頁：所有學期轉銜評估卡片'),
       item('改善', '八向度風險等級重定義：1=低、2-3=中、4-5=高（輸入、卡片、列印全更新）'),
       item('改善', '八向度移至展開內容最上方'),
       item('新功能', '校級轉銜匯入：找不到個案預設全勾、匯入後自動納入未歸屬評估'),
     ]},
-    { date: '2026-05-18 ~ 06-10', title: '空間預約、Calendar 同步、轉銜服務概況', isProd: true, items: [
+    { date: '2026-05-18 ~ 06-10', v: 3, title: '空間預約、Calendar 同步、轉銜服務概況', isProd: true, items: [
       item('新功能', '空間預約功能：新增、編輯、刪除，並同步 Google Calendar 空間預約行事曆'),
       item('新功能', '晤談紀錄：預約下次時間欄位（同步至 Calendar）'),
       item('新功能', '轉銜評估：服務概況 badges（各學期主責人員與晤談次數）'),
@@ -23793,7 +23824,7 @@ function renderChangelogPage() {
       item('改善', '補齊所有操作的背景工作（bgJob）與稽核日誌記錄'),
       item('改善', '個案列表、身心調適假、心理測驗：欄寬可拖曳調整'),
     ]},
-    { date: '2026-05-15 ~ 05-18', title: 'Apps Script 後端、BSRS-5、通知系統', isProd: true, items: [
+    { date: '2026-05-15 ~ 05-18', v: 2, title: 'Apps Script 後端、BSRS-5、通知系統', isProd: true, items: [
       item('新功能', 'Apps Script 後端架構：統一以 npust.scc 身份進行 Drive 操作（proxyCall）'),
       item('新功能', 'BSRS-5 心理測驗欄位：點選按鈕組輸入、總分警醒提示'),
       item('新功能', '通知系統：指派／移除主責或個案管理員時自動通知當事人'),
@@ -23806,7 +23837,7 @@ function renderChangelogPage() {
       item('改善', '個案列表：排序、學期篩選、案號格式、民國年顯示'),
       item('改善', '載入個案改用批次 API（141次→3次查詢）'),
     ]},
-    { date: '2026-05-12 ~ 05-15', title: '系統初建', isProd: true, items: [
+    { date: '2026-05-12 ~ 05-15', v: 1, title: '系統初建', isProd: true, items: [
       item('新功能', '個案管理員：指派、移除、列表顯示'),
       item('新功能', '永久刪除個案、搜尋篩選'),
       item('新功能', '開案時顯示本學期未使用案號建議'),
@@ -23818,7 +23849,7 @@ function renderChangelogPage() {
 
   const renderList = (prefix, entries) => {
     const sec = mkSection(prefix);
-    return entries.map(e => sec(e.date, e.title, e.isProd, e.items)).join('');
+    return entries.map(e => sec(e.date, e.v, e.title, e.isProd, e.items)).join('');
   };
   const prodEntries = allEntries.filter(e => e.isProd);
 
@@ -36190,6 +36221,49 @@ async function _saveIssues() {
   }
 }
 
+// ══════════════════════════════════════════════
+//  問題回報：自動回覆佇列（Claude Code 開發流程用）
+//  機制：pending-issue-replies.json 隨 repo 部署在 GitHub Pages（公開讀取，不經 GAS 驗證）；
+//  系統管理者登入時抓取此檔，逐筆比對該 issue 是否已有相同 autoReplyId 的留言，
+//  沒有則以 npust.scc 身份寫入留言（走既有已驗證的 issues.json 儲存路徑，不新增任何後端權限）。
+// ══════════════════════════════════════════════
+const AUTO_ISSUE_REPLY_QUEUE_URL = 'https://npustscc.github.io/scc-infosys/pending-issue-replies.json';
+const AUTO_ISSUE_REPLY_EMAIL     = 'npust.scc@heartnpust.tw';
+async function _checkAutoIssueReplies() {
+  const isSysAdminTrigger = extraRole === '管理者' || currentRole === '系統管理者';
+  if (!isSysAdminTrigger) return;
+  let queue;
+  try {
+    const r = await fetch(AUTO_ISSUE_REPLY_QUEUE_URL + '?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return;
+    queue = await r.json();
+  } catch (_) { return; }
+  if (!Array.isArray(queue) || !queue.length) return;
+  let changed = false;
+  for (const q of queue) {
+    if (!q || !q.id || !q.issueSerial || !q.text) continue;
+    const issue = issuesData.find(x => x.serial === q.issueSerial);
+    if (!issue) continue;
+    if (!issue.comments) issue.comments = [];
+    if (issue.comments.some(c => c.autoReplyId === q.id)) continue; // 已回覆過，避免重複
+    issue.comments.push({
+      id: 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      content: q.text,
+      attachments: [],
+      authorEmail: AUTO_ISSUE_REPLY_EMAIL,
+      authorName: configData?.users?.[AUTO_ISSUE_REPLY_EMAIL]?.name || '系統管理者',
+      createdAt: new Date().toISOString(),
+      autoReplyId: q.id,
+    });
+    changed = true;
+  }
+  if (!changed) return;
+  try {
+    await _saveIssues();
+    if (document.getElementById('page-issues')?.classList.contains('active') && typeof renderIssuesPage === 'function') renderIssuesPage();
+  } catch (e) { console.warn('[_checkAutoIssueReplies] 儲存失敗:', e.message); }
+}
+
 // ── @提及：解析內文中 @名字，回傳符合的 email 陣列 ──
 function _parseIssueMentions(content) {
   const tokens = (content.match(/@([^\s@,，。！？\n]+)/g) || []).map(m => m.slice(1));
@@ -36727,10 +36801,12 @@ function renderIssuesPage() {
             ${canDelete ? `<button class="btn btn-danger btn-sm" style="padding:0 5px;font-size:.7rem;" onclick="deleteIssueComment('${sid}','${cid}')">刪除</button>` : ''}
           </span>` : '';
           const editedMark = c.editedAt ? `<span style="font-size:.7rem;color:#a0aec0;">（已編輯）</span>` : '';
+          const autoMark = c.autoReplyId ? `<span style="font-size:.68rem;font-weight:700;color:#805ad5;background:#faf5ff;border:1px solid #d6bcfa;border-radius:4px;padding:0 5px;">系統自動回覆</span>` : '';
           return `
           <div id="issue-comment-card-${sid}-${cid}" style="margin-bottom:6px;padding:7px 10px;background:#f7fafc;border-radius:6px;font-size:.85rem;">
             <div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;font-size:.78rem;color:#718096;">
               <span style="font-weight:600;color:#4a5568;">${escHtml(c.authorName||c.authorEmail||'—')}</span>
+              ${autoMark}
               <span>${c.createdAt ? new Date(c.createdAt).toLocaleString('zh-TW',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : ''}</span>
               ${editedMark}${actBtns}
             </div>
