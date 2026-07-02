@@ -7744,18 +7744,24 @@ async function _migrateUserEmail(oldEmail, newEmail, entryPatches = {}, opts = {
     });
     bgJobProgress(jobId, 40);
 
-    // 3. 全員通知（露出舊 email 便於對接；7 天後自動移除）
+    // 3. 全員通知（露出舊 email + 操作者身分便於對接；7 天後自動移除；操作者本人也塞一份作留痕確認）
+    const _actorEmail = currentUser?.email || '';
+    const _actorName  = configData.users[_actorEmail]?.name || currentUser?.name || _actorEmail || '未知操作者';
+    const _actorTag   = _actorName && _actorEmail && _actorName !== _actorEmail
+                          ? `（由 ${_actorName}／${_actorEmail} 執行）`
+                          : `（由 ${_actorName || _actorEmail || '未知操作者'} 執行）`;
     const gmailNoticeMsg = isRemoval
-      ? `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 清空（改為無 Gmail 帳號）`
-      : `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 更改為 ${newEmail}`;
+      ? `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 清空（改為無 Gmail 帳號）${_actorTag}`
+      : `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 更改為 ${newEmail}${_actorTag}`;
     const nowIso = new Date().toISOString();
     Object.entries(configData.users).forEach(([email, u]) => {
-      if (email === currentUser?.email) return; // 操作者本人不塞
       if (!u.notifications) u.notifications = [];
       u.notifications.unshift({
         id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
         type: 'gmail_changed',
         message: gmailNoticeMsg,
+        actorEmail: _actorEmail,
+        actorName:  _actorName,
         createdAt: nowIso,
         read: false,
       });
@@ -7783,8 +7789,8 @@ async function _migrateUserEmail(oldEmail, newEmail, entryPatches = {}, opts = {
     bgJobDone(jobId);
     setAlert?.('admin-alert', 'success',
       isRemoval
-        ? `Gmail 已由 ${escHtml(oldEmail)} 清空（更新 ${affectedIds.size} 筆個案，通知已送出）。`
-        : `Gmail 已由 ${escHtml(oldEmail)} 遷移至 ${escHtml(newEmail)}（更新 ${affectedIds.size} 筆個案，通知已送出）。`);
+        ? `Gmail 已由 ${escHtml(oldEmail)} 清空（更新 ${affectedIds.size} 筆個案；已通知全體 ${Object.keys(configData.users).length} 位使用者，含您本人；由 ${escHtml(_actorName)} 執行）。`
+        : `Gmail 已由 ${escHtml(oldEmail)} 遷移至 ${escHtml(newEmail)}（更新 ${affectedIds.size} 筆個案；已通知全體 ${Object.keys(configData.users).length} 位使用者，含您本人；由 ${escHtml(_actorName)} 執行）。`);
     renderAdminUsers?.();
     if (typeof renderCases === 'function') renderCases();
     renderNotifBell?.();
@@ -22706,6 +22712,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-02', title: 'Gmail 通知含操作者身分 + 操作者本人也收到留痕', isProd: false, items: [
+      item('改善', '通知訊息尾端補「（由 XX 姓名／email 執行）」，明確露出誰做的變更'),
+      item('改善', '通知不再跳過操作者本人：執行者也會在自己鈴鐺看到留痕記錄，避免以為「沒有通知」'),
+      item('改善', 'notification 條目加 actorEmail / actorName 欄位，便於後續稽核統計'),
+      item('改善', 'setAlert 成功訊息說明「已通知全體 N 位使用者，含您本人；由 XX 執行」，資訊更完整'),
+    ]},
     { date: '2026-07-02', title: 'Gmail 清空亦走遷移路徑；過去學期未結案卡片整列可點擊收合', isProd: false, items: [
       item('改善', '使用者管理頁：清空 Gmail 欄位 → 遷移至新 nomail_ key，走與 Gmail 更改相同的全員通知/稽核重大事件路徑；如清空自己的 Gmail 會強制登出並提醒需管理者補填才能再次使用'),
       item('改善', '待辦頁「過去學期未結案」摘要卡片：整個標題列（含空白區）皆可點擊收合，不再限於文字；兩個按鈕加 event.stopPropagation() 避免誤觸'),
