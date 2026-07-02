@@ -63,6 +63,7 @@ function doPost(e) {
       case 'updateCalendarEvent':  result = updateCalendarEvent_(params, ctx); break;
       case 'deleteCalendarEvent':  result = deleteCalendarEvent_(params, ctx); break;
       case 'listCalendarEvents':   result = listCalendarEvents_(params, ctx); break;
+      case 'shareCalendarWriters': result = shareCalendarWriters_(params, ctx); break;
       case 'uploadFile':           result = uploadFile_(params); break;
       case 'downloadFileBase64':   result = downloadFileBase64_(params); break;
       case 'fetchMentalLeaves':    result = fetchMentalLeaves_(ctx, params); break;
@@ -426,16 +427,19 @@ function buildEventDesc_(actorName, notes, dateTime, bkSerial, isEdit) {
   return desc;
 }
 
-function createCalendarEvent_({ room, customRoom, date, startTime, endTime, counselorName, notes, creatorName, createdAt, bkSerial }, ctx) {
+function createCalendarEvent_({ room, customRoom, date, startTime, endTime, counselorName, notes, creatorName, createdAt, bkSerial, colorId }, ctx) {
   const cal = getOrCreateCalendar_(ctx);
   const { start, end } = parseEventTimes_(date, startTime, endTime);
   const title = buildEventTitle_(room, counselorName, customRoom || '');
   const desc  = buildEventDesc_(creatorName || counselorName || '', notes, createdAt, bkSerial, false);
   const event = cal.createEvent(title, start, end, { description: desc });
+  if (colorId) {
+    try { event.setColor(String(colorId)); } catch (e) { /* colorId 1-11 有效；異常則沿用預設 */ }
+  }
   return event.getId();
 }
 
-function updateCalendarEvent_({ eventId, room, customRoom, date, startTime, endTime, counselorName, notes, creatorName, createdAt, updatedAt, isEdit, bkSerial }, ctx) {
+function updateCalendarEvent_({ eventId, room, customRoom, date, startTime, endTime, counselorName, notes, creatorName, createdAt, updatedAt, isEdit, bkSerial, colorId }, ctx) {
   const cal = getOrCreateCalendar_(ctx);
   const event = cal.getEventById(eventId);
   if (!event) throw new Error('Event not found: ' + eventId);
@@ -444,6 +448,9 @@ function updateCalendarEvent_({ eventId, room, customRoom, date, startTime, endT
   event.setTitle(buildEventTitle_(room, counselorName, customRoom || ''));
   event.setDescription(buildEventDesc_(creatorName || counselorName || '', notes, actorTime, bkSerial, !!isEdit));
   event.setTime(start, end);
+  if (colorId) {
+    try { event.setColor(String(colorId)); } catch (e) { /* 沿用既有色 */ }
+  }
   return { ok: true };
 }
 
@@ -478,15 +485,44 @@ function listCalendarEvents_({ startDate, endDate }, ctx) {
   const start = new Date(startDate + 'T00:00:00+08:00');
   const end   = new Date(endDate   + 'T23:59:59+08:00');
   const events = cal.getEvents(start, end);
-  return events.map(e => ({
-    id:           e.getId(),
-    title:        e.getTitle(),
-    date:         Utilities.formatDate(e.getStartTime(), tz, 'yyyy-MM-dd'),
-    startTime:    Utilities.formatDate(e.getStartTime(), tz, 'HH:mm'),
-    endTime:      Utilities.formatDate(e.getEndTime(),   tz, 'HH:mm'),
-    description:  e.getDescription() || '',
-    lastModified: e.getLastUpdated().toISOString(),
-  }));
+  return events.map(e => {
+    var creators = [];
+    try { creators = (e.getCreators() || []); } catch (err) { creators = []; }
+    var colorId = '';
+    try { colorId = String(e.getColor() || ''); } catch (err) { colorId = ''; }
+    return {
+      id:           e.getId(),
+      title:        e.getTitle(),
+      date:         Utilities.formatDate(e.getStartTime(), tz, 'yyyy-MM-dd'),
+      startTime:    Utilities.formatDate(e.getStartTime(), tz, 'HH:mm'),
+      endTime:      Utilities.formatDate(e.getEndTime(),   tz, 'HH:mm'),
+      description:  e.getDescription() || '',
+      lastModified: e.getLastUpdated().toISOString(),
+      creators:     creators,
+      colorId:      colorId,
+    };
+  });
+}
+
+// 授與（或撤除）指定 email 對本行事曆的 writer 權限
+function shareCalendarWriters_({ emails, revoke }, ctx) {
+  const cal = getOrCreateCalendar_(ctx);
+  const results = { granted: [], removed: [], errors: [] };
+  (emails || []).forEach(function(email) {
+    if (!email || typeof email !== 'string') return;
+    try {
+      if (revoke) {
+        cal.removeEditor(email);
+        results.removed.push(email);
+      } else {
+        cal.addEditor(email);
+        results.granted.push(email);
+      }
+    } catch (e) {
+      results.errors.push({ email: email, message: (e && e.message) || String(e) });
+    }
+  });
+  return results;
 }
 
 // ══════════════════════════════════════════════

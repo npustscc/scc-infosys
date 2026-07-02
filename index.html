@@ -520,7 +520,7 @@
       background: #fff;
       border-radius: 12px;
       padding: 32px 36px;
-      width: 480px;
+      width: 640px;
       max-width: 95vw;
       box-shadow: 0 8px 32px rgba(0,0,0,.18);
     }
@@ -1520,6 +1520,18 @@
         </div>
       </div>
 
+      <div id="admin-panel-gcsync" style="display:none;">
+        <div class="card">
+          <div class="card-header"><h3>GC 編輯權限同步</h3></div>
+          <div style="padding:16px 20px;">
+            <p style="font-size:.88rem;color:#718096;margin-bottom:14px;">
+              授與<strong>專任 / 主任 / 管理者</strong>對系統行事曆的 <strong>writer 權限</strong>，讓他們可在 Google Calendar 端直接編輯自己的預約（例如自訂事件顏色）。此操作僅追加尚未授權的帳號，已授權者略過。
+            </p>
+            <div id="admin-gcsync-wrap"><p style="font-size:.85rem;color:#a0aec0;">載入中…</p></div>
+          </div>
+        </div>
+      </div>
+
       <div id="admin-panel-workhours" style="display:none;">
         <div class="card">
           <div class="card-header"><h3>上班時間設定</h3></div>
@@ -1619,6 +1631,15 @@
           <div class="field-label" style="margin-bottom:6px;">使用頻率記憶（選項排序）</div>
           <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">系統記憶預約時最常選的輔導人員/事由，自動排到前面。</p>
           <button class="btn btn-secondary btn-sm" onclick="prefResetBkFreqs()">清除排序記憶</button>
+        </div>
+        <div style="padding:0 20px 16px;">
+          <div class="field-label" style="margin-bottom:6px;">空間預約顯示顏色</div>
+          <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">選一個屬於自己的顏色（32 色）。此顏色會用於：(1) 空間預約列表中你的預約 cell 底色與左邊條紋；(2) 推送到 Google Calendar 時對應到最接近的 GC 事件顏色（GC 只支援 11 種）。</p>
+          <div id="pref-bkcolor-grid" style="display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;max-width:340px;"></div>
+          <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" onclick="clearMyBkColor()">還原預設（無色）</button>
+            <span id="pref-bkcolor-current" style="font-size:.82rem;color:#4a5568;"></span>
+          </div>
         </div>
       </div>
       <div class="card">
@@ -1818,12 +1839,11 @@
               <option value="week">週</option>
               <option value="list">列表檢視</option>
             </select>
-            <button id="bk-prev-week" class="btn btn-secondary btn-sm" onclick="shiftBkWeek(-1)" style="display:none;">上週</button>
-            <button id="bk-next-week" class="btn btn-secondary btn-sm" onclick="shiftBkWeek(1)" style="display:none;">下週</button>
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
             <button class="btn btn-secondary btn-sm" onclick="refreshBookings()" data-tip="從 Drive 重新讀取最新預約資料，若其他人剛更新可點此同步。">重新整理</button>
             <button class="btn btn-secondary btn-sm" onclick="syncFromCalendar()" data-tip="從 Google Calendar 讀取最新時間變更，同步至系統預約資料。">與Google日曆同步</button>
+            <button class="btn btn-secondary btn-sm" onclick="openBkColorModal()" data-tip="設定屬於你自己的預約顯示顏色，其他人也會看到你的預約以此顏色顯示。">🎨 我的顏色</button>
             <button class="btn btn-primary" onclick="openBookingModal()" data-tip="新增一筆諮商空間預約，填寫日期、時段與空間後儲存。">＋ 新增預約</button>
             <button class="btn btn-secondary btn-sm" onclick="_toggleBkSection('bookings-body','bk-overview-icon')" title="收折/展開" style="padding:2px 7px;font-size:.85rem;"><span id="bk-overview-icon">▼</span></button>
           </div>
@@ -3428,6 +3448,7 @@
       </div>
       <div id="todos-access-audit-section"></div>
       <div id="todos-off-hours-section"></div>
+      <div id="todos-gc-errors-section"></div>
       <div id="todos-ml-notif-section"></div>
       <div id="todos-major-events-section"></div>
       <div id="todos-assignment-section"></div>
@@ -3477,7 +3498,7 @@
       <label>附加身分</label>
       <label class="form-check">
         <input type="checkbox" id="modal-is-admin" />
-        管理者（可檢視所有個案、管理使用者）
+        系統管理者（可檢視所有個案、管理使用者）
       </label>
       <label class="form-check" style="margin-top:6px;">
         <input type="checkbox" id="modal-is-transfer-contact" />
@@ -3488,13 +3509,25 @@
         身心調適假窗口（可存取身心調適假資料庫與關鍵字設定）
       </label>
       <label class="form-check" style="margin-top:6px;">
-        <input type="checkbox" id="modal-is-intern-admin-sup" />
+        <input type="checkbox" id="modal-is-intern-admin-sup" onchange="_updateModalSuperviseesWrap()" />
         實習生行政督導（可查看實習生差勤、審核帳號申請）
       </label>
       <label class="form-check" style="margin-top:6px;">
-        <input type="checkbox" id="modal-is-intern-pro-sup" />
+        <input type="checkbox" id="modal-is-intern-pro-sup" onchange="_updateModalSuperviseesWrap()" />
         實習生專業督導（可查看實習生差勤、審核帳號申請）
       </label>
+      <label class="form-check" style="margin-top:6px;">
+        <input type="checkbox" id="modal-is-pt-contact" onchange="_updateModalSuperviseesWrap()" />
+        兼任心理師窗口（自動成為所負責兼任心理師之個案的當然個管）
+      </label>
+    </div>
+
+    <div id="modal-supervisees-wrap" class="form-row" style="display:none;">
+      <label id="modal-supervisees-label">負責的實習生</label>
+      <div id="modal-supervisees-picker" style="max-height:300px;overflow-y:auto;overflow-x:hidden;border:1px solid #cbd5e0;border-radius:6px;padding:8px 10px;background:#fafbfc;">
+        <span style="font-size:.82rem;color:#a0aec0;">請先勾選督導或窗口身分…</span>
+      </div>
+      <div style="font-size:.75rem;color:#718096;margin-top:4px;">已選人員（含其手上案）在您登入時會自動變成您的當然個管；解除後即失效。停用者以灰字顯示於下方。</div>
     </div>
 
     <div id="modal-error" class="alert alert-error"></div>
@@ -3512,7 +3545,7 @@
 // ══════════════════════════════════════════════
 const CLIENT_ID   = '68582831293-fecbka17adht886tm6oh18vrdsdg1hbj.apps.googleusercontent.com';
 const DRIVE_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP'; // 正式版資料夾
-const BOOTSTRAP_ADMIN_EMAIL = 'linkinlol528101@gmail.com'; // 永久管理者備援帳號
+const BOOTSTRAP_ADMIN_EMAIL = 'npust.scc@heartnpust.tw'; // 永久管理者備援帳號
 const CONFIG_FILE     = 'config.json';
 const CASES_INDEX     = 'cases/index.json'; // 舊格式（升級後僅作備份）
 const CASES_INDEX_FILE = 'cases-index.json'; // 輕量索引（相對 cases/），Hot/Cold 分層載入用
@@ -3539,6 +3572,36 @@ const DEFAULT_WORK_HOURS = {
   holidays: [],                   // ['YYYY-MM-DD']；覆蓋 workDays（假日不上班）
   extraWorkDays: [],              // ['YYYY-MM-DD']；補班日（週末也算上班）
 };
+// 空間預約使用者顏色（32 色）+ GC 11 色映射
+const BK_USER_COLORS = [
+  '#EF476F','#F27B76','#F49A6B','#F6C453','#FFE066','#E4EE79','#B4E37D','#8ED89F',
+  '#5DCFAE','#3EB4B6','#3195B0','#4A78C4','#5F5AA2','#7A4FA0','#994893','#B04780',
+  '#7A6C5D','#95A69C','#B0BEB0','#C7D0C7','#66A182','#4EACAB','#3E85A6','#3E5A99',
+  '#8B5CF6','#D946EF','#EC4899','#F43F5E','#FB923C','#F59E0B','#84CC16','#22D3EE',
+];
+const GC_EVENT_COLORS = {
+  1:'#a4bdfc',2:'#7ae7bf',3:'#dbadff',4:'#ff887c',5:'#fbd75b',
+  6:'#ffb878',7:'#46d6db',8:'#e1e1e1',9:'#5484ed',10:'#51b749',11:'#dc2127'
+};
+function _hex2rgb(hex) {
+  if (!hex || hex[0] !== '#' || hex.length !== 7) return null;
+  return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)];
+}
+function _nearestGcColorId(hex) {
+  const c = _hex2rgb(hex);
+  if (!c) return null;
+  let best = null, bestD = Infinity;
+  for (const [id, gh] of Object.entries(GC_EVENT_COLORS)) {
+    const g = _hex2rgb(gh); if (!g) continue;
+    const d = (c[0]-g[0])**2 + (c[1]-g[1])**2 + (c[2]-g[2])**2;
+    if (d < bestD) { bestD = d; best = id; }
+  }
+  return best;
+}
+// GC 事件驗證錯誤 feed
+const GC_VALIDATION_ERRORS_FILE = 'gc_validation_errors.json';
+let _gcErrorsCache = { entries: [] };            // 記憶體快取
+let _gcErrorsBroadcastedThisSession = new Set(); // 本 session 已廣播的 eventId+kind 組合，避免刷屏
 const BOOKINGS_FILE   = 'bookings.json';
 const ISSUES_FILE        = 'issues.json';
 const ISSUES_FOLDER_ID   = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP'; // dev/prod 共用正式版資料夾
@@ -3792,6 +3855,23 @@ function formatCounselorLabel(key) {
   if (!name) return key;
   if (!role || role === '系統管理者') return name;
   return name + role;
+}
+
+// 個案列表「管／初」徽章顏色（依類型區分，醒目好辨識）
+const CASE_BADGE_COLORS = {
+  '管':  { bg: '#d6eaf8', fg: '#2471a3' }, // 手動指定個管
+  '專督': { bg: '#e9d8fd', fg: '#553c9a' }, // 當然個管·實習生專業督導
+  '行督': { bg: '#fde3ec', fg: '#9d174d' }, // 當然個管·實習生行政督導
+  '窗':   { bg: '#cffafe', fg: '#0e7490' }, // 當然個管·兼任心理師窗口
+  '初':   { bg: '#d4edda', fg: '#276749' }, // 初次晤談者
+};
+// 個案列表徽章 chip：一或多個色塊 tag + 姓名職稱（label 已含姓名+職稱）
+function _caseBadgeChip(tags, label) {
+  const badges = tags.map(t => {
+    const c = CASE_BADGE_COLORS[t] || CASE_BADGE_COLORS['管'];
+    return `<span style="background:${c.bg};color:${c.fg};border-radius:3px;padding:0 4px;font-weight:700;letter-spacing:.02em;">${escHtml(t)}</span>`;
+  }).join(' ');
+  return `<span style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap;margin:1px 8px 1px 0;">${badges}${escHtml(label)}</span>`;
 }
 
 const SERVICE_ITEMS = [
@@ -5293,7 +5373,7 @@ async function afterLogin() {
     // ── users folder cache ──
     if (batch.usersFolderId) {
       _usersFolderIdCache = batch.usersFolderId;
-      localStorage.setItem(_USERS_FOLDER_LS_KEY, batch.usersFolderId);
+      try { localStorage.setItem(_USERS_FOLDER_LS_KEY, batch.usersFolderId); } catch (_) {}
     }
 
     // ── todos ──
@@ -5387,6 +5467,7 @@ async function afterLogin() {
     loadPendingUsers().catch(() => {});
     loadAccessLog().catch(() => {}); // 危機閱讀監督 feed + 我今日的授權
     loadOffHoursLog().catch(() => {}); // 非上班時間監督 feed（主任/管理者/專任在待辦頁可見）
+    loadGcErrorsCache().catch(() => {}); // GC 事件錯誤 feed（同上可見範圍）
 
     // ── 非上班時間登入：寫入 feed + 首次觸發廣播通知（非 priv 才推）──
     if (_isOffHours()) {
@@ -5475,7 +5556,7 @@ function resolveUserRole() {
   document.getElementById('sb-role').textContent  = currentRole || '（未設定角色）';
   // 附加身分 badges：與使用者管理頁的 badge 呈現一致
   const _sbExtraBadges = [];
-  if (extraRole === '管理者')                _sbExtraBadges.push(`<span class="badge badge-orange">管理者</span>`);
+  if (extraRole === '管理者')                _sbExtraBadges.push(`<span class="badge badge-orange">系統管理者</span>`);
   else if (extraRole === '個案管理員')       _sbExtraBadges.push(`<span class="badge badge-gray">個案管理員</span>`);
   else if (extraRole === '實習生行政督導')   _sbExtraBadges.push(`<span class="badge badge-gray">實習生行政督導</span>`);
   else if (extraRole === '實習生專業督導')   _sbExtraBadges.push(`<span class="badge badge-gray">實習生專業督導</span>`);
@@ -5968,6 +6049,64 @@ function _getInitialInterviewersForCase(c) {
   return [...emails];
 }
 
+// ══════════════════════════════════════════════
+//  當然個管（派生式）：實習生督導 / 兼任心理師窗口
+//  設計：只存 superviseeEmails 名單；每次渲染依名單推導個管關係
+//  好處：實習生新開案自動生效、關係解除自動失效、無需批次寫 allowedCases
+// ══════════════════════════════════════════════
+function _isPartTimeContact(email) {
+  return configData?.users?.[email]?.isPartTimeContact === true;
+}
+function _isInternSupervisor(email) {
+  const r = configData?.users?.[email]?.extraRole;
+  return r === '實習生行政督導' || r === '實習生專業督導';
+}
+function _getSuperviseeEmails(email) {
+  const arr = configData?.users?.[email]?.superviseeEmails;
+  return Array.isArray(arr) ? arr.filter(Boolean) : [];
+}
+// 每次計算：casesData 較小（<= 1500），supervisees 也小；避免快取失效複雜度。
+// 若日後效能吃緊，可再引入 supervisorEmail-scoped cache 並在 saveCase/changeCounselor/saveUser 呼叫 _invalidateAutoMgrCache()。
+function _invalidateAutoMgrCache() { /* placeholder — 目前無快取 */ }
+function _getAutoManagedCaseIds(supervisorEmail) {
+  if (!supervisorEmail) return new Set();
+  const supervisees = new Set(_getSuperviseeEmails(supervisorEmail));
+  const ids = new Set();
+  if (supervisees.size) {
+    (casesData || []).forEach(c => {
+      if (!c || c.deleted) return;
+      const lat = _getLatestCounselorEmail(c);
+      if (lat && supervisees.has(lat)) ids.add(c.id);
+    });
+  }
+  return ids;
+}
+// 反查：此案有哪些自動個管；回傳 [{email, reason:{kind,label,supervisee}}]
+function _getAutoManagersForCase(caseId) {
+  const c = (casesData || []).find(x => x.id === caseId);
+  if (!c) return [];
+  const lat = _getLatestCounselorEmail(c);
+  if (!lat) return [];
+  const supervisee = configData?.users?.[lat];
+  const supName = supervisee?.name || lat;
+  const supRole = supervisee?.role || '';
+  const out = [];
+  Object.entries(configData?.users || {}).forEach(([email, u]) => {
+    if (!u || u.disabled) return;
+    if (!_getSuperviseeEmails(email).includes(lat)) return;
+    let reason = null;
+    if (_isInternSupervisor(email) && supRole === '實習諮商心理師') {
+      const roleTag = u.extraRole === '實習生行政督導' ? '行政督導' : '專業督導';
+      const shortTag = u.extraRole === '實習生行政督導' ? '行督' : '專督';
+      reason = { kind: 'supervisor', label: `督導身份·${roleTag}`, shortTag, supervisee: supName };
+    } else if (_isPartTimeContact(email) && typeof supRole === 'string' && supRole.startsWith('兼任')) {
+      reason = { kind: 'ptContact', label: '窗口身份', shortTag: '窗', supervisee: supName };
+    }
+    if (reason) out.push({ email, reason });
+  });
+  return out;
+}
+
 // 個案（可為 index-only entry）對某使用者是否「屬於我／我可見的自有案」——非管理者可見性單一真相
 // 供 renderCases 過濾與 scoped 載入 chunk 計算共用，確保兩處判定一致
 function _caseVisibleToUser(c, email, allowedSet) {
@@ -5975,8 +6114,11 @@ function _caseVisibleToUser(c, email, allowedSet) {
   const lat = _getLatestCounselorEmail(c); // index-only 時 fallback 到 index.counselorEmail
   if (!lat) return true;                    // 未派案：全員可見
   if (lat === email) return true;           // 主責
-  if (allowedSet && allowedSet.has(c.id)) return true; // 個管
+  if (allowedSet && allowedSet.has(c.id)) return true; // 個管（手動）
   if (_isInitialInterviewerOfCase(c, email)) return true; // 初次晤談者（index 相容）
+  // 當然個管（派生：督導/窗口）——直接查 supervisee 名單，避免依賴 casesData（chunk 載入期 casesData 尚未 populate）
+  const supervisees = _getSuperviseeEmails(email);
+  if (supervisees.length && supervisees.includes(lat)) return true;
   return false;
 }
 
@@ -6297,9 +6439,10 @@ function renderCases() {
   // ── 僅主責/個管篩選 ──
   if (_casesMyOnly) {
     const myAllowed = new Set(configData?.users?.[currentUser?.email]?.allowedCases || []);
+    const myAutoManaged = _getAutoManagedCaseIds(currentUser?.email);
     visible = visible.filter(c => {
       const lat = _getLatestCounselorEmail(c);
-      return lat === currentUser?.email || myAllowed.has(c.id);
+      return lat === currentUser?.email || myAllowed.has(c.id) || myAutoManaged.has(c.id);
     });
   }
   const _isPrivilegedCases = currentRole === '主任' || extraRole === '管理者';
@@ -6432,12 +6575,22 @@ function renderCases() {
     return (b.updatedAt || '') > (a.updatedAt || '') ? 1 : -1;
   });
 
-  // 建立「個案ID → 管理員名單」反查表
+  // 建立「個案ID → 管理員名單」反查表（手動個管 + 派生的「當然個管」）；
+  // 每人可能同時具備多個 tag（如手動個管兼督導），一律用 Map<email, Set<tag>> 記錄，渲染時每人各自的 tag 各自成一個徽章
   const caseManagerMap = {};
   Object.entries(configData.users || {}).forEach(([key, info]) => {
     (info.allowedCases || []).forEach(id => {
-      if (!caseManagerMap[id]) caseManagerMap[id] = [];
-      caseManagerMap[id].push(formatCounselorLabel(key));
+      if (!caseManagerMap[id]) caseManagerMap[id] = new Map();
+      if (!caseManagerMap[id].has(key)) caseManagerMap[id].set(key, new Set());
+      caseManagerMap[id].get(key).add('管');
+    });
+  });
+  visible.forEach(c => {
+    _getAutoManagersForCase(c.id).forEach(({ email, reason }) => {
+      if (!caseManagerMap[c.id]) caseManagerMap[c.id] = new Map();
+      if (!caseManagerMap[c.id].has(email)) caseManagerMap[c.id].set(email, new Set());
+      const tag = reason.shortTag || (reason.kind === 'supervisor' ? '督' : '窗');
+      caseManagerMap[c.id].get(email).add(tag);
     });
   });
   // 建立「個案ID → 初談者名單」反查表（權限同個管，badge 不同）
@@ -6562,17 +6715,15 @@ function renderCases() {
       <td>${escHtml(c.name  || '—')}</td>
       <td>${escHtml(c.studentId || '—')}</td>
       <td>${escHtml(c.counselorName || '—')}${
-        (caseManagerMap[c.id] || []).length
-          ? `<div style="font-size:.72rem;margin-top:2px;color:#2471a3;">
-               <span style="background:#d6eaf8;border-radius:3px;padding:0 4px;font-weight:700;letter-spacing:.02em;">管</span>
-               ${escHtml((caseManagerMap[c.id] || []).join('、'))}
+        caseManagerMap[c.id] && caseManagerMap[c.id].size
+          ? `<div style="font-size:.72rem;margin-top:2px;display:flex;flex-wrap:wrap;">
+               ${[...caseManagerMap[c.id].entries()].map(([email, tags]) => _caseBadgeChip([...tags], formatCounselorLabel(email))).join('')}
              </div>`
           : ''
       }${
         (caseInitInterviewerMap[c.id] || []).length
-          ? `<div style="font-size:.72rem;margin-top:2px;color:#276749;">
-               <span style="background:#d4edda;border-radius:3px;padding:0 4px;font-weight:700;letter-spacing:.02em;">初</span>
-               ${escHtml((caseInitInterviewerMap[c.id] || []).join('、'))}
+          ? `<div style="font-size:.72rem;margin-top:2px;display:flex;flex-wrap:wrap;">
+               ${(caseInitInterviewerMap[c.id] || []).map(label => _caseBadgeChip(['初'], label)).join('')}
              </div>`
           : ''
       }</td>
@@ -7284,11 +7435,14 @@ function renderAdminPage() {
   document.getElementById('admin-panel-depts').style.display      = tab === 'depts'     ? '' : 'none';
   document.getElementById('admin-panel-presets').style.display    = tab === 'presets'   ? '' : 'none';
   document.getElementById('admin-panel-workhours').style.display  = tab === 'workhours' ? '' : 'none';
+  const gcPanel = document.getElementById('admin-panel-gcsync');
+  if (gcPanel) gcPanel.style.display = tab === 'gcsync' ? '' : 'none';
   if (tab === 'users')    { renderAdminUsers(); }
   else if (tab === 'apps')      renderPendingUsersTab();
   else if (tab === 'depts')     { renderAdminDegreeMapping(); renderAdminDeptCollege(); }
   else if (tab === 'presets')   { renderAdminPresets(); renderAdminBReasons(); }
   else if (tab === 'workhours') renderAdminWorkHours();
+  else if (tab === 'gcsync')    renderAdminGcSync();
 }
 
 function _renderAdminTabs() {
@@ -7305,7 +7459,7 @@ function _renderAdminTabs() {
   const badge = count > 0
     ? ` <span style="background:#e53e3e;color:#fff;border-radius:10px;padding:0 5px;font-size:.72rem;">${count}</span>`
     : '';
-  bar.innerHTML = _t('users','使用者列表') + _t('apps','帳號申請審核' + badge) + _t('depts','系所與學制') + _t('presets','快速選項') + _t('workhours','上班時間');
+  bar.innerHTML = _t('users','使用者列表') + _t('apps','帳號申請審核' + badge) + _t('depts','系所與學制') + _t('presets','快速選項') + _t('workhours','上班時間') + _t('gcsync','GC 同步');
 }
 
 function _adminTab(tab) {
@@ -7472,7 +7626,7 @@ function renderAdminUsers() {
   const rows = filtered.map(([key, info]) => {
     const isAdminUser = info.isAdmin === true || info.extraRole === '管理者';
     const _xBadges = [];
-    if (isAdminUser) _xBadges.push(`<span class="badge badge-orange">管理者</span>`);
+    if (isAdminUser) _xBadges.push(`<span class="badge badge-orange">系統管理者</span>`);
     if (info.extraRole && info.extraRole !== '管理者') {
       _xBadges.push(info.extraRole === '個案管理員'
         ? `<span class="badge badge-gray">個案管理員</span><span style="color:#718096;font-size:.8rem;"> (${(info.allowedCases || []).length} 個案)</span>`
@@ -7656,6 +7810,78 @@ async function importBulkUsers() {
 //  使用者 Modal
 // ══════════════════════════════════════════════
 let _editingEmail = null;
+let _modalSuperviseeSelected = new Set(); // supervisee email 集合，儲存時寫回 superviseeEmails
+
+// 依當下勾選的督導/窗口身分決定候選者：
+//   實習生督導 → role === '實習諮商心理師'
+//   兼任窗口   → role.startsWith('兼任')
+function _modalSuperviseeCandidates() {
+  const isInternSup = document.getElementById('modal-is-intern-admin-sup')?.checked
+                    || document.getElementById('modal-is-intern-pro-sup')?.checked;
+  const isPt = document.getElementById('modal-is-pt-contact')?.checked;
+  const roles = new Set();
+  if (isInternSup) roles.add('實習諮商心理師');
+  return Object.entries(configData?.users || {}).filter(([, u]) => {
+    if (!u || !u.role) return false;
+    if (roles.has(u.role)) return true;
+    if (isPt && typeof u.role === 'string' && u.role.startsWith('兼任')) return true;
+    return false;
+  }).sort(([, a], [, b]) => (a.name || '').localeCompare(b.name || '', 'zh'));
+}
+function _updateModalSuperviseesWrap() {
+  const isInternSup = document.getElementById('modal-is-intern-admin-sup')?.checked
+                    || document.getElementById('modal-is-intern-pro-sup')?.checked;
+  const isPt = document.getElementById('modal-is-pt-contact')?.checked;
+  const wrap = document.getElementById('modal-supervisees-wrap');
+  const label = document.getElementById('modal-supervisees-label');
+  if (!wrap) return;
+  if (!isInternSup && !isPt) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+  if (label) {
+    label.textContent = (isInternSup && isPt) ? '負責的實習生與兼任心理師'
+                     : isInternSup ? '負責的實習生'
+                     : '負責的兼任心理師';
+  }
+  _renderModalSuperviseesPicker();
+}
+function _renderModalSuperviseesPicker() {
+  const picker = document.getElementById('modal-supervisees-picker');
+  if (!picker) return;
+  const cands = _modalSuperviseeCandidates();
+  const active   = cands.filter(([, u]) => !u.disabled);
+  const disabled = cands.filter(([,  u]) =>  u.disabled);
+  if (!cands.length) {
+    picker.innerHTML = '<span style="font-size:.82rem;color:#a0aec0;">目前無符合角色的候選人（實習諮商心理師/兼任心理師）。</span>';
+    return;
+  }
+  const row = ([email, u], greyOut) => {
+    const checked = _modalSuperviseeSelected.has(email) ? 'checked' : '';
+    const name = escHtml(u.name || email);
+    const role = escHtml(u.role || '');
+    return `<label style="display:flex;align-items:center;gap:12px;padding:6px 4px;${greyOut?'color:#a0aec0;':''}cursor:pointer;font-size:.85rem;">
+      <input type="checkbox" class="mspv-cb" style="flex-shrink:0;" data-email="${escHtml(email)}" ${checked} onchange="_onModalSuperviseeToggle(this)">
+      <span style="font-weight:700;color:${greyOut?'#a0aec0':'#2d3748'};white-space:nowrap;">${name}</span>
+      <span style="font-size:.78rem;color:${greyOut?'#cbd5e0':'#6b7280'};white-space:nowrap;">${role}</span>
+      ${greyOut ? '<span style="margin-left:auto;flex-shrink:0;font-size:.7rem;color:#c53030;background:#fed7d7;border-radius:4px;padding:2px 7px;font-weight:600;">已停用</span>' : ''}
+    </label>`;
+  };
+  let html = '';
+  if (active.length) {
+    html += '<div style="font-size:.75rem;font-weight:700;color:#2b6cb0;padding:4px 4px;border-bottom:1px solid #e2e8f0;margin-bottom:4px;">啟用中</div>';
+    html += active.map(x => row(x, false)).join('');
+  }
+  if (disabled.length) {
+    html += '<div style="font-size:.75rem;font-weight:700;color:#a0aec0;padding:4px 4px;border-bottom:1px solid #e2e8f0;margin-top:10px;margin-bottom:4px;">已停用</div>';
+    html += disabled.map(x => row(x, true)).join('');
+  }
+  picker.innerHTML = html;
+}
+window._onModalSuperviseeToggle = function(cb) {
+  const email = cb.dataset.email;
+  if (!email) return;
+  if (cb.checked) _modalSuperviseeSelected.add(email);
+  else _modalSuperviseeSelected.delete(email);
+};
 
 
 function openUserModal(key) {
@@ -7684,8 +7910,11 @@ function openUserModal(key) {
     document.getElementById('modal-is-ml-contact').checked        = info.isMentalLeaveContact === true;
     document.getElementById('modal-is-intern-admin-sup').checked  = info.extraRole === '實習生行政督導';
     document.getElementById('modal-is-intern-pro-sup').checked    = info.extraRole === '實習生專業督導';
+    document.getElementById('modal-is-pt-contact').checked        = info.isPartTimeContact === true;
     document.getElementById('modal-intern-from').value = info.internFrom || '';
     document.getElementById('modal-intern-to').value   = info.internTo   || '';
+    _modalSuperviseeSelected = new Set(Array.isArray(info.superviseeEmails) ? info.superviseeEmails : []);
+    _updateModalSuperviseesWrap();
     _onRoleChange();
   } else {
     document.getElementById('modal-title').textContent = '新增使用者';
@@ -7700,8 +7929,11 @@ function openUserModal(key) {
     document.getElementById('modal-is-ml-contact').checked        = false;
     document.getElementById('modal-is-intern-admin-sup').checked  = false;
     document.getElementById('modal-is-intern-pro-sup').checked    = false;
+    document.getElementById('modal-is-pt-contact').checked        = false;
     document.getElementById('modal-intern-from').value = '';
     document.getElementById('modal-intern-to').value   = '';
+    _modalSuperviseeSelected = new Set();
+    _updateModalSuperviseesWrap();
     _onRoleChange();
   }
 
@@ -7724,6 +7956,8 @@ async function saveUser() {
   const isML           = document.getElementById('modal-is-ml-contact').checked;
   const isInternAdminS = document.getElementById('modal-is-intern-admin-sup').checked;
   const isInternProS   = document.getElementById('modal-is-intern-pro-sup').checked;
+  const isPtContact    = document.getElementById('modal-is-pt-contact').checked;
+  const supervisees    = (isInternAdminS || isInternProS || isPtContact) ? [..._modalSuperviseeSelected] : [];
   const errEl    = document.getElementById('modal-error');
   errEl.style.display = 'none';
 
@@ -7779,6 +8013,7 @@ async function saveUser() {
     if (isAdmin) merged.isAdmin = true; else delete merged.isAdmin;
     if (isTC)    merged.isTransferContact    = true; else delete merged.isTransferContact;
     if (isML)    merged.isMentalLeaveContact = true; else delete merged.isMentalLeaveContact;
+    if (isPtContact) merged.isPartTimeContact = true; else delete merged.isPartTimeContact;
     if (isInternAdminS)    merged.extraRole = '實習生行政督導';
     else if (isInternProS) merged.extraRole = '實習生專業督導';
     else if (!isAdmin)     delete merged.extraRole;
@@ -7786,6 +8021,7 @@ async function saveUser() {
       if (_internFrom) merged.internFrom = _internFrom; else delete merged.internFrom;
       if (_internTo)   merged.internTo   = _internTo;   else delete merged.internTo;
     } else { delete merged.internFrom; delete merged.internTo; }
+    if (supervisees.length) merged.superviseeEmails = supervisees; else delete merged.superviseeEmails;
     configData.users[newKey] = merged;
     delete configData.users[oldKey];
   } else {
@@ -7794,6 +8030,7 @@ async function saveUser() {
     if (isAdmin) entry.isAdmin = true; else delete entry.isAdmin;
     if (isTC)    entry.isTransferContact    = true; else delete entry.isTransferContact;
     if (isML)    entry.isMentalLeaveContact = true; else delete entry.isMentalLeaveContact;
+    if (isPtContact) entry.isPartTimeContact = true; else delete entry.isPartTimeContact;
     if (isInternAdminS)       entry.extraRole = '實習生行政督導';
     else if (isInternProS)    entry.extraRole = '實習生專業督導';
     else if (!isAdmin)        delete entry.extraRole;
@@ -7801,8 +8038,10 @@ async function saveUser() {
       if (_internFrom) entry.internFrom = _internFrom; else delete entry.internFrom;
       if (_internTo)   entry.internTo   = _internTo;   else delete entry.internTo;
     } else { delete entry.internFrom; delete entry.internTo; }
+    if (supervisees.length) entry.superviseeEmails = supervisees; else delete entry.superviseeEmails;
     configData.users[newKey] = entry;
   }
+  _invalidateAutoMgrCache();
 
   // Close modal and update UI immediately
   document.getElementById('user-modal').style.display = 'none';
@@ -7817,6 +8056,8 @@ async function saveUser() {
     auditLog(action, null, null, displayLabel + (isMigrating ? `（${oldKey} → ${newKey}）` : ''));
     bgJobDone(jobId);
     setAlert('admin-alert', 'success', `使用者 ${escHtml(displayLabel)} 已儲存。`);
+    // 增量：專任/主任/管理者且尚未同步過 → 背景授與 GC writer 權限
+    if (!newKey.startsWith('nomail_')) _gcAclAutoSyncOne(newKey).catch(() => {});
   } catch (err) {
     bgJobFail(jobId, err.message);
     setAlert('admin-alert', 'error', '儲存失敗：' + err.message);
@@ -8624,10 +8865,14 @@ async function showCaseDetail(caseId) {
 
   const mgrsEl = document.getElementById('detail-managers');
   const _mgrEmailsTop = _getManagersForCase(c.id);
+  const _autoMgrTopMap = new Map(); // email → reason
+  _getAutoManagersForCase(c.id).forEach(x => _autoMgrTopMap.set(x.email, x.reason));
   // 初談者：權限等同個管員，但獨立顯示、標籤不同（排除主責，避免重複）
   const _iiEmailsTop = _getInitialInterviewersForCase(c).filter(e => e && e !== c.counselorEmail);
+  const _mgrNameOf = e => escHtml(formatCounselorLabel(e) || configData?.users?.[e]?.name || e) +
+    (_autoMgrTopMap.has(e) ? `<span style="font-size:.7rem;color:#553c9a;background:#e9d8fd;border-radius:6px;padding:0 5px;margin-left:3px;" data-tip="當然個管：${escHtml(_autoMgrTopMap.get(e).label + ' · ' + _autoMgrTopMap.get(e).supervisee)}">當然</span>` : '');
   const _mgrLine = _mgrEmailsTop.length
-    ? `<div style="font-size:.82rem;color:#718096;">個案管理員：${_mgrEmailsTop.map(e => escHtml(formatCounselorLabel(e) || configData?.users?.[e]?.name || e)).join('、')}</div>`
+    ? `<div style="font-size:.82rem;color:#718096;">個案管理員：${_mgrEmailsTop.map(_mgrNameOf).join('、')}</div>`
     : '';
   const _iiLine = _iiEmailsTop.length
     ? `<div style="font-size:.82rem;color:#276749;">初談者：${_iiEmailsTop.map(e => escHtml(formatCounselorLabel(e) || configData?.users?.[e]?.name || e)).join('、')}</div>`
@@ -9138,6 +9383,11 @@ async function showCaseDetail(caseId) {
   } else {
   // ── 個案管理員區段 HTML ──
   const _mgrEmails = _getManagersForCase(c.id);
+  // 拆分手動個管與當然個管；同一人若兼有兩者 → 顯示手動 chip + 附註「亦為當然個管」
+  const _autoMgrMapDetail = new Map();
+  _getAutoManagersForCase(c.id).forEach(x => _autoMgrMapDetail.set(x.email, x.reason));
+  const _manualMgrEmails = _mgrEmails.filter(e => (configData?.users?.[e]?.allowedCases || []).includes(c.id));
+  const _autoOnlyEmails  = _mgrEmails.filter(e => !_manualMgrEmails.includes(e) && _autoMgrMapDetail.has(e));
   // 初談者：權限等同個管員，但獨立顯示為綠色 chips（排除主責及已列為個管者，避免重複）
   const _iiEmailsDetail = _getInitialInterviewersForCase(c).filter(e => e && e !== c.counselorEmail && !_mgrEmails.includes(e));
   const _mgrNonSet = new Set(
@@ -9145,18 +9395,29 @@ async function showCaseDetail(caseId) {
       .filter(([email, info]) => !_mgrEmails.includes(email) && email !== c.counselorEmail && info.role && info.role !== '系統管理者')
       .map(([email]) => email)
   );
-  const _mgrChips = _mgrEmails.length
-    ? _mgrEmails.map(email => {
+  const _mgrChips = _manualMgrEmails.length
+    ? _manualMgrEmails.map(email => {
         const _mSems = configData?.users?.[email]?.allowedCasesSems?.[c.id];
         const _semTag = _mSems?.length
           ? `<span style="font-size:.73rem;color:#2b6cb0;background:#bee3f8;border-radius:8px;padding:1px 5px;margin-left:3px;white-space:nowrap;">${_mSems.map(s => escHtml(semesterLabel(s))).join('、')}</span>`
           : `<span style="font-size:.73rem;color:#718096;margin-left:3px;">所有學期</span>`;
+        const _autoNote = _autoMgrMapDetail.has(email)
+          ? `<span style="font-size:.7rem;color:#553c9a;background:#e9d8fd;border-radius:6px;padding:1px 5px;margin-left:3px;" data-tip="亦是當然個管：${escHtml(_autoMgrMapDetail.get(email).label + ' · ' + _autoMgrMapDetail.get(email).supervisee)}">兼當然</span>`
+          : '';
         return `<span style="display:inline-flex;align-items:center;gap:2px;background:#ebf5fb;border:1px solid #aed6f1;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;">
-          ${escHtml(formatCounselorLabel(email))}${_semTag}
+          ${escHtml(formatCounselorLabel(email))}${_semTag}${_autoNote}
           ${_canEditMgrs ? `<button onclick="removeCaseManager('${escHtml(c.id)}','${escHtml(email)}')" style="border:none;background:none;cursor:pointer;color:#718096;font-size:.9rem;padding:0 0 0 4px;line-height:1;">✕</button>` : ''}
         </span>`;
       }).join('')
-    : `<span style="color:#718096;font-size:.85rem;">尚未指定</span>`;
+    : '';
+  const _autoChips = _autoOnlyEmails.map(email => {
+    const reason = _autoMgrMapDetail.get(email) || { label: '當然個管', supervisee: '' };
+    return `<span style="display:inline-flex;align-items:center;gap:2px;background:#faf5ff;border:1px solid #d6bcfa;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;color:#553c9a;" data-tip="當然個管（不可移除，依「督導/窗口 → 負責人員」設定推導；解除後即失效）">
+      ${escHtml(formatCounselorLabel(email))}
+      <span style="font-size:.72rem;color:#553c9a;background:#e9d8fd;border-radius:8px;padding:1px 5px;margin-left:3px;">${escHtml(reason.label)}${reason.supervisee?` · ${escHtml(reason.supervisee)}`:''}</span>
+    </span>`;
+  }).join('');
+  const _mgrChipsAll = (_mgrChips + _autoChips) || `<span style="color:#718096;font-size:.85rem;">尚未指定</span>`;
   const _iiChips = _iiEmailsDetail.length
     ? _iiEmailsDetail.map(email =>
         `<span style="display:inline-flex;align-items:center;gap:2px;background:#e6ffed;border:1px solid #86efac;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;color:#276749;" data-tip="初次晤談者，權限與個案管理員相同（不可移除，依初次晤談紀錄自動判定）">
@@ -9177,7 +9438,7 @@ async function showCaseDetail(caseId) {
         <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">個案管理員
           <span style="font-size:.75rem;font-weight:400;color:#718096;">（可閱讀此個案紀錄的輔導人員，主責以外）</span>
         </div>
-        <div style="margin-bottom:8px;">${_mgrChips}${_iiChips}</div>
+        <div style="margin-bottom:8px;">${_mgrChipsAll}${_iiChips}</div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <select id="cm-add-select" class="field-select" style="max-width:200px;">${_mgrAddOpts}</select>
           ${_mgrSemOpts}
@@ -9509,16 +9770,26 @@ async function removeCaseManager(caseId, email) {
 function _hasManagerAccess(email, caseId, semPrefix) {
   const info = configData?.users?.[email];
   if (!info) return false;
-  if (!(info.allowedCases || []).includes(caseId)) return false;
-  const sems = info.allowedCasesSems?.[caseId];
-  if (!sems || !semPrefix) return true;
-  return sems.includes(semPrefix);
+  // 手動個管路徑
+  if ((info.allowedCases || []).includes(caseId)) {
+    const sems = info.allowedCasesSems?.[caseId];
+    if (!sems || !semPrefix) return true;
+    if (sems.includes(semPrefix)) return true;
+    // 手動 allowedCases 存在但 sem 不在其範圍 → 落到派生路徑再檢一次（跨學期覆蓋）
+  }
+  // 派生路徑：督導/窗口對其 supervisee 的案有當然個管權
+  if (_getAutoManagedCaseIds(email).has(caseId)) return true;
+  return false;
 }
 
 function _getManagersForCase(caseId) {
-  return Object.entries(configData?.users || {})
-    .filter(([email]) => _hasManagerAccess(email, caseId))
+  // 手動個管
+  const manual = Object.entries(configData?.users || {})
+    .filter(([email, info]) => (info?.allowedCases || []).includes(caseId))
     .map(([email]) => email);
+  // 自動個管（去掉已在手動清單者，避免重複顯示；顯示端有需要另外標記）
+  const autoOnly = _getAutoManagersForCase(caseId).map(x => x.email).filter(e => !manual.includes(e));
+  return [...manual, ...autoOnly];
 }
 
 async function addCaseManagerInDetail(caseId) {
@@ -12414,15 +12685,42 @@ async function softDeleteEval(caseId, evalId) {
     }
   })();
 }
+// 判斷某學期是否「未結案」——不再單靠 semesterStatus 的預設 'active'，改為多重證據判斷
+// Bug 背景：舊資料 c.semesterStatus 缺該學期的 key 時，舊邏輯 || 'active' 會誤判為未結案，
+// 即便 c.semesterEvaluations 已有該學期的 closure、c.status 已經 'closed'，或整案已被視為 archived。
+function _isSemesterUnclosed(c, sem) {
+  const semSt = c.semesterStatus?.[sem];
+  if (semSt === 'closed') return false;               // 明確結案
+  if (semSt === 'active') return true;                // 明確進行中（就算 c.status=closed 也優先顯示為活動）
+  // ── semesterStatus 該學期為 undefined（舊資料）→ 其他線索 ──
+  const evals = Array.isArray(c.semesterEvaluations) ? c.semesterEvaluations : [];
+  const hasClosureEvalForSem = evals.some(e =>
+    e && e.type === 'closure' && !e.deletedAt && !e.replacedBy && e.semester === sem
+  );
+  if (hasClosureEvalForSem) return false;             // 有明確該學期的結案評估
+  // 舊格式 closureEvaluation（不帶學期）+ 案僅一個學期 → 視為該學期已結案
+  const semList = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)].filter(Boolean);
+  if (c.closureEvaluation && !evals.length && semList.length === 1) return false;
+  const latestSem = [...semList].sort().pop();
+  // 最新學期 + c.status='closed' → 該學期已結案
+  if (sem === latestSem && c.status === 'closed') return false;
+  // 積極規則：整案 c.status='closed' 且該學期無任何 semesterStatus 記錄
+  //   通常代表資料為舊資料（老案在系統升級前結案，未逐學期回填 semesterStatus）
+  //   為避免持續無意義提醒，一律視為結案。若確實有未結案需求，可透過重開案／建立 closure eval 明確覆寫。
+  if (c.status === 'closed' && semSt === undefined) return false;
+  // 個案被封存（archived）通常表示不再服務 → 也不再提醒未結案
+  if (c.archived) return false;
+  return true; // 無任何結案證據 → 仍需提醒
+}
 function _hasPastUnclosed(c) {
   const curSem = currentSemesterPrefix();
   const sems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)];
-  return sems.some(s => s && s < curSem && (c.semesterStatus?.[s] || 'active') !== 'closed');
+  return sems.some(s => s && s < curSem && _isSemesterUnclosed(c, s));
 }
 function _pastUnclosedSems(c) {
   const curSem = currentSemesterPrefix();
   const sems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)];
-  return sems.filter(s => s && s < curSem && (c.semesterStatus?.[s] || 'active') !== 'closed');
+  return sems.filter(s => s && s < curSem && _isSemesterUnclosed(c, s));
 }
 function _dismissUnclosedReminder() {
   const reminders = todosData.filter(t => t.type === 'unclosed_reminder' && !t.done);
@@ -18262,7 +18560,11 @@ function _renderOffHoursSection() {
         <span style="color:#a0aec0;">${fmtT(a.t)}</span>
       </div>`;
     }).join('');
-    const privBadge = g.isPriv ? `<span style="font-size:.7rem;color:#c05621;background:#fed7aa;border-radius:8px;padding:1px 6px;margin-left:6px;">主任／管理者</span>` : '';
+    const _privTags = [];
+    if (g.currentRole === '主任') _privTags.push('主任');
+    if (g.extraRole === '管理者') _privTags.push('系統管理者');
+    if (!_privTags.length && g.isPriv) _privTags.push('主任／系統管理者'); // 保底：當天缺登入事件、role 欄位未知時仍標示為特權
+    const privBadge = _privTags.map(t => `<span style="font-size:.7rem;color:#c05621;background:#fed7aa;border-radius:8px;padding:1px 6px;margin-left:6px;">${escHtml(t)}</span>`).join('');
     return `<div style="padding:8px 0;border-top:1px solid #e9d8fd;">
       <div style="font-size:.86rem;color:#2d3748;">
         <span style="font-weight:700;">${escHtml(g.name || g.email)}</span>${_roleTag(g)}${privBadge}
@@ -18284,6 +18586,53 @@ function _renderOffHoursSection() {
         ${shown.map(groupHtml).join('')}
         ${!showAll && list.length > shown.length ? `<div style="text-align:center;margin-top:8px;"><button class="btn btn-sm" style="font-size:.76rem;" onclick="window._offHoursShowAll=true;_renderOffHoursSection()">顯示全部 ${list.length} 筆</button></div>` : ''}
       </div>`}
+    </div>`;
+}
+
+// ── GC 事件錯誤區塊（主任/管理者/專任可見）──
+function _gcErrorsSeenKey() { return 'scc_gc_errors_seen_' + DRIVE_FOLDER_ID.slice(-8); }
+function _toggleGcErrorsSection() { window._gcErrorsCollapsed = !window._gcErrorsCollapsed; _renderGcErrorsSection(); }
+function _markGcErrorsSeen() { localStorage.setItem(_gcErrorsSeenKey(), new Date().toISOString()); _renderGcErrorsSection(); }
+function _renderGcErrorsSection() {
+  const section = document.getElementById('todos-gc-errors-section');
+  if (!section) return;
+  if (!_canViewAccessAudit()) { section.innerHTML = ''; return; }
+  const entries = (_gcErrorsCache && Array.isArray(_gcErrorsCache.entries)) ? _gcErrorsCache.entries : [];
+  if (!entries.length) { section.innerHTML = ''; return; }
+  const kindLabel = { MISSING_SERIAL:'缺流水號', MISSING_CREATOR:'缺建立者註記', BAD_TITLE:'標題格式錯誤',
+    UNKNOWN_ROOM:'未知空間', UNKNOWN_COUNSELOR:'未知輔導人員', UNMATCHED:'無對應 INFOSYS 預約' };
+  const kindColor = { MISSING_SERIAL:'#dd6b20', MISSING_CREATOR:'#3182ce', BAD_TITLE:'#e53e3e',
+    UNKNOWN_ROOM:'#9333ea', UNKNOWN_COUNSELOR:'#c026d3', UNMATCHED:'#c05621' };
+  // 依 kind 分組
+  const byKind = {};
+  entries.forEach(e => { (byKind[e.kind] = byKind[e.kind] || []).push(e); });
+  const seenAt = localStorage.getItem(_gcErrorsSeenKey()) || '';
+  const unread = entries.filter(e => (e.t || '') > seenAt).length;
+  const isCollapsed = !!window._gcErrorsCollapsed;
+  const fmtT = t => t ? new Date(t).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' }) : '';
+  const kindHtml = kind => `<div style="padding:6px 0;border-top:1px solid #fbb6ce;">
+    <div style="font-weight:700;font-size:.85rem;color:${kindColor[kind]||'#c53030'};margin-bottom:4px;">
+      <span style="background:${kindColor[kind]||'#c53030'}22;color:${kindColor[kind]||'#c53030'};border-radius:6px;padding:2px 8px;">${escHtml(kindLabel[kind]||kind)}</span>
+      <span style="font-size:.75rem;color:#718096;font-weight:400;margin-left:6px;">（${byKind[kind].length} 筆）</span>
+    </div>
+    ${byKind[kind].slice(0, 10).map(e => `<div style="font-size:.78rem;color:#4a5568;padding:2px 0 2px 14px;border-left:2px solid ${kindColor[kind]||'#c53030'}44;margin-left:4px;">
+      → <span style="font-weight:600;">${escHtml(e.title || '(無標題)')}</span>
+      <span style="color:#a0aec0;margin-left:6px;">${escHtml(e.date||'')} ${escHtml((e.startTime||'').slice(0,5))}–${escHtml((e.endTime||'').slice(0,5))}</span>
+      ${e.creators?.[0] ? `<span style="color:#718096;margin-left:6px;font-family:monospace;font-size:.72rem;">建立者：${escHtml(e.creators[0])}</span>` : ''}
+      <span style="color:#a0aec0;margin-left:6px;">${fmtT(e.t)}</span>
+    </div>`).join('')}
+    ${byKind[kind].length > 10 ? `<div style="font-size:.72rem;color:#a0aec0;padding-left:14px;">…另 ${byKind[kind].length - 10} 筆</div>` : ''}
+  </div>`;
+  section.innerHTML = `
+    <div style="background:#fff5f5;border:1px solid #fc8181;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+        <span style="font-weight:700;font-size:.9rem;color:#c53030;">⚠ Google Calendar 事件異常（${entries.length}）${unread > 0 ? ` <span class="badge" style="background:#e53e3e;color:#fff;font-size:.72rem;">${unread} 則新</span>` : ''}</span>
+        <div style="display:flex;gap:6px;">
+          ${unread > 0 ? `<button class="btn btn-sm" style="font-size:.76rem;padding:2px 10px;" onclick="_markGcErrorsSeen()">標示已讀</button>` : ''}
+          <button class="btn btn-sm" style="font-size:.76rem;padding:2px 10px;background:#fff;" onclick="_toggleGcErrorsSection()">${isCollapsed ? '展開 ▼' : '收合 ▲'}</button>
+        </div>
+      </div>
+      ${isCollapsed ? '' : `<div style="margin-top:8px;">${Object.keys(byKind).sort().map(kindHtml).join('')}</div>`}
     </div>`;
 }
 
@@ -18342,10 +18691,11 @@ window._mlToggleSection = function() {
 
 // 待辦頁「重大事件」區塊：拉 configData notifications 中的重大類型顯示（如 Gmail 變更、非上班時間活動）
 // 資料來源與鈴鐺同一份（configData.users[me].notifications），無需額外 Drive 寫入
-const MAJOR_EVENT_NOTIF_TYPES = new Set(['gmail_changed', 'off_hours_activity']);
+const MAJOR_EVENT_NOTIF_TYPES = new Set(['gmail_changed', 'off_hours_activity', 'gc_validation_error']);
 const MAJOR_EVENT_TYPE_LABELS = {
-  gmail_changed:       '重大事件・Gmail 變更',
-  off_hours_activity:  '重大事件・非上班時間活動',
+  gmail_changed:        '重大事件・Gmail 變更',
+  off_hours_activity:   '重大事件・非上班時間活動',
+  gc_validation_error:  '重大事件・GC 事件異常',
 };
 function _renderMajorEventNotifs() {
   const section = document.getElementById('todos-major-events-section');
@@ -18457,6 +18807,7 @@ window._mlBatchAcknowledge = async function() {
 function renderTodosPage() {
   _renderCaseAccessAuditSection();
   _renderOffHoursSection();
+  _renderGcErrorsSection();
   _renderAssignmentTodos();
   _renderMlNotifSection();
   _renderMajorEventNotifs();
@@ -22926,8 +23277,8 @@ function checkPinSetup() {
   if (configData?.users?.[currentUser?.email]) {
     const u = configData.users[currentUser.email];
     if (u.pin !== undefined) {
-      localStorage.setItem(pinKey(), u.pin);
-      if (u.pinTmo !== undefined) localStorage.setItem(pinTmoKey(), String(u.pinTmo));
+      try { localStorage.setItem(pinKey(), u.pin); } catch (_) {}
+      if (u.pinTmo !== undefined) { try { localStorage.setItem(pinTmoKey(), String(u.pinTmo)); } catch (_) {} }
       stored = u.pin;
     }
     if (u.pinSkipped === true) pinSkipped = true;
@@ -23041,6 +23392,45 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-03', title: '當然個管驗證修正：僅主責/個管篩選補上督導/窗口案 + badge 細分 + 空間預約週切換整合', isProd: true, items: [
+      item('修復', '個案列表「僅主責/個管」篩選 checkbox 未納入督導/窗口派生的當然個管案，導致督導登入後看不到 supervisee 的案；改用 `_getAutoManagedCaseIds` 一併納入'),
+      item('改善', '案列表當然個管 badge 由單一「督」再細分為「專督」（實習生專業督導）/「行督」（實習生行政督導），窗口身份維持「窗」'),
+      item('改善', '空間預約：篩選為「週」檢視時，移除獨立的「上週」/「下週」按鈕，改由原本的「‹」/「›」按鈕直接切換整週（維持對齊週一）'),
+      item('修復', '登入時若瀏覽器 localStorage 已滿導致寫入配額超出（QuotaExceededError），先前會被當成未知錯誤整個登入失敗（signOut）；改為該處寫入失敗僅略過，不影響登入'),
+    ]},
+    { date: '2026-07-03', title: '個案列表個管徽章統一改版 + 空間預約顏色補強 + 編輯使用者視窗排版修正', isProd: true, items: [
+      item('改善', '個案列表「個管/初談」徽章統一改為「每人各自的色塊徽章＋姓名職稱」格式：手動個管＝「管」（藍）、督導身份＝「專督」（紫）/「行督」（粉）、窗口身份＝「窗」（青）、初次晤談者＝「初」（綠）；同一人身兼多重身分時會並列顯示多個徽章'),
+      item('新功能', '空間預約頁新增「🎨 我的顏色」按鈕，點開彈窗即可直接設定自己的預約顯示顏色，不必再繞去偏好設定頁'),
+      item('新功能', '偏好設定「空間預約顯示顏色」色盤：已被其他使用者選用的顏色會加粗框標示，滑鼠移過去顯示「由 OOO 使用」（僅姓名）'),
+      item('改善', '編輯使用者視窗加寬（480px→640px），並修正「負責的實習生/兼任心理師」清單排版：姓名/角色改為不換行、已停用標籤靠右對齊、清單可捲動高度加大'),
+      item('改善', '待辦頁「非上班時間監督」的特權 badge 由籠統的「主任／管理者」拆分為精確的「主任」／「系統管理者」（可同時顯示兩者）；使用者管理頁、Sidebar、編輯使用者勾選框的「管理者」附加身分字樣統一改稱「系統管理者」'),
+    ]},
+    { date: '2026-07-02', title: '空間預約 / GC 強化：使用者顏色 + GC 編輯權限 + 事件驗證 + 自動補註', isProd: true, items: [
+      item('新功能', '偏好設定新增「空間預約顯示顏色」卡片：32 色可選，選定後空間預約列表中自己的預約 cell 底色淡（12% 透明）+ 左邊 4px 條紋標示；不設沿用預設灰底'),
+      item('新功能', 'GC 事件推送時附帶 colorId（自 32 色映射至最接近的 GC 11 色），GC 端也顯示對應色'),
+      item('新功能', '系統管理新 tab「GC 同步」：一鍵授與專任/主任/管理者對系統行事曆的 writer 權限；saveUser 增量 hook 對新符合資格者自動追加；gcAclSynced flag 避免重複授權'),
+      item('新功能', 'GC 事件驗證：每次同步後檢查六類錯誤（缺流水號 / 缺建立者 / 標題格式錯 / 未知空間 / 未知輔導人員 / 無對應 INFOSYS 預約），寫入共享 feed（gc_validation_errors.json）'),
+      item('新功能', '待辦頁新增紅色「⚠ Google Calendar 事件異常」區塊（主任/管理者/專任可見），依錯誤類型分組顯示；未讀 badge、標示已讀、收合／展開'),
+      item('新功能', '新錯誤即時透過鈴鐺 + 待辦頁紫色重大事件卡通知全體專任/主任/管理者；session 內同錯誤只推一次避免刷屏'),
+      item('新功能', '自動補註：偵測 GC 事件缺「建立者」→ 用 event.creators[0] 反查系統使用者 → 補描述「[系統補註] 由 XXX（yyy@gmail.com）建立，於 YYYY/MM/DD HH:MM 補註」；非系統帳號則標「建立者為非本系統帳號」保留於 feed'),
+      item('技術', 'Code.gs 擴充：createCalendarEvent_/updateCalendarEvent_ 加 colorId 參數；listCalendarEvents_ 回傳 creators + colorId；新 shareCalendarWriters_ action 走 CalendarApp.addEditor'),
+      item('稽核', '一鍵 ACL 同步 + 增量授權皆記入稽核日誌（重大事件 major）'),
+    ]},
+    { date: '2026-07-02', title: '當然個管：實習生督導 + 兼任心理師窗口自動成為個管', isProd: true, items: [
+      item('新功能', '實習生行政/專業督導、兼任心理師窗口（新增身分）自動成為其負責人員手上所有案的當然個管（可讀），無需管理員逐案指派'),
+      item('新功能', '編輯使用者 modal：勾選督導/窗口身分後自動出現「負責的實習生/兼任心理師」複選 picker；啟用者於前、停用者以灰字放於下方分組'),
+      item('新功能', '兼任心理師窗口為新 flag（isPartTimeContact），與轉銜窗口/身心調適假窗口同層，可與其他附加身分並存'),
+      item('新功能', '案詳情頂部「個案管理員」行內為當然個管者附紫色「當然」小標；個管員區塊顯示紫色不可移除的當然個管 chip（含理由「督導身份·行政督導 · 實習生 XX」）；手動+自動兼具者顯示手動 chip 並附「兼當然」小註'),
+      item('新功能', '案列表主責下方「管」prefix 行為當然個管者名字後綴「專督」/「行督」（依督導身分）或「窗」符號區分'),
+      item('技術', '派生式實作：僅存 superviseeEmails 名單；每次渲染依名單從 casesData 動態推導 auto-managed 案號集合；實習生新開案自動生效、督導關係解除自動失效、無需批次寫 allowedCases'),
+      item('技術', '_caseVisibleToUser 加派生路徑（chunk 分層載入時亦生效，督導首次登入即載入 supervisee 的案 chunks）；_hasManagerAccess/_getManagersForCase 合併手動+自動去重'),
+    ]},
+    { date: '2026-07-02', title: '拖曳 chips 調整系所學院/學制歸屬 + 過去學期未結案 bug 修（積極版）', isProd: true, items: [
+      item('修復', '待辦頁「過去學期未結案」對舊資料誤判：`_isSemesterUnclosed` 新增多重證據判斷（semesterEvaluations 有 closure 條目、舊格式 closureEvaluation、最新學期 c.status===closed）。再加積極規則：整案 c.status===closed 且該學期無 semesterStatus 記錄 → 視為結案（舊資料補救）；已封存（archived）個案亦不再提醒'),
+      item('新功能', '系統管理→系所與學院對照：系所 chip 可拖曳到其他學院區塊，drop 時更新 configData.deptToCollege 並存；即時反映到統計、新開案顯示；歷史個案的 c.college 是死欄位（未被讀取），實際顯示走 live lookup，不受影響'),
+      item('新功能', '系統管理→學制學號前綴：字母 chip 可跨學制拖曳（學士/碩士/博士），drop 時更新 configData.degreeMapping 並存；由於 `_buildDegreeMaps` 是 live 從 studentId 前綴推導，無需批次更新個案'),
+      item('稽核', '拖曳成功時記入稽核日誌（「調整系所學院歸屬」/「調整學制前綴對應」），詳情含來源→目標'),
+    ]},
     { date: '2026-07-02', title: '上班時間設定支援每日不同時段（滿足晚班需求）', isProd: true, items: [
       item('改善', '設定 UI 改為「每個星期一列」：週一~週日各自可 checkbox 上班/不上班、獨立設定開始/結束時數（如週一週四 8-21 晚班、週二三五 8-18）'),
       item('相容', '舊格式（startHour/endHour/workDays）自動 migrate 為 weeklyHours；saveHandler 儲存後清除舊欄位避免混淆'),
@@ -23516,6 +23906,9 @@ function renderPrefsPage() {
       gmailCard.style.display = 'none';
     }
   }
+
+  // 空間預約顯示顏色 grid
+  _renderBkColorGrid();
 }
 
 function saveLeaveConfirmPref() {
@@ -23535,6 +23928,64 @@ function _prefChangeMyGmail() {
 }
 function toggleCustomTimeout(sel) {
   document.getElementById('pref-timeout-custom').style.display = sel.value === 'custom' ? '' : 'none';
+}
+// gridId/currentId 預設對應偏好設定頁；booking 頁彈窗會傳入另一組 id 重用同一份渲染邏輯
+function _renderBkColorGrid(gridId, currentId) {
+  const grid = document.getElementById(gridId || 'pref-bkcolor-grid');
+  const cur  = document.getElementById(currentId || 'pref-bkcolor-current');
+  if (!grid) return;
+  const me = currentUser?.email;
+  const my = configData?.users?.[me]?.bkColor || '';
+  // 統計每個顏色被哪些「其他使用者」選用，供 hover 顯示
+  const usersByColor = {};
+  Object.entries(configData?.users || {}).forEach(([email, u]) => {
+    if (!u || u.disabled || email === me || !u.bkColor) return;
+    const key = u.bkColor.toUpperCase();
+    (usersByColor[key] = usersByColor[key] || []).push(u.name || email);
+  });
+  grid.innerHTML = BK_USER_COLORS.map(hex => {
+    const key = hex.toUpperCase();
+    const sel = key === (my || '').toUpperCase();
+    const others = usersByColor[key] || [];
+    const tip = others.length ? ` data-tip="由 ${escHtml(others.join('、'))} 使用"` : '';
+    const box = sel
+      ? 'inset 0 0 0 3px #fff, 0 0 0 2px #2b6cb0'
+      : others.length
+        ? 'inset 0 0 0 2px #fff, 0 0 0 2px #2d3748'
+        : 'inset 0 0 0 1px rgba(0,0,0,.08)';
+    return `<div onclick="pickMyBkColor('${hex}','${escHtml(gridId||'pref-bkcolor-grid')}','${escHtml(currentId||'pref-bkcolor-current')}')"
+      title="${escHtml(hex)}"${tip}
+      style="width:32px;height:32px;border-radius:6px;background:${hex};cursor:pointer;
+      box-shadow:${box};transition:transform .1s;"
+      onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform=''"></div>`;
+  }).join('');
+  if (cur) cur.textContent = my ? `目前：${my}` : '目前：未設定（沿用預設灰底）';
+}
+async function pickMyBkColor(hex, gridId, currentId) {
+  const me = currentUser?.email;
+  if (!me || !configData?.users?.[me]) return;
+  configData.users[me].bkColor = hex;
+  _renderBkColorGrid(gridId, currentId);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
+  if (document.getElementById('page-bookings')?.classList.contains('active')) renderBookingsPage();
+  showToast?.(`已設定顏色 ${hex}`, 'success');
+}
+function openBkColorModal() {
+  document.getElementById('bk-color-modal').style.display = 'flex';
+  _renderBkColorGrid('bk-color-modal-grid', 'bk-color-modal-current');
+}
+function closeBkColorModal() {
+  document.getElementById('bk-color-modal').style.display = 'none';
+}
+async function clearMyBkColor(gridId, currentId) {
+  const me = currentUser?.email;
+  if (!me || !configData?.users?.[me]) return;
+  if (!confirm('要清除您的預約顯示顏色，改回預設灰底嗎？')) return;
+  delete configData.users[me].bkColor;
+  _renderBkColorGrid(gridId, currentId);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
+  if (document.getElementById('page-bookings')?.classList.contains('active')) renderBookingsPage();
+  showToast?.('已清除自訂顏色', 'info');
 }
 function prefResetBkFreqs() {
   if (!confirm('確定清除空間預約使用頻率記憶？選項排序將回到預設。')) return;
@@ -25020,22 +25471,181 @@ async function syncFromCalendar(silent = false) {
         if (!bk?.calendarEventId) continue;
         try {
           const _isEdit = !!(bk.updatedAt && bk.updatedAt !== bk.createdAt);
+          const _bkClr = configData?.users?.[bk.counselorEmail]?.bkColor || '';
           await proxyCall('updateCalendarEvent', {
             eventId: bk.calendarEventId, room: bk.room, customRoom: bk.customRoom || '',
             date: bk.date, startTime: bk.startTime, endTime: bk.endTime,
             counselorName: bk.counselorName || '', notes: bk.notes || '',
             creatorName: bk.creatorName || bk.counselorName || '',
             createdAt: bk.createdAt, updatedAt: bk.updatedAt || bk.createdAt,
-            isEdit: _isEdit, bkSerial: bk.bkSerial });
+            isEdit: _isEdit, bkSerial: bk.bkSerial,
+            colorId: _bkClr ? _nearestGcColorId(_bkClr) : null });
         } catch (_) {}
       }
     }
+    // GC 事件驗證 + 自動補註 + 廣播（背景，不阻擋 sync 完成回報）
+    try { await _runGcValidationAndBackfill(gcEvents); } catch (e) { console.warn('gc validation failed', e); }
     if (jobId) bgJobDone(jobId);
   } catch (e) {
     if (jobId) bgJobFail(jobId, e.message);
     if (!silent) setAlert('bookings-alert', 'warn', '同步失敗：' + e.message);
     console.warn('syncFromCalendar failed', e);
   }
+}
+
+// ══════════════════════════════════════════════
+//  GC 事件驗證（六類錯誤 + 自動補註 + 廣播）
+// ══════════════════════════════════════════════
+async function loadGcErrorsCache() {
+  try { _gcErrorsCache = await driveReadJson(GC_VALIDATION_ERRORS_FILE); } catch { _gcErrorsCache = null; }
+  if (!_gcErrorsCache || !Array.isArray(_gcErrorsCache.entries)) _gcErrorsCache = { entries: [] };
+}
+async function _saveGcErrorsCache() {
+  _gcErrorsCache.updatedAt = new Date().toISOString();
+  try { await driveUpdateJsonFile(GC_VALIDATION_ERRORS_FILE, _gcErrorsCache); }
+  catch (e) {
+    try { await driveCreateJsonFile(GC_VALIDATION_ERRORS_FILE, _gcErrorsCache); }
+    catch (e2) { console.warn('_saveGcErrorsCache failed:', e2); }
+  }
+}
+function _gcValidateEvent(ev, bookingsIndex, usersByName, usersByEmail) {
+  const kinds = new Set();
+  const desc = ev.description || '';
+  const title = ev.title || '';
+  // 1. MISSING_SERIAL
+  if (!/\n#\d+\s*$/.test(desc)) kinds.add('MISSING_SERIAL');
+  // 2. MISSING_CREATOR
+  if (!/\S+\s+(建立|編輯)/.test(desc)) kinds.add('MISSING_CREATOR');
+  // 3. BAD_TITLE
+  const titleMatch = title.match(/^([^\.]+)\.(.+)$/);
+  if (!titleMatch) kinds.add('BAD_TITLE');
+  else {
+    const [, roomChar, personName] = titleMatch;
+    // 4. UNKNOWN_ROOM
+    const knownRooms = ROOMS.filter(r => r !== '其他').concat(_getBkCustomRooms());
+    const roomHit = knownRooms.some(r => r.charAt(0) === roomChar) || roomChar === '其他' || roomChar.length > 1;
+    if (!roomHit) kinds.add('UNKNOWN_ROOM');
+    // 5. UNKNOWN_COUNSELOR
+    if (personName && !usersByName.has(personName)) kinds.add('UNKNOWN_COUNSELOR');
+  }
+  // 6. UNMATCHED（無對應 INFOSYS booking）
+  if (!bookingsIndex.has(ev.id)) kinds.add('UNMATCHED');
+  return kinds;
+}
+async function _runGcValidationAndBackfill(gcEvents) {
+  if (!Array.isArray(gcEvents) || !gcEvents.length) return;
+  if (!_gcErrorsCache?.entries) await loadGcErrorsCache();
+  const bookingsIndex = new Map((bookingsData || []).map(b => [b.calendarEventId, b]));
+  const usersByName = new Map();
+  const usersByEmail = new Map();
+  Object.entries(configData?.users || {}).forEach(([email, u]) => {
+    if (u?.name) usersByName.set(u.name, { email, ...u });
+    usersByEmail.set(email, u);
+  });
+  // 上一次 feed 快照（key = eventId|kind）
+  const prevKeys = new Set((_gcErrorsCache.entries || []).map(e => `${e.eventId}|${e.kind}`));
+  const currentKeys = new Set();
+  const newErrors = []; // 本輪偵測新增（非快取內）
+  const survivedEntries = []; // 本輪仍存在的錯誤（舊+新）
+  const backfillCandidates = []; // MISSING_CREATOR 且有 creator email
+
+  for (const ev of gcEvents) {
+    const kinds = _gcValidateEvent(ev, bookingsIndex, usersByName, usersByEmail);
+    for (const kind of kinds) {
+      const key = `${ev.id}|${kind}`;
+      currentKeys.add(key);
+      const entry = {
+        id: `gce-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+        eventId: ev.id, kind,
+        title: ev.title, date: ev.date, startTime: ev.startTime, endTime: ev.endTime,
+        creators: ev.creators || [],
+        t: new Date().toISOString(),
+      };
+      // 若已存在於 feed 中，沿用舊 entry id 與時間戳
+      const existing = (_gcErrorsCache.entries || []).find(e => e.eventId === ev.id && e.kind === kind);
+      if (existing) survivedEntries.push(existing);
+      else { survivedEntries.push(entry); newErrors.push(entry); }
+    }
+    // 自動補註 candidates
+    if (kinds.has('MISSING_CREATOR') && (ev.creators || []).length) {
+      backfillCandidates.push(ev);
+    }
+  }
+
+  // 移除已消失的錯誤（GC 端已修正 → 從 feed 移除）
+  _gcErrorsCache.entries = survivedEntries;
+
+  // 自動補註（每輪最多 5 筆，避免長時間佔用）
+  const maxBackfill = 5;
+  let backfilled = 0;
+  for (const ev of backfillCandidates.slice(0, maxBackfill)) {
+    const creatorEmail = ev.creators[0];
+    const creatorUser = usersByEmail.get(creatorEmail);
+    const creatorName = creatorUser?.name || '';
+    const note = creatorName
+      ? `[系統補註] 由 ${creatorName}（${creatorEmail}）建立，於 ${new Date().toLocaleString('zh-TW')} 補註`
+      : `[系統補註] 建立者為非本系統帳號：${creatorEmail}，於 ${new Date().toLocaleString('zh-TW')} 標註`;
+    const newDesc = ((ev.description || '').trimEnd() + '\n---\n' + note).trim();
+    try {
+      // 沿用原標題/時間，只改 description
+      const titleMatch = (ev.title || '').match(/^([^\.]+)\.(.+)$/);
+      const roomChar = titleMatch ? titleMatch[1] : '其他';
+      const roomFull = ROOMS.find(r => r !== '其他' && r.charAt(0) === roomChar) || roomChar;
+      const counselorName = titleMatch ? titleMatch[2] : '';
+      await proxyCall('updateCalendarEvent', {
+        eventId: ev.id,
+        room: roomFull, customRoom: roomFull === roomChar ? roomChar : '',
+        date: ev.date, startTime: ev.startTime, endTime: ev.endTime,
+        counselorName, notes: newDesc, creatorName: '',
+        createdAt: '', updatedAt: '', isEdit: false, bkSerial: null,
+      });
+      backfilled++;
+      // 補完後從 feed 移除該 MISSING_CREATOR 記錄
+      _gcErrorsCache.entries = _gcErrorsCache.entries.filter(e => !(e.eventId === ev.id && e.kind === 'MISSING_CREATOR'));
+    } catch (e) { console.warn('backfill failed for', ev.id, e); }
+  }
+
+  // 儲存 feed（若有變動）
+  if (newErrors.length || backfilled > 0 || prevKeys.size !== currentKeys.size) {
+    await _saveGcErrorsCache();
+  }
+
+  // 廣播新錯誤通知（session 內同錯誤只推一次）
+  const trulyNew = newErrors.filter(e => !_gcErrorsBroadcastedThisSession.has(`${e.eventId}|${e.kind}`));
+  if (trulyNew.length) {
+    trulyNew.forEach(e => _gcErrorsBroadcastedThisSession.add(`${e.eventId}|${e.kind}`));
+    _broadcastGcValidationErrors(trulyNew);
+  }
+  // 重繪錯誤區塊（若在待辦頁）
+  if (document.getElementById('page-todos')?.classList.contains('active')) _renderGcErrorsSection?.();
+  renderNotifBell?.();
+}
+function _broadcastGcValidationErrors(newErrors) {
+  const kindLabel = { MISSING_SERIAL:'缺流水號', MISSING_CREATOR:'缺建立者註記', BAD_TITLE:'標題格式錯誤',
+    UNKNOWN_ROOM:'未知空間', UNKNOWN_COUNSELOR:'未知輔導人員', UNMATCHED:'無對應 INFOSYS 預約' };
+  const brief = newErrors.slice(0, 3).map(e => `${kindLabel[e.kind]||e.kind}：${e.title||'(無標題)'}`).join('；');
+  const more = newErrors.length > 3 ? `（另 ${newErrors.length - 3} 筆）` : '';
+  const msg = `⚠ Google Calendar 偵測到 ${newErrors.length} 筆新的異常事件：${brief}${more}。請至待辦頁「GC 事件錯誤」查看。`;
+  const nowIso = new Date().toISOString();
+  let pushed = 0;
+  Object.entries(configData?.users || {}).forEach(([email, u]) => {
+    if (!u || u.disabled) return;
+    if (email === currentUser?.email) return;
+    const r = u.role || '';
+    const recipient = r === '主任' || u.isAdmin === true || u.extraRole === '管理者' || (typeof r === 'string' && r.startsWith('專任'));
+    if (!recipient) return;
+    if (!u.notifications) u.notifications = [];
+    u.notifications.unshift({
+      id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+      type: 'gc_validation_error',
+      message: msg,
+      createdAt: nowIso, read: false,
+    });
+    _pruneOldReadNotifications(u);
+    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
+    pushed++;
+  });
+  if (pushed) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
 }
 
 function _initBkAuditDropdowns() {
@@ -26944,7 +27554,7 @@ function _bkRenderDayColumn(date) {
           ${calTag}
           <button class="btn btn-secondary btn-sm" style="padding:1px 6px;font-size:.72rem;" onclick="_bkCtxMenu(event,'${escHtml(b.id)}')">⋯</button>
         </span>`;
-        html += `<div style="padding:4px 6px;background:#edf2f7;border-radius:5px;margin-bottom:4px;">
+        html += `<div style="padding:4px 6px;${_bkCellStyle(b)}border-radius:5px;margin-bottom:4px;">
           <div style="font-size:.82rem;font-weight:600;color:#2d3748;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</div>
           <div style="font-size:.82rem;color:#4a5568;">${escHtml(b.counselorName || '—')}</div>
           ${caseTag}${noteTag}${actBtns}
@@ -26956,6 +27566,12 @@ function _bkRenderDayColumn(date) {
   return html;
 }
 
+// 依主責的 bkColor 產生 cell 樣式：淡背景（13% 透明）+ 左邊 4px 條紋；未設沿用現行灰底
+function _bkCellStyle(b) {
+  const hex = configData?.users?.[b?.counselorEmail]?.bkColor;
+  if (!hex || hex[0] !== '#') return 'background:#edf2f7;';
+  return `background:${hex}22;border-left:4px solid ${hex};`;
+}
 function renderBookingsPage() {
   const dateEl = document.getElementById('booking-date');
   if (!dateEl) return;
@@ -26967,10 +27583,6 @@ function renderBookingsPage() {
   // 更新下拉選單與控制項顯示
   const viewSel = document.getElementById('bk-view-select');
   if (viewSel) viewSel.value = _bkListView ? 'list' : _bkWeekMode ? 'week' : String(_bkDaySpan);
-  const prevWeekBtn = document.getElementById('bk-prev-week');
-  const nextWeekBtn = document.getElementById('bk-next-week');
-  if (prevWeekBtn) prevWeekBtn.style.display = (!_bkListView && _bkWeekMode) ? '' : 'none';
-  if (nextWeekBtn) nextWeekBtn.style.display = (!_bkListView && _bkWeekMode) ? '' : 'none';
   const dateCtrl = document.getElementById('bk-date-controls');
   if (dateCtrl) dateCtrl.style.display = _bkListView ? 'none' : '';
   const filterBar = document.getElementById('bk-list-filter-bar');
@@ -27004,7 +27616,7 @@ function renderBookingsPage() {
           const calTag = b.calendarEventId
             ? `<span title="已同步 Google Calendar" style="font-size:.85rem;">📅</span>`
             : `<button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:.75rem;" data-sync-id="${escHtml(b.id)}" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅 同步</button>`;
-          html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 8px;background:#edf2f7;border-radius:6px;margin-bottom:4px;cursor:grab;">
+          html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 8px;${_bkCellStyle(b)}border-radius:6px;margin-bottom:4px;cursor:grab;">
             <span style="font-size:.85rem;font-weight:600;color:#2d3748;min-width:105px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</span>
             <span style="font-size:.875rem;color:#4a5568;">${escHtml(b.counselorName || '—')}</span>
             ${caseTag}${noteTag}${calTag}
@@ -27049,7 +27661,7 @@ function renderBookingsPage() {
             const calTag = b.calendarEventId
               ? `<span title="已同步" style="font-size:.75rem;">📅</span>`
               : `<button class="btn btn-secondary btn-sm" style="padding:0 3px;font-size:.65rem;" data-sync-id="${escHtml(b.id)}" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅</button>`;
-            html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="padding:3px 5px;background:#edf2f7;border-radius:4px;margin-bottom:3px;font-size:.78rem;cursor:grab;">` +
+            html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="padding:3px 5px;${_bkCellStyle(b)}border-radius:4px;margin-bottom:3px;font-size:.78rem;cursor:grab;">` +
               `<div style="font-weight:600;color:#2d3748;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</div>` +
               `<div style="color:#4a5568;">${escHtml(b.counselorName||'—')}</div>` +
               (b.caseId ? `<div style="color:#2471a3;font-size:.72rem;">${escHtml(b.caseId)}</div>` : '') +
@@ -27219,6 +27831,7 @@ async function _bkGcFlush() {
     if (!snap.calendarEventId) continue;
     const creatorName = configData?.users?.[snap.creatorEmail]?.name || snap.creatorName || '';
     try {
+      const _snClr = configData?.users?.[snap.counselorEmail]?.bkColor || '';
       await proxyCall('updateCalendarEvent', {
         eventId: snap.calendarEventId,
         room: snap.room, customRoom: snap.customRoom,
@@ -27226,6 +27839,7 @@ async function _bkGcFlush() {
         counselorName: snap.counselorName, notes: snap.notes,
         creatorName, createdAt: snap.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(), isEdit: true, bkSerial: snap.bkSerial,
+        colorId: _snClr ? _nearestGcColorId(_snClr) : null,
       });
     } catch(_) { /* 靜默失敗，不影響本機資料 */ }
   }
@@ -27267,6 +27881,7 @@ async function bkDrop(event, newRoom, newDate) {
 }
 
 function shiftBookingDate(delta) {
+  if (_bkWeekMode) { shiftBkWeek(delta); return; }
   const el = document.getElementById('booking-date');
   if (!el) return;
   const d = new Date(el.value || new Date());
@@ -27632,8 +28247,10 @@ async function syncBookingToCalendar(id) {
   modalEl.style.display = 'flex';
 
   try {
+    const _bColorRef = configData?.users?.[b.counselorEmail]?.bkColor || '';
     const calParams = { room: b.room, date: b.date, startTime: b.startTime, endTime: b.endTime,
-      counselorName: b.counselorName, caseId: b.caseId || '', caseName: b.caseName || '', notes: b.notes || '' };
+      counselorName: b.counselorName, caseId: b.caseId || '', caseName: b.caseName || '', notes: b.notes || '',
+      colorId: _bColorRef ? _nearestGcColorId(_bColorRef) : null };
     const calendarEventId = await proxyCall('createCalendarEvent', calParams);
     if (calendarEventId) {
       const idx = bookingsData.findIndex(x => x.id === id);
@@ -27977,10 +28594,12 @@ async function saveBooking() {
   // 先取舊的 calendarEventId 與舊狀態快照（編輯時用，供稽核日誌差異比對）
   const _oldBkSnap = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
   const newSerial = _editingBookingId ? (_oldBkSnap?.bkSerial) : _bkNextSerial();
+  const _bkCounselorColor = configData?.users?.[counselorEmail]?.bkColor || '';
   const calParams = { room, customRoom, date, startTime: start, endTime: end, counselorName, notes, creatorName,
     createdAt: _editingBookingId ? (_oldBkSnap?.createdAt || now) : now,
     updatedAt: now, isEdit: !!_editingBookingId,
-    bkSerial: newSerial };
+    bkSerial: newSerial,
+    colorId: _bkCounselorColor ? _nearestGcColorId(_bkCounselorColor) : null };
   const existingCalEventId = _oldBkSnap?.calendarEventId;
   const newId = _editingBookingId || `bk_${Date.now()}`;
 
@@ -29578,14 +30197,22 @@ function renderAdminDegreeMapping() {
     { key: 'master',   label: '碩士班', years: 2, color: '#6b46c1' },
     { key: 'phd',      label: '博士班', years: 3, color: '#c05621' },
   ];
-  el.innerHTML = sections.map(s => {
+  el.innerHTML = `
+    <div style="font-size:.78rem;color:#718096;margin-bottom:10px;padding:6px 10px;background:#f7fafc;border-radius:5px;">
+      💡 提示：字母 chip 可拖曳到其他學制列以改變歸屬（等同修改前綴對應）。
+    </div>` + sections.map(s => {
     const chips = (dm[s.key] || []).map(c =>
-      `<span style="display:inline-flex;align-items:center;gap:2px;background:${s.color}18;color:${s.color};border:1px solid ${s.color}50;border-radius:12px;padding:2px 8px 2px 10px;font-size:.85rem;font-weight:700;">${escHtml(c)}<button onclick="_adminRemovePrefix('${escHtml(s.key)}','${escHtml(c)}')" title="移除" style="background:none;border:none;cursor:pointer;color:${s.color};font-size:1rem;line-height:1;padding:0 0 0 3px;margin:0;">×</button></span>`
+      `<span draggable="true" data-char="${escHtml(c)}" data-src-key="${escHtml(s.key)}"
+        ondragstart="_dmDragStart(event)" ondragend="_dmDragEnd(event)"
+        style="display:inline-flex;align-items:center;gap:2px;background:${s.color}18;color:${s.color};border:1px solid ${s.color}50;border-radius:12px;padding:2px 8px 2px 10px;font-size:.85rem;font-weight:700;cursor:grab;"
+        title="拖曳至其他學制以變更歸屬">${escHtml(c)}<button onclick="_adminRemovePrefix('${escHtml(s.key)}','${escHtml(c)}')" title="移除" style="background:none;border:none;cursor:pointer;color:${s.color};font-size:1rem;line-height:1;padding:0 0 0 3px;margin:0;">×</button></span>`
     ).join(' ');
-    return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 0;border-bottom:1px solid #f0f4f8;">
+    return `<div class="dm-drop-row" data-key="${escHtml(s.key)}"
+      ondragover="_dmDragOver(event)" ondragleave="_dmDragLeave(event)" ondrop="_dmDrop(event)"
+      style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:9px 8px;border-bottom:1px solid #f0f4f8;border-radius:6px;transition:background .15s;">
       <span style="font-weight:600;font-size:.88rem;width:92px;color:${s.color};flex-shrink:0;">${escHtml(s.label)}（${s.years}年）</span>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;">
-        ${chips || '<span style="font-size:.82rem;color:#a0aec0;">（尚未設定）</span>'}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex:1;min-height:28px;">
+        ${chips || '<span style="font-size:.82rem;color:#a0aec0;">（尚未設定；可從其他學制拖曳字母過來）</span>'}
       </div>
       <div style="display:inline-flex;gap:4px;align-items:center;flex-shrink:0;">
         <input type="text" id="dm-input-${s.key}" maxlength="1" placeholder="字母" style="width:44px;padding:4px 6px;border:1px solid #cbd5e0;border-radius:6px;font-size:.85rem;text-align:center;text-transform:uppercase;" oninput="this.value=this.value.toUpperCase()">
@@ -29593,6 +30220,49 @@ function renderAdminDegreeMapping() {
       </div>
     </div>`;
   }).join('');
+}
+// ── 學制前綴拖曳 handlers ──
+function _dmDragStart(ev) {
+  const el = ev.currentTarget;
+  ev.dataTransfer.setData('text/plain', JSON.stringify({ ch: el.dataset.char, src: el.dataset.srcKey }));
+  ev.dataTransfer.effectAllowed = 'move';
+  el.style.opacity = '.5';
+}
+function _dmDragEnd(ev) { ev.currentTarget.style.opacity = ''; }
+function _dmDragOver(ev) {
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'move';
+  ev.currentTarget.style.background = '#ebf8ff';
+}
+function _dmDragLeave(ev) { ev.currentTarget.style.background = ''; }
+async function _dmDrop(ev) {
+  ev.preventDefault();
+  const row = ev.currentTarget;
+  row.style.background = '';
+  const destKey = row.dataset.key;
+  let payload = {};
+  try { payload = JSON.parse(ev.dataTransfer.getData('text/plain') || '{}'); } catch (_) {}
+  const { ch, src } = payload;
+  if (!ch || !src || !destKey) return;
+  if (src === destKey) return; // 同一學制內拖曳無意義
+  if (!configData.degreeMapping) configData.degreeMapping = { bachelor:['B','E','F','K'], master:['M','N'], phd:['P'] };
+  const dm = configData.degreeMapping;
+  if (!Array.isArray(dm[src])) dm[src] = [];
+  if (!Array.isArray(dm[destKey])) dm[destKey] = [];
+  dm[src] = dm[src].filter(x => x !== ch);
+  if (!dm[destKey].includes(ch)) dm[destKey].push(ch);
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('調整學制前綴對應', null, null, `字母 ${ch}：${src} → ${destKey}`);
+    renderAdminDegreeMapping();
+    showToast?.(`已將字母「${ch}」改為 ${({bachelor:'學士',master:'碩士',phd:'博士'})[destKey]||destKey}`, 'success');
+  } catch (e) {
+    alert('儲存失敗：' + e.message);
+    // 回滾
+    dm[destKey] = dm[destKey].filter(x => x !== ch);
+    if (!dm[src].includes(ch)) dm[src].push(ch);
+    renderAdminDegreeMapping();
+  }
 }
 
 async function _adminAddPrefix(degreeKey) {
@@ -29629,6 +30299,9 @@ function renderAdminDeptCollege() {
     <div style="margin-bottom:12px;font-size:.82rem;color:${usingConfig?'#276749':'#718096'};background:${usingConfig?'#f0fff4':'#f7fafc'};border:1px solid ${usingConfig?'#9ae6b4':'#e2e8f0'};padding:8px 12px;border-radius:6px;">
       ${usingConfig ? '✓ 目前使用 config.json 中的自訂對照表。' : '⚠ 目前使用系統內建對照表（未自訂），修改後將寫入 config.json。'}
     </div>
+    <div style="font-size:.78rem;color:#718096;margin-bottom:10px;padding:6px 10px;background:#f7fafc;border-radius:5px;">
+      💡 提示：系所 chip 可拖曳到其他學院區塊以改變歸屬（等同修改對照表）。統計、新開案的學院顯示會即時反映；歷史個案的顯示因走 live lookup 也會一併更新。
+    </div>
     <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;">
       <input type="text" id="dc-input-dept" class="field-input" placeholder="系所名稱" style="flex:1;min-width:180px;max-width:280px;" />
       <input type="text" id="dc-input-college" class="field-input" placeholder="學院名稱" style="flex:1;min-width:140px;max-width:200px;" list="dc-college-list" />
@@ -29637,16 +30310,60 @@ function renderAdminDeptCollege() {
       ${usingConfig ? '' : `<button class="btn btn-secondary btn-sm" onclick="_adminInitDeptCollegeFromDefault()">匯入系統預設</button>`}
     </div>
     ${colleges.map(col => `
-      <div style="margin-bottom:14px;">
+      <div class="dc-drop-group" data-college="${escHtml(col)}"
+        ondragover="_dcDragOver(event)" ondragleave="_dcDragLeave(event)" ondrop="_dcDrop(event)"
+        style="margin-bottom:14px;border-radius:6px;padding:2px;transition:background .15s;">
         <div style="font-weight:700;font-size:.88rem;color:#2b6cb0;background:#ebf8ff;padding:5px 10px;border-radius:6px;margin-bottom:6px;">${escHtml(col)}</div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;padding:0 4px;">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;padding:0 4px;min-height:28px;">
           ${(byCollege[col]||[]).map(dept =>
-            `<span style="display:inline-flex;align-items:center;gap:2px;background:#edf2f7;color:#2d3748;border:1px solid #cbd5e0;border-radius:12px;padding:2px 8px 2px 10px;font-size:.83rem;">
+            `<span draggable="true" data-dept="${escHtml(dept)}" data-src-college="${escHtml(col)}"
+              ondragstart="_dcDragStart(event)" ondragend="_dcDragEnd(event)"
+              style="display:inline-flex;align-items:center;gap:2px;background:#edf2f7;color:#2d3748;border:1px solid #cbd5e0;border-radius:12px;padding:2px 8px 2px 10px;font-size:.83rem;cursor:grab;"
+              title="拖曳至其他學院區塊以變更歸屬">
               ${escHtml(dept)}<button onclick="_adminRemoveDeptCollege('${escHtml(dept)}')" title="移除" style="background:none;border:none;cursor:pointer;color:#718096;font-size:1rem;line-height:1;padding:0 0 0 3px;">×</button>
-            </span>`).join('')}
+            </span>`).join('') || '<span style="font-size:.78rem;color:#a0aec0;">（可從其他學院拖曳系所過來）</span>'}
         </div>
       </div>`).join('')}
     ${Object.keys(dc).length === 0 ? '<div style="color:#a0aec0;font-size:.85rem;">尚無對應資料。</div>' : ''}`;
+}
+// ── 系所→學院 拖曳 handlers ──
+function _dcDragStart(ev) {
+  const el = ev.currentTarget;
+  ev.dataTransfer.setData('text/plain', JSON.stringify({ dept: el.dataset.dept, src: el.dataset.srcCollege }));
+  ev.dataTransfer.effectAllowed = 'move';
+  el.style.opacity = '.5';
+}
+function _dcDragEnd(ev) { ev.currentTarget.style.opacity = ''; }
+function _dcDragOver(ev) {
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'move';
+  ev.currentTarget.style.background = '#f0fff4';
+}
+function _dcDragLeave(ev) { ev.currentTarget.style.background = ''; }
+async function _dcDrop(ev) {
+  ev.preventDefault();
+  const grp = ev.currentTarget;
+  grp.style.background = '';
+  const destCollege = grp.dataset.college;
+  let payload = {};
+  try { payload = JSON.parse(ev.dataTransfer.getData('text/plain') || '{}'); } catch (_) {}
+  const { dept, src } = payload;
+  if (!dept || !destCollege) return;
+  if (src === destCollege) return;
+  if (!configData.deptToCollege) configData.deptToCollege = { ..._getDeptToCollege() };
+  const prev = configData.deptToCollege[dept];
+  configData.deptToCollege[dept] = destCollege;
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('調整系所學院歸屬', null, null, `${dept}：${prev||'（未設）'} → ${destCollege}`);
+    renderAdminDeptCollege();
+    showToast?.(`已將「${dept}」歸入「${destCollege}」`, 'success');
+  } catch (e) {
+    alert('儲存失敗：' + e.message);
+    // 回滾
+    if (prev) configData.deptToCollege[dept] = prev; else delete configData.deptToCollege[dept];
+    renderAdminDeptCollege();
+  }
 }
 
 async function _adminAddDeptCollege() {
@@ -29945,6 +30662,81 @@ async function _adminSaveWorkHours() {
     if (st) st.textContent = '';
     alert('儲存失敗：' + e.message);
   }
+}
+
+// ── GC 編輯權限一鍵同步 UI ──────────────────────────
+function _gcSyncEligibleUsers() {
+  return Object.entries(configData?.users || {}).filter(([email, u]) => {
+    if (!u || u.disabled || !email || email.startsWith('nomail_')) return false;
+    const r = u.role || '';
+    return r === '主任' || u.isAdmin === true || u.extraRole === '管理者' || (typeof r === 'string' && r.startsWith('專任'));
+  });
+}
+function renderAdminGcSync() {
+  const el = document.getElementById('admin-gcsync-wrap');
+  if (!el) return;
+  const eligible = _gcSyncEligibleUsers();
+  const pending = eligible.filter(([, u]) => !u.gcAclSynced);
+  const done    = eligible.filter(([,  u]) =>  u.gcAclSynced);
+  const rowsPending = pending.length
+    ? pending.map(([email, u]) => `<li style="font-size:.85rem;padding:2px 0;">${escHtml(u.name || email)} <span style="color:#718096;">（${escHtml(email)} · ${escHtml(u.role || '')}${u.extraRole?'/'+escHtml(u.extraRole):''}${u.isAdmin?' · 管理者':''}）</span></li>`).join('')
+    : '<li style="font-size:.85rem;color:#a0aec0;">（無）</li>';
+  const rowsDone = done.length
+    ? done.map(([email, u]) => `<li style="font-size:.83rem;padding:2px 0;color:#276749;">✓ ${escHtml(u.name || email)} <span style="color:#718096;">（${escHtml(email)}）</span></li>`).join('')
+    : '<li style="font-size:.83rem;color:#a0aec0;">（無）</li>';
+  el.innerHTML = `
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;">
+      <div style="flex:1;min-width:260px;background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;padding:10px 14px;">
+        <div style="font-size:.9rem;font-weight:700;color:#9c4221;margin-bottom:6px;">待授權（${pending.length}）</div>
+        <ul style="list-style:none;padding:0;margin:0;">${rowsPending}</ul>
+      </div>
+      <div style="flex:1;min-width:260px;background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:10px 14px;">
+        <div style="font-size:.9rem;font-weight:700;color:#276749;margin-bottom:6px;">已授權（${done.length}）</div>
+        <ul style="list-style:none;padding:0;margin:0;max-height:200px;overflow-y:auto;">${rowsDone}</ul>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button class="btn btn-primary" ${pending.length?'':'disabled'} onclick="_adminGcAclSyncAll()">一鍵授權待授權者（${pending.length}）</button>
+      <span id="admin-gcsync-status" style="font-size:.82rem;color:#718096;"></span>
+    </div>`;
+}
+async function _adminGcAclSyncAll() {
+  const eligible = _gcSyncEligibleUsers().filter(([, u]) => !u.gcAclSynced);
+  if (!eligible.length) return;
+  const emails = eligible.map(([email]) => email);
+  const st = document.getElementById('admin-gcsync-status');
+  if (st) st.textContent = `授權中… (${emails.length} 位)`;
+  const jobId = bgJobAdd(`GC ACL 同步：${emails.length} 位`);
+  try {
+    const res = await proxyCall('shareCalendarWriters', { emails });
+    (res?.granted || []).forEach(em => { if (configData.users[em]) configData.users[em].gcAclSynced = true; });
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('同步 GC 編輯權限', null, null, `授權 ${res?.granted?.length || 0} 位；錯誤 ${res?.errors?.length || 0} 位`, { major: true });
+    bgJobDone(jobId);
+    if (st) { st.textContent = `✓ 完成：${res?.granted?.length||0} 授權；${res?.errors?.length||0} 錯誤`; setTimeout(() => { if (st) st.textContent = ''; }, 5000); }
+    if (res?.errors?.length) console.warn('GC ACL errors:', res.errors);
+    renderAdminGcSync();
+  } catch (e) {
+    bgJobFail(jobId, e.message);
+    if (st) st.textContent = '';
+    alert('授權失敗：' + e.message);
+  }
+}
+// saveUser 增量 hook：儲存為專任/主任/管理者且尚未同步 → 背景授權該一位
+async function _gcAclAutoSyncOne(email) {
+  const u = configData?.users?.[email];
+  if (!u || u.disabled || !email || email.startsWith('nomail_')) return;
+  const r = u.role || '';
+  const eligible = r === '主任' || u.isAdmin === true || u.extraRole === '管理者' || (typeof r === 'string' && r.startsWith('專任'));
+  if (!eligible || u.gcAclSynced) return;
+  try {
+    const res = await proxyCall('shareCalendarWriters', { emails: [email] });
+    if ((res?.granted || []).includes(email)) {
+      u.gcAclSynced = true;
+      driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+      auditLog('同步 GC 編輯權限（增量）', null, null, email);
+    }
+  } catch (_) { /* 靜默 */ }
 }
 
 function _computeGradStatus(c, curSemStr) {
@@ -35208,6 +36000,25 @@ function toggleNavPin(navId) {
     <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
       <button class="btn btn-secondary" onclick="closeBookingModal()">取消</button>
       <button class="btn btn-primary" id="btn-save-booking" onclick="saveBooking()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 空間預約：我的顯示顏色 Modal -->
+<div id="bk-color-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:600;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:12px;padding:24px 24px 18px;width:90%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,.2);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <h3 style="font-size:1.05rem;color:#1a202c;">我的空間預約顏色</h3>
+      <button onclick="closeBkColorModal()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+    </div>
+    <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">選一個屬於自己的顏色，其他人也會看到你的預約以此顏色顯示。粗框色塊代表已被其他人選用（移過去看是誰）。</p>
+    <div id="bk-color-modal-grid" style="display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;"></div>
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <button class="btn btn-secondary btn-sm" onclick="clearMyBkColor('bk-color-modal-grid','bk-color-modal-current')">還原預設（無色）</button>
+      <span id="bk-color-modal-current" style="font-size:.82rem;color:#4a5568;"></span>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-top:16px;">
+      <button class="btn btn-secondary" onclick="closeBkColorModal()">關閉</button>
     </div>
   </div>
 </div>
