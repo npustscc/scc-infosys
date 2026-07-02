@@ -520,7 +520,7 @@
       background: #fff;
       border-radius: 12px;
       padding: 32px 36px;
-      width: 480px;
+      width: 640px;
       max-width: 95vw;
       box-shadow: 0 8px 32px rgba(0,0,0,.18);
     }
@@ -1843,6 +1843,7 @@
           <div style="display:flex;gap:8px;align-items:center;">
             <button class="btn btn-secondary btn-sm" onclick="refreshBookings()" data-tip="從 Drive 重新讀取最新預約資料，若其他人剛更新可點此同步。">重新整理</button>
             <button class="btn btn-secondary btn-sm" onclick="syncFromCalendar()" data-tip="從 Google Calendar 讀取最新時間變更，同步至系統預約資料。">與Google日曆同步</button>
+            <button class="btn btn-secondary btn-sm" onclick="openBkColorModal()" data-tip="設定屬於你自己的預約顯示顏色，其他人也會看到你的預約以此顏色顯示。">🎨 我的顏色</button>
             <button class="btn btn-primary" onclick="openBookingModal()" data-tip="新增一筆諮商空間預約，填寫日期、時段與空間後儲存。">＋ 新增預約</button>
             <button class="btn btn-secondary btn-sm" onclick="_toggleBkSection('bookings-body','bk-overview-icon')" title="收折/展開" style="padding:2px 7px;font-size:.85rem;"><span id="bk-overview-icon">▼</span></button>
           </div>
@@ -3523,7 +3524,7 @@
 
     <div id="modal-supervisees-wrap" class="form-row" style="display:none;">
       <label id="modal-supervisees-label">負責的實習生</label>
-      <div id="modal-supervisees-picker" style="max-height:220px;overflow-y:auto;border:1px solid #cbd5e0;border-radius:6px;padding:8px 10px;background:#fafbfc;">
+      <div id="modal-supervisees-picker" style="max-height:300px;overflow-y:auto;overflow-x:hidden;border:1px solid #cbd5e0;border-radius:6px;padding:8px 10px;background:#fafbfc;">
         <span style="font-size:.82rem;color:#a0aec0;">請先勾選督導或窗口身分…</span>
       </div>
       <div style="font-size:.75rem;color:#718096;margin-top:4px;">已選人員（含其手上案）在您登入時會自動變成您的當然個管；解除後即失效。停用者以灰字顯示於下方。</div>
@@ -3854,6 +3855,23 @@ function formatCounselorLabel(key) {
   if (!name) return key;
   if (!role || role === '系統管理者') return name;
   return name + role;
+}
+
+// 個案列表「管／初」徽章顏色（依類型區分，醒目好辨識）
+const CASE_BADGE_COLORS = {
+  '管':  { bg: '#d6eaf8', fg: '#2471a3' }, // 手動指定個管
+  '專督': { bg: '#e9d8fd', fg: '#553c9a' }, // 當然個管·實習生專業督導
+  '行督': { bg: '#fde3ec', fg: '#9d174d' }, // 當然個管·實習生行政督導
+  '窗':   { bg: '#cffafe', fg: '#0e7490' }, // 當然個管·兼任心理師窗口
+  '初':   { bg: '#d4edda', fg: '#276749' }, // 初次晤談者
+};
+// 個案列表徽章 chip：一或多個色塊 tag + 姓名職稱（label 已含姓名+職稱）
+function _caseBadgeChip(tags, label) {
+  const badges = tags.map(t => {
+    const c = CASE_BADGE_COLORS[t] || CASE_BADGE_COLORS['管'];
+    return `<span style="background:${c.bg};color:${c.fg};border-radius:3px;padding:0 4px;font-weight:700;letter-spacing:.02em;">${escHtml(t)}</span>`;
+  }).join(' ');
+  return `<span style="display:inline-flex;align-items:center;gap:4px;white-space:nowrap;margin:1px 8px 1px 0;">${badges}${escHtml(label)}</span>`;
 }
 
 const SERVICE_ITEMS = [
@@ -6557,29 +6575,22 @@ function renderCases() {
     return (b.updatedAt || '') > (a.updatedAt || '') ? 1 : -1;
   });
 
-  // 建立「個案ID → 管理員名單」反查表（手動個管 + 派生的「當然個管」）
+  // 建立「個案ID → 管理員名單」反查表（手動個管 + 派生的「當然個管」）；
+  // 每人可能同時具備多個 tag（如手動個管兼督導），一律用 Map<email, Set<tag>> 記錄，渲染時每人各自的 tag 各自成一個徽章
   const caseManagerMap = {};
-  const caseManagerAutoSet = {}; // caseId → Set(email) 標示派生
   Object.entries(configData.users || {}).forEach(([key, info]) => {
     (info.allowedCases || []).forEach(id => {
-      if (!caseManagerMap[id]) caseManagerMap[id] = [];
-      const label = formatCounselorLabel(key);
-      if (!caseManagerMap[id].some(x => x.email === key)) caseManagerMap[id].push({ email: key, label, auto: false });
+      if (!caseManagerMap[id]) caseManagerMap[id] = new Map();
+      if (!caseManagerMap[id].has(key)) caseManagerMap[id].set(key, new Set());
+      caseManagerMap[id].get(key).add('管');
     });
   });
   visible.forEach(c => {
     _getAutoManagersForCase(c.id).forEach(({ email, reason }) => {
-      if (!caseManagerMap[c.id]) caseManagerMap[c.id] = [];
+      if (!caseManagerMap[c.id]) caseManagerMap[c.id] = new Map();
+      if (!caseManagerMap[c.id].has(email)) caseManagerMap[c.id].set(email, new Set());
       const tag = reason.shortTag || (reason.kind === 'supervisor' ? '督' : '窗');
-      const label = formatCounselorLabel(email) + tag;
-      const exist = caseManagerMap[c.id].find(x => x.email === email);
-      if (exist) {
-        // 手動+自動兼具 → 保留手動 label 但補標記
-        if (!exist.label.endsWith(tag)) exist.label += tag;
-      } else {
-        caseManagerMap[c.id].push({ email, label, auto: true });
-        (caseManagerAutoSet[c.id] = caseManagerAutoSet[c.id] || new Set()).add(email);
-      }
+      caseManagerMap[c.id].get(email).add(tag);
     });
   });
   // 建立「個案ID → 初談者名單」反查表（權限同個管，badge 不同）
@@ -6704,17 +6715,15 @@ function renderCases() {
       <td>${escHtml(c.name  || '—')}</td>
       <td>${escHtml(c.studentId || '—')}</td>
       <td>${escHtml(c.counselorName || '—')}${
-        (caseManagerMap[c.id] || []).length
-          ? `<div style="font-size:.72rem;margin-top:2px;color:#2471a3;">
-               <span style="background:#d6eaf8;border-radius:3px;padding:0 4px;font-weight:700;letter-spacing:.02em;">管</span>
-               ${(caseManagerMap[c.id] || []).map(x => escHtml(x.label || x)).join('、')}
+        caseManagerMap[c.id] && caseManagerMap[c.id].size
+          ? `<div style="font-size:.72rem;margin-top:2px;display:flex;flex-wrap:wrap;">
+               ${[...caseManagerMap[c.id].entries()].map(([email, tags]) => _caseBadgeChip([...tags], formatCounselorLabel(email))).join('')}
              </div>`
           : ''
       }${
         (caseInitInterviewerMap[c.id] || []).length
-          ? `<div style="font-size:.72rem;margin-top:2px;color:#276749;">
-               <span style="background:#d4edda;border-radius:3px;padding:0 4px;font-weight:700;letter-spacing:.02em;">初</span>
-               ${escHtml((caseInitInterviewerMap[c.id] || []).join('、'))}
+          ? `<div style="font-size:.72rem;margin-top:2px;display:flex;flex-wrap:wrap;">
+               ${(caseInitInterviewerMap[c.id] || []).map(label => _caseBadgeChip(['初'], label)).join('')}
              </div>`
           : ''
       }</td>
@@ -7848,20 +7857,21 @@ function _renderModalSuperviseesPicker() {
   const row = ([email, u], greyOut) => {
     const checked = _modalSuperviseeSelected.has(email) ? 'checked' : '';
     const name = escHtml(u.name || email);
-    const roleTag = `<span style="font-size:.72rem;color:#718096;margin-left:6px;">${escHtml(u.role || '')}</span>`;
-    return `<label style="display:flex;align-items:center;gap:6px;padding:3px 0;${greyOut?'color:#a0aec0;':''}cursor:pointer;font-size:.85rem;">
-      <input type="checkbox" class="mspv-cb" data-email="${escHtml(email)}" ${checked} onchange="_onModalSuperviseeToggle(this)">
-      <span>${name}</span>${roleTag}
-      ${greyOut ? '<span style="font-size:.7rem;color:#c53030;margin-left:6px;">已停用</span>' : ''}
+    const role = escHtml(u.role || '');
+    return `<label style="display:flex;align-items:center;gap:12px;padding:6px 4px;${greyOut?'color:#a0aec0;':''}cursor:pointer;font-size:.85rem;">
+      <input type="checkbox" class="mspv-cb" style="flex-shrink:0;" data-email="${escHtml(email)}" ${checked} onchange="_onModalSuperviseeToggle(this)">
+      <span style="font-weight:700;color:${greyOut?'#a0aec0':'#2d3748'};white-space:nowrap;">${name}</span>
+      <span style="font-size:.78rem;color:${greyOut?'#cbd5e0':'#6b7280'};white-space:nowrap;">${role}</span>
+      ${greyOut ? '<span style="margin-left:auto;flex-shrink:0;font-size:.7rem;color:#c53030;background:#fed7d7;border-radius:4px;padding:2px 7px;font-weight:600;">已停用</span>' : ''}
     </label>`;
   };
   let html = '';
   if (active.length) {
-    html += '<div style="font-size:.75rem;font-weight:700;color:#2b6cb0;margin-bottom:3px;">啟用中</div>';
+    html += '<div style="font-size:.75rem;font-weight:700;color:#2b6cb0;padding:4px 4px;border-bottom:1px solid #e2e8f0;margin-bottom:4px;">啟用中</div>';
     html += active.map(x => row(x, false)).join('');
   }
   if (disabled.length) {
-    html += '<div style="font-size:.75rem;font-weight:700;color:#a0aec0;margin-top:8px;margin-bottom:3px;">已停用</div>';
+    html += '<div style="font-size:.75rem;font-weight:700;color:#a0aec0;padding:4px 4px;border-bottom:1px solid #e2e8f0;margin-top:10px;margin-bottom:4px;">已停用</div>';
     html += disabled.map(x => row(x, true)).join('');
   }
   picker.innerHTML = html;
@@ -23382,6 +23392,13 @@ function renderChangelogPage() {
       item('修復', '個案列表「僅主責/個管」篩選 checkbox 未納入督導/窗口派生的當然個管案，導致督導登入後看不到 supervisee 的案；改用 `_getAutoManagedCaseIds` 一併納入'),
       item('改善', '案列表當然個管 badge 由單一「督」再細分為「專督」（實習生專業督導）/「行督」（實習生行政督導），窗口身份維持「窗」'),
       item('改善', '空間預約：篩選為「週」檢視時，移除獨立的「上週」/「下週」按鈕，改由原本的「‹」/「›」按鈕直接切換整週（維持對齊週一）'),
+      item('修復', '登入時若瀏覽器 localStorage 已滿導致寫入配額超出（QuotaExceededError），先前會被當成未知錯誤整個登入失敗（signOut）；改為該處寫入失敗僅略過，不影響登入'),
+    ]},
+    { date: '2026-07-03', title: '個案列表個管徽章統一改版 + 空間預約顏色補強 + 編輯使用者視窗排版修正', isProd: false, items: [
+      item('改善', '個案列表「個管/初談」徽章統一改為「每人各自的色塊徽章＋姓名職稱」格式：手動個管＝「管」（藍）、督導身份＝「專督」（紫）/「行督」（粉）、窗口身份＝「窗」（青）、初次晤談者＝「初」（綠）；同一人身兼多重身分時會並列顯示多個徽章'),
+      item('新功能', '空間預約頁新增「🎨 我的顏色」按鈕，點開彈窗即可直接設定自己的預約顯示顏色，不必再繞去偏好設定頁'),
+      item('新功能', '偏好設定「空間預約顯示顏色」色盤：已被其他使用者選用的顏色會加粗框標示，滑鼠移過去顯示「由 OOO 使用」（僅姓名）'),
+      item('改善', '編輯使用者視窗加寬（480px→640px），並修正「負責的實習生/兼任心理師」清單排版：姓名/角色改為不換行、已停用標籤靠右對齊、清單可捲動高度加大'),
     ]},
     { date: '2026-07-02', title: '空間預約 / GC 強化：使用者顏色 + GC 編輯權限 + 事件驗證 + 自動補註', isProd: false, items: [
       item('新功能', '偏好設定新增「空間預約顯示顏色」卡片：32 色可選，選定後空間預約列表中自己的預約 cell 底色淡（12% 透明）+ 左邊 4px 條紋標示；不設沿用預設灰底'),
@@ -23907,36 +23924,60 @@ function _prefChangeMyGmail() {
 function toggleCustomTimeout(sel) {
   document.getElementById('pref-timeout-custom').style.display = sel.value === 'custom' ? '' : 'none';
 }
-function _renderBkColorGrid() {
-  const grid = document.getElementById('pref-bkcolor-grid');
-  const cur  = document.getElementById('pref-bkcolor-current');
+// gridId/currentId 預設對應偏好設定頁；booking 頁彈窗會傳入另一組 id 重用同一份渲染邏輯
+function _renderBkColorGrid(gridId, currentId) {
+  const grid = document.getElementById(gridId || 'pref-bkcolor-grid');
+  const cur  = document.getElementById(currentId || 'pref-bkcolor-current');
   if (!grid) return;
-  const my = configData?.users?.[currentUser?.email]?.bkColor || '';
+  const me = currentUser?.email;
+  const my = configData?.users?.[me]?.bkColor || '';
+  // 統計每個顏色被哪些「其他使用者」選用，供 hover 顯示
+  const usersByColor = {};
+  Object.entries(configData?.users || {}).forEach(([email, u]) => {
+    if (!u || u.disabled || email === me || !u.bkColor) return;
+    const key = u.bkColor.toUpperCase();
+    (usersByColor[key] = usersByColor[key] || []).push(u.name || email);
+  });
   grid.innerHTML = BK_USER_COLORS.map(hex => {
-    const sel = hex.toUpperCase() === (my || '').toUpperCase();
-    return `<div onclick="pickMyBkColor('${hex}')"
-      title="${escHtml(hex)}"
+    const key = hex.toUpperCase();
+    const sel = key === (my || '').toUpperCase();
+    const others = usersByColor[key] || [];
+    const tip = others.length ? ` data-tip="由 ${escHtml(others.join('、'))} 使用"` : '';
+    const box = sel
+      ? 'inset 0 0 0 3px #fff, 0 0 0 2px #2b6cb0'
+      : others.length
+        ? 'inset 0 0 0 2px #fff, 0 0 0 2px #2d3748'
+        : 'inset 0 0 0 1px rgba(0,0,0,.08)';
+    return `<div onclick="pickMyBkColor('${hex}','${escHtml(gridId||'pref-bkcolor-grid')}','${escHtml(currentId||'pref-bkcolor-current')}')"
+      title="${escHtml(hex)}"${tip}
       style="width:32px;height:32px;border-radius:6px;background:${hex};cursor:pointer;
-      box-shadow:${sel?'inset 0 0 0 3px #fff, 0 0 0 2px #2b6cb0':'inset 0 0 0 1px rgba(0,0,0,.08)'};transition:transform .1s;"
+      box-shadow:${box};transition:transform .1s;"
       onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform=''"></div>`;
   }).join('');
   if (cur) cur.textContent = my ? `目前：${my}` : '目前：未設定（沿用預設灰底）';
 }
-async function pickMyBkColor(hex) {
+async function pickMyBkColor(hex, gridId, currentId) {
   const me = currentUser?.email;
   if (!me || !configData?.users?.[me]) return;
   configData.users[me].bkColor = hex;
-  _renderBkColorGrid();
+  _renderBkColorGrid(gridId, currentId);
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
   if (document.getElementById('page-bookings')?.classList.contains('active')) renderBookingsPage();
   showToast?.(`已設定顏色 ${hex}`, 'success');
 }
-async function clearMyBkColor() {
+function openBkColorModal() {
+  document.getElementById('bk-color-modal').style.display = 'flex';
+  _renderBkColorGrid('bk-color-modal-grid', 'bk-color-modal-current');
+}
+function closeBkColorModal() {
+  document.getElementById('bk-color-modal').style.display = 'none';
+}
+async function clearMyBkColor(gridId, currentId) {
   const me = currentUser?.email;
   if (!me || !configData?.users?.[me]) return;
   if (!confirm('要清除您的預約顯示顏色，改回預設灰底嗎？')) return;
   delete configData.users[me].bkColor;
-  _renderBkColorGrid();
+  _renderBkColorGrid(gridId, currentId);
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
   if (document.getElementById('page-bookings')?.classList.contains('active')) renderBookingsPage();
   showToast?.('已清除自訂顏色', 'info');
@@ -35954,6 +35995,25 @@ function toggleNavPin(navId) {
     <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
       <button class="btn btn-secondary" onclick="closeBookingModal()">取消</button>
       <button class="btn btn-primary" id="btn-save-booking" onclick="saveBooking()">儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 空間預約：我的顯示顏色 Modal -->
+<div id="bk-color-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:600;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:12px;padding:24px 24px 18px;width:90%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,.2);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <h3 style="font-size:1.05rem;color:#1a202c;">我的空間預約顏色</h3>
+      <button onclick="closeBkColorModal()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+    </div>
+    <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">選一個屬於自己的顏色，其他人也會看到你的預約以此顏色顯示。粗框色塊代表已被其他人選用（移過去看是誰）。</p>
+    <div id="bk-color-modal-grid" style="display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;"></div>
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <button class="btn btn-secondary btn-sm" onclick="clearMyBkColor('bk-color-modal-grid','bk-color-modal-current')">還原預設（無色）</button>
+      <span id="bk-color-modal-current" style="font-size:.82rem;color:#4a5568;"></span>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-top:16px;">
+      <button class="btn btn-secondary" onclick="closeBkColorModal()">關閉</button>
     </div>
   </div>
 </div>
