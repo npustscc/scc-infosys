@@ -5285,6 +5285,7 @@ window.addEventListener('load', () => {
         });
       } else {
         gIdToken = storedToken;
+        try { _gTokenExp = Number(JSON.parse(atob(storedToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp) || 0; } catch (_) { _gTokenExp = 0; }
         showLoading('自動登入中…');
         afterLogin();
       } // end else (token valid)
@@ -5304,11 +5305,74 @@ function handleCredentialResponse(response) {
   const payload = JSON.parse(decodeURIComponent(
     atob(b64).split('').map(c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join('')
   ));
+  // 刷新模式：App 已啟動（configData 已載入）且同一使用者 → 只更新權杖，不重跑 afterLogin
+  const _isRefresh = !!(configData && configData.users) && currentUser?.email === payload.email;
   currentUser = { email: payload.email, name: payload.name, picture: payload.picture };
   sessionStorage.setItem('scc_user', JSON.stringify(currentUser));
   gIdToken = response.credential;
   sessionStorage.setItem('scc_idtoken', response.credential);
+  _gTokenExp = Number(payload.exp) || 0;
+  if (_isRefresh) {
+    _syslog?.('success', '登入權杖已於背景更新（畫面資料保留，不需重新整理）');
+    _hideReloginModal();
+    _resolveTokenRefresh(true);
+    return;
+  }
+  _hideReloginModal();
+  _resolveTokenRefresh(true);
   afterLogin();
+}
+
+// ── AFK 過久 token 過期處理：背景靜默刷新 + 重新登入 modal ──
+let _gTokenExp = 0;               // 目前 gIdToken 的 exp（Unix 秒）
+let _tokenRefreshPromise = null;  // in-flight 刷新去重（多個 proxyCall 共用同一次刷新）
+let _tokenRefreshResolve = null;
+function _resolveTokenRefresh(ok) {
+  const r = _tokenRefreshResolve;
+  _tokenRefreshPromise = null; _tokenRefreshResolve = null;
+  if (r) r(ok);
+}
+function _refreshIdToken() {
+  if (_tokenRefreshPromise) return _tokenRefreshPromise;
+  _tokenRefreshPromise = new Promise(resolve => { _tokenRefreshResolve = resolve; });
+  const p = _tokenRefreshPromise;
+  // 8 秒內靜默刷新未完成 → 顯示重新登入 modal（promise 續等使用者完成登入）
+  const fallbackTimer = setTimeout(() => { if (_tokenRefreshResolve) _showReloginModal(); }, 8000);
+  _syslog?.('warn', '登入權杖已過期，嘗試背景更新…');
+  try {
+    google.accounts.id.prompt(n => {
+      try {
+        if (n && ((n.isNotDisplayed && n.isNotDisplayed()) || (n.isSkippedMoment && n.isSkippedMoment()))) {
+          if (_tokenRefreshResolve) _showReloginModal();
+        }
+      } catch (_) {}
+    });
+  } catch (_) { if (_tokenRefreshResolve) _showReloginModal(); }
+  p.finally(() => clearTimeout(fallbackTimer));
+  return p;
+}
+function _showReloginModal() {
+  let el = document.getElementById('relogin-modal');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'relogin-modal';
+    el.style.cssText = 'position:fixed;inset:0;z-index:100002;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;';
+    el.innerHTML = `<div style="background:#fff;border-radius:12px;padding:28px 32px;max-width:400px;width:90%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.25);">
+      <div style="font-size:2rem;margin-bottom:10px;">🔐</div>
+      <div style="font-weight:700;font-size:1.05rem;color:#2d3748;margin-bottom:8px;">登入已逾時</div>
+      <div style="font-size:.9rem;color:#4a5568;margin-bottom:18px;">閒置過久，Google 登入憑證已過期。<br>請重新登入以繼續，畫面上的資料不會遺失。</div>
+      <div id="relogin-btn-slot" style="display:flex;justify-content:center;"></div>
+    </div>`;
+    document.body.appendChild(el);
+  }
+  el.style.display = 'flex';
+  try {
+    google.accounts.id.renderButton(document.getElementById('relogin-btn-slot'), { theme: 'outline', size: 'large', text: 'signin_with' });
+  } catch (_) {}
+}
+function _hideReloginModal() {
+  const el = document.getElementById('relogin-modal');
+  if (el) el.style.display = 'none';
 }
 
 function _showDisabledScreen() {
@@ -20620,8 +20684,10 @@ async function driveUpdateJsonFile(path, content) {
 // ══════════════════════════════════════════════
 //  Apps Script Proxy（所有 Drive 操作將透過此函式）
 // ══════════════════════════════════════════════
-async function proxyCall(action, params = {}, _silent = false, _retry = 0) {
+async function proxyCall(action, params = {}, _silent = false, _retry = 0, _authRetried = false) {
   if (!gIdToken) throw new Error('尚未取得 ID token，請重新登入');
+  // token 即將過期（60 秒緩衝）→ 先刷新再送出，避免 AFK 過久後操作出現 Unauthorized
+  if (_gTokenExp && (Date.now() / 1000) > (_gTokenExp - 60)) await _refreshIdToken();
   const _isRead = _SYSLOG_READ_ACTIONS.has(action);
   const _logDetail = Object.entries(params)
     .filter(([k]) => k !== 'content')
@@ -20643,12 +20709,20 @@ async function proxyCall(action, params = {}, _silent = false, _retry = 0) {
         if (!_silent) _syslog('debug', `→ ${action} 冷啟動重試 #${_retry + 1}（HTTP ${r.status}）`);
         _showRetryNotice(`⟳ 伺服器連線異常（HTTP ${r.status}），正在自動重試（第 ${_retry + 1}/2 次），請稍候…`);
         await new Promise(res => setTimeout(res, 1200 * (_retry + 1)));
-        return proxyCall(action, params, _silent, _retry + 1);
+        return proxyCall(action, params, _silent, _retry + 1, _authRetried);
       }
       throw new Error(`Apps Script 呼叫失敗 (${r.status})`);
     }
     const data = await r.json();
-    if (data.status === 401 || data.error === '身份驗證失敗') throw new Error('身份驗證失敗，請重新登入');
+    if (data.status === 401 || data.error === '身份驗證失敗') {
+      if (!_authRetried) {
+        if (!_silent) _syslog('warn', `→ ${action} 身份驗證失敗，更新登入權杖後自動重試`);
+        _gTokenExp = 0;
+        await _refreshIdToken();
+        return proxyCall(action, params, _silent, 0, true);
+      }
+      throw new Error('身份驗證失敗，請重新登入');
+    }
     if (!data.success && data.pong === undefined) throw new Error(data.error || 'Apps Script 回應錯誤');
     if (data.data && typeof data.data === 'object' && data.data.error && !data.data.ok) throw new Error(data.data.error);
     if (!_silent) _syslog(_isRead ? 'debug' : 'success', `✓ ${action} (${Date.now() - _t0}ms)${_retry > 0 ? ` [重試${_retry}次]` : ''}`);
