@@ -35984,6 +35984,7 @@ function toggleNavPin(navId) {
   <div style="background:#fff;border-radius:12px;max-width:520px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
     <h3 style="margin:0 0 14px;color:#1a5276;font-size:1.05rem;">回報問題或錯誤</h3>
     <textarea id="issue-desc" rows="5" style="width:100%;padding:10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.88rem;resize:vertical;box-sizing:border-box;" placeholder="請描述問題，例如：在哪個頁面、做了什麼動作、出現了什麼狀況… （輸入 @ 可提及使用者）" oninput="_issueAtInput(this)" onkeydown="_issueAtKeydown(event)"></textarea>
+    <div id="issue-sys-context" style="display:none;margin-top:10px;"></div>
     <div id="attachPicker_issue_new" class="attach-picker-wrap"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
       <button class="btn btn-secondary" type="button" onclick="document.getElementById('issue-submit-modal').style.display='none'">取消</button>
@@ -36371,8 +36372,48 @@ function _hideAtSuggest() {
 document.addEventListener('click', e => {
   if (!document.getElementById('at-suggest-panel')?.contains(e.target)) _hideAtSuggest();
 });
+// 技術錯誤 → 非工程師可懂的白話翻譯（回報問題時同步附上，方便回報與溝通）
+function _friendlyError(msg) {
+  const m = String(msg || '');
+  if (/401|身份驗證失敗|unauthorized/i.test(m)) return '登入逾時，系統需要重新登入';
+  if (/404|503|冷啟動/.test(m)) return '雲端服務暫時沒有回應（系統會自動重試）';
+  if (/Failed to fetch|NetworkError|network|ERR_INTERNET/i.test(m)) return '網路連線中斷或不穩定';
+  if (/找不到 Drive (檔案|資料夾)|找不到檔案/.test(m)) return '雲端上找不到對應的資料檔';
+  if (/quota|rate|429|too many/i.test(m)) return '雲端服務流量暫時滿載，稍後會恢復';
+  if (/timeout|逾時|timed out/i.test(m)) return '等待雲端回應逾時';
+  if (/permission|權限|forbidden|403/i.test(m)) return '帳號權限不足，無法執行該操作';
+  return '系統發生未預期的錯誤';
+}
+// 取本次工作階段最近的系統錯誤（最多 5 筆），附白話翻譯
+function _recentSysErrors() {
+  return (_syslogEntries || [])
+    .filter(e => e.level === 'error')
+    .slice(-5)
+    .map(e => ({ t: e.t, raw: `${e.msg}${e.detail ? '｜' + e.detail : ''}`, friendly: _friendlyError(e.msg) }));
+}
+
+let _issueSysContext = [];
 function openIssueModal() {
   document.getElementById('issue-desc').value = '';
+  // 自動偵測最近的系統錯誤，翻成白話顯示並於送出時一併附上
+  _issueSysContext = _recentSysErrors();
+  const ctxEl = document.getElementById('issue-sys-context');
+  if (ctxEl) {
+    if (_issueSysContext.length) {
+      ctxEl.style.display = '';
+      ctxEl.innerHTML = `<details style="background:#fff8e6;border:1px solid #f0d490;border-radius:8px;padding:8px 12px;">
+        <summary style="cursor:pointer;font-size:.82rem;font-weight:600;color:#8a6d3b;">🔎 系統偵測到 ${_issueSysContext.length} 筆最近的錯誤（送出時會自動附上，協助工程端診斷）</summary>
+        <div style="margin-top:6px;">${_issueSysContext.map(x => `
+          <div style="padding:4px 0;border-top:1px solid #f0e4c0;font-size:.82rem;color:#4a5568;">
+            <span style="color:#a0aec0;font-size:.74rem;">[${escHtml(x.t)}]</span> ${escHtml(x.friendly)}
+            <div style="font-size:.72rem;color:#a0aec0;font-family:monospace;word-break:break-all;">${escHtml(x.raw.slice(0, 160))}${x.raw.length > 160 ? '…' : ''}</div>
+          </div>`).join('')}</div>
+      </details>`;
+    } else {
+      ctxEl.style.display = 'none';
+      ctxEl.innerHTML = '';
+    }
+  }
   document.getElementById('issue-submit-modal').style.display = 'flex';
   setTimeout(() => { attachInit('issue_new', [], { dropTargets: ['issue-desc'] }); document.getElementById('issue-desc').focus(); }, 50);
 }
@@ -36404,6 +36445,7 @@ async function submitIssue() {
       status: 'open',
       resolution: '',
     };
+    if (_issueSysContext.length) issue.systemContext = _issueSysContext;
     issuesData.push(issue);
     try {
       await _saveIssues();
@@ -36777,6 +36819,15 @@ function renderIssuesPage() {
           ${issueEditBtn}
         </div>
         <div id="issue-desc-text-${sid}" style="font-size:.88rem;color:#2d3748;white-space:pre-wrap;">${_renderIssueText(issue.description)}</div>
+        ${Array.isArray(issue.systemContext) && issue.systemContext.length ? `
+        <details style="margin-top:6px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px 10px;">
+          <summary style="cursor:pointer;font-size:.78rem;font-weight:600;color:#4a5568;">🔎 回報當下系統偵測到的錯誤（${issue.systemContext.length} 筆）</summary>
+          ${issue.systemContext.map(x => `
+            <div style="padding:3px 0;border-top:1px solid #edf2f7;font-size:.8rem;color:#4a5568;">
+              <span style="color:#a0aec0;font-size:.72rem;">[${escHtml(x.t || '')}]</span> ${escHtml(x.friendly || '')}
+              <div style="font-size:.7rem;color:#a0aec0;font-family:monospace;word-break:break-all;">${escHtml(String(x.raw || '').slice(0, 200))}</div>
+            </div>`).join('')}
+        </details>` : ''}
         ${renderAttachChips(issue.attachments)}
         ${timelineHtml}
         ${verifyControl}
