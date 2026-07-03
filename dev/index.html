@@ -4409,7 +4409,7 @@ const GenogramEditor = (() => {
   const SZ = 22;
   const GRID = 20;
   const COUPLE_LTYPES = ['married','separated','divorced','bond','cohabiting']; // 所有視為「配偶」的結構關係線類型（觸發子女ㄇ字橫桿邏輯）
-  // 內建常用模版（QM 原版 1/2/3/4 子設計）：配偶（男+女）+ N 位子女（性別不明，可點選側欄形狀改變），程式內建不存 configData
+  // 內建常用模版（QM 原版 1/2/3/4 子設計）：配偶（男+女）+ N 位子女（預設男性方形，可選取後點側欄形狀改變），程式內建不存 configData
   const BUILTIN_TEMPLATES = [1,2,3,4].map(n=>{
     const childXs = n===1?[0] : n===2?[-45,45] : n===3?[-70,0,70] : [-105,-35,35,105];
     const objects = [
@@ -4419,7 +4419,7 @@ const GenogramEditor = (() => {
     ];
     childXs.forEach((cx,i)=>{
       const cid='c'+i;
-      objects.push({id:cid,type:'node',shapeType:'unknown',x:cx,y:120,label:''});
+      objects.push({id:cid,type:'node',shapeType:'male',x:cx,y:120,label:''});
       objects.push({id:'l'+i,type:'link',from:'a',to:cid,linkType:'parent',coupleId:'m',childId:cid,parentId:'a'});
     });
     return {name:n+' 子',objects,bbox:{w:270,h:180}};
@@ -4771,10 +4771,14 @@ const GenogramEditor = (() => {
             _pushUndo();
             const nl={id:_uid(),type:'link',from:_connectFrom,to:nd.id,linkType:_linkType};
             if(['parent','adopted','foster'].includes(_linkType)){
-              const fCpl=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===_connectFrom||o.to===_connectFrom));
-              const tCpl=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===nd.id||o.to===nd.id));
-              if(tCpl.length&&!fCpl.length){nl.coupleId=tCpl[0].id;nl.childId=_connectFrom;nl.parentId=nd.id;}
-              else if(fCpl.length&&!tCpl.length){nl.coupleId=fCpl[0].id;nl.childId=nd.id;nl.parentId=_connectFrom;}
+              // 親子方向以「垂直位置」判斷（Y 較小＝畫面上方＝父母，Y 較大＝下方＝子女），不受點擊順序或哪一側已成家影響。
+              // 若改用「哪一側已成家」當作父母的判斷依據，新增祖父母世代時（祖父尚未成家、父母已成家有子女）會誤判成祖父是父母的孩子。
+              const fNode=_objs.find(o=>o.id===_connectFrom);
+              const parentId=(fNode.y<=nd.y)?_connectFrom:nd.id;
+              const childId=(fNode.y<=nd.y)?nd.id:_connectFrom;
+              nl.parentId=parentId;nl.childId=childId;
+              const pCpl=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===parentId||o.to===parentId));
+              if(pCpl.length)nl.coupleId=pCpl[0].id;
               if(nl.coupleId){
                 const exCl=_objs.find(o=>o.type==='link'&&o.coupleId===nl.coupleId&&o.childId===nl.childId);
                 if(exCl){exCl.linkType=nl.linkType;}else{_objs.push(nl);}
@@ -5199,20 +5203,21 @@ const GenogramEditor = (() => {
   function _renderSidebar(){
     const sb=document.getElementById('geno-sidebar');if(!sb)return;
     const nodes=[{id:'male',name:'男性'},{id:'female',name:'女性'},{id:'pregnant',name:'懷孕'},{id:'unknown',name:'性別不明'},{id:'ip_m',name:'IP個案(男)'},{id:'ip_f',name:'IP個案(女)'},{id:'dead_m',name:'已故男'},{id:'dead_f',name:'已故女'},{id:'abort',name:'流產'},{id:'stillbirth',name:'死胎/死產'}];
-    const sl=[{id:'married',name:'婚姻'},{id:'bond',name:'連結'},{id:'cohabiting',name:'同居'},{id:'separated',name:'分居'},{id:'divorced',name:'離婚'},{id:'parent',name:'親子'},{id:'adopted',name:'領養'},{id:'foster',name:'寄養'},{id:'twin',name:'多胞胎'}];
+    const parentTip='先點父母、再點子女；系統依兩點的垂直位置自動判斷（畫面較上方＝父母，較下方＝子女），與點擊順序、是否已成家無關——新增祖父母世代時，祖父母節點要畫在上方';
+    const sl=[{id:'married',name:'婚姻'},{id:'bond',name:'連結'},{id:'cohabiting',name:'同居'},{id:'separated',name:'分居'},{id:'divorced',name:'離婚'},{id:'parent',name:'親子',tip:parentTip},{id:'adopted',name:'領養',tip:'領養：'+parentTip},{id:'foster',name:'寄養',tip:'寄養：'+parentTip},{id:'twin',name:'多胞胎'}];
     const el=[{id:'fused',name:'融合/極度親密'},{id:'close',name:'親密'},{id:'ambivalent',name:'矛盾'},{id:'conflict',name:'衝突'},{id:'cutoff',name:'情感疏離'},{id:'deteriorating',name:'關係惡化'}];
     const customs=(configData&&configData.customComponents)||[];
     let h=_sbSec('人物節點','nodes',
       '<div class="geno-sb-grid">'+nodes.map(n=>`<div class="geno-sb-item" id="geno-sb-n-${n.id}" onclick="GenogramEditor.setShape('${n.id}')" title="${n.name}">${_shapeSvg(n.id,30)}<span>${n.name}</span></div>`).join('')+'</div>');
     h+=_sbSec('結構關係線','structural',
-      sl.map(l=>`<div class="geno-sb-item geno-sb-lnk" id="geno-sb-l-${l.id}" onclick="GenogramEditor.setTool('connect');GenogramEditor.setLinkType('${l.id}')" title="${l.name}">${_linkSvg(l.id)}<span>${l.name}</span></div>`).join(''));
+      sl.map(l=>`<div class="geno-sb-item geno-sb-lnk" id="geno-sb-l-${l.id}" onclick="GenogramEditor.setTool('connect');GenogramEditor.setLinkType('${l.id}')" title="${l.tip||l.name}">${_linkSvg(l.id)}<span>${l.name}</span></div>`).join(''));
     h+=_sbSec('情緒關係線','emotional',
       el.map(l=>`<div class="geno-sb-item geno-sb-lnk" id="geno-sb-l-${l.id}" onclick="GenogramEditor.setTool('connect');GenogramEditor.setLinkType('${l.id}')" title="${l.name}">${_linkSvg(l.id)}<span>${l.name}</span></div>`).join(''));
     h+=_sbSec('常用模版','templates',
       '<div class="geno-sb-grid">'+BUILTIN_TEMPLATES.map((tpl,i)=>{
         const vw=tpl.bbox.w,vh=tpl.bbox.h;
         const mini=tpl.objects.filter(o=>o.type==='node').map(o=>`<g transform="translate(${o.x+vw/2},${o.y+SZ+8})">${_shapeSvg(o.shapeType,SZ*1.6).replace(/^<svg[^>]*>/,'').replace(/<[/]svg>$/,'')}</g>`).join('');
-        return `<div class="geno-sb-item" onclick="GenogramEditor.placeBuiltinTemplate(${i})" title="點選後在畫布任一處點擊放置：配偶＋${tpl.name}（子女性別不明，可選取後於「人物節點」點形狀改變）"><svg xmlns="${NS}" width="30" height="30" viewBox="0 0 ${vw} ${vh}" style="display:block;flex-shrink:0;background:#f7fafc;border-radius:2px;">${mini}</svg><span>${tpl.name}</span></div>`;
+        return `<div class="geno-sb-item" onclick="GenogramEditor.placeBuiltinTemplate(${i})" title="點選後在畫布任一處點擊放置：配偶＋${tpl.name}（子女預設男性方形，可選取後於「人物節點」點形狀改變）"><svg xmlns="${NS}" width="30" height="30" viewBox="0 0 ${vw} ${vh}" style="display:block;flex-shrink:0;background:#f7fafc;border-radius:2px;">${mini}</svg><span>${tpl.name}</span></div>`;
       }).join('')+'</div>');
     const customContent=(!customs.length?'<div style="font-size:.72rem;color:#a0aec0;padding:4px 6px;">（尚無自訂元件）</div>':customs.map((cc,i)=>{
       const vw=Math.max((cc.bbox&&cc.bbox.w)||60,10),vh=Math.max((cc.bbox&&cc.bbox.h)||60,10);
@@ -23465,9 +23470,13 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-04', v: 83, title: '家族圖：修正三代親子方向誤判 + 模版子女改為方形', isProd: false, items: [
+      item('修復', '新增親子關係線時，原本用「哪一側已成家」判斷誰是父母，導致新增祖父母世代時（祖父尚未成家、父母已成家有子女）會誤把祖父判斷成父母的孩子。改為依兩節點的垂直位置判斷（畫面上方＝父母，下方＝子女），不受點擊順序或是否已成家影響，正確支援三代以上的家族圖'),
+      item('改善', '常用模版產生的子女節點改為正方形（男性）而非菱形（性別不明），選取後仍可於側欄「人物節點」點選形狀改變'),
+    ]},
     { date: '2026-07-04', v: 82, title: '家族圖第二輪：對齊 QM 實際慣例（配偶直線+ㄇ字橫桿、模版、身障/慢性病標記等）', isProd: false, items: [
       item('修復', '配偶連接線改為永遠直線（不論有無子女），子女的ㄇ字橫桿獨立畫在子女那一側、寬度依子女實際分布自動延伸，取代原本配偶兩人各自往下垂直延伸的「倒ㄇ」畫法——修正後才真正符合家系圖實務慣例'),
-      item('新功能', '新增「常用模版」：一鍵放置「配偶＋1/2/3/4 位子女」的標準結構（依 QM 家系圖工具原版設計換算比例），子女預設性別不明，選取後可於側欄「人物節點」點選形狀改變'),
+      item('新功能', '新增「常用模版」：一鍵放置「配偶＋1/2/3/4 位子女」的標準結構（依 QM 家系圖工具原版設計換算比例），選取後可於側欄「人物節點」點選形狀改變'),
       item('新功能', '選取既有節點後點側欄形狀，改為直接變更該節點的形狀（而非切換為放置新節點），方便修改模版產生的子女性別/類型'),
       item('新功能', '身心障礙／慢性病雙標記：可為任一節點勾選，右上角/右側黑色標記疊加顯示，兩者可同時或分別勾選，不影響原本形狀與顏色'),
       item('新功能', '結構關係線新增「連結」「同居」；分居／離婚改為 QM 新版式（ㄇ字外框+對角斜線）；情緒關係線新增「關係惡化」'),
