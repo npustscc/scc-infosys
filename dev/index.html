@@ -3496,6 +3496,10 @@
         <input type="checkbox" id="modal-is-pt-contact" onchange="_updateModalSuperviseesWrap()" />
         兼任心理師窗口（自動成為所負責兼任心理師之個案的當然個管）
       </label>
+      <label class="form-check" style="margin-top:6px;">
+        <input type="checkbox" id="modal-is-vol-contact" />
+        義務輔導老師窗口（自動成為全部義務輔導老師之個案的當然個管，不需逐一選擇）
+      </label>
     </div>
 
     <div id="modal-supervisees-wrap" class="form-row" style="display:none;">
@@ -3838,7 +3842,8 @@ const CASE_BADGE_COLORS = {
   '管':  { bg: '#d6eaf8', fg: '#2471a3' }, // 手動指定個管
   '專督': { bg: '#e9d8fd', fg: '#553c9a' }, // 當然個管·實習生專業督導
   '行督': { bg: '#fde3ec', fg: '#9d174d' }, // 當然個管·實習生行政督導
-  '窗':   { bg: '#cffafe', fg: '#0e7490' }, // 當然個管·兼任心理師窗口
+  '兼窗': { bg: '#cffafe', fg: '#0e7490' }, // 當然個管·兼任心理師窗口
+  '義窗': { bg: '#dcfce7', fg: '#166534' }, // 當然個管·義務輔導老師窗口
   '初':   { bg: '#d4edda', fg: '#276749' }, // 初次晤談者
 };
 // 個案列表徽章 chip：一或多個色塊 tag + 姓名職稱（label 已含姓名+職稱）
@@ -5561,6 +5566,8 @@ function resolveUserRole() {
   else if (extraRole === '實習生專業督導')   _sbExtraBadges.push(`<span class="badge badge-gray">實習生專業督導</span>`);
   if (isTransferContact)    _sbExtraBadges.push(`<span class="badge badge-teal">轉銜窗口</span>`);
   if (isMentalLeaveContact) _sbExtraBadges.push(`<span class="badge badge-blue">身心調適假窗口</span>`);
+  if (_isPartTimeContact(currentUser?.email))  _sbExtraBadges.push(`<span class="badge" style="background:#cffafe;color:#0e7490;">兼任心理師窗口</span>`);
+  if (_isVolunteerContact(currentUser?.email)) _sbExtraBadges.push(`<span class="badge" style="background:#dcfce7;color:#166534;">義務輔導老師窗口</span>`);
   document.getElementById('sb-extra').innerHTML = _sbExtraBadges.join(' ');
 
   // 管理者才顯示使用者管理頁
@@ -6056,6 +6063,9 @@ function _getInitialInterviewersForCase(c) {
 function _isPartTimeContact(email) {
   return configData?.users?.[email]?.isPartTimeContact === true;
 }
+function _isVolunteerContact(email) {
+  return configData?.users?.[email]?.isVolunteerContact === true;
+}
 function _isInternSupervisor(email) {
   const r = configData?.users?.[email]?.extraRole;
   return r === '實習生行政督導' || r === '實習生專業督導';
@@ -6070,12 +6080,16 @@ function _invalidateAutoMgrCache() { /* placeholder — 目前無快取 */ }
 function _getAutoManagedCaseIds(supervisorEmail) {
   if (!supervisorEmail) return new Set();
   const supervisees = new Set(_getSuperviseeEmails(supervisorEmail));
+  const isVol = _isVolunteerContact(supervisorEmail);
   const ids = new Set();
-  if (supervisees.size) {
+  if (supervisees.size || isVol) {
     (casesData || []).forEach(c => {
       if (!c || c.deleted) return;
       const lat = _getLatestCounselorEmail(c);
-      if (lat && supervisees.has(lat)) ids.add(c.id);
+      if (!lat) return;
+      if (supervisees.has(lat)) { ids.add(c.id); return; }
+      // 義輔窗口：一個窗口涵蓋全部義務輔導老師，不需逐一指定名單
+      if (isVol && configData?.users?.[lat]?.role === '義務輔導老師') ids.add(c.id);
     });
   }
   return ids;
@@ -6092,14 +6106,19 @@ function _getAutoManagersForCase(caseId) {
   const out = [];
   Object.entries(configData?.users || {}).forEach(([email, u]) => {
     if (!u || u.disabled) return;
-    if (!_getSuperviseeEmails(email).includes(lat)) return;
     let reason = null;
-    if (_isInternSupervisor(email) && supRole === '實習諮商心理師') {
-      const roleTag = u.extraRole === '實習生行政督導' ? '行政督導' : '專業督導';
-      const shortTag = u.extraRole === '實習生行政督導' ? '行督' : '專督';
-      reason = { kind: 'supervisor', label: `督導身份·${roleTag}`, shortTag, supervisee: supName };
-    } else if (_isPartTimeContact(email) && typeof supRole === 'string' && supRole.startsWith('兼任')) {
-      reason = { kind: 'ptContact', label: '窗口身份', shortTag: '窗', supervisee: supName };
+    if (_getSuperviseeEmails(email).includes(lat)) {
+      if (_isInternSupervisor(email) && supRole === '實習諮商心理師') {
+        const roleTag = u.extraRole === '實習生行政督導' ? '行政督導' : '專業督導';
+        const shortTag = u.extraRole === '實習生行政督導' ? '行督' : '專督';
+        reason = { kind: 'supervisor', label: `督導身份·${roleTag}`, shortTag, supervisee: supName };
+      } else if (_isPartTimeContact(email) && typeof supRole === 'string' && supRole.startsWith('兼任')) {
+        reason = { kind: 'ptContact', label: '窗口身份·兼任心理師窗口', shortTag: '兼窗', supervisee: supName };
+      }
+    }
+    // 義輔窗口：涵蓋全部義務輔導老師，不依 superviseeEmails 名單
+    if (!reason && _isVolunteerContact(email) && supRole === '義務輔導老師') {
+      reason = { kind: 'volContact', label: '窗口身份·義務輔導老師窗口', shortTag: '義窗', supervisee: supName };
     }
     if (reason) out.push({ email, reason });
   });
@@ -6118,6 +6137,8 @@ function _caseVisibleToUser(c, email, allowedSet) {
   // 當然個管（派生：督導/窗口）——直接查 supervisee 名單，避免依賴 casesData（chunk 載入期 casesData 尚未 populate）
   const supervisees = _getSuperviseeEmails(email);
   if (supervisees.length && supervisees.includes(lat)) return true;
+  // 義輔窗口：主責為義務輔導老師的案一律可見
+  if (_isVolunteerContact(email) && configData?.users?.[lat]?.role === '義務輔導老師') return true;
   return false;
 }
 
@@ -6588,7 +6609,7 @@ function renderCases() {
     _getAutoManagersForCase(c.id).forEach(({ email, reason }) => {
       if (!caseManagerMap[c.id]) caseManagerMap[c.id] = new Map();
       if (!caseManagerMap[c.id].has(email)) caseManagerMap[c.id].set(email, new Set());
-      const tag = reason.shortTag || (reason.kind === 'supervisor' ? '督' : '窗');
+      const tag = reason.shortTag || (reason.kind === 'supervisor' ? '督' : '兼窗');
       caseManagerMap[c.id].get(email).add(tag);
     });
   });
@@ -7633,6 +7654,8 @@ function renderAdminUsers() {
     }
     if (info.isTransferContact)    _xBadges.push(`<span class="badge badge-teal">轉銜窗口</span>`);
     if (info.isMentalLeaveContact) _xBadges.push(`<span class="badge badge-blue">身心調適假窗口</span>`);
+    if (info.isPartTimeContact)    _xBadges.push(`<span class="badge" style="background:#cffafe;color:#0e7490;">兼任心理師窗口</span>`);
+    if (info.isVolunteerContact)   _xBadges.push(`<span class="badge" style="background:#dcfce7;color:#166534;">義務輔導老師窗口</span>`);
     const adminBadge = _xBadges.length ? _xBadges.join(' ') : '—';
     const isSelf = key === currentUser.email;
     const isNomail = key.startsWith('nomail_');
@@ -7910,6 +7933,7 @@ function openUserModal(key) {
     document.getElementById('modal-is-intern-admin-sup').checked  = info.extraRole === '實習生行政督導';
     document.getElementById('modal-is-intern-pro-sup').checked    = info.extraRole === '實習生專業督導';
     document.getElementById('modal-is-pt-contact').checked        = info.isPartTimeContact === true;
+    document.getElementById('modal-is-vol-contact').checked       = info.isVolunteerContact === true;
     document.getElementById('modal-intern-from').value = info.internFrom || '';
     document.getElementById('modal-intern-to').value   = info.internTo   || '';
     _modalSuperviseeSelected = new Set(Array.isArray(info.superviseeEmails) ? info.superviseeEmails : []);
@@ -7929,6 +7953,7 @@ function openUserModal(key) {
     document.getElementById('modal-is-intern-admin-sup').checked  = false;
     document.getElementById('modal-is-intern-pro-sup').checked    = false;
     document.getElementById('modal-is-pt-contact').checked        = false;
+    document.getElementById('modal-is-vol-contact').checked       = false;
     document.getElementById('modal-intern-from').value = '';
     document.getElementById('modal-intern-to').value   = '';
     _modalSuperviseeSelected = new Set();
@@ -7956,6 +7981,7 @@ async function saveUser() {
   const isInternAdminS = document.getElementById('modal-is-intern-admin-sup').checked;
   const isInternProS   = document.getElementById('modal-is-intern-pro-sup').checked;
   const isPtContact    = document.getElementById('modal-is-pt-contact').checked;
+  const isVolContact   = document.getElementById('modal-is-vol-contact').checked;
   const supervisees    = (isInternAdminS || isInternProS || isPtContact) ? [..._modalSuperviseeSelected] : [];
   const errEl    = document.getElementById('modal-error');
   errEl.style.display = 'none';
@@ -8013,6 +8039,7 @@ async function saveUser() {
     if (isTC)    merged.isTransferContact    = true; else delete merged.isTransferContact;
     if (isML)    merged.isMentalLeaveContact = true; else delete merged.isMentalLeaveContact;
     if (isPtContact) merged.isPartTimeContact = true; else delete merged.isPartTimeContact;
+    if (isVolContact) merged.isVolunteerContact = true; else delete merged.isVolunteerContact;
     if (isInternAdminS)    merged.extraRole = '實習生行政督導';
     else if (isInternProS) merged.extraRole = '實習生專業督導';
     else if (!isAdmin)     delete merged.extraRole;
@@ -8030,6 +8057,7 @@ async function saveUser() {
     if (isTC)    entry.isTransferContact    = true; else delete entry.isTransferContact;
     if (isML)    entry.isMentalLeaveContact = true; else delete entry.isMentalLeaveContact;
     if (isPtContact) entry.isPartTimeContact = true; else delete entry.isPartTimeContact;
+    if (isVolContact) entry.isVolunteerContact = true; else delete entry.isVolunteerContact;
     if (isInternAdminS)       entry.extraRole = '實習生行政督導';
     else if (isInternProS)    entry.extraRole = '實習生專業督導';
     else if (!isAdmin)        delete entry.extraRole;
