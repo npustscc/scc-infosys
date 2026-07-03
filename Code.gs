@@ -390,8 +390,11 @@ function listDir_({ path, fields, pageSize }, ctx) {
 function getOrCreateCalendar_(ctx) {
   const name = (ctx && ctx.calendarName) || CALENDAR_NAME;
   const cals = CalendarApp.getCalendarsByName(name);
-  if (cals.length > 0) return cals[0];
-  return CalendarApp.createCalendar(name, { color: CalendarApp.Color.CYAN });
+  if (cals.length === 1) return cals[0];
+  if (cals.length > 1) {
+    throw new Error('找到 ' + cals.length + ' 顆同名日曆「' + name + '」，請確認共用設定，移除或改名多餘的日曆後再試。');
+  }
+  throw new Error('找不到日曆「' + name + '」，請確認執行帳號已被加入該日曆共用名單，且權限為「進行變更並管理共用設定」。');
 }
 
 function parseEventTimes_(date, startTime, endTime) {
