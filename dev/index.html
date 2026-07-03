@@ -1823,7 +1823,7 @@
             <button class="btn btn-secondary btn-sm" onclick="refreshBookings()" data-tip="從 Drive 重新讀取最新預約資料，若其他人剛更新可點此同步。">重新整理</button>
             <button class="btn btn-secondary btn-sm" onclick="syncFromCalendar()" data-tip="從 Google Calendar 讀取最新時間變更，同步至系統預約資料。">與Google日曆同步</button>
             <button class="btn btn-secondary btn-sm" onclick="openBkColorModal()" data-tip="設定屬於你自己的預約顯示顏色，其他人也會看到你的預約以此顏色顯示。">🎨 我的顏色</button>
-  <button class="btn btn-secondary btn-sm" onclick="_bkLinkGc()" data-tip="確認 Google 日曆共用權限：主任/系統管理者按下會批次確保所有專任同仁都被邀請且有編輯權；一般同仁按下則連結自己的帳號。">🔗 連結 GC 日曆</button>
+  <button class="btn btn-secondary btn-sm" onclick="_bkLinkGc()" data-tip="確認 Google 日曆共用權限：主任/系統管理者按下會批次確保所有專任同仁都被邀請且有編輯權；一般同仁按下則連結自己的帳號。">🔗 連結 Google 日曆</button>
             <button class="btn btn-primary" onclick="openBookingModal()" data-tip="新增一筆諮商空間預約，填寫日期、時段與空間後儲存。">＋ 新增預約</button>
             <button class="btn btn-secondary btn-sm" onclick="_toggleBkSection('bookings-body','bk-overview-icon')" title="收折/展開" style="padding:2px 7px;font-size:.85rem;"><span id="bk-overview-icon">▼</span></button>
           </div>
@@ -23295,6 +23295,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-03', v: 79, title: '連結 Google 日曆按鈕改名 + 授權失敗訊息可視化', isProd: false, items: [
+      item('改善', '空間預約頁「🔗 連結 GC 日曆」按鈕改名為「🔗 連結 Google 日曆」，相關確認視窗、提示訊息、稽核日誌文字一併統一為「Google 日曆」'),
+      item('修復', '批次授權 Google 日曆編輯權限失敗時，原本只在瀏覽器主控台顯示錯誤物件（一般使用者看不到），現改為直接在提示訊息與系統管理頁顯示實際錯誤原因（例如帳號無管理共用設定的權限），方便判斷是否為 Google 日曆本身的擁有權/共用設定問題'),
+    ]},
     { date: '2026-07-03', v: 78, title: '個案紀錄/精神科醫師評估/初談紀錄卡片 banner 點擊收合展開', isProd: true, items: [
       item('改善', '個案詳細資料中，個案紀錄、精神科醫師評估（含卡片內合併時間軸）、初談紀錄的卡片頂端 banner 現在點擊任意處都能收合/展開，不限原本的「展開▼」按鈕；精神科醫師評估卡片原本沒有收合功能，一併補上'),
       item('改善', '收合/展開點擊已排除拖曳反白選字的情境：有文字選取範圍或點在按鈕等互動元件上時不會誤觸切換'),
@@ -30726,13 +30730,21 @@ async function _adminSaveWorkHours() {
   }
 }
 
-// ── GC 編輯權限一鍵同步 UI ──────────────────────────
+// ── Google 日曆編輯權限一鍵同步 UI ──────────────────────────
 function _gcSyncEligibleUsers() {
   return Object.entries(configData?.users || {}).filter(([email, u]) => {
     if (!u || u.disabled || !email || email.startsWith('nomail_')) return false;
     const r = u.role || '';
     return r === '主任' || u.isAdmin === true || u.extraRole === '管理者' || (typeof r === 'string' && r.startsWith('專任'));
   });
+}
+// 授權失敗時常見原因是執行帳號（npust.scc）對該 Google 日曆只有「編輯」而非「擁有者/可管理共用設定」權限；
+// 把第一筆實際錯誤訊息直接攤在畫面上，不用開 DevTools 才看得到
+let _gcAclLastErrors = []; // [{email, message}]
+function _gcAclErrSummary(errors) {
+  if (!errors || !errors.length) return '';
+  const first = errors[0];
+  return `${first.email || ''}：${first.message || '未知錯誤'}`;
 }
 function renderAdminGcSync() {
   const el = document.getElementById('admin-gcsync-wrap');
@@ -30746,7 +30758,14 @@ function renderAdminGcSync() {
   const rowsDone = done.length
     ? done.map(([email, u]) => `<li style="font-size:.83rem;padding:2px 0;color:#276749;">✓ ${escHtml(u.name || email)} <span style="color:#718096;">（${escHtml(email)}）</span></li>`).join('')
     : '<li style="font-size:.83rem;color:#a0aec0;">（無）</li>';
-  el.innerHTML = `
+  const errorBanner = _gcAclLastErrors.length ? `
+    <div style="background:#fff5f5;border:1px solid #feb2b2;border-radius:8px;padding:10px 14px;margin-bottom:14px;">
+      <div style="font-size:.88rem;font-weight:700;color:#c53030;margin-bottom:4px;">⚠ 上次同步失敗（${_gcAclLastErrors.length} 筆），可能是執行帳號對此 Google 日曆只有「編輯」而非「擁有者/可管理共用設定」權限，需請日曆擁有者手動調整：</div>
+      <ul style="list-style:none;padding:0;margin:0;font-size:.8rem;color:#822727;max-height:150px;overflow-y:auto;">
+        ${_gcAclLastErrors.map(e => `<li>${escHtml(e.email||'')}：${escHtml(e.message||'未知錯誤')}</li>`).join('')}
+      </ul>
+    </div>` : '';
+  el.innerHTML = errorBanner + `
     <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:14px;">
       <div style="flex:1;min-width:260px;background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;padding:10px 14px;">
         <div style="font-size:.9rem;font-weight:700;color:#9c4221;margin-bottom:6px;">待授權（${pending.length}）</div>
@@ -30768,15 +30787,16 @@ async function _adminGcAclSyncAll() {
   const emails = eligible.map(([email]) => email);
   const st = document.getElementById('admin-gcsync-status');
   if (st) st.textContent = `授權中… (${emails.length} 位)`;
-  const jobId = bgJobAdd(`GC ACL 同步：${emails.length} 位`);
+  const jobId = bgJobAdd(`Google 日曆編輯權限同步：${emails.length} 位`);
   try {
     const res = await proxyCall('shareCalendarWriters', { emails });
     (res?.granted || []).forEach(em => { if (configData.users[em]) configData.users[em].gcAclSynced = true; });
     await driveUpdateJsonFile(CONFIG_FILE, configData);
-    auditLog('同步 GC 編輯權限', null, null, `授權 ${res?.granted?.length || 0} 位；錯誤 ${res?.errors?.length || 0} 位`, { major: true });
+    auditLog('同步 Google 日曆編輯權限', null, null, `授權 ${res?.granted?.length || 0} 位；錯誤 ${res?.errors?.length || 0} 位`, { major: true });
     bgJobDone(jobId);
-    if (st) { st.textContent = `✓ 完成：${res?.granted?.length||0} 授權；${res?.errors?.length||0} 錯誤`; setTimeout(() => { if (st) st.textContent = ''; }, 5000); }
-    if (res?.errors?.length) console.warn('GC ACL errors:', res.errors);
+    _gcAclLastErrors = res?.errors || [];
+    if (st) { st.textContent = `✓ 完成：${res?.granted?.length||0} 授權；${res?.errors?.length||0} 錯誤${_gcAclLastErrors.length ? '（' + _gcAclErrSummary(_gcAclLastErrors) + '）' : ''}`; setTimeout(() => { if (st) st.textContent = ''; }, 8000); }
+    if (_gcAclLastErrors.length) console.warn('Google 日曆授權錯誤：', _gcAclLastErrors);
     renderAdminGcSync();
   } catch (e) {
     bgJobFail(jobId, e.message);
@@ -30784,36 +30804,37 @@ async function _adminGcAclSyncAll() {
     alert('授權失敗：' + e.message);
   }
 }
-// 空間預約頁「連結 GC 日曆」：主任/系統管理者批次授權全部符合資格者；其他人連結自己的帳號
+// 空間預約頁「連結 Google 日曆」：主任/系統管理者批次授權全部符合資格者；其他人連結自己的帳號
 async function _bkLinkGc() {
   const isPrivU = currentRole === '主任' || extraRole === '管理者';
   if (isPrivU) {
     const eligible = _gcSyncEligibleUsers();
     const emails = eligible.map(([email]) => email);
     if (!emails.length) { showToast('沒有符合資格的使用者', 'warn'); return; }
-    if (!confirm(`將批次確認 ${emails.length} 位（主任／系統管理者／專任）都被邀請到 GC 日曆並具編輯權限。\n\n確定執行？`)) return;
-    const jobId = bgJobAdd(`GC 日曆帳號連結：${emails.length} 位`);
+    if (!confirm(`將批次確認 ${emails.length} 位（主任／系統管理者／專任）都被邀請到 Google 日曆並具編輯權限。\n\n確定執行？`)) return;
+    const jobId = bgJobAdd(`Google 日曆帳號連結：${emails.length} 位`);
     try {
       const res = await proxyCall('shareCalendarWriters', { emails });
       (res?.granted || []).forEach(em => { if (configData.users[em]) configData.users[em].gcAclSynced = true; });
       await driveUpdateJsonFile(CONFIG_FILE, configData);
-      auditLog('同步 GC 編輯權限', null, null, `（空間預約頁）授權 ${res?.granted?.length || 0} 位；錯誤 ${res?.errors?.length || 0} 位`, { major: true });
+      auditLog('同步 Google 日曆編輯權限', null, null, `（空間預約頁）授權 ${res?.granted?.length || 0} 位；錯誤 ${res?.errors?.length || 0} 位`, { major: true });
       bgJobDone(jobId);
       const errN = res?.errors?.length || 0;
-      showToast(`✓ GC 連結完成：${res?.granted?.length || 0} 位已具編輯權${errN ? `；${errN} 位失敗（詳見系統管理頁）` : ''}`, errN ? 'warn' : 'success', 6000);
-      if (errN) console.warn('GC ACL errors:', res.errors);
+      _gcAclLastErrors = res?.errors || [];
+      showToast(`${errN ? '⚠' : '✓'} Google 日曆連結完成：${res?.granted?.length || 0} 位已具編輯權${errN ? `；${errN} 位失敗（${_gcAclErrSummary(_gcAclLastErrors)}；完整清單見系統管理頁）` : ''}`, errN ? 'warn' : 'success', 9000);
+      if (errN) console.warn('Google 日曆授權錯誤：', _gcAclLastErrors);
     } catch (e) { bgJobFail(jobId, e.message); alert('連結失敗：' + e.message); }
   } else {
     const me = currentUser?.email;
     if (!me) return;
-    const jobId = bgJobAdd('GC 日曆帳號連結（本人）');
+    const jobId = bgJobAdd('Google 日曆帳號連結（本人）');
     try {
       const res = await proxyCall('shareCalendarWriters', { emails: [me] });
       if ((res?.granted || []).includes(me)) {
         if (configData?.users?.[me]) { configData.users[me].gcAclSynced = true; driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {}); }
-        auditLog('同步 GC 編輯權限（本人）', null, null, me);
+        auditLog('同步 Google 日曆編輯權限（本人）', null, null, me);
         bgJobDone(jobId);
-        showToast('✓ 已確認您的帳號具有 GC 日曆編輯權限，請至 Google 日曆查看共用日曆', 'success', 6000);
+        showToast('✓ 已確認您的帳號具有 Google 日曆編輯權限，請至 Google 日曆查看共用日曆', 'success', 6000);
       } else {
         const err = (res?.errors || [])[0];
         throw new Error(err?.message || '未能授權，請聯繫系統管理者');
@@ -30834,7 +30855,7 @@ async function _gcAclAutoSyncOne(email) {
     if ((res?.granted || []).includes(email)) {
       u.gcAclSynced = true;
       driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
-      auditLog('同步 GC 編輯權限（增量）', null, null, email);
+      auditLog('同步 Google 日曆編輯權限（增量）', null, null, email);
     }
   } catch (_) { /* 靜默 */ }
 }
