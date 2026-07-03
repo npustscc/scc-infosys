@@ -507,18 +507,36 @@ function listCalendarEvents_({ startDate, endDate }, ctx) {
   });
 }
 
-// 授與（或撤除）指定 email 對本行事曆的 writer 權限
+// 授與（或撤除）指定 email 對本行事曆的 owner（進行變更並管理共用設定）權限
+// 註：CalendarApp.addEditor()/removeEditor() 只有在日曆為執行帳號「原生擁有」時才可用，
+// 對於分享而來（即使被授予「管理共用設定」）的日曆一律不存在該方法，因此改用 Calendar 進階服務（Calendar API v3 ACL）操作，
+// 其授權以 ACL 角色為準，不受「原生擁有」限制。
 function shareCalendarWriters_({ emails, revoke }, ctx) {
   const cal = getOrCreateCalendar_(ctx);
+  const calendarId = cal.getId();
   const results = { granted: [], removed: [], errors: [] };
   (emails || []).forEach(function(email) {
     if (!email || typeof email !== 'string') return;
+    const ruleId = 'user:' + email;
     try {
       if (revoke) {
-        cal.removeEditor(email);
+        try {
+          Calendar.Acl.remove(calendarId, ruleId);
+        } catch (e) {
+          if (!/not found/i.test((e && e.message) || '')) throw e;
+        }
         results.removed.push(email);
       } else {
-        cal.addEditor(email);
+        const resource = { role: 'owner', scope: { type: 'user', value: email } };
+        try {
+          Calendar.Acl.insert(resource, calendarId);
+        } catch (e) {
+          if (/already exists|duplicate/i.test((e && e.message) || '')) {
+            Calendar.Acl.update(resource, calendarId, ruleId);
+          } else {
+            throw e;
+          }
+        }
         results.granted.push(email);
       }
     } catch (e) {
