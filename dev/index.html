@@ -20142,6 +20142,10 @@ function _caseToIndexEntry(c) {
     abType: c.abType || '',
     caseType: c.caseType || '',
     isTransferCase: !!c.isTransferCase,
+    // 精神科醫師「僅評估列表可見」權限用：標記此案是否有（未刪除的）精神科評估
+    hasPsyEval: (c.psychiatristRecords || c._fullLoaded || !c._indexOnly)
+      ? !!(c.psychiatristRecords || []).some(p => p && !p.deleted)
+      : !!c.hasPsyEval,
     semesters: (Array.isArray(c.semesters) && c.semesters.length)
       ? [...c.semesters]
       : [openDateToSemPrefix(c.openDate)].filter(Boolean),
@@ -20253,14 +20257,14 @@ async function _maybeRebuildIndexForInterviewers() {
   if (!isPriv) return;
   const cases = _casesIndexCache?.cases || [];
   if (!cases.length) return;
-  if (cases.every(c => 'interviewerEmails' in c)) return; // 已是新版 index
-  _syslog('info', '偵測到舊 index 缺 interviewerEmails，管理者背景重建中…');
+  if (cases.every(c => 'interviewerEmails' in c && 'hasPsyEval' in c)) return; // 已是新版 index
+  _syslog('info', '偵測到舊 index 缺 interviewerEmails/hasPsyEval，管理者背景重建中…');
   try {
-    await _ensureAllFullyLoaded('重建索引（補初次晤談者欄位）');
+    await _ensureAllFullyLoaded('重建索引（補初次晤談者/精神科評估欄位）');
     _loadedFullDataset = true; // 已補齊全體完整資料
     await _saveCasesIndex();
     await _saveCasesHot();
-    _syslog('info', 'index/hot 已重建（含 interviewerEmails）');
+    _syslog('info', 'index/hot 已重建（含 interviewerEmails + hasPsyEval）');
   } catch (e) { _syslog('warn', `重建 index 失敗：${e.message}`); }
 }
 
@@ -34407,14 +34411,34 @@ function clearPsyDraft() {
 }
 
 async function renderPsychiatryPage() {
-  // 精神科頁需迭代所有 case 的 psychiatristRecords；補載入封存/舊學期完整資料
-  await _ensureAllFullyLoaded('精神科紀錄');
+  const isAdminUser = currentRole === '主任' || extraRole === '管理者';
+  const isPsychiatrist = currentRole === '駐校精神科醫師';
+  const _me = currentUser?.email || '';
+  const _allowedSet = new Set(configData?.users?.[_me]?.allowedCases || []);
+  // 載入策略依角色分流（資料最小化）：
+  //  主任/管理者 → 全量補載；精神科醫師 → 只補載「有精神科評估」的個案；其他 → 只補載自己可見的個案
+  if (isAdminUser) {
+    await _ensureAllFullyLoaded('精神科紀錄');
+  } else if (isPsychiatrist) {
+    const _idxHasFlag = (_casesIndexCache?.cases || []).some(c => 'hasPsyEval' in c);
+    const _psyIds = casesData
+      .filter(c => c?.id && c._indexOnly && !c._fullLoaded && (_idxHasFlag ? c.hasPsyEval : true))
+      .map(c => c.id);
+    if (_psyIds.length) {
+      showLoading(`載入精神科評估資料（${_psyIds.length} 筆個案）…`);
+      try { await _ensureFullCases(_psyIds); } finally { hideLoading(); }
+    }
+  } else {
+    const _myIds = casesData
+      .filter(c => c?.id && c._indexOnly && !c._fullLoaded && _caseVisibleToUser(c, _me, _allowedSet))
+      .map(c => c.id);
+    if (_myIds.length) { try { await _ensureFullCases(_myIds); } catch (_) {} }
+  }
   const q    = (document.getElementById('psychiatry-q')?.value    || '').trim().toLowerCase();
   const diag = (document.getElementById('psychiatry-diag')?.value || '');
   const tag  = (document.getElementById('psychiatry-tag')?.value  || '');
   const from = (document.getElementById('psychiatry-from')?.value || '');
   const to   = (document.getElementById('psychiatry-to')?.value   || '');
-  const isAdminUser = currentRole === '主任' || extraRole === '管理者';
 
   const archivedFilter = document.getElementById('psychiatry-archived')?.value ?? 'unarchived';
   const rows = [];
@@ -34422,6 +34446,8 @@ async function renderPsychiatryPage() {
     if (c.deleted) continue;
     if (archivedFilter === 'unarchived' && c.archived) continue;
     if (archivedFilter === 'archived' && !c.archived) continue;
+    // 可見性收斂：主任/管理者與精神科醫師可看全部評估；其他人僅能看自己主責/個管/初談個案的評估
+    if (!isAdminUser && !isPsychiatrist && !_caseVisibleToUser(c, _me, _allowedSet)) continue;
     for (const pr of (c.psychiatristRecords || [])) {
       const isCreator = pr.createdBy === currentUser?.email;
       const isPrimary = c.counselorEmail === currentUser?.email;
@@ -34463,6 +34489,9 @@ async function renderPsychiatryPage() {
     const tags = [pr.medicationAdvice==='yes'?'建議藥物':'', pr.hospitalizationAdvice==='yes'?'建議住院':''].filter(Boolean);
     const isCreator  = pr.createdBy === currentUser?.email;
     const psyEditable = !pr.createdAt || isEditable(pr.createdAt);
+    const isPending = pr.status === 'pending';
+    // 精神科醫師檢視他人個案的評估：僅列表閱覽+列印，不提供編輯/刪除（自己建立的評估不在此限）
+    const _psyReadOnlyRow = isPsychiatrist && !isAdminUser && !isCreator && !_caseVisibleToUser(c, _me, _allowedSet);
 
     let actionBtns = '';
     if (pr.deleted) {
@@ -34471,14 +34500,13 @@ async function renderPsychiatryPage() {
         <button class="btn btn-danger btn-sm" onclick="purgePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}',renderPsychiatryPage)" style="font-size:.78rem;" title="徹底移除">徹底移除</button>`;
       }
     } else {
-      actionBtns = `<button class="btn btn-secondary btn-sm" onclick="openPsychiatristModal('${escHtml(c.id)}','${escHtml(pr.id)}')" style="font-size:.78rem;">編輯</button>`;
+      if (!_psyReadOnlyRow)
+        actionBtns = `<button class="btn btn-secondary btn-sm" onclick="openPsychiatristModal('${escHtml(c.id)}','${escHtml(pr.id)}')" style="font-size:.78rem;">編輯</button>`;
       if (!isPending)
         actionBtns += `<button class="btn btn-secondary btn-sm" onclick="printPsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')" style="font-size:.78rem;">列印</button>`;
       if (isAdminUser || (isCreator && psyEditable))
         actionBtns += `<button class="btn btn-danger btn-sm" onclick="deletePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}',renderPsychiatryPage)" style="font-size:.78rem;">刪除</button>`;
     }
-
-    const isPending = pr.status === 'pending';
     const deletedBadge = pr.deleted
       ? `<span style="background:#fed7d7;color:#c53030;padding:2px 8px;border-radius:10px;font-size:.75rem;white-space:nowrap;">已刪除 by ${escHtml(pr.deletedByName||pr.deletedBy||'—')}</span>`
       : isPending ? `<span style="background:#fefcbf;color:#744210;padding:2px 8px;border-radius:10px;font-size:.75rem;white-space:nowrap;">草稿</span>` : '';
