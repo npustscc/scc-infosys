@@ -9021,6 +9021,15 @@ async function showCaseDetail(caseId) {
   const activeCount = visibleRecords.filter(r => !r.deleted).length;
   const deletedCount = visibleRecords.filter(r => r.deleted).length;
 
+  // 精神科醫師評估：併入個案紀錄時間軸依日期排序顯示（僅未刪除者；已刪除紀錄仍僅顯示於精神科醫師評估卡片）
+  const _visiblePsyForTimeline = (c.psychiatristRecords || []).filter(pr => {
+    if (pr.deleted) return false;
+    if (_csems && _detailSemFilter !== 'all' && pr.date) {
+      if (openDateToSemPrefix(pr.date) !== _activeSem) return false;
+    }
+    return true;
+  });
+
   const renderRecordCard = r => {
     const editable = !r.deleted && isEditable(r.createdAt) && !_detailReadOnly;
     const isCreator = isRecordCreator(r);
@@ -9120,12 +9129,69 @@ async function showCaseDetail(caseId) {
       </div>`;
   };
 
-  // 排序後的記錄列表（含分頁）
-  const _pendingRecs = visibleRecords.filter(r => r.status === 'pending');
-  const _normalRecs  = visibleRecords.filter(r => !r.deleted && r.status !== 'pending');
-  const _deletedRecs = visibleRecords.filter(r => r.deleted);
-  const _sortedNormal = _recSortDesc ? [..._normalRecs].reverse() : [..._normalRecs];
-  const sortedRecords = [..._pendingRecs, ..._sortedNormal, ..._deletedRecs];
+  // 精神科醫師評估之個案紀錄時間軸卡片：可收合/展開，展開後顯示填表人/評估人
+  const renderPsyTimelineCard = pr => {
+    const isCreator = pr.createdBy === currentUser?.email;
+    const psyEditable = (!pr.createdAt || isEditable(pr.createdAt)) && !_detailReadOnly;
+    const _pf = _psyFillerInfo(pr);
+    let actions = '';
+    if (!caseIsDeleted) {
+      if (psyEditable) actions += `<button class="btn-rec btn-rec-edit" onclick="openPsychiatristModal('${escHtml(c.id)}','${escHtml(pr.id)}')">編輯</button>`;
+      actions += `<button class="btn-rec btn-rec-edit" onclick="printPsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')">列印</button>`;
+      if (isAdminUser || (isCreator && psyEditable))
+        actions += `<button class="btn-rec btn-rec-delete" onclick="deletePsychiatristRecord('${escHtml(c.id)}','${escHtml(pr.id)}')">刪除</button>`;
+    }
+    const diagBadge = pr.diagnosisType==='specific' ? `<span class="badge badge-orange">${escHtml(pr.diagnosisName||'確診')}</span>` : '';
+    const medBadge  = pr.medicationAdvice==='yes' ? '<span class="badge badge-red">建議藥物</span>' : '';
+    const hospBadge = pr.hospitalizationAdvice==='yes' ? '<span class="badge badge-red">建議住院</span>' : '';
+
+    const foldView = `<div class="rec-fold-view">
+      ${pr.recommendations ? `<div class="record-summary rec-summary-clamp">${renderMaybeHtml(pr.recommendations)}</div>
+      <div class="rec-fold-more"><span class="rec-dots">……</span><button class="rec-more-btn" onclick="toggleRecordExpand('${escHtml(pr.id)}')">更多</button></div>` : ''}
+    </div>`;
+
+    const fullView = `<div class="rec-full-view">
+      ${pr.mainIssue ? `<div class="rec-section-label">主述與會談資料</div><div class="record-summary">${renderMaybeHtml(pr.mainIssue)}</div>` : ''}
+      ${pr.coreAssessment ? `<div class="rec-section-label">核心問題之評估與判斷</div><div class="record-summary">${renderMaybeHtml(pr.coreAssessment)}</div>` : ''}
+      ${pr.intervention ? `<div class="rec-section-label">介入處遇</div><div class="record-summary">${renderMaybeHtml(pr.intervention)}</div>` : ''}
+      ${pr.recommendations ? `<div class="rec-section-label">給學生諮商中心的建議</div><div class="record-summary">${renderMaybeHtml(pr.recommendations)}</div>` : ''}
+      ${pr.otherNotes ? `<div class="rec-section-label">其他注意事項</div><div class="record-summary">${renderMaybeHtml(pr.otherNotes)}</div>` : ''}
+      <div class="rec-section-label">${escHtml(_pf.label)}</div><div class="record-summary">${escHtml(_pf.display)}</div>
+      ${renderAttachChips(pr.attachments)}
+    </div>`;
+
+    const toggleBtn = `<button class="rec-toggle-btn" onclick="toggleRecordExpand('${escHtml(pr.id)}')">展開 ▼</button>`;
+
+    return `
+      <div class="record-card" id="rec-card-${escHtml(pr.id)}">
+        <div class="record-card-header">
+          <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;flex:1;min-width:0;margin-right:10px;">
+            <span class="record-date">🩺 ${escHtml(pr.date || '—')}</span>
+            <span class="badge" style="background:#e9d8fd;color:#553c9a;border:1px solid #d6bcfa;font-size:.73rem;">精神科評估</span>
+            ${diagBadge}${medBadge}${hospBadge}
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+            <div class="record-card-actions">${actions}</div>
+            ${toggleBtn}
+          </div>
+        </div>
+        ${foldView}${fullView}
+      </div>`;
+  };
+
+  // 排序後的記錄列表（含分頁；晤談紀錄與精神科評估依日期合併排序）
+  const _pendingRecs = visibleRecords.filter(r => r.status === 'pending').map(r => ({ type:'record', ref:r }));
+  const _normalItems = [
+    ...visibleRecords.filter(r => !r.deleted && r.status !== 'pending').map(r => ({ type:'record', date: r.date || (r.createdAt||'').slice(0,10), ref:r })),
+    ..._visiblePsyForTimeline.map(pr => ({ type:'psychiatrist', date: pr.date || (pr.createdAt||'').slice(0,10), ref:pr })),
+  ];
+  _normalItems.sort((a, b) => {
+    const da = a.date || '', db = b.date || '';
+    if (da === db) return 0;
+    return _recSortDesc ? (da < db ? 1 : -1) : (da < db ? -1 : 1);
+  });
+  const _deletedRecs = visibleRecords.filter(r => r.deleted).map(r => ({ type:'record', ref:r }));
+  const sortedRecords = [..._pendingRecs, ..._normalItems, ..._deletedRecs];
   const totalRecCount = sortedRecords.length;
   const totalPages = Math.max(1, Math.ceil(totalRecCount / _recPageSize));
   if (_recPage > totalPages) _recPage = totalPages;
@@ -9146,7 +9212,7 @@ async function showCaseDetail(caseId) {
 
   const recordCards = totalRecCount === 0
     ? `<div class="empty-state" style="padding:30px;"><div class="icon">📝</div><p>尚無晤談紀錄</p></div>`
-    : pagedRecords.map(renderRecordCard).join('') + paginationHtml;
+    : pagedRecords.map(item => item.type === 'psychiatrist' ? renderPsyTimelineCard(item.ref) : renderRecordCard(item.ref)).join('') + paginationHtml;
 
   // 學期 tab 已移至頁面頂部 detail-student-sem-nav，此處留空
   const _semTabsHtml = '';
@@ -9292,9 +9358,9 @@ async function showCaseDetail(caseId) {
     listContent = _buildAllSemTimeline(_relatedCases, caseId, isAdminUser);
     countLabel = '所有學期紀錄';
   } else {
-    countLabel = isAdminUser && deletedCount > 0
+    countLabel = (isAdminUser && deletedCount > 0
       ? `晤談紀錄（${activeCount} 筆，含 ${deletedCount} 筆已刪除）`
-      : `晤談紀錄（${activeCount} 筆）`;
+      : `晤談紀錄（${activeCount} 筆）`) + (_visiblePsyForTimeline.length ? `・含 ${_visiblePsyForTimeline.length} 筆精神科評估` : '');
     listContent = recordCards;
   }
 
@@ -34794,13 +34860,25 @@ function _renderPsychNavResults() {
   el.innerHTML = matches.map(c => `
     <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-radius:6px;cursor:pointer;"
       onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background=''"
-      onclick="document.getElementById('psych-nav-search-modal').remove();openPsychiatristModal('${escHtml(c.id)}')">
+      onclick="_psychNavOpenCase('${escHtml(c.id)}')">
       <div>
         <div style="font-weight:600;font-size:.88rem;">${escHtml(c.name)}</div>
         <div style="color:#718096;font-size:.78rem;">${escHtml(c.id)} | ${escHtml(c.studentId||'—')}</div>
       </div>
       <span style="color:#3182ce;font-size:.82rem;">選擇</span>
     </div>`).join('');
+}
+
+// 從全域搜尋開啟精神科評估表單前，先確保 cold case 完整資料已載入
+// （否則新增紀錄後 showCaseDetail 的 cold-load 分支會用舊資料覆蓋剛新增的紀錄）
+async function _psychNavOpenCase(id) {
+  document.getElementById('psych-nav-search-modal')?.remove();
+  const c = casesData.find(x => x.id === id);
+  if (c?._indexOnly && !c._fullLoaded) {
+    showLoading('讀取個案資料…');
+    try { await _ensureFullCases([id]); } finally { hideLoading(); }
+  }
+  openPsychiatristModal(id);
 }
 
 function openPsychiatristModal(caseId, recordId) {
@@ -34960,6 +35038,13 @@ async function savePsychiatristRecord(caseId, recordId) {
   if (_psyTodo) { _psyTodo.done = true; _psyTodo.doneAt = now; saveUserTodos().catch(()=>{}); _syncTodoBadge(); }
   clearPsyDraft();
   document.getElementById('psychiatrist-modal')?.remove();
+  // 避免 showCaseDetail 的 cold-load 分支用舊資料覆蓋剛寫入的紀錄
+  c._fullLoaded = true; c._indexOnly = false;
+  // 跨學期個案：若新/編輯紀錄的日期落在其他學期分頁，自動切換過去，避免存檔後在目前分頁看不到
+  if (Array.isArray(c.semesters) && c.semesters.length > 1 && data.date) {
+    const _prSem = openDateToSemPrefix(data.date);
+    if (c.semesters.includes(_prSem)) { _caseDetailActiveSem = _prSem; _detailSemFilter = 'current'; }
+  }
   showCaseDetail(caseId);
   const _psyJobLabel = recordId === '__new__' ? '新增精神科評估' : '更新精神科評估';
   const jobId = bgJobAdd(_psyJobLabel, `${c.name} ${data.date}`);
@@ -34992,6 +35077,7 @@ async function deletePsychiatristRecord(caseId, recordId, onSuccess) {
   pr.deletedAt = new Date().toISOString();
   pr.deletedBy = currentUser?.email;
   pr.deletedByName = configData?.users?.[currentUser?.email]?.name || currentUser?.name;
+  c._fullLoaded = true; c._indexOnly = false;
   if (typeof onSuccess === 'function') onSuccess();
   else showCaseDetail(caseId);
   const jobId = bgJobAdd('刪除精神科評估');
@@ -35048,6 +35134,16 @@ async function restorePsychiatristRecord(caseId, recordId, onSuccess) {
   }
 }
 
+// 精神科評估「填表人／評估人」：若填寫者本身即為駐校精神科醫師則標示為「評估人」，否則為「填表人」；一律顯示姓名+職稱
+function _psyFillerInfo(pr) {
+  const u = configData?.users?.[pr?.createdBy];
+  const role = u?.role || '';
+  const label = role === '駐校精神科醫師' ? '評估人' : '填表人';
+  const name = u?.name || pr?.createdByName || pr?.createdBy || '—';
+  const display = (u && role && role !== '系統管理者') ? name + role : name;
+  return { label, display };
+}
+
 function printPsychiatristRecord(caseId, recordId, mode = 'print') {
   const c = casesData.find(x => x.id === caseId);
   const pr = (c?.psychiatristRecords||[]).find(r => r.id === recordId);
@@ -35083,7 +35179,7 @@ function printPsychiatristRecord(caseId, recordId, mode = 'print') {
       <tr><th>是否建議藥物治療</th><td colspan="3">${medHtml}</td></tr>
       <tr><th>是否建議住院治療</th><td colspan="3">${hospHtml}</td></tr>
       <tr><th>其他注意事項</th><td colspan="3" style="min-height:50px;">${renderMaybeHtml(pr.otherNotes||'')}</td></tr>
-      <tr><th>填表人</th><td colspan="3">${escHtml(pr.createdByName || configData?.users?.[pr.createdBy]?.name || pr.createdBy || '—')}</td></tr>
+      <tr><th>${_psyFillerInfo(pr).label}</th><td colspan="3">${escHtml(_psyFillerInfo(pr).display)}</td></tr>
     </table>
     <div style="margin-top:14px;text-align:right;font-size:10pt;color:#555;">${escHtml(configData?.users?.[currentUser?.email]?.name || currentUser?.name || '')} 於 ${escHtml(new Date().toLocaleString('zh-TW',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}))} 列印　國立屏東科技大學學生諮商中心資訊系統</div>
     </body></html>`;
