@@ -1822,6 +1822,7 @@
             <button class="btn btn-secondary btn-sm" onclick="refreshBookings()" data-tip="從 Drive 重新讀取最新預約資料，若其他人剛更新可點此同步。">重新整理</button>
             <button class="btn btn-secondary btn-sm" onclick="syncFromCalendar()" data-tip="從 Google Calendar 讀取最新時間變更，同步至系統預約資料。">與Google日曆同步</button>
             <button class="btn btn-secondary btn-sm" onclick="openBkColorModal()" data-tip="設定屬於你自己的預約顯示顏色，其他人也會看到你的預約以此顏色顯示。">🎨 我的顏色</button>
+  <button class="btn btn-secondary btn-sm" onclick="_bkLinkGc()" data-tip="確認 Google 日曆共用權限：主任/系統管理者按下會批次確保所有專任同仁都被邀請且有編輯權；一般同仁按下則連結自己的帳號。">🔗 連結 GC 日曆</button>
             <button class="btn btn-primary" onclick="openBookingModal()" data-tip="新增一筆諮商空間預約，填寫日期、時段與空間後儲存。">＋ 新增預約</button>
             <button class="btn btn-secondary btn-sm" onclick="_toggleBkSection('bookings-body','bk-overview-icon')" title="收折/展開" style="padding:2px 7px;font-size:.85rem;"><span id="bk-overview-icon">▼</span></button>
           </div>
@@ -30569,6 +30570,44 @@ async function _adminGcAclSyncAll() {
     alert('授權失敗：' + e.message);
   }
 }
+// 空間預約頁「連結 GC 日曆」：主任/系統管理者批次授權全部符合資格者；其他人連結自己的帳號
+async function _bkLinkGc() {
+  const isPrivU = currentRole === '主任' || extraRole === '管理者';
+  if (isPrivU) {
+    const eligible = _gcSyncEligibleUsers();
+    const emails = eligible.map(([email]) => email);
+    if (!emails.length) { showToast('沒有符合資格的使用者', 'warn'); return; }
+    if (!confirm(`將批次確認 ${emails.length} 位（主任／系統管理者／專任）都被邀請到 GC 日曆並具編輯權限。\n\n確定執行？`)) return;
+    const jobId = bgJobAdd(`GC 日曆帳號連結：${emails.length} 位`);
+    try {
+      const res = await proxyCall('shareCalendarWriters', { emails });
+      (res?.granted || []).forEach(em => { if (configData.users[em]) configData.users[em].gcAclSynced = true; });
+      await driveUpdateJsonFile(CONFIG_FILE, configData);
+      auditLog('同步 GC 編輯權限', null, null, `（空間預約頁）授權 ${res?.granted?.length || 0} 位；錯誤 ${res?.errors?.length || 0} 位`, { major: true });
+      bgJobDone(jobId);
+      const errN = res?.errors?.length || 0;
+      showToast(`✓ GC 連結完成：${res?.granted?.length || 0} 位已具編輯權${errN ? `；${errN} 位失敗（詳見系統管理頁）` : ''}`, errN ? 'warn' : 'success', 6000);
+      if (errN) console.warn('GC ACL errors:', res.errors);
+    } catch (e) { bgJobFail(jobId, e.message); alert('連結失敗：' + e.message); }
+  } else {
+    const me = currentUser?.email;
+    if (!me) return;
+    const jobId = bgJobAdd('GC 日曆帳號連結（本人）');
+    try {
+      const res = await proxyCall('shareCalendarWriters', { emails: [me] });
+      if ((res?.granted || []).includes(me)) {
+        if (configData?.users?.[me]) { configData.users[me].gcAclSynced = true; driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {}); }
+        auditLog('同步 GC 編輯權限（本人）', null, null, me);
+        bgJobDone(jobId);
+        showToast('✓ 已確認您的帳號具有 GC 日曆編輯權限，請至 Google 日曆查看共用日曆', 'success', 6000);
+      } else {
+        const err = (res?.errors || [])[0];
+        throw new Error(err?.message || '未能授權，請聯繫系統管理者');
+      }
+    } catch (e) { bgJobFail(jobId, e.message); alert('連結失敗：' + e.message); }
+  }
+}
+
 // saveUser 增量 hook：儲存為專任/主任/管理者且尚未同步 → 背景授權該一位
 async function _gcAclAutoSyncOne(email) {
   const u = configData?.users?.[email];
