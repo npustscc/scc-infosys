@@ -19157,23 +19157,44 @@ function renderEventRecordsPage() {
   setTimeout(() => document.getElementById('evr-search-inp')?.focus(), 50);
 }
 
+// 比對正規化：移除所有空白（含全形）並轉小寫，避免資料或輸入含空白造成查無
+function _evrNorm(s) { return String(s || '').replace(/[\s　]+/g, '').toLowerCase(); }
+
 function _evrSearch(q) {
   const res = document.getElementById('evr-search-results');
   if (!res) return;
-  q = (q || '').trim().toLowerCase();
+  q = _evrNorm(q);
   if (!q) { res.innerHTML = ''; return; }
-  const matched = casesData.filter(c => !c.deleted && c.status !== '結案' &&
-    ((c.name||'').toLowerCase().includes(q) || (c.studentId||'').toLowerCase().includes(q) || (c.id||'').toLowerCase().includes(q))
-  ).slice(0, 20);
-  if (!matched.length) { res.innerHTML = '<div style="color:#718096;font-size:.88rem;padding:8px;">查無符合的開案個案。</div>'; return; }
+  const hit = c => _evrNorm(c.name).includes(q) || _evrNorm(c.studentId).includes(q) || _evrNorm(c.id).includes(q);
+  let matched = casesData.filter(c => !c.deleted && hit(c)).slice(0, 20);
+  // Fallback：casesData 查無時改搜輕量索引（涵蓋尚未載入 chunk 的個案）
+  if (!matched.length && _casesIndexCache?.cases?.length) {
+    matched = _casesIndexCache.cases.filter(c => c?.id && !c.deleted && hit(c)).slice(0, 20);
+  }
+  if (!matched.length) { res.innerHTML = '<div style="color:#718096;font-size:.88rem;padding:8px;">查無符合的開案個案。若確定該生已開案，請確認輸入的姓名／學號／案號是否正確。</div>'; return; }
   res.innerHTML = matched.map(c => `
     <div style="padding:10px 12px;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;background:#fff;">
       <div>
-        <div style="font-weight:600;">${escHtml(c.name)}</div>
+        <div style="font-weight:600;">${escHtml(c.name)}
+          ${c.status === 'closed' ? '<span style="font-size:.72rem;background:#f0f4f8;color:#718096;border-radius:4px;padding:1px 5px;margin-left:6px;">已結案</span>' : ''}
+          ${c.archived ? '<span style="font-size:.72rem;background:#fefcbf;color:#744210;border-radius:4px;padding:1px 5px;margin-left:6px;">已封存</span>' : ''}
+        </div>
         <div style="font-size:.82rem;color:#718096;">${escHtml(c.id)}${c.studentId ? ' ‧ ' + escHtml(c.studentId) : ''}</div>
       </div>
-      <button class="btn btn-primary btn-sm" onclick="openEventRecordForm('${escHtml(c.id)}')">新增事件處理記錄</button>
+      <button class="btn btn-primary btn-sm" onclick="_evrPick('${escHtml(c.id)}')">新增事件處理記錄</button>
     </div>`).join('');
+}
+
+// 選取後先確保完整資料已載入（scoped/cold 個案可能僅為索引 stub），再開表單
+async function _evrPick(caseId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (c && c._indexOnly && !c._fullLoaded) {
+    showLoading('載入個案資料…');
+    try { await _ensureFullCases([caseId]); }
+    catch (e) { hideLoading(); alert('載入個案資料失敗：' + e.message); return; }
+    hideLoading();
+  }
+  openEventRecordForm(caseId);
 }
 
 // ── 開啟表單 ──
