@@ -4408,6 +4408,22 @@ const GenogramEditor = (() => {
   const NS = 'http://www.w3.org/2000/svg';
   const SZ = 22;
   const GRID = 20;
+  const COUPLE_LTYPES = ['married','separated','divorced','bond','cohabiting']; // 所有視為「配偶」的結構關係線類型（觸發子女ㄇ字橫桿邏輯）
+  // 內建常用模版（QM 原版 1/2/3/4 子設計）：配偶（男+女）+ N 位子女（性別不明，可點選側欄形狀改變），程式內建不存 configData
+  const BUILTIN_TEMPLATES = [1,2,3,4].map(n=>{
+    const childXs = n===1?[0] : n===2?[-45,45] : n===3?[-70,0,70] : [-105,-35,35,105];
+    const objects = [
+      {id:'a',type:'node',shapeType:'male',x:-45,y:0,label:''},
+      {id:'b',type:'node',shapeType:'female',x:45,y:0,label:''},
+      {id:'m',type:'link',from:'a',to:'b',linkType:'married'},
+    ];
+    childXs.forEach((cx,i)=>{
+      const cid='c'+i;
+      objects.push({id:cid,type:'node',shapeType:'unknown',x:cx,y:120,label:''});
+      objects.push({id:'l'+i,type:'link',from:'a',to:cid,linkType:'parent',coupleId:'m',childId:cid,parentId:'a'});
+    });
+    return {name:n+' 子',objects,bbox:{w:270,h:180}};
+  });
   let _svg=null,_vp=null;
   let _objs=[],_selId=null,_multiSel=new Set();
   let _tool='select',_placeShape='male',_linkType='married';
@@ -4420,7 +4436,7 @@ const GenogramEditor = (() => {
   let _textFontSize=12,_textBold=false,_textItalic=false,_textStrike=false;
   let _nodeLabelFontSize=+(localStorage.getItem('genoLblFz')||11);
   let _snapEnabled=true;
-  let _sbCollapsed={nodes:false,structural:false,emotional:false,custom:false};
+  let _sbCollapsed={nodes:false,structural:false,emotional:false,templates:false,custom:false};
 
   const _el=(tag,attrs={})=>{const e=document.createElementNS(NS,tag);for(const[k,v]of Object.entries(attrs))e.setAttribute(k,String(v));return e;};
   const _uid=()=>'g'+(++_idSeq)+'_'+(Date.now()%1000000);
@@ -4432,12 +4448,10 @@ const GenogramEditor = (() => {
     const sel=!fe&&(o.id===_selId||_multiSel.has(o.id)),sc=sel?'#3182ce':(o.strokeColor||'#1a202c'),sw=sel?'2.5':'1.8',t=o.shapeType;
     const fc=(d)=>o.fillColor||d;
     if(t==='male'||t==='dead_m'||t==='ip_m'){
-      if(t==='ip_m')g.appendChild(_el('rect',{x:-(SZ+5),y:-(SZ+5),width:(SZ+5)*2,height:(SZ+5)*2,fill:'none',stroke:sc,'stroke-width':sw}));
-      g.appendChild(_el('rect',{x:-SZ,y:-SZ,width:SZ*2,height:SZ*2,fill:t==='dead_m'?fc('#e2e8f0'):fc('#fff'),stroke:sc,'stroke-width':sw}));
+      g.appendChild(_el('rect',{x:-SZ,y:-SZ,width:SZ*2,height:SZ*2,fill:t==='dead_m'?fc('#e2e8f0'):t==='ip_m'?fc('#a0aec0'):fc('#fff'),stroke:sc,'stroke-width':sw}));
       if(t==='dead_m'){const r=SZ-4;g.appendChild(_el('line',{x1:-r,y1:-r,x2:r,y2:r,stroke:sc,'stroke-width':sw}));g.appendChild(_el('line',{x1:r,y1:-r,x2:-r,y2:r,stroke:sc,'stroke-width':sw}));}
     }else if(t==='female'||t==='dead_f'||t==='ip_f'){
-      if(t==='ip_f')g.appendChild(_el('circle',{cx:0,cy:0,r:SZ+5,fill:'none',stroke:sc,'stroke-width':sw}));
-      g.appendChild(_el('circle',{cx:0,cy:0,r:SZ,fill:t==='dead_f'?fc('#e2e8f0'):fc('#fff'),stroke:sc,'stroke-width':sw}));
+      g.appendChild(_el('circle',{cx:0,cy:0,r:SZ,fill:t==='dead_f'?fc('#e2e8f0'):t==='ip_f'?fc('#a0aec0'):fc('#fff'),stroke:sc,'stroke-width':sw}));
       if(t==='dead_f'){const r=SZ*.65;g.appendChild(_el('line',{x1:-r,y1:-r,x2:r,y2:r,stroke:sc,'stroke-width':sw}));g.appendChild(_el('line',{x1:r,y1:-r,x2:-r,y2:r,stroke:sc,'stroke-width':sw}));}
     }else if(t==='pregnant'){
       g.appendChild(_el('polygon',{points:`0,${-SZ} ${SZ*.9},${SZ*.7} ${-SZ*.9},${SZ*.7}`,fill:fc('#fff'),stroke:sc,'stroke-width':sw}));
@@ -4450,12 +4464,27 @@ const GenogramEditor = (() => {
     }else{
       g.appendChild(_el('circle',{cx:0,cy:0,r:SZ,fill:fc('#fff'),stroke:sc,'stroke-width':sw}));
     }
+    // 慢性病（右半黑）／身心障礙（右上角四分之一黑）：QM 慣例疊加標記，與底層形狀/顏色無關
+    if(o.chronicIllness)g.appendChild(_el('rect',{x:0,y:-SZ,width:SZ,height:SZ*2,fill:'#1a202c'}));
+    if(o.disability)g.appendChild(_el('rect',{x:0,y:-SZ,width:SZ,height:SZ,fill:'#1a202c'}));
     if(sel)g.appendChild(_el('circle',{cx:0,cy:0,r:SZ+11,fill:'none',stroke:'#3182ce','stroke-width':'1','stroke-dasharray':'3,2',opacity:'0.5'}));
     if(o.label){const lbl=_el('text',{x:0,y:SZ+14,'text-anchor':'middle','font-size':String(_nodeLabelFontSize),fill:'#2d3748','font-family':'sans-serif'});lbl.textContent=o.label;g.appendChild(lbl);}
     g.appendChild(_el('rect',{x:-(SZ+8),y:-(SZ+8),width:(SZ+8)*2,height:(SZ+8)*2,fill:'transparent',stroke:'none'}));
     return g;
   }
 
+  // 分居/離婚新版式（QM）：兩端往同一側短垂直勾形成ㄇ字外框，中間 1（分居）或 2（離婚）條對角斜線
+  function _drawSeparationMarks(g,x1,y1,x2,y2,sc,tickCount){
+    const dx=x2-x1,dy=y2-y1,len=Math.hypot(dx,dy)||1;
+    const nx=-dy/len,ny=dx/len,ux=dx/len,uy=dy/len,TICK=8,SL=8;
+    g.appendChild(_el('line',{x1,y1,x2:x1+nx*TICK,y2:y1+ny*TICK,stroke:sc,'stroke-width':'1.8'}));
+    g.appendChild(_el('line',{x1:x2,y1:y2,x2:x2+nx*TICK,y2:y2+ny*TICK,stroke:sc,'stroke-width':'1.8'}));
+    const mx=(x1+x2)/2,my=(y1+y2)/2;
+    for(let i=0;i<tickCount;i++){
+      const off=tickCount===2?(i===0?-7:7):0,px=mx+ux*off,py=my+uy*off;
+      g.appendChild(_el('line',{x1:px-ux*SL+nx*SL,y1:py-uy*SL+ny*SL,x2:px+ux*SL-nx*SL,y2:py+uy*SL-ny*SL,stroke:sc,'stroke-width':'1.8'}));
+    }
+  }
   function _linkEl(o,fe){
     const fm=_objs.find(x=>x.id===o.from),to=_objs.find(x=>x.id===o.to);
     if(!fm||!to)return null;
@@ -4486,14 +4515,18 @@ const GenogramEditor = (() => {
       g.appendChild(_el('line',{x1,y1,x2:mx,y2:my,stroke:sc,'stroke-width':'1.8'}));
       g.appendChild(_el('line',{x1:x2,y1:y2,x2:mx,y2:my,stroke:sc,'stroke-width':'1.8'}));
       g.appendChild(_el('line',{x1:mx+nx*12,y1:my+ny*12,x2:mx-nx*12,y2:my-ny*12,stroke:sc,'stroke-width':'1.8'}));
+    }else if(lt==='deteriorating'){
+      const ux=dx/len,uy=dy/len,HL=7;
+      g.appendChild(_el('line',{x1,y1,x2,y2,stroke:sc,'stroke-width':'1.8'}));
+      const steps=Math.max(4,Math.floor(len/16));
+      for(let i=1;i<steps;i++){const t=i/steps,cx=x1+dx*t,cy=y1+dy*t;g.appendChild(_el('line',{x1:cx-ux*HL-nx*HL,y1:cy-uy*HL-ny*HL,x2:cx+ux*HL+nx*HL,y2:cy+uy*HL+ny*HL,stroke:sc,'stroke-width':'1.4'}));}
     }else{
-      const dash=lt==='adopted'||lt==='dashed'?'7,4':lt==='foster'||lt==='dotted'?'2,5':'';
+      const dash=lt==='adopted'||lt==='dashed'?'7,4':lt==='foster'||lt==='dotted'?'2,5':lt==='cohabiting'?'4,3':'';
       const dp=`M${x1} ${y1}L${x2} ${y2}`;
       if(sel)g.appendChild(_el('path',{d:dp,fill:'none',stroke:'#bee3f8','stroke-width':'6'}));
       g.appendChild(_el('path',{d:dp,fill:'none',stroke:sc,'stroke-width':'1.8',...(dash?{'stroke-dasharray':dash}:{})}));
       if(lt==='separated'||lt==='divorced'){
-        const mx=(x1+x2)/2,my=(y1+y2)/2,SL=9,n=lt==='divorced'?2:1;
-        for(let i=0;i<n;i++){const off=n===2?(i===0?-5.5:5.5):0,px=mx+(dx/len)*off,py=my+(dy/len)*off;g.appendChild(_el('line',{x1:px+nx*SL,y1:py+ny*SL,x2:px-nx*SL,y2:py-ny*SL,stroke:sc,'stroke-width':'1.8'}));}
+        _drawSeparationMarks(g,x1,y1,x2,y2,sc,lt==='divorced'?2:1);
       }
     }
     g.appendChild(_el('path',{d:`M${x1} ${y1}L${x2} ${y2}`,fill:'none',stroke:'transparent','stroke-width':'14'}));
@@ -4506,34 +4539,46 @@ const GenogramEditor = (() => {
     const g=_el('g',{class:'geno-conn','data-id':o.id});
     const sel=!fe&&o.id===_selId,sc=sel?'#3182ce':'#1a202c',lt=o.linkType;
     const ax=A.x,ay=A.y,bx=B.x,by=B.y;
-    const barY=Math.max(ay,by)+54,midX=(ax+bx)/2;
-    g.appendChild(_el('line',{x1:ax,y1:ay,x2:ax,y2:barY,stroke:sc,'stroke-width':'1.8'}));
-    g.appendChild(_el('line',{x1:ax,y1:barY,x2:bx,y2:barY,stroke:sc,'stroke-width':'1.8'}));
-    g.appendChild(_el('line',{x1:bx,y1:by,x2:bx,y2:barY,stroke:sc,'stroke-width':'1.8'}));
+    // 配偶線：永遠是直線，不因子女而彎曲（子女的ㄇ字橫桿獨立畫在子女那一側）
+    const dp=`M${ax} ${ay}L${bx} ${by}`;
+    g.appendChild(_el('path',{d:dp,fill:'none',stroke:sc,'stroke-width':'1.8'}));
+    const midX=(ax+bx)/2,midY=(ay+by)/2;
     if(lt==='separated'||lt==='divorced'){
-      const ym=(ay+barY)/2,n=lt==='divorced'?2:1;
-      for(let i=0;i<n;i++){const off=n===2?(i===0?-5.5:5.5):0;g.appendChild(_el('line',{x1:ax-9,y1:ym+off-5,x2:ax+9,y2:ym+off+5,stroke:sc,'stroke-width':'1.8'}));}
+      _drawSeparationMarks(g,ax,ay,bx,by,sc,lt==='divorced'?2:1);
     }
     const chn=childLinks.map(cl=>({node:_objs.find(x=>x.id===cl.childId),cl})).filter(x=>x.node);
-    chn.sort((a,b)=>a.node.x-b.node.x);
-    const twinGroups={};const normChn=[];
-    for(const{node,cl}of chn){if(cl.twinGroupId){if(!twinGroups[cl.twinGroupId])twinGroups[cl.twinGroupId]=[];twinGroups[cl.twinGroupId].push({node,cl});}else{normChn.push({node,cl});}}
-    // 一般孩子：以子女 X 吸附到倒ㄇ下緣（保持直線）
-    const barLx=Math.min(ax,bx),barRx=Math.max(ax,bx);
-    for(const{node:c,cl}of normChn){const bpX=Math.max(barLx,Math.min(barRx,c.x));const dash=cl.linkType==='adopted'?'7,4':cl.linkType==='foster'?'2,4':null;const la={x1:bpX,y1:barY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'};if(dash)la['stroke-dasharray']=dash;g.appendChild(_el('line',la));}
-    // 多胞胎：依群組倒V（支援 adopted/foster 虛線；若全為領養/寄養則 hub 線也虛線）
-    for(const pairs of Object.values(twinGroups)){
-      pairs.sort((a,b)=>a.node.x-b.node.x);
-      const gMidX=pairs.reduce((s,p)=>s+p.node.x,0)/pairs.length;
-      const bpX=Math.max(barLx,Math.min(barRx,gMidX));
-      const dropY=barY+30;
-      const allAdopted=pairs.every(p=>p.cl.linkType==='adopted'),allFoster=pairs.every(p=>p.cl.linkType==='foster');
-      const hubA={x1:bpX,y1:barY,x2:bpX,y2:dropY,stroke:sc,'stroke-width':'1.8'};
-      if(allAdopted)hubA['stroke-dasharray']='7,4';else if(allFoster)hubA['stroke-dasharray']='2,4';
-      g.appendChild(_el('line',hubA));
-      for(const{node:c,cl}of pairs){const dash=cl.linkType==='adopted'?'7,4':cl.linkType==='foster'?'2,4':null;const la={x1:bpX,y1:dropY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'};if(dash)la['stroke-dasharray']=dash;g.appendChild(_el('line',la));}
+    if(chn.length){
+      chn.sort((a,b)=>a.node.x-b.node.x);
+      const twinGroups={};const normChn=[];
+      for(const{node,cl}of chn){if(cl.twinGroupId){if(!twinGroups[cl.twinGroupId])twinGroups[cl.twinGroupId]=[];twinGroups[cl.twinGroupId].push({node,cl});}else{normChn.push({node,cl});}}
+      const twinGroupList=Object.values(twinGroups);
+      const dropY=Math.max(ay,by)+54;
+      // 橫桿 X 範圍依「子女實際分布」決定（含多胞胎群組代表點），不再夾在配偶兩人的 X 範圍內
+      const allXs=normChn.map(c=>c.node.x);
+      for(const pairs of twinGroupList){allXs.push(pairs.reduce((s,p)=>s+p.node.x,0)/pairs.length);}
+      const barLx=Math.min(...allXs),barRx=Math.max(...allXs);
+      const dropX=Math.max(barLx,Math.min(barRx,midX));
+      // 配偶連線中點 → 子女橫桿
+      g.appendChild(_el('line',{x1:midX,y1:midY,x2:dropX,y2:dropY,stroke:sc,'stroke-width':'1.8'}));
+      // 手足橫桿：只有一位子女（barLx===barRx）時寬度為 0，自然省略
+      if(barRx>barLx){
+        g.appendChild(_el('line',{x1:barLx,y1:dropY,x2:barRx,y2:dropY,stroke:sc,'stroke-width':'1.8'}));
+      }
+      // 一般孩子：從橫桿垂直落到子女（橫桿寬度已依子女 X 決定，故為直線不需夾取）
+      for(const{node:c,cl}of normChn){const dash=cl.linkType==='adopted'?'7,4':cl.linkType==='foster'?'2,4':null;const la={x1:c.x,y1:dropY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'};if(dash)la['stroke-dasharray']=dash;g.appendChild(_el('line',la));}
+      // 多胞胎：依群組倒V（支援 adopted/foster 虛線；若全為領養/寄養則 hub 線也虛線）
+      for(const pairs of twinGroupList){
+        pairs.sort((a,b)=>a.node.x-b.node.x);
+        const gMidX=pairs.reduce((s,p)=>s+p.node.x,0)/pairs.length;
+        const hubDropY=dropY+30;
+        const allAdopted=pairs.every(p=>p.cl.linkType==='adopted'),allFoster=pairs.every(p=>p.cl.linkType==='foster');
+        const hubA={x1:gMidX,y1:dropY,x2:gMidX,y2:hubDropY,stroke:sc,'stroke-width':'1.8'};
+        if(allAdopted)hubA['stroke-dasharray']='7,4';else if(allFoster)hubA['stroke-dasharray']='2,4';
+        g.appendChild(_el('line',hubA));
+        for(const{node:c,cl}of pairs){const dash=cl.linkType==='adopted'?'7,4':cl.linkType==='foster'?'2,4':null;const la={x1:gMidX,y1:hubDropY,x2:c.x,y2:c.y-SZ,stroke:sc,'stroke-width':'1.8'};if(dash)la['stroke-dasharray']=dash;g.appendChild(_el('line',la));}
+      }
     }
-    g.appendChild(_el('path',{d:`M${ax} ${ay}L${bx} ${barY}`,fill:'none',stroke:'transparent','stroke-width':'14'}));
+    g.appendChild(_el('path',{d:dp,fill:'none',stroke:'transparent','stroke-width':'14'}));
     return g;
   }
 
@@ -4552,7 +4597,10 @@ const GenogramEditor = (() => {
   function _pathEl(o,fe){
     const g=_el('g',{class:'geno-freehand','data-id':o.id});
     const sel=!fe&&(o.id===_selId||_multiSel.has(o.id));
-    g.appendChild(_el('path',{d:o.d,fill:'none',stroke:sel?'#3182ce':'#1a202c','stroke-width':'1.8','stroke-linecap':'round','stroke-linejoin':'round'}));
+    const isBoundary=o.pathKind==='boundary';
+    const attrs={d:o.d,fill:'none',stroke:sel?'#3182ce':(isBoundary?'#a0aec0':'#1a202c'),'stroke-width':isBoundary?'1.6':'1.8','stroke-linecap':'round','stroke-linejoin':'round'};
+    if(isBoundary)attrs['stroke-dasharray']='6,4';
+    g.appendChild(_el('path',attrs));
     g.appendChild(_el('path',{d:o.d,fill:'none',stroke:'transparent','stroke-width':'14'}));
     return g;
   }
@@ -4567,7 +4615,7 @@ const GenogramEditor = (() => {
     pat.appendChild(_el('circle',{cx:'1',cy:'1',r:'1.3',fill:'#b0bec5',opacity:'0.55'}));
     defs.appendChild(pat);_vp.appendChild(defs);
     _vp.appendChild(_el('rect',{x:'-3000',y:'-3000',width:'6000',height:'6000',fill:'url(#gp)'}));
-    {const fam=new Set(_objs.filter(o=>o.type==='link'&&o.coupleId).map(o=>o.coupleId));for(const o of _objs)if(o.type==='link'){if(fam.has(o.id)&&['married','separated','divorced'].includes(o.linkType)){const cl=_objs.filter(x=>x.type==='link'&&x.coupleId===o.id);const g=_linkElFamily(o,cl,false);if(g)_vp.appendChild(g);}else if(!o.coupleId){const g=_linkEl(o,false);if(g)_vp.appendChild(g);}}}
+    {const fam=new Set(_objs.filter(o=>o.type==='link'&&o.coupleId).map(o=>o.coupleId));for(const o of _objs)if(o.type==='link'){if(fam.has(o.id)&&COUPLE_LTYPES.includes(o.linkType)){const cl=_objs.filter(x=>x.type==='link'&&x.coupleId===o.id);const g=_linkElFamily(o,cl,false);if(g)_vp.appendChild(g);}else if(!o.coupleId){const g=_linkEl(o,false);if(g)_vp.appendChild(g);}}}
     for(const o of _objs){
       if(o.type==='node')_vp.appendChild(_nodeEl(o,false));
       else if(o.type==='text')_vp.appendChild(_textEl(o,false));
@@ -4644,7 +4692,7 @@ const GenogramEditor = (() => {
             else{
               // 若拖曳伴侶節點，同步帶動其子女
               const _lkChn=[];
-              if(hObj.type==='node'){const CTYPE=['married','separated','divorced'];const cpls=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===hitId||o.to===hitId));for(const cp of cpls){const cks=_objs.filter(o=>o.type==='link'&&o.coupleId===cp.id);for(const ck of cks){const cn=_objs.find(o=>o.id===ck.childId);if(cn&&!_lkChn.find(c=>c.id===cn.id))_lkChn.push({id:cn.id,ox:cn.x,oy:cn.y});}}}
+              if(hObj.type==='node'){const CTYPE=COUPLE_LTYPES;const cpls=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===hitId||o.to===hitId));for(const cp of cpls){const cks=_objs.filter(o=>o.type==='link'&&o.coupleId===cp.id);for(const ck of cks){const cn=_objs.find(o=>o.id===ck.childId);if(cn&&!_lkChn.find(c=>c.id===cn.id))_lkChn.push({id:cn.id,ox:cn.x,oy:cn.y});}}}
               _dragging={type:'single',id:hitId,sx:x,sy:y,ox:hObj.x,oy:hObj.y,lkChn:_lkChn};
             }
           }else _dragging=null;
@@ -4669,6 +4717,20 @@ const GenogramEditor = (() => {
         }
         _multiSel=new Set(cc.objects.map(o=>idMap[o.id]));_selId=null;_render();
       }
+    }else if(_tool.startsWith('place_builtin_')){
+      const idx=parseInt(_tool.slice(14));
+      const tpl=BUILTIN_TEMPLATES[idx];
+      if(tpl){
+        _pushUndo();const idMap={},sx=_snapG(x),sy=_snapG(y);
+        for(const o of tpl.objects)idMap[o.id]=_uid();
+        for(const o of tpl.objects){
+          const copy=JSON.parse(JSON.stringify(o));copy.id=idMap[o.id];
+          if(copy.type==='link'){copy.from=idMap[copy.from]||copy.from;copy.to=idMap[copy.to]||copy.to;if(copy.coupleId)copy.coupleId=idMap[copy.coupleId]||copy.coupleId;if(copy.childId)copy.childId=idMap[copy.childId]||copy.childId;if(copy.parentId)copy.parentId=idMap[copy.parentId]||copy.parentId;}
+          else{copy.x=(copy.x||0)+sx;copy.y=(copy.y||0)+sy;}
+          _objs.push(copy);
+        }
+        _multiSel=new Set(tpl.objects.map(o=>idMap[o.id]));_selId=null;_render();
+      }
     }else if(_tool.startsWith('place_')){
       _pushUndo();
       const n={id:_uid(),type:'node',shapeType:_tool.slice(6),x:_snapG(x),y:_snapG(y),label:''};
@@ -4677,7 +4739,7 @@ const GenogramEditor = (() => {
       if(nd){
         if(!_connectFrom){_connectFrom=nd.id;_connectLine=_el('line',{x1:nd.x,y1:nd.y,x2:nd.x,y2:nd.y,stroke:'#3182ce','stroke-width':'1.5','stroke-dasharray':'4,3','pointer-events':'none'});}
         else if(nd.id!==_connectFrom){
-          const CTYPE=['married','separated','divorced'];
+          const CTYPE=COUPLE_LTYPES;
           if(_linkType==='twin'){
             const hasCplChn=nid=>_objs.some(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===nid||o.to===nid)&&_objs.some(c=>c.type==='link'&&c.coupleId===o.id));
             const isPartnerOnly=nid=>{const cpls=_objs.filter(o=>o.type==='link'&&CTYPE.includes(o.linkType)&&(o.from===nid||o.to===nid));return cpls.length>0&&!_objs.some(c=>c.type==='link'&&cpls.some(cp=>c.coupleId===cp.id));};
@@ -4719,7 +4781,7 @@ const GenogramEditor = (() => {
                 _autoArrangeCouple(nl.coupleId);
               }else{_objs.push(nl);}
             }else{
-              if(['married','separated','divorced'].includes(_linkType)){
+              if(COUPLE_LTYPES.includes(_linkType)){
                 const fNode=_objs.find(o=>o.id===_connectFrom);
                 if(fNode){const ay=_snapG((fNode.y+nd.y)/2);fNode.y=ay;nd.y=ay;}
               }
@@ -4733,9 +4795,11 @@ const GenogramEditor = (() => {
       _pushUndo();
       const n={id:_uid(),type:'text',x:_snapG(x),y:_snapG(y),text:'文字',fontSize:_textFontSize,bold:_textBold,italic:_textItalic,strikethrough:_textStrike};
       _objs.push(n);_selId=n.id;_multiSel=new Set();_render();_startInlineEdit(n.id);
-    }else if(_tool==='freehand'){
+    }else if(_tool==='freehand'||_tool==='boundary'){
       _freehandPts=[[x,y]];
-      _freehandEl=_el('path',{d:`M${x} ${y}`,fill:'none',stroke:'#1a202c','stroke-width':'1.8','stroke-linecap':'round','pointer-events':'none'});
+      _freehandEl=_tool==='boundary'
+        ? _el('path',{d:`M${x} ${y}`,fill:'none',stroke:'#a0aec0','stroke-width':'1.6','stroke-dasharray':'6,4','stroke-linecap':'round','pointer-events':'none'})
+        : _el('path',{d:`M${x} ${y}`,fill:'none',stroke:'#1a202c','stroke-width':'1.8','stroke-linecap':'round','pointer-events':'none'});
     }else if(_tool==='erase'){
       _dragBeforeState=_snap();
       if(anyHit){const tid=(nd||tx||ph||lk).id;_objs=_objs.filter(o=>o.id!==tid&&!(o.type==='link'&&(o.from===tid||o.to===tid)));if(_selId===tid)_selId=null;_multiSel.delete(tid);}
@@ -4772,7 +4836,7 @@ const GenogramEditor = (() => {
       }
     }
     if(_connectLine&&_connectFrom){_connectLine.setAttribute('x2',x);_connectLine.setAttribute('y2',y);_render();}
-    if(_tool==='freehand'&&_freehandPts.length){
+    if((_tool==='freehand'||_tool==='boundary')&&_freehandPts.length){
       _freehandPts.push([x,y]);if(_freehandEl)_freehandEl.setAttribute('d',_ptsToD(_freehandPts));_render();
     }
   }
@@ -4797,9 +4861,11 @@ const GenogramEditor = (() => {
       }
     }
     _dragging=null;
-    if(_tool==='freehand'&&_freehandPts.length>2){
+    if((_tool==='freehand'||_tool==='boundary')&&_freehandPts.length>2){
       _pushUndo();const pts=_freehandPts;
-      const o={id:_uid(),type:'path',points:pts,d:_ptsToD(pts),bbox:_calcBbox(pts)};
+      const isBoundary=_tool==='boundary';
+      const o={id:_uid(),type:'path',points:pts,d:_ptsToD(pts)+(isBoundary?' Z':''),bbox:_calcBbox(pts)};
+      if(isBoundary)o.pathKind='boundary';
       _objs.push(o);_selId=o.id;
     }
     _freehandPts=[];_freehandEl=null;_render();
@@ -4925,7 +4991,7 @@ const GenogramEditor = (() => {
       n.y=_snapG(baseY+rel*GEN_GAP);
     }
     // 同代夫妻保險：配偶連線兩端強制取平均高度，避免因不同分支路徑算出的深度有落差
-    const CTYPE0=['married','separated','divorced'];
+    const CTYPE0=COUPLE_LTYPES;
     for(const o of _objs){
       if(o.type==='link'&&CTYPE0.includes(o.linkType)){
         const A=_objs.find(x=>x.id===o.from),B=_objs.find(x=>x.id===o.to);
@@ -4936,7 +5002,7 @@ const GenogramEditor = (() => {
   function autoArrangeAll(){
     _pushUndo();
     _autoArrangeGenerations();
-    const CTYPE=['married','separated','divorced'];
+    const CTYPE=COUPLE_LTYPES;
     let n=0;for(const o of _objs)if(o.type==='link'&&CTYPE.includes(o.linkType)){_autoArrangeCouple(o.id);n++;}
     _render();
     const tip=document.createElement('div');tip.textContent=n?`已整理世代間距，並均勻排列 ${n} 個家庭組子女位置`:'未找到配偶連線（需先用「結婚/分居/離婚」連線連結兩個節點，才能美化排列）';
@@ -4955,6 +5021,22 @@ const GenogramEditor = (() => {
     if(!_selId&&_multiSel.size===0)return;_pushUndo();
     const ids=new Set(_multiSel);if(_selId)ids.add(_selId);
     for(const id of ids){const o=_objs.find(x=>x.id===id);if(o)o.strokeColor=color;}
+    _render();
+  }
+  function toggleDisability(){
+    if(!_selId&&_multiSel.size===0)return;_pushUndo();
+    const ids=new Set(_multiSel);if(_selId)ids.add(_selId);
+    const nodes=[..._objs].filter(o=>ids.has(o.id)&&o.type==='node');
+    const on=!nodes.every(o=>o.disability);
+    for(const o of nodes){if(on)o.disability=true;else delete o.disability;}
+    _render();
+  }
+  function toggleChronicIllness(){
+    if(!_selId&&_multiSel.size===0)return;_pushUndo();
+    const ids=new Set(_multiSel);if(_selId)ids.add(_selId);
+    const nodes=[..._objs].filter(o=>ids.has(o.id)&&o.type==='node');
+    const on=!nodes.every(o=>o.chronicIllness);
+    for(const o of nodes){if(on)o.chronicIllness=true;else delete o.chronicIllness;}
     _render();
   }
   function clearColor(){
@@ -5026,7 +5108,12 @@ const GenogramEditor = (() => {
   }
   function placeCustom(idx){
     _tool='place_custom_'+idx;
-    ['select','connect','text','freehand','erase'].forEach(n=>{const b=document.getElementById('geno-t-'+n);if(b)b.classList.remove('active');});
+    ['select','connect','text','freehand','boundary','erase'].forEach(n=>{const b=document.getElementById('geno-t-'+n);if(b)b.classList.remove('active');});
+    document.querySelectorAll('.geno-sb-item').forEach(b=>b.classList.remove('active'));
+  }
+  function placeBuiltinTemplate(idx){
+    _tool='place_builtin_'+idx;
+    ['select','connect','text','freehand','boundary','erase'].forEach(n=>{const b=document.getElementById('geno-t-'+n);if(b)b.classList.remove('active');});
     document.querySelectorAll('.geno-sb-item').forEach(b=>b.classList.remove('active'));
   }
 
@@ -5045,7 +5132,7 @@ const GenogramEditor = (() => {
     if(!isFinite(lx)){lx=0;ly=0;hx=300;hy=200;}
     const P=28,W=hx-lx+P*2,H=hy-ly+P*2;
     const s2=_el('svg',{xmlns:NS,width:W,height:H,viewBox:`${lx-P} ${ly-P} ${W} ${H}`});s2.style.background='#fff';
-    {const fam=new Set(_objs.filter(o=>o.type==='link'&&o.coupleId).map(o=>o.coupleId));for(const o of _objs)if(o.type==='link'){if(fam.has(o.id)&&['married','separated','divorced'].includes(o.linkType)){const cl=_objs.filter(x=>x.type==='link'&&x.coupleId===o.id);const g=_linkElFamily(o,cl,true);if(g)s2.appendChild(g);}else if(!o.coupleId){const g=_linkEl(o,true);if(g)s2.appendChild(g);}}}
+    {const fam=new Set(_objs.filter(o=>o.type==='link'&&o.coupleId).map(o=>o.coupleId));for(const o of _objs)if(o.type==='link'){if(fam.has(o.id)&&COUPLE_LTYPES.includes(o.linkType)){const cl=_objs.filter(x=>x.type==='link'&&x.coupleId===o.id);const g=_linkElFamily(o,cl,true);if(g)s2.appendChild(g);}else if(!o.coupleId){const g=_linkEl(o,true);if(g)s2.appendChild(g);}}}
     for(const o of _objs){
       if(o.type==='node')s2.appendChild(_nodeEl(o,true));
       else if(o.type==='text')s2.appendChild(_textEl(o,true));
@@ -5074,8 +5161,8 @@ const GenogramEditor = (() => {
     if(t==='male')inner=`<rect x="${-s}" y="${-s}" width="${s*2}" height="${s*2}" fill="#fff" stroke="#1a202c" stroke-width="1.6"/>`;
     else if(t==='female')inner=`<circle cx="0" cy="0" r="${s}" fill="#fff" stroke="#1a202c" stroke-width="1.6"/>`;
     else if(t==='pregnant')inner=`<polygon points="0,${-s} ${s*.9},${s*.7} ${-s*.9},${s*.7}" fill="#fff" stroke="#1a202c" stroke-width="1.6"/>`;
-    else if(t==='ip_m')inner=`<rect x="${-s-3}" y="${-s-3}" width="${(s+3)*2}" height="${(s+3)*2}" fill="none" stroke="#1a202c" stroke-width="1"/><rect x="${-s}" y="${-s}" width="${s*2}" height="${s*2}" fill="#fff" stroke="#1a202c" stroke-width="1.6"/>`;
-    else if(t==='ip_f')inner=`<circle cx="0" cy="0" r="${s+3}" fill="none" stroke="#1a202c" stroke-width="1"/><circle cx="0" cy="0" r="${s}" fill="#fff" stroke="#1a202c" stroke-width="1.6"/>`;
+    else if(t==='ip_m')inner=`<rect x="${-s}" y="${-s}" width="${s*2}" height="${s*2}" fill="#a0aec0" stroke="#1a202c" stroke-width="1.6"/>`;
+    else if(t==='ip_f')inner=`<circle cx="0" cy="0" r="${s}" fill="#a0aec0" stroke="#1a202c" stroke-width="1.6"/>`;
     else if(t==='dead_m'){const r=s*.8;inner=`<rect x="${-s}" y="${-s}" width="${s*2}" height="${s*2}" fill="#e2e8f0" stroke="#1a202c" stroke-width="1.6"/><line x1="${-r}" y1="${-r}" x2="${r}" y2="${r}" stroke="#1a202c" stroke-width="1.4"/><line x1="${r}" y1="${-r}" x2="${-r}" y2="${r}" stroke="#1a202c" stroke-width="1.4"/>`;}
     else if(t==='dead_f'){const r=s*.65;inner=`<circle cx="0" cy="0" r="${s}" fill="#e2e8f0" stroke="#1a202c" stroke-width="1.6"/><line x1="${-r}" y1="${-r}" x2="${r}" y2="${r}" stroke="#1a202c" stroke-width="1.4"/><line x1="${r}" y1="${-r}" x2="${-r}" y2="${r}" stroke="#1a202c" stroke-width="1.4"/>`;}
     else if(t==='unknown')inner=`<polygon points="0,${-s} ${s},0 0,${s} ${-s},0" fill="#fff" stroke="#1a202c" stroke-width="1.6"/>`;
@@ -5088,12 +5175,13 @@ const GenogramEditor = (() => {
   function _linkSvg(lt,w,h){
     w=w||95;h=h||15;const ns=NS,x1=3,x2=w-3,y=h/2;
     let inner='';
-    if(lt==='married')inner=`<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#1a202c" stroke-width="1.8"/>`;
-    else if(lt==='separated'){const mx=(x1+x2)/2;inner=`<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#1a202c" stroke-width="1.8"/><line x1="${mx-5}" y1="${y-6}" x2="${mx+5}" y2="${y+6}" stroke="#1a202c" stroke-width="1.8"/>`;}
-    else if(lt==='divorced'){const mx=(x1+x2)/2;inner=`<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#1a202c" stroke-width="1.8"/><line x1="${mx-9}" y1="${y-6}" x2="${mx-3}" y2="${y+6}" stroke="#1a202c" stroke-width="1.8"/><line x1="${mx+3}" y1="${y-6}" x2="${mx+9}" y2="${y+6}" stroke="#1a202c" stroke-width="1.8"/>`;}
+    if(lt==='married'||lt==='bond')inner=`<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#1a202c" stroke-width="1.8"/>`;
+    else if(lt==='cohabiting')inner=`<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#1a202c" stroke-width="1.8" stroke-dasharray="4,3"/>`;
+    else if(lt==='separated'||lt==='divorced'){const n=lt==='divorced'?2:1;inner=`<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#1a202c" stroke-width="1.8"/><line x1="${x1}" y1="${y}" x2="${x1}" y2="${y+7}" stroke="#1a202c" stroke-width="1.8"/><line x1="${x2}" y1="${y}" x2="${x2}" y2="${y+7}" stroke="#1a202c" stroke-width="1.8"/>`;const mx=(x1+x2)/2;for(let i=0;i<n;i++){const off=n===2?(i===0?-5:5):0;inner+=`<line x1="${mx+off-6}" y1="${y+6}" x2="${mx+off+6}" y2="${y-6}" stroke="#1a202c" stroke-width="1.8"/>`;}}
     else if(lt==='parent'||lt==='sibling')inner=`<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#1a202c" stroke-width="1.8"/>`;
     else if(lt==='adopted')inner=`<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#1a202c" stroke-width="1.8" stroke-dasharray="7,4"/>`;
     else if(lt==='foster')inner=`<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#1a202c" stroke-width="1.8" stroke-dasharray="2,4"/>`;
+    else if(lt==='deteriorating'){inner=`<line x1="${x1}" y1="${y}" x2="${x2}" y2="${y}" stroke="#1a202c" stroke-width="1.8"/>`;const steps=5;for(let i=1;i<steps;i++){const cx=x1+(x2-x1)*i/steps;inner+=`<line x1="${cx-4}" y1="${y+5}" x2="${cx+4}" y2="${y-5}" stroke="#1a202c" stroke-width="1.4"/>`;}}
     else if(lt==='close'){inner=`<line x1="${x1}" y1="${y-4}" x2="${x2}" y2="${y-4}" stroke="#1a202c" stroke-width="1.6"/><line x1="${x1}" y1="${y+4}" x2="${x2}" y2="${y+4}" stroke="#1a202c" stroke-width="1.6"/>`;}
     else if(lt==='ambivalent'){const mx=(x1+x2)/2;inner=`<line x1="${x1}" y1="${y-4}" x2="${x2}" y2="${y-4}" stroke="#1a202c" stroke-width="1.6"/><polyline points="${x1},${y+4} ${(x1+mx)/2},${y+9} ${mx},${y+4} ${(mx+x2)/2},${y-1} ${x2},${y+4}" fill="none" stroke="#1a202c" stroke-width="1.8"/>`;}
     else if(lt==='twin'){const mx=(x1+x2)/2;inner=`<line x1="${x1}" y1="${y}" x2="${mx}" y2="${y}" stroke="#1a202c" stroke-width="1.8"/><line x1="${x2}" y1="${y}" x2="${mx}" y2="${y}" stroke="#1a202c" stroke-width="1.8"/><line x1="${mx}" y1="${y-6}" x2="${mx}" y2="${y+6}" stroke="#1a202c" stroke-width="1.8"/>`;}
@@ -5111,8 +5199,8 @@ const GenogramEditor = (() => {
   function _renderSidebar(){
     const sb=document.getElementById('geno-sidebar');if(!sb)return;
     const nodes=[{id:'male',name:'男性'},{id:'female',name:'女性'},{id:'pregnant',name:'懷孕'},{id:'unknown',name:'性別不明'},{id:'ip_m',name:'IP個案(男)'},{id:'ip_f',name:'IP個案(女)'},{id:'dead_m',name:'已故男'},{id:'dead_f',name:'已故女'},{id:'abort',name:'流產'},{id:'stillbirth',name:'死胎/死產'}];
-    const sl=[{id:'married',name:'婚姻'},{id:'separated',name:'分居'},{id:'divorced',name:'離婚'},{id:'parent',name:'親子'},{id:'adopted',name:'領養'},{id:'foster',name:'寄養'},{id:'twin',name:'多胞胎'}];
-    const el=[{id:'fused',name:'融合/極度親密'},{id:'close',name:'親密'},{id:'ambivalent',name:'矛盾'},{id:'conflict',name:'衝突'},{id:'cutoff',name:'情感疏離'}];
+    const sl=[{id:'married',name:'婚姻'},{id:'bond',name:'連結'},{id:'cohabiting',name:'同居'},{id:'separated',name:'分居'},{id:'divorced',name:'離婚'},{id:'parent',name:'親子'},{id:'adopted',name:'領養'},{id:'foster',name:'寄養'},{id:'twin',name:'多胞胎'}];
+    const el=[{id:'fused',name:'融合/極度親密'},{id:'close',name:'親密'},{id:'ambivalent',name:'矛盾'},{id:'conflict',name:'衝突'},{id:'cutoff',name:'情感疏離'},{id:'deteriorating',name:'關係惡化'}];
     const customs=(configData&&configData.customComponents)||[];
     let h=_sbSec('人物節點','nodes',
       '<div class="geno-sb-grid">'+nodes.map(n=>`<div class="geno-sb-item" id="geno-sb-n-${n.id}" onclick="GenogramEditor.setShape('${n.id}')" title="${n.name}">${_shapeSvg(n.id,30)}<span>${n.name}</span></div>`).join('')+'</div>');
@@ -5120,6 +5208,12 @@ const GenogramEditor = (() => {
       sl.map(l=>`<div class="geno-sb-item geno-sb-lnk" id="geno-sb-l-${l.id}" onclick="GenogramEditor.setTool('connect');GenogramEditor.setLinkType('${l.id}')" title="${l.name}">${_linkSvg(l.id)}<span>${l.name}</span></div>`).join(''));
     h+=_sbSec('情緒關係線','emotional',
       el.map(l=>`<div class="geno-sb-item geno-sb-lnk" id="geno-sb-l-${l.id}" onclick="GenogramEditor.setTool('connect');GenogramEditor.setLinkType('${l.id}')" title="${l.name}">${_linkSvg(l.id)}<span>${l.name}</span></div>`).join(''));
+    h+=_sbSec('常用模版','templates',
+      '<div class="geno-sb-grid">'+BUILTIN_TEMPLATES.map((tpl,i)=>{
+        const vw=tpl.bbox.w,vh=tpl.bbox.h;
+        const mini=tpl.objects.filter(o=>o.type==='node').map(o=>`<g transform="translate(${o.x+vw/2},${o.y+SZ+8})">${_shapeSvg(o.shapeType,SZ*1.6).replace(/^<svg[^>]*>/,'').replace(/<[/]svg>$/,'')}</g>`).join('');
+        return `<div class="geno-sb-item" onclick="GenogramEditor.placeBuiltinTemplate(${i})" title="點選後在畫布任一處點擊放置：配偶＋${tpl.name}（子女性別不明，可選取後於「人物節點」點形狀改變）"><svg xmlns="${NS}" width="30" height="30" viewBox="0 0 ${vw} ${vh}" style="display:block;flex-shrink:0;background:#f7fafc;border-radius:2px;">${mini}</svg><span>${tpl.name}</span></div>`;
+      }).join('')+'</div>');
     const customContent=(!customs.length?'<div style="font-size:.72rem;color:#a0aec0;padding:4px 6px;">（尚無自訂元件）</div>':customs.map((cc,i)=>{
       const vw=Math.max((cc.bbox&&cc.bbox.w)||60,10),vh=Math.max((cc.bbox&&cc.bbox.h)||60,10);
       const mini=cc.objects.filter(o=>o.type==='node'||o.type==='path').map(o=>{
@@ -5136,7 +5230,7 @@ const GenogramEditor = (() => {
   // ── Build UI ──────────────────────────────────────────────────────
   function _buildUI(){
     const ov=document.createElement('div');ov.id='geno-overlay';ov.classList.toggle('geno-readonly',_readOnly);
-    ov.innerHTML=`<div id="geno-header"><span style="font-weight:700;font-size:1.1rem;color:#2b6cb0;">家族圖${_readOnly?'（唯讀檢視）':'繪製'}</span><div style="display:flex;gap:6px;align-items:center;"><button class="geno-tb-btn geno-edit-only" onclick="GenogramEditor.undo()" title="Ctrl+Z">↩ 復原</button><button class="geno-tb-btn geno-edit-only" onclick="GenogramEditor.redo()" title="Ctrl+Y">↪ 重做</button><button class="geno-tb-btn" onclick="GenogramEditor.zoomFit()">⊞ 全圖</button><div class="geno-tb-sep"></div><button class="btn btn-secondary btn-sm" onclick="GenogramEditor.close()">${_readOnly?'關閉':'取消'}</button><button class="btn btn-primary btn-sm geno-edit-only" onclick="GenogramEditor.save()">插入家族圖</button></div></div><div id="geno-toolbar" class="geno-edit-only"><span style="font-size:.76rem;color:#718096;margin-right:2px;">工具：</span><button class="geno-tb-btn active" id="geno-t-select" onclick="GenogramEditor.setTool('select')" title="選取/拖曳；拖曳空白處框選多物件；Space+拖曳平移">↖ 選取/移動</button><button class="geno-tb-btn" id="geno-t-connect" onclick="GenogramEditor.setTool('connect')" title="點兩個節點連線（先在側欄選連線類型）">─ 連線</button><button class="geno-tb-btn" id="geno-t-text" onclick="GenogramEditor.setTool('text')" title="點畫布新增文字；雙擊編輯">T 文字</button><button class="geno-tb-btn" id="geno-t-freehand" onclick="GenogramEditor.setTool('freehand')" title="自由手繪">✏ 手繪</button><button class="geno-tb-btn" id="geno-t-erase" onclick="GenogramEditor.setTool('erase')" title="點物件刪除">✕ 橡皮擦</button><div class="geno-tb-sep"></div><span style="font-size:.76rem;color:#718096;margin-right:2px;">文字：</span><button class="geno-tb-btn" id="geno-txt-bold" onclick="GenogramEditor.toggleTextProp('bold')" title="粗體" style="font-weight:700;min-width:26px;">B</button><button class="geno-tb-btn" id="geno-txt-italic" onclick="GenogramEditor.toggleTextProp('italic')" title="斜體" style="font-style:italic;min-width:26px;">I</button><button class="geno-tb-btn" id="geno-txt-strike" onclick="GenogramEditor.toggleTextProp('strikethrough')" title="刪除線" style="text-decoration:line-through;min-width:26px;">S</button><select id="geno-txt-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.applyFontSize(+this.value)" title="字級">${[8,9,10,11,12,14,16,18,20,24].map(n=>`<option value="${n}"${n===12?' selected':''}>${n}px</option>`).join('')}</select><span style="font-size:.76rem;color:#718096;margin-left:4px;margin-right:2px;">介面字：</span><select id="geno-lbl-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.setNodeLabelFontSize(+this.value)" title="側欄與節點標籤字級">${[9,10,11,12,13,14,16].map(n=>`<option value="${n}"${n===11?' selected':''}>${n}</option>`).join('')}</select><div class="geno-tb-sep"></div><button class="geno-tb-btn active" id="geno-snap-btn" onclick="GenogramEditor.toggleSnap()" title="網格吸附">⊡ 吸附</button><button class="geno-tb-btn" onclick="GenogramEditor.saveAsCustom()" title="將已選取物件存為共用自訂元件">📌 自訂元件</button><button class="geno-tb-btn" onclick="GenogramEditor.deleteSelected()" title="刪除所選（Delete鍵）">🗑 刪除</button><button class="geno-tb-btn" onclick="GenogramEditor.clearSelect()" title="取消選取（Esc）">☐ 取消</button><button class="geno-tb-btn" onclick="GenogramEditor.autoArrangeAll()" title="自動整理世代間距（避免多代擠在一起）並均勻排列所有子女、調整倒ㄇ寬度">✨ 美化</button><div class="geno-tb-sep"></div><span style="font-size:.75rem;color:#718096;">填色：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:1.5px solid #a0aec0;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<span style="font-size:.75rem;color:#718096;margin-left:6px;" title="節點外框色、關係線顏色">框線：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyStrokeColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:2.5px solid #718096;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<button class="geno-tb-btn" onclick="GenogramEditor.clearColor()" onmousedown="event.preventDefault()" title="清除選取物件的顏色設定">✕色</button></div><div id="geno-body"><div id="geno-sidebar" class="geno-edit-only"></div><div id="geno-sb-resize" class="geno-edit-only"></div><div id="geno-canvas-wrap"><svg id="geno-svg" xmlns="${NS}"><g id="geno-vp"></g></svg></div></div>`;
+    ov.innerHTML=`<div id="geno-header"><span style="font-weight:700;font-size:1.1rem;color:#2b6cb0;">家族圖${_readOnly?'（唯讀檢視）':'繪製'}</span><div style="display:flex;gap:6px;align-items:center;"><button class="geno-tb-btn geno-edit-only" onclick="GenogramEditor.undo()" title="Ctrl+Z">↩ 復原</button><button class="geno-tb-btn geno-edit-only" onclick="GenogramEditor.redo()" title="Ctrl+Y">↪ 重做</button><button class="geno-tb-btn" onclick="GenogramEditor.zoomFit()">⊞ 全圖</button><div class="geno-tb-sep"></div><button class="btn btn-secondary btn-sm" onclick="GenogramEditor.close()">${_readOnly?'關閉':'取消'}</button><button class="btn btn-primary btn-sm geno-edit-only" onclick="GenogramEditor.save()">插入家族圖</button></div></div><div id="geno-toolbar" class="geno-edit-only"><span style="font-size:.76rem;color:#718096;margin-right:2px;">工具：</span><button class="geno-tb-btn active" id="geno-t-select" onclick="GenogramEditor.setTool('select')" title="選取/拖曳；拖曳空白處框選多物件；Space+拖曳平移">↖ 選取/移動</button><button class="geno-tb-btn" id="geno-t-connect" onclick="GenogramEditor.setTool('connect')" title="點兩個節點連線（先在側欄選連線類型）">─ 連線</button><button class="geno-tb-btn" id="geno-t-text" onclick="GenogramEditor.setTool('text')" title="點畫布新增文字；雙擊編輯">T 文字</button><button class="geno-tb-btn" id="geno-t-freehand" onclick="GenogramEditor.setTool('freehand')" title="自由手繪">✏ 手繪</button><button class="geno-tb-btn" id="geno-t-boundary" onclick="GenogramEditor.setTool('boundary')" title="生活圈：拖曳圈出同住/關係緊密的一群人，虛線灰框表示框選範圍（非手繪筆跡）">⭕ 生活圈</button><button class="geno-tb-btn" id="geno-t-erase" onclick="GenogramEditor.setTool('erase')" title="點物件刪除">✕ 橡皮擦</button><div class="geno-tb-sep"></div><span style="font-size:.76rem;color:#718096;margin-right:2px;">文字：</span><button class="geno-tb-btn" id="geno-txt-bold" onclick="GenogramEditor.toggleTextProp('bold')" title="粗體" style="font-weight:700;min-width:26px;">B</button><button class="geno-tb-btn" id="geno-txt-italic" onclick="GenogramEditor.toggleTextProp('italic')" title="斜體" style="font-style:italic;min-width:26px;">I</button><button class="geno-tb-btn" id="geno-txt-strike" onclick="GenogramEditor.toggleTextProp('strikethrough')" title="刪除線" style="text-decoration:line-through;min-width:26px;">S</button><select id="geno-txt-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.applyFontSize(+this.value)" title="字級">${[8,9,10,11,12,14,16,18,20,24].map(n=>`<option value="${n}"${n===12?' selected':''}>${n}px</option>`).join('')}</select><span style="font-size:.76rem;color:#718096;margin-left:4px;margin-right:2px;">介面字：</span><select id="geno-lbl-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.setNodeLabelFontSize(+this.value)" title="側欄與節點標籤字級">${[9,10,11,12,13,14,16].map(n=>`<option value="${n}"${n===11?' selected':''}>${n}</option>`).join('')}</select><div class="geno-tb-sep"></div><button class="geno-tb-btn active" id="geno-snap-btn" onclick="GenogramEditor.toggleSnap()" title="網格吸附">⊡ 吸附</button><button class="geno-tb-btn" onclick="GenogramEditor.saveAsCustom()" title="將已選取物件存為共用自訂元件">📌 自訂元件</button><button class="geno-tb-btn" onclick="GenogramEditor.deleteSelected()" title="刪除所選（Delete鍵）">🗑 刪除</button><button class="geno-tb-btn" onclick="GenogramEditor.clearSelect()" title="取消選取（Esc）">☐ 取消</button><button class="geno-tb-btn" onclick="GenogramEditor.autoArrangeAll()" title="自動整理世代間距（避免多代擠在一起）並均勻排列所有子女、調整倒ㄇ寬度">✨ 美化</button><div class="geno-tb-sep"></div><span style="font-size:.75rem;color:#718096;">填色：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:1.5px solid #a0aec0;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<span style="font-size:.75rem;color:#718096;margin-left:6px;" title="節點外框色、關係線顏色">框線：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyStrokeColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:2.5px solid #718096;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<button class="geno-tb-btn" onclick="GenogramEditor.clearColor()" onmousedown="event.preventDefault()" title="清除選取物件的顏色設定">✕色</button><div class="geno-tb-sep"></div><button class="geno-tb-btn" onclick="GenogramEditor.toggleDisability()" title="標記/取消所選節點為「身心障礙」（右上角黑色標記，可與慢性病同時勾選）">♿ 身心障礙</button><button class="geno-tb-btn" onclick="GenogramEditor.toggleChronicIllness()" title="標記/取消所選節點為「慢性病」（右側黑色標記，可與身心障礙同時勾選）">🩺 慢性病</button></div><div id="geno-body"><div id="geno-sidebar" class="geno-edit-only"></div><div id="geno-sb-resize" class="geno-edit-only"></div><div id="geno-canvas-wrap"><svg id="geno-svg" xmlns="${NS}"><g id="geno-vp"></g></svg></div></div>`;
     document.body.appendChild(ov);
     {const s=document.getElementById('geno-lbl-size');if(s)s.value=String(_nodeLabelFontSize);}
     setNodeLabelFontSize(_nodeLabelFontSize);
@@ -5223,16 +5317,20 @@ const GenogramEditor = (() => {
 
   function setTool(t){
     _tool=t;_connectFrom=null;_connectLine=null;
-    ['select','connect','text','freehand','erase'].forEach(n=>{const b=document.getElementById('geno-t-'+n);if(b)b.classList.toggle('active',n===t);});
+    ['select','connect','text','freehand','boundary','erase'].forEach(n=>{const b=document.getElementById('geno-t-'+n);if(b)b.classList.toggle('active',n===t);});
     if(!t.startsWith('place_'))document.querySelectorAll('.geno-sb-item').forEach(b=>b.classList.remove('active'));
-    const cursors={select:'default',connect:'crosshair',text:'text',freehand:'crosshair',erase:'cell'};
+    const cursors={select:'default',connect:'crosshair',text:'text',freehand:'crosshair',boundary:'crosshair',erase:'cell'};
     if(_svg)_svg.style.cursor=cursors[t]||'default';
     _render();
   }
 
   function setShape(s){
+    if(_selId){
+      const o=_objs.find(x=>x.id===_selId);
+      if(o&&o.type==='node'){_pushUndo();o.shapeType=s;_render();return;}
+    }
     _placeShape=s;_tool='place_'+s;
-    ['select','connect','text','freehand','erase'].forEach(n=>{const b=document.getElementById('geno-t-'+n);if(b)b.classList.remove('active');});
+    ['select','connect','text','freehand','boundary','erase'].forEach(n=>{const b=document.getElementById('geno-t-'+n);if(b)b.classList.remove('active');});
     document.querySelectorAll('.geno-sb-item').forEach(b=>b.classList.remove('active'));
     const btn=document.getElementById('geno-sb-n-'+s);if(btn)btn.classList.add('active');
     if(_svg)_svg.style.cursor='copy';
@@ -5269,7 +5367,7 @@ const GenogramEditor = (() => {
     _zoom=Math.min(W/cW,H/cH,3);_panX=(W-cW*_zoom)/2-lx*_zoom+40*_zoom;_panY=(H-cH*_zoom)/2-ly*_zoom+40*_zoom;_render();
   }
 
-  return{open,close,save,undo,redo,setTool,setShape,setLinkType,toggleTextProp,applyFontSize,setNodeLabelFontSize,toggleSnap,zoomFit,deleteSelected,editLabel,saveAsCustom,deleteCustom,placeCustom,applyColor,applyStrokeColor,clearColor,clearSelect,autoArrangeAll,toggleSbSection};
+  return{open,close,save,undo,redo,setTool,setShape,setLinkType,toggleTextProp,applyFontSize,setNodeLabelFontSize,toggleSnap,zoomFit,deleteSelected,editLabel,saveAsCustom,deleteCustom,placeCustom,placeBuiltinTemplate,applyColor,applyStrokeColor,clearColor,clearSelect,autoArrangeAll,toggleSbSection,toggleDisability,toggleChronicIllness};
 })();
 
 function openGenogramEditor(fieldId,caseId,storeKey){
@@ -23367,6 +23465,15 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-04', v: 82, title: '家族圖第二輪：對齊 QM 實際慣例（配偶直線+ㄇ字橫桿、模版、身障/慢性病標記等）', isProd: false, items: [
+      item('修復', '配偶連接線改為永遠直線（不論有無子女），子女的ㄇ字橫桿獨立畫在子女那一側、寬度依子女實際分布自動延伸，取代原本配偶兩人各自往下垂直延伸的「倒ㄇ」畫法——修正後才真正符合家系圖實務慣例'),
+      item('新功能', '新增「常用模版」：一鍵放置「配偶＋1/2/3/4 位子女」的標準結構（依 QM 家系圖工具原版設計換算比例），子女預設性別不明，選取後可於側欄「人物節點」點選形狀改變'),
+      item('新功能', '選取既有節點後點側欄形狀，改為直接變更該節點的形狀（而非切換為放置新節點），方便修改模版產生的子女性別/類型'),
+      item('新功能', '身心障礙／慢性病雙標記：可為任一節點勾選，右上角/右側黑色標記疊加顯示，兩者可同時或分別勾選，不影響原本形狀與顏色'),
+      item('新功能', '結構關係線新增「連結」「同居」；分居／離婚改為 QM 新版式（ㄇ字外框+對角斜線）；情緒關係線新增「關係惡化」'),
+      item('新功能', '新增「生活圈」圈選工具：拖曳畫出虛線灰框，用來框出同住/關係緊密的一群人，與手繪筆跡（實線黑）明顯區分'),
+      item('改善', 'IP 案主節點改為灰色填色，取代原本的雙外框線，符合 QM 慣例'),
+    ]},
     { date: '2026-07-04', v: 81, title: '家族圖：世代自動排版 + 唯讀檢視模式（回應 #029/#013）', isProd: false, items: [
       item('改善', '「✨ 美化」按鈕新增世代自動排版：依親子關係計算每個節點的世代深度，自動統一調整垂直間距（固定世代間距遠大於配偶→子女連接線的垂直偏移），新增第三代不需再手動抓高度、連接線也不會因間距太近而與上一代重疊'),
       item('修復', '危機案件唯讀檢視模式下，雙擊已內嵌的家族圖圖片會開啟完整可編輯的家族圖工具，可繞過唯讀限制修改資料；家族圖編輯器新增唯讀模式，唯讀檢視下只能檢視/縮放，工具列與側欄皆隱藏，且無法儲存'),
