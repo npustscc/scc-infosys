@@ -10639,7 +10639,7 @@ function _checkRecNextBkRealtime() {
     return;
   }
   const ccConflict = bookingsData.find(b =>
-    b.id !== oldBkId && b.date === date && b.counselorEmail === currentUser?.email &&
+    b.id !== oldBkId && b.date === date && _bkHasCounselor(b, currentUser?.email) &&
     b.startTime < end && b.endTime > start
   );
   if (ccConflict) {
@@ -11376,7 +11376,7 @@ async function saveRecord() {
     }
     const counselorConflict = bookingsData.find(b =>
       b.id !== _editOldBkId &&
-      b.date === nextBkDate && b.counselorEmail === currentUser.email &&
+      b.date === nextBkDate && _bkHasCounselor(b, currentUser.email) &&
       b.startTime < nextBkEnd && b.endTime > nextBkStart
     );
     if (counselorConflict) {
@@ -25193,12 +25193,18 @@ function _parseBkGcTitle(title) {
     if (!customs.includes(roomPart) && !ROOMS.includes(roomPart)) { customs.push(roomPart); _saveBkCustomRooms(customs); }
   }
 
-  let counselorName = personPart, counselorEmail = '';
-  if (personPart && configData?.users) {
-    const found = Object.entries(configData.users).find(([, u]) => (u.name || '') === personPart);
-    if (found) { counselorEmail = found[0]; counselorName = found[1].name || personPart; }
-  }
-  return { room: room || '', counselorName, counselorEmail };
+  const names = personPart ? personPart.split(',').map(s => s.trim()).filter(Boolean) : [];
+  const counselors = names.map(name => {
+    const found = configData?.users && Object.entries(configData.users).find(([, u]) => (u.name || '') === name);
+    return found ? { value: found[0], label: found[1].name || name, isCustom: false }
+                 : { value: name, label: name, isCustom: true };
+  });
+  return {
+    room: room || '',
+    counselors,
+    counselorName: counselors.map(c => c.label).join(','),
+    counselorEmail: counselors[0] && !counselors[0].isCustom ? counselors[0].value : '',
+  };
 }
 
 async function syncFromCalendar(silent = false) {
@@ -25297,7 +25303,7 @@ async function syncFromCalendar(silent = false) {
             }
             if ((parsed.counselorName || '') !== (b.counselorName || '')) {
               diffs.push(`人員 ${b.counselorName||'—'}→${parsed.counselorName||'—'}`);
-              update.counselorName = parsed.counselorName; update.counselorEmail = parsed.counselorEmail;
+              update.counselors = parsed.counselors; update.counselorName = parsed.counselorName; update.counselorEmail = parsed.counselorEmail;
             }
           }
         }
@@ -25393,8 +25399,9 @@ function _gcValidateEvent(ev, bookingsIndex, usersByName, usersByEmail) {
     const knownRooms = ROOMS.filter(r => r !== '其他').concat(_getBkCustomRooms());
     const roomHit = knownRooms.some(r => r.charAt(0) === roomChar) || roomChar === '其他' || roomChar.length > 1;
     if (!roomHit) kinds.add('UNKNOWN_ROOM');
-    // 5. UNKNOWN_COUNSELOR
-    if (personName && !usersByName.has(personName)) kinds.add('UNKNOWN_COUNSELOR');
+    // 5. UNKNOWN_COUNSELOR（可能為逗號分隔的多人名單，逐一比對）
+    const personNames = personName ? personName.split(',').map(s => s.trim()).filter(Boolean) : [];
+    if (personNames.length && personNames.some(n => !usersByName.has(n))) kinds.add('UNKNOWN_COUNSELOR');
   }
   // 6. UNMATCHED（無對應 INFOSYS booking）
   if (!bookingsIndex.has(ev.id)) kinds.add('UNMATCHED');
@@ -27427,7 +27434,7 @@ function _bkRenderDayColumn(date) {
         </span>`;
         html += `<div style="padding:4px 6px;${_bkCellStyle(b)}border-radius:5px;margin-bottom:4px;">
           <div style="font-size:.82rem;font-weight:600;color:#2d3748;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</div>
-          <div style="font-size:.82rem;color:#4a5568;">${escHtml(b.counselorName || '—')}</div>
+          <div style="font-size:.82rem;color:#4a5568;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(b.counselorName || '')}">${escHtml(b.counselorName || '—')}</div>
           ${caseTag}${noteTag}${actBtns}
         </div>`;
       });
@@ -27530,7 +27537,7 @@ function renderBookingsPage() {
             : `<button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:.75rem;" data-sync-id="${escHtml(b.id)}" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅 同步</button>`;
           html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 8px;${_bkCellStyle(b)}border-radius:6px;margin-bottom:4px;cursor:grab;">
             <span style="font-size:.85rem;font-weight:600;color:#2d3748;min-width:105px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</span>
-            <span style="font-size:.875rem;color:#4a5568;">${escHtml(b.counselorName || '—')}</span>
+            <span style="font-size:.875rem;color:#4a5568;" title="${escHtml(b.counselorName || '')}">${escHtml(b.counselorName || '—')}</span>
             ${caseTag}${noteTag}${calTag}
             <span style="margin-left:auto;display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
               <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="editBooking('${escHtml(b.id)}')">編輯</button>
@@ -27575,7 +27582,7 @@ function renderBookingsPage() {
               : `<button class="btn btn-secondary btn-sm" style="padding:0 3px;font-size:.65rem;" data-sync-id="${escHtml(b.id)}" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅</button>`;
             html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="padding:3px 5px;${_bkCellStyle(b)}border-radius:4px;margin-bottom:3px;font-size:.78rem;cursor:grab;">` +
               `<div style="font-weight:600;color:#2d3748;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</div>` +
-              `<div style="color:#4a5568;">${escHtml(b.counselorName||'—')}</div>` +
+              `<div style="color:#4a5568;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(b.counselorName||'')}">${escHtml(b.counselorName||'—')}</div>` +
               (b.caseId ? `<div style="color:#2471a3;font-size:.72rem;">${escHtml(b.caseId)}</div>` : '') +
               (b.notes ? `<div style="color:#718096;font-size:.72rem;">${escHtml(b.notes.slice(0,20))}${b.notes.length>20?'…':''}</div>` : '') +
               `<div style="display:flex;gap:2px;margin-top:2px;align-items:center;">` +
@@ -27633,7 +27640,7 @@ function renderBkListView(body) {
   rows.sort((a, b) => {
     if (sort === 'time-desc') return key(b) < key(a) ? -1 : 1;
     if (sort === 'room')      return (a.room || '') < (b.room || '') ? -1 : (a.room || '') > (b.room || '') ? 1 : key(a) < key(b) ? -1 : 1;
-    if (sort === 'counselor') return (a.counselorName || '') < (b.counselorName || '') ? -1 : (a.counselorName || '') > (b.counselorName || '') ? 1 : key(a) < key(b) ? -1 : 1;
+    if (sort === 'counselor') { const an = a.counselors?.[0]?.label || a.counselorName || '', bn = b.counselors?.[0]?.label || b.counselorName || ''; return an < bn ? -1 : an > bn ? 1 : key(a) < key(b) ? -1 : 1; }
     return key(a) < key(b) ? -1 : 1; // time-asc default
   });
 
@@ -27676,9 +27683,9 @@ function renderBkListView(body) {
         <div style="font-size:.75rem;color:#718096;">空間</div>
         <div style="font-size:.88rem;color:#2d3748;font-weight:600;">${escHtml(b.room || '—')}</div>
       </div>
-      <div style="min-width:90px;">
+      <div style="min-width:90px;max-width:160px;">
         <div style="font-size:.75rem;color:#718096;">主責</div>
-        <div style="font-size:.88rem;color:#2d3748;">${escHtml(b.counselorName || '—')}</div>
+        <div style="font-size:.88rem;color:#2d3748;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(b.counselorName || '')}">${escHtml(b.counselorName || '—')}</div>
       </div>
       ${caseTag ? `<div style="min-width:90px;"><div style="font-size:.75rem;color:#718096;">個案</div><div style="font-size:.88rem;color:#2471a3;">${caseTag}</div></div>` : ''}
       ${b.notes ? `<div style="flex:1;min-width:100px;"><div style="font-size:.75rem;color:#718096;">備註</div><div style="font-size:.85rem;color:#4a5568;">${escHtml(b.notes.slice(0,60))}${b.notes.length>60?'…':''}</div></div>` : ''}
@@ -27856,9 +27863,8 @@ function _bkDelCustomRoom(room) {
   _populateBookingRoomChips(_bkSelectedRoom); _checkBkConflict();
 }
 
-// ── 空間預約「輔導人員/借用事由」選擇器 ──────────────
-let _bkSelectedValue = '';
-let _bkSelectedLabel = '';
+// ── 空間預約「輔導人員/借用事由」選擇器（可複選，[0]＝主責）──
+let _bkSelectedOpts = [];   // [{value,label,isCustom}]
 function _getBkFreqs()        { return { ..._userPref_('bkFreqs', {}) }; }
 function _recordBkFreq(v) {
   if (!v) return;
@@ -27879,20 +27885,31 @@ function _bkBuildAllOpts() {
   return all;
 }
 
-function _populateBookingCounselorSelect(restoreValue) {
-  if (restoreValue !== undefined) _bkSelectedValue = restoreValue;
-  if (!_bkSelectedValue && currentUser?.email && BK_COUNSELING_ROLES.has(configData?.users?.[currentUser.email]?.role)) {
-    _bkSelectedValue = currentUser.email;
+// 舊資料相容：只有純量 counselorEmail/counselorName 的 booking 視為單人陣列
+function _bkNormalizeCounselors(b) {
+  if (Array.isArray(b?.counselors) && b.counselors.length) return b.counselors;
+  if (b?.counselorEmail || b?.counselorName) {
+    return [{ value: b.counselorEmail || b.counselorName, label: b.counselorName || b.counselorEmail, isCustom: !b.counselorEmail }];
   }
+  return [];
+}
+function _bkHasCounselor(b, value) { return !!value && _bkNormalizeCounselors(b).some(c => c.value === value); }
+
+function _populateBookingCounselorSelect(restoreOpts) {
+  if (restoreOpts !== undefined) _bkSelectedOpts = Array.isArray(restoreOpts) ? [...restoreOpts] : [];
   const opts = _bkBuildAllOpts();
-  const cur  = opts.find(o => o.value === _bkSelectedValue);
-  _bkSelectedLabel = cur ? cur.label : _bkSelectedValue;
+  if (!_bkSelectedOpts.length && currentUser?.email && BK_COUNSELING_ROLES.has(configData?.users?.[currentUser.email]?.role)) {
+    const me = opts.find(o => o.value === currentUser.email);
+    if (me) _bkSelectedOpts = [{ value: me.value, label: me.label, isCustom: false }];
+  }
   const chips = opts.map(o => {
-    const sel = o.value === _bkSelectedValue;
+    const selIdx = _bkSelectedOpts.findIndex(s => s.value === o.value);
+    const sel = selIdx >= 0;
+    const primaryTag = sel && selIdx === 0 ? ' <span style="font-size:.68rem;color:#1a5276;font-weight:700;">主責</span>' : '';
     const del = o.isCustom
       ? `<span class="bk-opt-chip-del" onclick="event.stopPropagation();_bkDelCustomOpt(${escHtml(JSON.stringify(o.value))})">✕</span>`
       : '';
-    return `<div class="bk-opt-chip${sel ? ' bk-opt-chip-sel' : ''}" onclick="_bkPickOpt(${escHtml(JSON.stringify(o.value))},${escHtml(JSON.stringify(o.label))})">${escHtml(o.label)}${del}</div>`;
+    return `<div class="bk-opt-chip${sel ? ' bk-opt-chip-sel' : ''}" onclick="_bkPickOpt(${escHtml(JSON.stringify(o.value))},${escHtml(JSON.stringify(o.label))},${o.isCustom ? 'true' : 'false'})">${escHtml(o.label)}${primaryTag}${del}</div>`;
   }).join('');
   const picker = document.getElementById('bk-counselor-picker');
   if (!picker) return;
@@ -27900,17 +27917,31 @@ function _populateBookingCounselorSelect(restoreValue) {
     `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">${chips || '<span style="color:#a0aec0;font-size:.82rem;">（尚無選項）</span>'}</div>` +
     `<div style="display:flex;gap:6px;"><input type="text" id="bk-custom-inp" class="field-input" placeholder="新增自訂選項…" style="flex:1;font-size:.82rem;padding:5px 9px;" onkeydown="if(event.key==='Enter'){event.preventDefault();_bkAddCustomOpt();}"/><button type="button" onclick="_bkAddCustomOpt()" style="padding:5px 14px;background:#edf2f7;border:1px solid #cbd5e0;border-radius:6px;cursor:pointer;font-size:.82rem;white-space:nowrap;">新增</button></div>`;
 }
-function _bkPickOpt(value, label) { _bkSelectedValue = value; _bkSelectedLabel = label; _populateBookingCounselorSelect(value); _checkBkConflict(); }
+function _bkPickOpt(value, label, isCustom) {
+  if (value === '中心會議') {
+    // 中心會議與複選人員互斥：此時段代表中心會議，不特定於某人
+    _bkSelectedOpts = _bkSelectedOpts.some(o => o.value === '中心會議') ? [] : [{ value, label, isCustom: false }];
+  } else {
+    _bkSelectedOpts = _bkSelectedOpts.filter(o => o.value !== '中心會議');
+    const idx = _bkSelectedOpts.findIndex(o => o.value === value);
+    if (idx >= 0) _bkSelectedOpts.splice(idx, 1);
+    else _bkSelectedOpts.push({ value, label, isCustom: !!isCustom });
+  }
+  _populateBookingCounselorSelect();
+  _checkBkConflict();
+}
 function _bkAddCustomOpt() {
   const inp = document.getElementById('bk-custom-inp');
   const lbl = (inp?.value || '').trim(); if (!lbl) return;
   const opts = _getBkCustomOpts(); if (!opts.includes(lbl)) { opts.push(lbl); _saveBkCustomOpts(opts); }
-  inp.value = ''; _populateBookingCounselorSelect(_bkSelectedValue);
+  _bkSelectedOpts = _bkSelectedOpts.filter(o => o.value !== '中心會議');
+  if (!_bkSelectedOpts.some(o => o.value === lbl)) _bkSelectedOpts.push({ value: lbl, label: lbl, isCustom: true });
+  inp.value = ''; _populateBookingCounselorSelect();
 }
 function _bkDelCustomOpt(value) {
   _saveBkCustomOpts(_getBkCustomOpts().filter(l => l !== value));
-  if (_bkSelectedValue === value) { _bkSelectedValue = ''; _bkSelectedLabel = ''; }
-  _populateBookingCounselorSelect(_bkSelectedValue);
+  _bkSelectedOpts = _bkSelectedOpts.filter(o => o.value !== value);
+  _populateBookingCounselorSelect();
 }
 
 let _recNextBkRoom = '';
@@ -28004,32 +28035,32 @@ function _checkBkConflict() {
     }
   }
 
-  // 同人員同時段不同空間（即時提醒，無操作按鈕）
+  // 同人員同時段不同空間（即時提醒，無操作按鈕；檢查所有被選中的人）
   if (personWarnEl) {
-    if (_bkSelectedValue && _bkSelectedValue !== '中心會議') {
-      const personConflict = bookingsData.find(b =>
-        b.id !== _editingBookingId && b.room !== room && b.date === date &&
-        (b.counselorEmail === _bkSelectedValue || (!b.counselorEmail && b.counselorName === _bkSelectedValue)) &&
-        b.startTime < end && b.endTime > start
-      );
-      if (personConflict) {
-        const pRoom = personConflict.room === '其他' ? (personConflict.customRoom || '其他') : personConflict.room;
-        personWarnEl.style.display = '';
-        personWarnEl.innerHTML =
-          `<div style="background:#fffbeb;border:2px solid #f6ad55;border-radius:8px;padding:10px 14px;">` +
-          `<div style="font-weight:600;color:#744210;margin-bottom:4px;">⚠ ${escHtml(_bkSelectedLabel||_bkSelectedValue)} 已在此時段預約另一空間</div>` +
-          `<div style="font-size:.875rem;color:#92400e;margin-bottom:8px;">目前已預約「${escHtml(pRoom)}」（${escHtml((personConflict.startTime||'').slice(0,5))}–${escHtml((personConflict.endTime||'').slice(0,5))}）</div>` +
-          `<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.875rem;color:#744210;">` +
-          `<input type="checkbox" id="bk-person-conflict-ack" style="width:16px;height:16px;cursor:pointer;" onchange="_bkAckPersonConflict()">` +
-          `確認仍要為此人預約「${escHtml(room)}」</label>` +
-          `<div class="bk-conflict-hint" style="display:none;margin-top:6px;font-size:.82rem;color:#744210;">✔ 已確認，請繼續往下點「儲存」完成預約。</div>` +
-          `</div>`;
-      } else {
-        personWarnEl.style.display = 'none';
-        _bkSkipPersonConflict = false;
+    const myOpts = _bkSelectedOpts.filter(o => o.value !== '中心會議');
+    let personConflict = null, conflictOpt = null;
+    outer: for (const b of bookingsData) {
+      if (b.id === _editingBookingId || b.room === room || b.date !== date) continue;
+      if (!(b.startTime < end && b.endTime > start)) continue;
+      for (const o of myOpts) {
+        if (_bkHasCounselor(b, o.value)) { personConflict = b; conflictOpt = o; break outer; }
       }
+    }
+    if (personConflict) {
+      const pRoom = personConflict.room === '其他' ? (personConflict.customRoom || '其他') : personConflict.room;
+      personWarnEl.style.display = '';
+      personWarnEl.innerHTML =
+        `<div style="background:#fffbeb;border:2px solid #f6ad55;border-radius:8px;padding:10px 14px;">` +
+        `<div style="font-weight:600;color:#744210;margin-bottom:4px;">⚠ ${escHtml(conflictOpt?.label || conflictOpt?.value || '')} 已在此時段預約另一空間</div>` +
+        `<div style="font-size:.875rem;color:#92400e;margin-bottom:8px;">目前已預約「${escHtml(pRoom)}」（${escHtml((personConflict.startTime||'').slice(0,5))}–${escHtml((personConflict.endTime||'').slice(0,5))}）</div>` +
+        `<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.875rem;color:#744210;">` +
+        `<input type="checkbox" id="bk-person-conflict-ack" style="width:16px;height:16px;cursor:pointer;" onchange="_bkAckPersonConflict()">` +
+        `確認仍要為此人預約「${escHtml(room)}」</label>` +
+        `<div class="bk-conflict-hint" style="display:none;margin-top:6px;font-size:.82rem;color:#744210;">✔ 已確認，請繼續往下點「儲存」完成預約。</div>` +
+        `</div>`;
     } else {
       personWarnEl.style.display = 'none';
+      _bkSkipPersonConflict = false;
     }
   }
 }
@@ -28073,11 +28104,12 @@ function _checkRecBkConflict() {
     const emails = new Set(_recCounselors.map(c => c.email));
     const pc = bookingsData.find(b =>
       b.id !== _recFromBkId && b.room !== room && b.date === date &&
-      emails.has(b.counselorEmail) && b.startTime < end && b.endTime > start
+      _bkNormalizeCounselors(b).some(c => emails.has(c.value)) && b.startTime < end && b.endTime > start
     );
     if (pc) {
       const pRoom = pc.room === '其他' ? (pc.customRoom || '其他') : pc.room;
-      const conflictName = (_recCounselors.find(c => c.email === pc.counselorEmail)?.label) || pc.counselorName || '—';
+      const matchedVal = _bkNormalizeCounselors(pc).find(c => emails.has(c.value))?.value;
+      const conflictName = (_recCounselors.find(c => c.email === matchedVal)?.label) || pc.counselorName || '—';
       personWarnEl.style.display = '';
       personWarnEl.textContent = `⚠ 人員衝突：${conflictName} 已在此時段預約「${pRoom}」（${(pc.startTime||'').slice(0,5)}–${(pc.endTime||'').slice(0,5)}）。`;
     }
@@ -28240,7 +28272,7 @@ function _initBkPeriodSelect() {
 function openBookingModal(prefillCaseId) {
   _editingBookingId = null;
   _bkSkipPersonConflict = false;
-  _bkSelectedValue = ''; _bkSelectedLabel = '';
+  _bkSelectedOpts = [];
   document.getElementById('booking-modal-title').textContent = '新增預約';
   _bkSelectedRoom = '';
   _populateBookingRoomChips('');
@@ -28277,7 +28309,7 @@ function editBooking(id) {
   _bkSkipPersonConflict = false;
   _editingBookingId = id;
   document.getElementById('booking-modal-title').textContent = '編輯預約';
-  _populateBookingCounselorSelect(b.counselorEmail || b.counselorName || '');
+  _populateBookingCounselorSelect(_bkNormalizeCounselors(b));
   _populateBookingCaseDatalist();
   _initBkPeriodSelect();
   let _editRoom = b.room || '';
@@ -28345,7 +28377,7 @@ function _bkCopyOpenModal() {
   _bkSkipPersonConflict = false;
   _editingBookingId = null;
   document.getElementById('booking-modal-title').textContent = '複製預約';
-  _populateBookingCounselorSelect(b.counselorEmail || b.counselorName || '');
+  _populateBookingCounselorSelect(_bkNormalizeCounselors(b));
   _populateBookingCaseDatalist();
   _initBkPeriodSelect();
   let _copyRoom = b.room || '';
@@ -28448,8 +28480,16 @@ async function saveBooking() {
   const date       = document.getElementById('bk-date').value;
   const start      = document.getElementById('bk-start').value;
   const end        = document.getElementById('bk-end').value;
-  const isSysCounselor = !!configData?.users?.[_bkSelectedValue];
-  const counselorEmail = (isSysCounselor || _bkSelectedValue === '中心會議') ? _bkSelectedValue : '';
+  const _bkOptsToCounselor = (o) => {
+    const isSys = !o.isCustom && !!configData?.users?.[o.value];
+    return {
+      value: o.value, isCustom: !!o.isCustom,
+      email: (isSys || o.value === '中心會議') ? o.value : '',
+      name:  isSys ? (configData.users[o.value].name || o.value) : (o.value || ''),
+    };
+  };
+  const counselors = _bkSelectedOpts.map(_bkOptsToCounselor);
+  const counselorEmail = counselors[0]?.email || '';
   const caseId = document.getElementById('bk-case-id').value.trim();
   const notes  = document.getElementById('bk-notes').value.trim();
 
@@ -28477,13 +28517,15 @@ async function saveBooking() {
     return;
   }
 
-  // 同一人同時段借用不同空間：顯示在人員卡片下方，需確認才儲存
-  if (_bkSelectedValue && _bkSelectedValue !== '中心會議') {
-    const personConflict = bookingsData.find(b =>
-      b.id !== _editingBookingId && b.room !== room && b.date === date &&
-      (b.counselorEmail === _bkSelectedValue || (!b.counselorEmail && b.counselorName === _bkSelectedValue)) &&
-      b.startTime < end && b.endTime > start
-    );
+  // 同一人同時段借用不同空間：顯示在人員卡片下方，需確認才儲存（檢查所有被選中的人）
+  {
+    const myValues = _bkSelectedOpts.filter(o => o.value !== '中心會議').map(o => o.value);
+    let personConflict = null;
+    outer: for (const b of bookingsData) {
+      if (b.id === _editingBookingId || b.room === room || b.date !== date) continue;
+      if (!(b.startTime < end && b.endTime > start)) continue;
+      for (const v of myValues) { if (_bkHasCounselor(b, v)) { personConflict = b; break outer; } }
+    }
     if (personConflict && !_bkSkipPersonConflict) {
       // 警告已由 _checkBkConflict() 即時顯示（含確認勾選框）
       if (saveBtn) saveBtn.disabled = false;
@@ -28492,10 +28534,8 @@ async function saveBooking() {
   }
   _bkSkipPersonConflict = false;
 
-  // counselorName: 系統人員只取姓名（不帶角色），其他直接用 value
-  const counselorName = isSysCounselor
-    ? (configData.users[_bkSelectedValue].name || _bkSelectedValue)
-    : (_bkSelectedValue || '');
+  // counselorName：所有選中人員姓名以半形逗號串接，同時作為畫面顯示與 GC 標題來源
+  const counselorName = counselors.map(c => c.name).join(',');
   const caseObj = caseId ? casesData.find(c => c.id === caseId) : null;
   const now = new Date().toISOString();
   const creatorName = configData?.users?.[currentUser?.email]?.name || currentUser?.name || currentUser?.given_name || (currentUser?.email?.split('@')[0] ?? '') || '';
@@ -28529,7 +28569,7 @@ async function saveBooking() {
         .forEach(sb => {
           sb.room = room; sb.customRoom = customRoom;
           sb.startTime = start; sb.endTime = end;
-          sb.counselorEmail = counselorEmail; sb.counselorName = counselorName;
+          sb.counselors = counselors; sb.counselorEmail = counselorEmail; sb.counselorName = counselorName;
           sb.caseId = caseId || ''; sb.caseName = caseObj?.name || '';
           sb.notes = notes; sb.updatedAt = now;
           if (_bkOverride) sb.bkOverrideColor = _bkOverride; else delete sb.bkOverrideColor;
@@ -28539,7 +28579,7 @@ async function saveBooking() {
       if (idx >= 0) {
         bookingsData[idx] = { ...bookingsData[idx],
           room, customRoom, date, startTime: start, endTime: end,
-          counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
+          counselors, counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
           notes, updatedAt: now };
         if (_bkOverride) bookingsData[idx].bkOverrideColor = _bkOverride; else delete bookingsData[idx].bkOverrideColor;
       }
@@ -28552,7 +28592,7 @@ async function saveBooking() {
         id: _si === 0 ? newId : `bk_${Date.now() + _si}`,
         bkSerial: newSerial + _si, room, customRoom,
         date: _sDate, startTime: start, endTime: end,
-        counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
+        counselors, counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
         notes, createdAt: now, updatedAt: now, creatorName
       };
       if (seriesId) _sObj.seriesId = seriesId;
@@ -28563,7 +28603,7 @@ async function saveBooking() {
 
   // 立即關閉 Modal 並顯示結果（樂觀更新）
   closeBookingModal();
-  _recordBkFreq(_bkSelectedValue);
+  _recordBkFreq(_bkSelectedOpts[0]?.value);
   renderBookingsPage();
 
   // 背景：同步 GC + 儲存至 Drive（不阻擋 UI）
@@ -35954,7 +35994,7 @@ function toggleNavPin(navId) {
         </div>
       </div>
       <div style="grid-column:1/-1;">
-        <label class="field-label">輔導人員／借用事由</label>
+        <label class="field-label">輔導人員／借用事由（可複選）</label>
         <div id="bk-counselor-picker" style="border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;background:#f7fafc;"></div>
         <div id="bk-person-conflict-warn" style="display:none;margin-top:6px;"></div>
       </div>
