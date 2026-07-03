@@ -945,6 +945,7 @@
     #geno-overlay { position:fixed;inset:0;z-index:99999;background:#fff;display:flex;flex-direction:column;overflow:hidden; }
     #geno-header { display:flex;align-items:center;justify-content:space-between;padding:10px 18px;border-bottom:2px solid #3182ce;background:linear-gradient(90deg,#ebf8ff,#f0fff4);flex-shrink:0; }
     #geno-toolbar { display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:6px 10px;background:#f7fafc;border-bottom:1px solid #e2e8f0;flex-shrink:0; }
+    #geno-overlay.geno-readonly .geno-edit-only { display:none !important; }
     #geno-body { display:flex;flex:1;overflow:hidden;min-height:0;position:relative; }
     #geno-sidebar { width:170px;min-width:120px;max-width:400px;flex-shrink:0;overflow-y:auto;border-right:1px solid #e2e8f0;background:#fafafa;padding:4px 3px;user-select:none; }
     #geno-sb-resize { position:absolute;top:0;left:170px;width:7px;height:100%;cursor:col-resize;z-index:3;border-radius:3px; }
@@ -4415,7 +4416,7 @@ const GenogramEditor = (() => {
   let _idSeq=1,_dragBeforeState=null;
   let _dragging=null,_connectFrom=null,_connectLine=null;
   let _boxSel=null,_freehandPts=[],_freehandEl=null;
-  let _fieldId=null,_storeKey=null,_caseId=null;
+  let _fieldId=null,_storeKey=null,_caseId=null,_readOnly=false;
   let _textFontSize=12,_textBold=false,_textItalic=false,_textStrike=false;
   let _nodeLabelFontSize=+(localStorage.getItem('genoLblFz')||11);
   let _snapEnabled=true;
@@ -4888,12 +4889,57 @@ const GenogramEditor = (() => {
     const nAx=A.x,nBx=B.x;
     for(let i=0;i<n;i++){const bpX=n===1?(nAx+nBx)/2:nAx+(nBx-nAx)*(i+1)/(n+1);children[i].x=_snapG(bpX);}
   }
+  // 依親子關係計算每個節點的世代深度（0=最頂層祖先），統一調整 Y 座標為 baseY + depth*GEN_GAP，
+  // 讓「新增三代」不需使用者手動抓高度；固定間距(120)遠大於配偶→子女倒ㄇ橫桿的垂直偏移(54)，
+  // 兩代之間保證留有淨空，順帶避免橫桿與下一代節點/橫桿重疊。
+  function _autoArrangeGenerations(){
+    const GEN_GAP=120;
+    const nodes=_objs.filter(o=>o.type==='node');
+    if(!nodes.length)return;
+    const childParentKey={};
+    for(const o of _objs){
+      if(o.type==='link'&&['parent','adopted','foster'].includes(o.linkType)&&o.childId){
+        childParentKey[o.childId]=o.coupleId||('single_'+o.parentId);
+      }
+    }
+    const depthCache={};
+    function nodeDepth(nodeId,seen){
+      if(depthCache[nodeId]!==undefined)return depthCache[nodeId];
+      seen=seen||new Set();
+      if(seen.has(nodeId)){depthCache[nodeId]=0;return 0;}
+      seen.add(nodeId);
+      const pk=childParentKey[nodeId];
+      if(!pk){depthCache[nodeId]=0;return 0;}
+      let parentNodeId=null;
+      if(pk.startsWith('single_'))parentNodeId=pk.slice(7);
+      else{const cplLink=_objs.find(o=>o.id===pk);parentNodeId=cplLink?cplLink.from:null;}
+      const d=parentNodeId?nodeDepth(parentNodeId,seen)+1:0;
+      depthCache[nodeId]=d;return d;
+    }
+    for(const n of nodes)nodeDepth(n.id);
+    const minDepth=Math.min(...nodes.map(n=>depthCache[n.id]));
+    const baseNodes=nodes.filter(n=>depthCache[n.id]===minDepth);
+    const baseY=baseNodes.reduce((s,n)=>s+n.y,0)/baseNodes.length;
+    for(const n of nodes){
+      const rel=depthCache[n.id]-minDepth;
+      n.y=_snapG(baseY+rel*GEN_GAP);
+    }
+    // 同代夫妻保險：配偶連線兩端強制取平均高度，避免因不同分支路徑算出的深度有落差
+    const CTYPE0=['married','separated','divorced'];
+    for(const o of _objs){
+      if(o.type==='link'&&CTYPE0.includes(o.linkType)){
+        const A=_objs.find(x=>x.id===o.from),B=_objs.find(x=>x.id===o.to);
+        if(A&&B){const y=_snapG((A.y+B.y)/2);A.y=y;B.y=y;}
+      }
+    }
+  }
   function autoArrangeAll(){
     _pushUndo();
+    _autoArrangeGenerations();
     const CTYPE=['married','separated','divorced'];
     let n=0;for(const o of _objs)if(o.type==='link'&&CTYPE.includes(o.linkType)){_autoArrangeCouple(o.id);n++;}
     _render();
-    const tip=document.createElement('div');tip.textContent=n?`已均勻排列 ${n} 個家庭組子女位置`:'未找到配偶連線（需先用「結婚/分居/離婚」連線連結兩個節點，才能美化子女排列）';
+    const tip=document.createElement('div');tip.textContent=n?`已整理世代間距，並均勻排列 ${n} 個家庭組子女位置`:'未找到配偶連線（需先用「結婚/分居/離婚」連線連結兩個節點，才能美化排列）';
     tip.style.cssText='position:fixed;bottom:30px;left:50%;transform:translateX(-50%);background:#2d3748;color:#fff;padding:8px 18px;border-radius:8px;font-size:.85rem;z-index:200000;pointer-events:none;opacity:1;transition:opacity .5s';
     document.body.appendChild(tip);setTimeout(()=>{tip.style.opacity='0';setTimeout(()=>tip.remove(),500);},2500);
   }
@@ -5089,8 +5135,8 @@ const GenogramEditor = (() => {
 
   // ── Build UI ──────────────────────────────────────────────────────
   function _buildUI(){
-    const ov=document.createElement('div');ov.id='geno-overlay';
-    ov.innerHTML=`<div id="geno-header"><span style="font-weight:700;font-size:1.1rem;color:#2b6cb0;">家族圖繪製</span><div style="display:flex;gap:6px;align-items:center;"><button class="geno-tb-btn" onclick="GenogramEditor.undo()" title="Ctrl+Z">↩ 復原</button><button class="geno-tb-btn" onclick="GenogramEditor.redo()" title="Ctrl+Y">↪ 重做</button><button class="geno-tb-btn" onclick="GenogramEditor.zoomFit()">⊞ 全圖</button><div class="geno-tb-sep"></div><button class="btn btn-secondary btn-sm" onclick="GenogramEditor.close()">取消</button><button class="btn btn-primary btn-sm" onclick="GenogramEditor.save()">插入家族圖</button></div></div><div id="geno-toolbar"><span style="font-size:.76rem;color:#718096;margin-right:2px;">工具：</span><button class="geno-tb-btn active" id="geno-t-select" onclick="GenogramEditor.setTool('select')" title="選取/拖曳；拖曳空白處框選多物件；Space+拖曳平移">↖ 選取/移動</button><button class="geno-tb-btn" id="geno-t-connect" onclick="GenogramEditor.setTool('connect')" title="點兩個節點連線（先在側欄選連線類型）">─ 連線</button><button class="geno-tb-btn" id="geno-t-text" onclick="GenogramEditor.setTool('text')" title="點畫布新增文字；雙擊編輯">T 文字</button><button class="geno-tb-btn" id="geno-t-freehand" onclick="GenogramEditor.setTool('freehand')" title="自由手繪">✏ 手繪</button><button class="geno-tb-btn" id="geno-t-erase" onclick="GenogramEditor.setTool('erase')" title="點物件刪除">✕ 橡皮擦</button><div class="geno-tb-sep"></div><span style="font-size:.76rem;color:#718096;margin-right:2px;">文字：</span><button class="geno-tb-btn" id="geno-txt-bold" onclick="GenogramEditor.toggleTextProp('bold')" title="粗體" style="font-weight:700;min-width:26px;">B</button><button class="geno-tb-btn" id="geno-txt-italic" onclick="GenogramEditor.toggleTextProp('italic')" title="斜體" style="font-style:italic;min-width:26px;">I</button><button class="geno-tb-btn" id="geno-txt-strike" onclick="GenogramEditor.toggleTextProp('strikethrough')" title="刪除線" style="text-decoration:line-through;min-width:26px;">S</button><select id="geno-txt-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.applyFontSize(+this.value)" title="字級">${[8,9,10,11,12,14,16,18,20,24].map(n=>`<option value="${n}"${n===12?' selected':''}>${n}px</option>`).join('')}</select><span style="font-size:.76rem;color:#718096;margin-left:4px;margin-right:2px;">介面字：</span><select id="geno-lbl-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.setNodeLabelFontSize(+this.value)" title="側欄與節點標籤字級">${[9,10,11,12,13,14,16].map(n=>`<option value="${n}"${n===11?' selected':''}>${n}</option>`).join('')}</select><div class="geno-tb-sep"></div><button class="geno-tb-btn active" id="geno-snap-btn" onclick="GenogramEditor.toggleSnap()" title="網格吸附">⊡ 吸附</button><button class="geno-tb-btn" onclick="GenogramEditor.saveAsCustom()" title="將已選取物件存為共用自訂元件">📌 自訂元件</button><button class="geno-tb-btn" onclick="GenogramEditor.deleteSelected()" title="刪除所選（Delete鍵）">🗑 刪除</button><button class="geno-tb-btn" onclick="GenogramEditor.clearSelect()" title="取消選取（Esc）">☐ 取消</button><button class="geno-tb-btn" onclick="GenogramEditor.autoArrangeAll()" title="均勻排列所有子女，自動調整倒ㄇ寬度">✨ 美化</button><div class="geno-tb-sep"></div><span style="font-size:.75rem;color:#718096;">填色：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:1.5px solid #a0aec0;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<span style="font-size:.75rem;color:#718096;margin-left:6px;" title="節點外框色、關係線顏色">框線：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyStrokeColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:2.5px solid #718096;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<button class="geno-tb-btn" onclick="GenogramEditor.clearColor()" onmousedown="event.preventDefault()" title="清除選取物件的顏色設定">✕色</button></div><div id="geno-body"><div id="geno-sidebar"></div><div id="geno-sb-resize"></div><div id="geno-canvas-wrap"><svg id="geno-svg" xmlns="${NS}"><g id="geno-vp"></g></svg></div></div>`;
+    const ov=document.createElement('div');ov.id='geno-overlay';ov.classList.toggle('geno-readonly',_readOnly);
+    ov.innerHTML=`<div id="geno-header"><span style="font-weight:700;font-size:1.1rem;color:#2b6cb0;">家族圖${_readOnly?'（唯讀檢視）':'繪製'}</span><div style="display:flex;gap:6px;align-items:center;"><button class="geno-tb-btn geno-edit-only" onclick="GenogramEditor.undo()" title="Ctrl+Z">↩ 復原</button><button class="geno-tb-btn geno-edit-only" onclick="GenogramEditor.redo()" title="Ctrl+Y">↪ 重做</button><button class="geno-tb-btn" onclick="GenogramEditor.zoomFit()">⊞ 全圖</button><div class="geno-tb-sep"></div><button class="btn btn-secondary btn-sm" onclick="GenogramEditor.close()">${_readOnly?'關閉':'取消'}</button><button class="btn btn-primary btn-sm geno-edit-only" onclick="GenogramEditor.save()">插入家族圖</button></div></div><div id="geno-toolbar" class="geno-edit-only"><span style="font-size:.76rem;color:#718096;margin-right:2px;">工具：</span><button class="geno-tb-btn active" id="geno-t-select" onclick="GenogramEditor.setTool('select')" title="選取/拖曳；拖曳空白處框選多物件；Space+拖曳平移">↖ 選取/移動</button><button class="geno-tb-btn" id="geno-t-connect" onclick="GenogramEditor.setTool('connect')" title="點兩個節點連線（先在側欄選連線類型）">─ 連線</button><button class="geno-tb-btn" id="geno-t-text" onclick="GenogramEditor.setTool('text')" title="點畫布新增文字；雙擊編輯">T 文字</button><button class="geno-tb-btn" id="geno-t-freehand" onclick="GenogramEditor.setTool('freehand')" title="自由手繪">✏ 手繪</button><button class="geno-tb-btn" id="geno-t-erase" onclick="GenogramEditor.setTool('erase')" title="點物件刪除">✕ 橡皮擦</button><div class="geno-tb-sep"></div><span style="font-size:.76rem;color:#718096;margin-right:2px;">文字：</span><button class="geno-tb-btn" id="geno-txt-bold" onclick="GenogramEditor.toggleTextProp('bold')" title="粗體" style="font-weight:700;min-width:26px;">B</button><button class="geno-tb-btn" id="geno-txt-italic" onclick="GenogramEditor.toggleTextProp('italic')" title="斜體" style="font-style:italic;min-width:26px;">I</button><button class="geno-tb-btn" id="geno-txt-strike" onclick="GenogramEditor.toggleTextProp('strikethrough')" title="刪除線" style="text-decoration:line-through;min-width:26px;">S</button><select id="geno-txt-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.applyFontSize(+this.value)" title="字級">${[8,9,10,11,12,14,16,18,20,24].map(n=>`<option value="${n}"${n===12?' selected':''}>${n}px</option>`).join('')}</select><span style="font-size:.76rem;color:#718096;margin-left:4px;margin-right:2px;">介面字：</span><select id="geno-lbl-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.setNodeLabelFontSize(+this.value)" title="側欄與節點標籤字級">${[9,10,11,12,13,14,16].map(n=>`<option value="${n}"${n===11?' selected':''}>${n}</option>`).join('')}</select><div class="geno-tb-sep"></div><button class="geno-tb-btn active" id="geno-snap-btn" onclick="GenogramEditor.toggleSnap()" title="網格吸附">⊡ 吸附</button><button class="geno-tb-btn" onclick="GenogramEditor.saveAsCustom()" title="將已選取物件存為共用自訂元件">📌 自訂元件</button><button class="geno-tb-btn" onclick="GenogramEditor.deleteSelected()" title="刪除所選（Delete鍵）">🗑 刪除</button><button class="geno-tb-btn" onclick="GenogramEditor.clearSelect()" title="取消選取（Esc）">☐ 取消</button><button class="geno-tb-btn" onclick="GenogramEditor.autoArrangeAll()" title="自動整理世代間距（避免多代擠在一起）並均勻排列所有子女、調整倒ㄇ寬度">✨ 美化</button><div class="geno-tb-sep"></div><span style="font-size:.75rem;color:#718096;">填色：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:1.5px solid #a0aec0;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<span style="font-size:.75rem;color:#718096;margin-left:6px;" title="節點外框色、關係線顏色">框線：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyStrokeColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:2.5px solid #718096;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<button class="geno-tb-btn" onclick="GenogramEditor.clearColor()" onmousedown="event.preventDefault()" title="清除選取物件的顏色設定">✕色</button></div><div id="geno-body"><div id="geno-sidebar" class="geno-edit-only"></div><div id="geno-sb-resize" class="geno-edit-only"></div><div id="geno-canvas-wrap"><svg id="geno-svg" xmlns="${NS}"><g id="geno-vp"></g></svg></div></div>`;
     document.body.appendChild(ov);
     {const s=document.getElementById('geno-lbl-size');if(s)s.value=String(_nodeLabelFontSize);}
     setNodeLabelFontSize(_nodeLabelFontSize);
@@ -5112,9 +5158,9 @@ const GenogramEditor = (() => {
   }
 
   // ── Public API ────────────────────────────────────────────────────
-  function open({fieldId,caseId,storeKey}){
+  function open({fieldId,caseId,storeKey,readOnly}){
     if(document.getElementById('geno-overlay'))return;
-    _fieldId=fieldId;_caseId=caseId||null;_storeKey=storeKey||fieldId;
+    _fieldId=fieldId;_caseId=caseId||null;_storeKey=storeKey||fieldId;_readOnly=!!readOnly;
     _objs=[];_selId=null;_multiSel=new Set();_tool='select';_placeShape='male';_linkType='married';
     _zoom=1;_panX=0;_panY=0;_undo=[];_redo=[];_connectFrom=null;_connectLine=null;
     _boxSel=null;_freehandPts=[];_freehandEl=null;_spaceDown=false;
@@ -5130,6 +5176,7 @@ const GenogramEditor = (() => {
   }
 
   function save(){
+    if(_readOnly){close();return;}
     if(!_objs.length){close();return;}
     _exportPng(dataUrl=>{
       if(!dataUrl){alert('匯出圖片失敗，請重試。');return;}
@@ -5226,7 +5273,7 @@ const GenogramEditor = (() => {
 })();
 
 function openGenogramEditor(fieldId,caseId,storeKey){
-  GenogramEditor.open({fieldId,caseId:caseId||null,storeKey:storeKey||fieldId});
+  GenogramEditor.open({fieldId,caseId:caseId||null,storeKey:storeKey||fieldId,readOnly:!!_detailReadOnly});
 }
 
 // ══════════════════════════════════════════════
@@ -23320,6 +23367,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-04', v: 81, title: '家族圖：世代自動排版 + 唯讀檢視模式（回應 #029/#013）', isProd: false, items: [
+      item('改善', '「✨ 美化」按鈕新增世代自動排版：依親子關係計算每個節點的世代深度，自動統一調整垂直間距（固定世代間距遠大於配偶→子女連接線的垂直偏移），新增第三代不需再手動抓高度、連接線也不會因間距太近而與上一代重疊'),
+      item('修復', '危機案件唯讀檢視模式下，雙擊已內嵌的家族圖圖片會開啟完整可編輯的家族圖工具，可繞過唯讀限制修改資料；家族圖編輯器新增唯讀模式，唯讀檢視下只能檢視/縮放，工具列與側欄皆隱藏，且無法儲存'),
+    ]},
     { date: '2026-07-03', v: 80, title: 'Google 日曆授權改用進階服務 ACL（owner 權限）+ 登入權杖背景主動刷新', isProd: true, items: [
       item('修復', 'Google 日曆一鍵授權：CalendarApp.addEditor()/removeEditor() 只有在日曆為執行帳號原生擁有時才可用，換成 heartnpust5 擁有的日曆後全數失敗；改用 Calendar 進階服務（Calendar API v3 ACL）操作，不受「原生擁有」限制，並升級授權為 owner（進行變更並管理共用設定）'),
       item('改善', '登入權杖背景主動刷新：分頁開著時每 3 分鐘檢查一次權杖是否快過期，提早靜默更新，降低回來操作時撞上「需要重新登入」按鈕的機率；成功時完全無感（不重新整理頁面、不重載資料）'),
