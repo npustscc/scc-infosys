@@ -28427,33 +28427,37 @@ async function _bkConfirmDeleteSeries(scope) {
   await _doDeleteBookings(idsToDelete, b);
 }
 
-async function _doDeleteBookings(idsToDelete, primaryB) {
+function _doDeleteBookings(idsToDelete, primaryB) {
   const calEventIds = idsToDelete.map(id => bookingsData.find(x => x.id === id)?.calendarEventId).filter(Boolean);
   const _delRoomD = primaryB.room === '其他' ? (primaryB.customRoom||'其他') : primaryB.room;
   const _delDetail = `${_delRoomD}　${primaryB.date}　${(primaryB.startTime||'').slice(0,5)}–${(primaryB.endTime||'').slice(0,5)}${primaryB.counselorName ? '　' + primaryB.counselorName : ''}`;
-  bookingsData = bookingsData.filter(x => !idsToDelete.includes(x.id));
-  calEventIds.forEach(evId => proxyCall('deleteCalendarEvent', { eventId: evId }).catch(() => {}));
-  showLoading('刪除中…');
   const _suffix = idsToDelete.length > 1 ? ` (共${idsToDelete.length}筆)` : '';
-  const jobId = bgJobAdd(`刪除空間預約：${_delDetail}`);
-  try {
-    await saveBookings();
-    bgJobDone(jobId);
-    auditLog('刪除空間預約', primaryB.caseId || null, null, _delDetail + _suffix);
-  } catch (e) {
-    setTimeout(async () => {
+  // 背景化：畫面立即移除（樂觀更新），儲存與 GC 刪除進工作執行分頁，不鎖畫面
+  bookingsData = bookingsData.filter(x => !idsToDelete.includes(x.id));
+  renderBookingsPage();
+  const jobId = bgJobAdd(`刪除空間預約：${_delDetail}${_suffix}`);
+  (async () => {
+    calEventIds.forEach(evId => proxyCall('deleteCalendarEvent', { eventId: evId }).catch(() => {}));
+    bgJobProgress(jobId, 40);
+    try {
+      await saveBookings();
+      bgJobDone(jobId);
+      auditLog('刪除空間預約', primaryB.caseId || null, null, _delDetail + _suffix);
+    } catch (e) {
+      // 5 秒後自動重試一次，仍失敗才醒目提醒
+      await new Promise(r => setTimeout(r, 5000));
       try {
         await saveBookings();
         bgJobDone(jobId);
         auditLog('刪除空間預約', primaryB.caseId || null, null, _delDetail + _suffix);
       } catch (_) {
-        bgJobFail(jobId, '雲端儲存暫時失敗');
-        setAlert('bookings-alert', 'warn', '預約已從畫面移除，但雲端儲存暫時失敗，將於下次同步自動修正。若持續出現請手動重新整理。');
+        bgJobFail(jobId, '雲端儲存失敗');
+        _showRetryNotice(`⚠ 刪除預約「${_delDetail}」已從畫面移除，但雲端儲存失敗，請重新整理頁面確認後再操作一次`);
+        setAlert('bookings-alert', 'warn', '預約已從畫面移除，但雲端儲存失敗。請重新整理頁面確認狀態後再操作一次。');
+        showToast('刪除預約的雲端儲存失敗，請重新整理頁面確認', 'error', 10000);
       }
-    }, 5000);
-  }
-  hideLoading();
-  renderBookingsPage();
+    }
+  })();
 }
 
 function renderPendingList() {
