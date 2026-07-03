@@ -25094,7 +25094,7 @@ async function syncFromCalendar(silent = false) {
         if (!bk?.calendarEventId) continue;
         try {
           const _isEdit = !!(bk.updatedAt && bk.updatedAt !== bk.createdAt);
-          const _bkClr = configData?.users?.[bk.counselorEmail]?.bkColor || '';
+          const _bkClr = _bkEffColor(bk);
           await proxyCall('updateCalendarEvent', {
             eventId: bk.calendarEventId, room: bk.room, customRoom: bk.customRoom || '',
             date: bk.date, startTime: bk.startTime, endTime: bk.endTime,
@@ -27189,11 +27189,52 @@ function _bkRenderDayColumn(date) {
   return html;
 }
 
-// 依主責的 bkColor 產生 cell 樣式：淡背景（13% 透明）+ 左邊 4px 條紋；未設沿用現行灰底
+// 預約有效顏色：單筆自訂（bkOverrideColor）優先，其次主責人員的個人 bkColor
+function _bkEffColor(b) {
+  return b?.bkOverrideColor || configData?.users?.[b?.counselorEmail]?.bkColor || '';
+}
+
+// 依有效顏色產生 cell 樣式：淡背景（13% 透明）+ 左邊 4px 條紋；未設沿用現行灰底
 function _bkCellStyle(b) {
-  const hex = configData?.users?.[b?.counselorEmail]?.bkColor;
+  const hex = _bkEffColor(b);
   if (!hex || hex[0] !== '#') return 'background:#edf2f7;';
   return `background:${hex}22;border-left:4px solid ${hex};`;
+}
+
+// ── 單筆預約自訂顏色（僅影響該筆預約，複製/重複預約沿用）──
+let _bkPickedColor = '';
+function _toggleBkOverridePanel() {
+  const p = document.getElementById('bk-color-override-panel');
+  if (!p) return;
+  const show = p.style.display === 'none';
+  p.style.display = show ? '' : 'none';
+  if (show) _renderBkOverrideGrid();
+}
+function _renderBkOverrideGrid() {
+  const grid = document.getElementById('bk-color-override-grid');
+  if (!grid) return;
+  grid.innerHTML = BK_USER_COLORS.map(hex => {
+    const sel = hex.toUpperCase() === (_bkPickedColor || '').toUpperCase();
+    return `<div onclick="_pickBkOverrideColor('${hex}')" title="${hex}" style="width:32px;height:32px;border-radius:6px;background:${hex};cursor:pointer;box-shadow:${sel ? 'inset 0 0 0 3px #fff, 0 0 0 2px #2b6cb0' : 'inset 0 0 0 1px rgba(0,0,0,.08)'};transition:transform .1s;" onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform=''"></div>`;
+  }).join('');
+  _updateBkOverrideCurrent();
+}
+function _pickBkOverrideColor(hex) {
+  _bkPickedColor = hex || '';
+  _renderBkOverrideGrid();
+}
+function _updateBkOverrideCurrent() {
+  const cur = document.getElementById('bk-color-override-current');
+  if (!cur) return;
+  cur.innerHTML = _bkPickedColor
+    ? `<span style="width:14px;height:14px;border-radius:4px;background:${_bkPickedColor};display:inline-block;border:1px solid rgba(0,0,0,.15);"></span>此預約使用自訂顏色 ${_bkPickedColor}`
+    : '未自訂（沿用主責人員的預設顏色）';
+}
+function _resetBkOverrideUi(color) {
+  _bkPickedColor = color || '';
+  const p = document.getElementById('bk-color-override-panel');
+  if (p) p.style.display = 'none';
+  _updateBkOverrideCurrent();
 }
 function renderBookingsPage() {
   const dateEl = document.getElementById('booking-date');
@@ -27454,7 +27495,7 @@ async function _bkGcFlush() {
     if (!snap.calendarEventId) continue;
     const creatorName = configData?.users?.[snap.creatorEmail]?.name || snap.creatorName || '';
     try {
-      const _snClr = configData?.users?.[snap.counselorEmail]?.bkColor || '';
+      const _snClr = _bkEffColor(snap);
       await proxyCall('updateCalendarEvent', {
         eventId: snap.calendarEventId,
         room: snap.room, customRoom: snap.customRoom,
@@ -27870,7 +27911,7 @@ async function syncBookingToCalendar(id) {
   modalEl.style.display = 'flex';
 
   try {
-    const _bColorRef = configData?.users?.[b.counselorEmail]?.bkColor || '';
+    const _bColorRef = _bkEffColor(b);
     const calParams = { room: b.room, date: b.date, startTime: b.startTime, endTime: b.endTime,
       counselorName: b.counselorName, caseId: b.caseId || '', caseName: b.caseName || '', notes: b.notes || '',
       colorId: _bColorRef ? _nearestGcColorId(_bColorRef) : null };
@@ -27978,6 +28019,7 @@ function openBookingModal(prefillCaseId) {
   if (_rt) { _rt.checked = false; }
   const _rp = document.getElementById('bk-repeat-panel');
   if (_rp) _rp.style.display = 'none';
+  _resetBkOverrideUi('');
   document.getElementById('booking-modal').style.display = 'flex';
 }
 
@@ -28015,6 +28057,7 @@ function editBooking(id) {
   if (_ert) _ert.checked = false;
   const _erp = document.getElementById('bk-repeat-panel');
   if (_erp) _erp.style.display = 'none';
+  _resetBkOverrideUi(b.bkOverrideColor || '');
   _bkEditScope = 'this';
   // 若屬系列，先選範圍
   if (b.seriesId) {
@@ -28081,6 +28124,7 @@ function _bkCopyOpenModal() {
   if (_crt) _crt.checked = false;
   const _crp = document.getElementById('bk-repeat-panel');
   if (_crp) _crp.style.display = 'none';
+  _resetBkOverrideUi(b.bkOverrideColor || '');
   _bkEditScope = 'this';
   document.getElementById('booking-modal').style.display = 'flex';
   _checkBkConflict();
@@ -28217,7 +28261,8 @@ async function saveBooking() {
   // 先取舊的 calendarEventId 與舊狀態快照（編輯時用，供稽核日誌差異比對）
   const _oldBkSnap = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
   const newSerial = _editingBookingId ? (_oldBkSnap?.bkSerial) : _bkNextSerial();
-  const _bkCounselorColor = configData?.users?.[counselorEmail]?.bkColor || '';
+  const _bkOverride = _bkPickedColor || '';
+  const _bkCounselorColor = _bkOverride || configData?.users?.[counselorEmail]?.bkColor || '';
   const calParams = { room, customRoom, date, startTime: start, endTime: end, counselorName, notes, creatorName,
     createdAt: _editingBookingId ? (_oldBkSnap?.createdAt || now) : now,
     updatedAt: now, isEdit: !!_editingBookingId,
@@ -28239,13 +28284,17 @@ async function saveBooking() {
           sb.counselorEmail = counselorEmail; sb.counselorName = counselorName;
           sb.caseId = caseId || ''; sb.caseName = caseObj?.name || '';
           sb.notes = notes; sb.updatedAt = now;
+          if (_bkOverride) sb.bkOverrideColor = _bkOverride; else delete sb.bkOverrideColor;
         });
     } else {
       const idx = bookingsData.findIndex(x => x.id === _editingBookingId);
-      if (idx >= 0) bookingsData[idx] = { ...bookingsData[idx],
-        room, customRoom, date, startTime: start, endTime: end,
-        counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
-        notes, updatedAt: now };
+      if (idx >= 0) {
+        bookingsData[idx] = { ...bookingsData[idx],
+          room, customRoom, date, startTime: start, endTime: end,
+          counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
+          notes, updatedAt: now };
+        if (_bkOverride) bookingsData[idx].bkOverrideColor = _bkOverride; else delete bookingsData[idx].bkOverrideColor;
+      }
     }
   } else {
     // T2：單筆或系列建立
@@ -28259,6 +28308,7 @@ async function saveBooking() {
         notes, createdAt: now, updatedAt: now, creatorName
       };
       if (seriesId) _sObj.seriesId = seriesId;
+      if (_bkOverride) _sObj.bkOverrideColor = _bkOverride;
       bookingsData.push(_sObj);
     }
   }
@@ -35601,6 +35651,17 @@ function toggleNavPin(navId) {
       <div style="grid-column:1/-1;">
         <label class="field-label">備註</label>
         <textarea class="field-input" id="bk-notes" rows="2" style="resize:vertical;"></textarea>
+      </div>
+      <div style="grid-column:1/-1;" id="bk-color-override-wrap">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="_toggleBkOverridePanel()" data-tip="只變更「這筆預約」的顯示顏色（含 Google 日曆），不影響個人預設顏色；複製與重複預約會沿用此顏色">🎨 顏色</button>
+          <span id="bk-color-override-current" style="display:inline-flex;align-items:center;gap:6px;font-size:.82rem;color:#4a5568;"></span>
+        </div>
+        <div id="bk-color-override-panel" style="display:none;margin-top:8px;padding:10px 12px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;">
+          <p style="font-size:.8rem;color:#8a6d3b;background:#fff8e6;border:1px solid #f0d490;border-radius:6px;padding:6px 10px;margin:0 0 8px;">提醒：這裡選的顏色<b>只會套用在這一筆預約</b>（含 Google 日曆事件顏色），不會改變您或主責人員的個人預設顏色。複製與重複預約會一併帶入此顏色。</p>
+          <div id="bk-color-override-grid" style="display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;"></div>
+          <div style="margin-top:8px;"><button type="button" class="btn btn-secondary btn-sm" onclick="_pickBkOverrideColor('')">清除（沿用預設顏色）</button></div>
+        </div>
       </div>
       <!-- T2：重複預約 -->
       <div style="grid-column:1/-1;" id="bk-repeat-wrap">
