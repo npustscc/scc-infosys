@@ -12,6 +12,10 @@ const ALLOWED_ROOTS = {
   '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx': { configOverride: null, calendarName: '[DEV] SCC 空間預約', gmailLabel: 'ml-processed-dev' },
 };
 
+// 緊急備援名單：即使 config 讀不到或帳號不在名單，這些帳號仍可登入以修復系統（對應前端 BOOTSTRAP_ADMIN_EMAIL）。
+// 註：列出 email 不構成後門——仍須持有該帳號的 Google 憑證（有效 ID token）才通過，攻擊者知道 email 也無法冒充。
+const BOOTSTRAP_ADMINS = ['npust.scc@heartnpust.tw', 'linkinlol528101@gmail.com'];
+
 // ── 進入點 ────────────────────────────────────────────────────────────────────
 
 function doPost(e) {
@@ -40,6 +44,15 @@ function doPost(e) {
         if (!isIssuesOp) return jsonResp_({ error: 'Unauthorized rootFolderId' });
         ctx = { root: rootFolderId, configOverride: null, calendarName: CALENDAR_NAME };
       }
+    }
+
+    // ── 使用者授權閘：email 必須存在於 config.users 且未停用（少數 action 例外）──
+    // 修補重大漏洞：先前僅驗證 ID token 對 CLIENT_ID 有效，未比對授權名單，導致任何 Google 帳號
+    // 皆可用公開的 CLIENT_ID / APPS_SCRIPT_URL / rootFolderId 直接撈取或竄改全部個案資料。
+    // ping（探測）與 submitUserApplication（尚未獲授權者申請帳號的唯一入口）需在授權前放行。
+    var AUTHZ_EXEMPT = { ping: true, submitUserApplication: true };
+    if (!AUTHZ_EXEMPT[action] && !isAuthorizedUser_(userEmail, ctx)) {
+      return jsonResp_({ error: 'Unauthorized user' });
     }
 
     let result;
@@ -115,6 +128,32 @@ function verifyIdToken_(idToken) {
     try { cache.put(cacheKey, d.email, 300); } catch (_) {}
     return d.email;
   } catch (e) { return null; }
+}
+
+// ── 使用者授權閘 ──────────────────────────────────────────────────────────────
+// email 必須存在於 config.users 且未停用（判定基準與前端 resolveUserRole 一致）。
+// fail-closed：config 讀不到一律拒絕（BOOTSTRAP_ADMINS 例外，避免 config 全毀時管理者被鎖死）。
+// 命中結果以 CacheService 快取 5 分鐘，避免每個請求都多讀一次 config。
+// 副作用：新增/停用使用者後，後端授權狀態最多延遲 5 分鐘生效。
+function isAuthorizedUser_(userEmail, ctx) {
+  if (!userEmail) return false;
+  if (BOOTSTRAP_ADMINS.indexOf(userEmail) !== -1) return true;
+  var cache = CacheService.getScriptCache();
+  var key = 'authz:' + userEmail.slice(0, 240);
+  try { if (cache.get(key) === '1') return true; } catch (_) {}
+  try {
+    var cfgId = ctx.configOverride || resolvePathToId_('config.json', ctx);
+    var res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + cfgId + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() !== 200) return false;
+    var cfg = JSON.parse(res.getContentText());
+    var u = cfg && cfg.users && cfg.users[userEmail];
+    var ok = !!u && u.disabled !== true;
+    if (ok) { try { cache.put(key, '1', 300); } catch (_) {} }
+    return ok;
+  } catch (e) { return false; }
 }
 
 // ── 回應工具 ──────────────────────────────────────────────────────────────────
