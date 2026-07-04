@@ -81,7 +81,8 @@ async function interactiveAuth(creds) {
         response_type: 'code',
         scope: SCOPE,
         access_type: 'offline',
-        prompt: 'consent',
+        prompt: 'select_account consent',            // 強制跳出帳號選擇，避免瀏覽器預設帳號直接授權
+        login_hint: 'npust.scc@heartnpust.tw',       // 預選/提示正確帳號
       });
       console.log('\n請在瀏覽器開啟以下網址完成授權（請用 npust.scc@heartnpust.tw 登入）：\n');
       console.log(authUrl + '\n');
