@@ -59,6 +59,7 @@ async function tokenFromRefresh(creds, refreshToken) {
 
 async function interactiveAuth(creds) {
   return new Promise((resolve, reject) => {
+    let redirectUri = ''; // 在 listen callback 記下，server.close() 後 address() 會變 null
     const server = http.createServer(async (req, res) => {
       try {
         const u = new URL(req.url, 'http://localhost');
@@ -69,7 +70,6 @@ async function interactiveAuth(creds) {
         res.end(code ? '<h2>授權完成，可以關閉此視窗回到終端機。</h2>' : '<h2>授權失敗：' + (err || '未知') + '</h2>');
         server.close();
         if (!code) { reject(new Error('授權失敗：' + err)); return; }
-        const redirectUri = 'http://localhost:' + server.address().port;
         const tokenRes = await fetch(creds.token_uri, {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -84,7 +84,7 @@ async function interactiveAuth(creds) {
       } catch (e) { reject(e); }
     });
     server.listen(0, '127.0.0.1', () => {
-      const redirectUri = 'http://localhost:' + server.address().port;
+      redirectUri = 'http://localhost:' + server.address().port;
       const authUrl = creds.auth_uri + '?' + new URLSearchParams({
         client_id: creds.client_id,
         redirect_uri: redirectUri,
