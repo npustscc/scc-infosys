@@ -129,14 +129,28 @@ async function drive(url) {
   return res;
 }
 
+// supportsAllDrives/includeItemsFromAllDrives：資料夾可能位於共用雲端硬碟，一律帶上
+async function whoAmI() {
+  const r = await (await drive('https://www.googleapis.com/drive/v3/about?fields=user')).json();
+  return r.user?.emailAddress || '(未知)';
+}
+
+async function checkFolderAccess(folderId) {
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${folderId}?supportsAllDrives=true&fields=id,name,driveId`, {
+    headers: { Authorization: 'Bearer ' + ACCESS_TOKEN },
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
 async function findFileInFolder(name, folderId) {
   const q = encodeURIComponent(`name='${name}' and '${folderId}' in parents and trashed=false`);
-  const r = await (await drive(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)`)).json();
+  const r = await (await drive(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true`)).json();
   return r.files?.[0] || null;
 }
 
 async function downloadTo(fileId, destPath) {
-  const res = await drive(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+  const res = await drive(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`);
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
   fs.writeFileSync(destPath, Buffer.from(await res.arrayBuffer()));
 }
@@ -162,9 +176,13 @@ const STATUS_LABEL = { open: '待處理', in_progress: '處理中', pending_veri
 async function main() {
   ACCESS_TOKEN = await getAccessToken();
   console.log(`輸出：${OUT_DIR}`);
+  console.log(`授權帳號：${await whoAmI()}`);
+  const folder = await checkFolderAccess(FOLDER_ID);
+  if (!folder) throw new Error(`授權帳號無法存取資料夾 ${FOLDER_ID}——請確認授權時選的是 npust.scc@heartnpust.tw（刪除 .drive-token.json 後重跑可重新授權）`);
+  console.log(`資料夾：${folder.name}${folder.driveId ? '（位於共用雲端硬碟）' : ''}`);
 
   const meta = await findFileInFolder('issues.json', FOLDER_ID);
-  if (!meta) throw new Error('資料夾內找不到 issues.json（請確認授權帳號有權限存取該資料夾）');
+  if (!meta) throw new Error('資料夾內找不到 issues.json');
   const issuesPath = path.join(OUT_DIR, 'issues.json');
   await downloadTo(meta.id, issuesPath);
   const data = JSON.parse(fs.readFileSync(issuesPath, 'utf8'));
