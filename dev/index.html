@@ -3440,6 +3440,7 @@
       <div id="todos-major-events-section"></div>
       <div id="todos-assignment-section"></div>
       <div id="todos-unclosed-summary"></div>
+      <div id="todos-classify-help-section"></div>
       <div id="todos-body"></div>
     </div>
 
@@ -14134,6 +14135,94 @@ function _getDeptToCollege() {
 }
 function getCollegeFromDept(dept) { return _getDeptToCollege()[dept] || ''; }
 
+// ── 系所簡寫對照與全員協助歸類 ──────────────────────────────
+// configData.deptAbbrevMap：{ 原始文字（如信件中的系所簡寫）: 正式系所名 }；值為 '' 表示已確認無法對應（不再請大家協助）
+function _getDeptAbbrevMap() { return configData?.deptAbbrevMap || {}; }
+// 將原始系所文字解析為正式系所名；已是正式名稱則原樣回傳；查無對照回 ''
+function resolveDeptName(raw) {
+  const s = (raw || '').trim();
+  if (!s) return '';
+  if (_getDeptToCollege()[s] !== undefined) return s;
+  return _getDeptAbbrevMap()[s] || '';
+}
+// 收集身心調適假紀錄中無法對應正式系所的原始文字（含出現次數，多的排前）
+function _collectUnmappedDepts() {
+  const map = _getDeptAbbrevMap();
+  const cnt = {};
+  (mentalLeavesData || []).forEach(l => {
+    if (l.deleted) return;
+    const s = (l.department || '').trim();
+    if (!s || resolveDeptName(s) || map[s] === '') return;
+    cnt[s] = (cnt[s] || 0) + 1;
+  });
+  return Object.entries(cnt).map(([raw, count]) => ({ raw, count })).sort((a, b) => b.count - a.count);
+}
+async function _saveDeptAbbrev(raw, dept, btn) {
+  if (!configData.deptAbbrevMap) configData.deptAbbrevMap = {};
+  const prev = configData.deptAbbrevMap[raw];
+  configData.deptAbbrevMap[raw] = dept;
+  if (btn) { btn.disabled = true; btn.textContent = '儲存中…'; }
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('系所簡寫歸類', null, null, `「${raw}」→ ${dept || '（標記為無法判別）'}`);
+    showToast(dept ? `已歸類：「${raw}」→ ${dept}，謝謝協助！` : `已標記「${raw}」為無法判別`, 'success');
+    _renderClassifyHelpSection();
+    if (typeof renderAdminDeptCollege === 'function') renderAdminDeptCollege();
+  } catch (e) {
+    if (prev === undefined) delete configData.deptAbbrevMap[raw]; else configData.deptAbbrevMap[raw] = prev;
+    if (btn) { btn.disabled = false; btn.textContent = '確認'; }
+    showToast('儲存失敗：' + e.message, 'error');
+  }
+}
+function _classifyConfirm(btn) {
+  const raw = decodeURIComponent(btn.getAttribute('data-raw') || '');
+  const sel = btn.parentElement.querySelector('select');
+  const dept = sel?.value || '';
+  if (!dept) { alert('請先選擇要對應的正式系所。'); return; }
+  _saveDeptAbbrev(raw, dept, btn);
+}
+function _classifyIgnore(btn) {
+  const raw = decodeURIComponent(btn.getAttribute('data-raw') || '');
+  if (!confirm(`確定將「${raw}」標記為無法判別的系所？\n之後不會再出現在協助歸類清單。`)) return;
+  _saveDeptAbbrev(raw, '', btn);
+}
+function _toggleClassifyHelp() {
+  window._classifyHelpCollapsed = !window._classifyHelpCollapsed;
+  _renderClassifyHelpSection();
+}
+// 待辦頁「協助系統歸類」區塊：全員可見的小遊戲區——目前收錄「身心調適假系所簡寫 → 正式系所」
+function _renderClassifyHelpSection() {
+  const section = document.getElementById('todos-classify-help-section');
+  if (!section) return;
+  const items = _collectUnmappedDepts();
+  if (!items.length) { section.innerHTML = ''; return; }
+  const collapsed = !!window._classifyHelpCollapsed;
+  const deptOpts = Object.keys(_getDeptToCollege()).sort((a, b) => a.localeCompare(b, 'zh-TW'))
+    .map(d => `<option value="${escHtml(d)}">${escHtml(d)}</option>`).join('');
+  const rows = collapsed ? '' : items.map(({ raw, count }) => `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 10px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;margin-bottom:6px;">
+      <span style="font-weight:700;font-size:.9rem;color:#2d3748;">「${escHtml(raw)}」</span>
+      <span style="font-size:.75rem;color:#a0aec0;">出現 ${count} 筆</span>
+      <span style="font-size:.82rem;color:#718096;margin-left:auto;">應該是：</span>
+      <select class="field-select" style="max-width:200px;font-size:.83rem;">
+        <option value="">—請選擇正式系所—</option>${deptOpts}
+      </select>
+      <button class="btn btn-primary btn-sm" data-raw="${encodeURIComponent(raw)}" onclick="_classifyConfirm(this)">確認</button>
+      <button class="btn btn-secondary btn-sm" data-raw="${encodeURIComponent(raw)}" onclick="_classifyIgnore(this)" data-tip="確定不是任何系所（如亂碼、班級代號）才點選">無法判別</button>
+    </div>`).join('');
+  section.innerHTML = `
+    <div style="background:#fffaf0;border:1px solid #fbd38d;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
+      <div onclick="_toggleClassifyHelp()" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;cursor:pointer;user-select:none;margin-bottom:${collapsed ? '0' : '8px'};" data-tip="點選整列可收起/展開">
+        <span style="font-weight:600;font-size:.9rem;color:#975a16;">
+          <span style="display:inline-block;width:14px;">${collapsed ? '▶' : '▼'}</span>
+          🧩 協助系統歸類（${items.length} 項待協助）
+        </span>
+        <span style="font-size:.78rem;color:#b7791f;">有空的話，幫系統認一下這些對不起來的系所簡寫吧！</span>
+      </div>
+      ${collapsed ? '' : `<div style="font-size:.78rem;color:#975a16;margin-bottom:8px;">以下是身心調適假信件中擷取到、但系統無法自動對應到正式系所的文字。您的歸類會讓學院/系所統計立即變準確，全中心共用、只需做一次。</div>${rows}`}
+    </div>`;
+}
+
 const ETH_NOTE_IDS = {
   '漢民族': 'nc-eth-note-han',
   '原住民族': 'nc-eth-note-indigenous',
@@ -19065,6 +19154,7 @@ function renderTodosPage() {
   _renderAssignmentTodos();
   _renderMlNotifSection();
   _renderMajorEventNotifs();
+  _renderClassifyHelpSection();
 
   // Show/hide sections by tab
   const _showAdmin = _tab === 'all' || _tab === 'admin';
@@ -19076,6 +19166,7 @@ function renderTodosPage() {
   if (document.getElementById('todos-ml-notif-section'))     document.getElementById('todos-ml-notif-section').style.display     = _showAdmin ? '' : 'none';
   if (document.getElementById('todos-major-events-section')) document.getElementById('todos-major-events-section').style.display = _showCases ? '' : 'none';
   if (document.getElementById('todos-assignment-section'))   document.getElementById('todos-assignment-section').style.display   = _showCases ? '' : 'none';
+  if (document.getElementById('todos-classify-help-section')) document.getElementById('todos-classify-help-section').style.display = _showAdmin ? '' : 'none';
 
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
 
@@ -23093,7 +23184,8 @@ async function renderStats() {
     // ── 學院 / 系所統計 ──
     const _dg = {};
     data.forEach(l => {
-      const dept = l.department || '（未填系所）';
+      // 先套系所簡寫對照（deptAbbrevMap），對得到就用正式系所名歸組（學院也能跟著對到）
+      const dept = resolveDeptName(l.department) || l.department || '（未填系所）';
       if (!_dg[dept]) _dg[dept] = [];
       _dg[dept].push(l);
     });
@@ -23487,6 +23579,8 @@ function renderChangelogPage() {
       item('修復', '個案詳細資料「歷屆」下拉選單與「過去學期未結案」提醒的主責顯示：已連結系統帳號時改以帳號目前名稱為準，不再被匯入時的原始文字蓋過；變更主責（直接轉派/確認轉案/確認派案）時同步清除過時的原始文字（回應 #023）'),
       item('改善', '問題回報「更新狀態」按鈕點選後即時鎖定並顯示「更新中…」，選擇與目前相同的狀態時提示「狀態未變更」，不再看起來像沒反應'),
       item('新功能', '待驗證回報新增「驗證後仍有問題」選項：回報者可填寫仍遇到的狀況（必填），送出後自動留言、退回「處理中」並通知系統管理者；時間軸如實記錄本人與時間'),
+      item('新功能', '系所簡寫對照：身心調適假信件擷取到的系所簡寫可對應到正式系所（學院/系所統計隨之變準確）；系統管理→系所與學院對照頁可管理對照表'),
+      item('新功能', '待辦事項頁新增「🧩 協助系統歸類」區塊：系統無法自動對應的系所簡寫會列出請全體同仁協助認領歸類（選定正式系所或標記無法判別），做一次全中心共用，含稽核日誌'),
     ]},
     { date: '2026-07-04', v: 83, title: '家族圖：修正三代親子方向誤判 + 模版子女改為方形', isProd: true, items: [
       item('修復', '新增親子關係線時，原本用「哪一側已成家」判斷誰是父母，導致新增祖父母世代時（祖父尚未成家、父母已成家有子女）會誤把祖父判斷成父母的孩子。改為依兩節點的垂直位置判斷（畫面上方＝父母，下方＝子女），不受點擊順序或是否已成家影響，正確支援三代以上的家族圖'),
@@ -30599,7 +30693,64 @@ function renderAdminDeptCollege() {
             </span>`).join('') || '<span style="font-size:.78rem;color:#a0aec0;">（可從其他學院拖曳系所過來）</span>'}
         </div>
       </div>`).join('')}
-    ${Object.keys(dc).length === 0 ? '<div style="color:#a0aec0;font-size:.85rem;">尚無對應資料。</div>' : ''}`;
+    ${Object.keys(dc).length === 0 ? '<div style="color:#a0aec0;font-size:.85rem;">尚無對應資料。</div>' : ''}
+    ${_renderDeptAbbrevAdmin(dc)}`;
+}
+
+// 系所簡寫對照管理（renderAdminDeptCollege 的附加區塊）
+function _renderDeptAbbrevAdmin(dc) {
+  const map = _getDeptAbbrevMap();
+  const entries = Object.entries(map).sort((a, b) => a[0].localeCompare(b[0], 'zh-TW'));
+  const deptOpts = Object.keys(dc).sort((a, b) => a.localeCompare(b, 'zh-TW'))
+    .map(d => `<option value="${escHtml(d)}">${escHtml(d)}</option>`).join('');
+  const rows = entries.map(([raw, dept]) => `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 10px;border-bottom:1px solid #f0f4f8;font-size:.85rem;">
+      <span style="font-weight:600;color:#2d3748;">${escHtml(raw)}</span>
+      <span style="color:#a0aec0;">→</span>
+      <span style="color:${dept ? '#2b6cb0' : '#a0aec0'};">${dept ? escHtml(dept) : '（無法判別）'}</span>
+      <button data-raw="${encodeURIComponent(raw)}" onclick="_adminRemoveDeptAbbrev(this)" title="移除此對照（會重新出現在待辦頁協助歸類清單）"
+        style="margin-left:auto;background:none;border:none;cursor:pointer;color:#718096;font-size:1rem;line-height:1;">×</button>
+    </div>`).join('');
+  return `
+    <div style="margin-top:24px;border-top:2px solid #e2e8f0;padding-top:14px;">
+      <div style="font-weight:700;font-size:.92rem;color:#2d3748;margin-bottom:6px;">🧩 系所簡寫對照（身心調適假信件擷取用）</div>
+      <div style="font-size:.78rem;color:#718096;margin-bottom:10px;padding:6px 10px;background:#f7fafc;border-radius:5px;">
+        信件中擷取到的系所簡寫會依此表對應到正式系所（進而對到學院統計）。無法自動對應的簡寫會出現在「待辦事項」頁的「協助系統歸類」區塊，全體同仁都可協助認領歸類。
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
+        <input type="text" id="da-input-raw" class="field-input" placeholder="簡寫（如信件中的原文）" style="flex:1;min-width:160px;max-width:240px;" />
+        <select id="da-input-dept" class="field-select" style="max-width:220px;">
+          <option value="">—對應正式系所—</option>${deptOpts}
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="_adminAddDeptAbbrev()">新增對照</button>
+      </div>
+      ${rows || '<div style="color:#a0aec0;font-size:.85rem;">尚無簡寫對照。</div>'}
+    </div>`;
+}
+
+async function _adminAddDeptAbbrev() {
+  const raw = (document.getElementById('da-input-raw')?.value || '').trim();
+  const dept = document.getElementById('da-input-dept')?.value || '';
+  if (!raw) { alert('請填寫簡寫原文。'); return; }
+  if (!dept) { alert('請選擇對應的正式系所。'); return; }
+  await _saveDeptAbbrev(raw, dept, null);
+  renderAdminDeptCollege();
+}
+
+async function _adminRemoveDeptAbbrev(btn) {
+  const raw = decodeURIComponent(btn.getAttribute('data-raw') || '');
+  if (!confirm(`確認移除「${raw}」的簡寫對照？`)) return;
+  const prev = configData.deptAbbrevMap?.[raw];
+  if (configData.deptAbbrevMap) delete configData.deptAbbrevMap[raw];
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('移除系所簡寫對照', null, null, `「${raw}」（原對應：${prev || '無法判別'}）`);
+    renderAdminDeptCollege();
+    _renderClassifyHelpSection();
+  } catch (e) {
+    if (prev !== undefined) { if (!configData.deptAbbrevMap) configData.deptAbbrevMap = {}; configData.deptAbbrevMap[raw] = prev; }
+    alert('儲存失敗：' + e.message);
+  }
 }
 // ── 系所→學院 拖曳 handlers ──
 function _dcDragStart(ev) {
