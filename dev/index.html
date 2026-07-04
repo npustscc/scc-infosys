@@ -23575,6 +23575,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-04', v: 85, title: 'Google 日曆補註建立者安全化（追加式寫入 + 修復重複補註）', isProd: false, items: [
+      item('修復', 'Google 日曆事件自動補註建立者後，仍會被驗證判定「缺建立者註記」，導致每小時自動同步時重複追加補註、備註無限累積；驗證規則現已認得「[系統補註]」標記，補註一次後即不再重複'),
+      item('改善', '自動補註改用專用的「僅追加備註」後端操作：不再整顆事件重寫（標題/時間完全不動、既有備註不覆蓋），流水號固定保持在備註末端不被破壞；已重複補註過的舊事件會自動略過並清出待確認清單'),
+    ]},
     { date: '2026-07-04', v: 84, title: '回應 #023 歷屆主責顯示 + 問題回報驗證/狀態操作體驗', isProd: false, items: [
       item('修復', '個案詳細資料「歷屆」下拉選單與「過去學期未結案」提醒的主責顯示：已連結系統帳號時改以帳號目前名稱為準，不再被匯入時的原始文字蓋過；變更主責（直接轉派/確認轉案/確認派案）時同步清除過時的原始文字（回應 #023）'),
       item('改善', '問題回報「更新狀態」按鈕點選後即時鎖定並顯示「更新中…」，選擇與目前相同的狀態時提示「狀態未變更」，不再看起來像沒反應'),
@@ -25792,8 +25796,8 @@ function _gcValidateEvent(ev, bookingsIndex, usersByName, usersByEmail) {
   const title = ev.title || '';
   // 1. MISSING_SERIAL
   if (!/\n#\d+\s*$/.test(desc)) kinds.add('MISSING_SERIAL');
-  // 2. MISSING_CREATOR
-  if (!/\S+\s+(建立|編輯)/.test(desc)) kinds.add('MISSING_CREATOR');
+  // 2. MISSING_CREATOR（系統寫入的「某人 建立/編輯」行，或已由系統補註過建立者皆算有）
+  if (!/\S+\s+(建立|編輯)/.test(desc) && desc.indexOf('[系統補註') === -1) kinds.add('MISSING_CREATOR');
   // 3. BAD_TITLE
   const titleMatch = title.match(/^([^\.]+)\.(.+)$/);
   if (!titleMatch) kinds.add('BAD_TITLE');
@@ -25864,20 +25868,14 @@ async function _runGcValidationAndBackfill(gcEvents) {
     const note = creatorName
       ? `[系統補註] 由 ${creatorName}（${creatorEmail}）建立，於 ${new Date().toLocaleString('zh-TW')} 補註`
       : `[系統補註] 建立者為非本系統帳號：${creatorEmail}，於 ${new Date().toLocaleString('zh-TW')} 標註`;
-    const newDesc = ((ev.description || '').trimEnd() + '\n---\n' + note).trim();
     try {
-      // 沿用原標題/時間，只改 description
-      const titleMatch = (ev.title || '').match(/^([^\.]+)\.(.+)$/);
-      const roomChar = titleMatch ? titleMatch[1] : '其他';
-      const roomFull = ROOMS.find(r => r !== '其他' && r.charAt(0) === roomChar) || roomChar;
-      const counselorName = titleMatch ? titleMatch[2] : '';
-      await proxyCall('updateCalendarEvent', {
-        eventId: ev.id,
-        room: roomFull, customRoom: roomFull === roomChar ? roomChar : '',
-        date: ev.date, startTime: ev.startTime, endTime: ev.endTime,
-        counselorName, notes: newDesc, creatorName: '',
-        createdAt: '', updatedAt: '', isEdit: false, bkSerial: null,
-      });
+      // 專用追加 action：不動標題/時間、不覆蓋既有備註、流水號保持在末端；
+      // 後端以 '[系統補註' 標記防重複（配合 _gcValidateEvent 認得此標記，補註後不再判定缺建立者）
+      const r = await proxyCall('gcAnnotateEvent', { eventId: ev.id, noteText: note });
+      if (r?.skipped) { // 先前已補註過（可能是舊版重複補註留下的），僅清 feed 不再寫入
+        _gcErrorsCache.entries = _gcErrorsCache.entries.filter(e => !(e.eventId === ev.id && e.kind === 'MISSING_CREATOR'));
+        continue;
+      }
       backfilled++;
       // 補完後從 feed 移除該 MISSING_CREATOR 記錄
       _gcErrorsCache.entries = _gcErrorsCache.entries.filter(e => !(e.eventId === ev.id && e.kind === 'MISSING_CREATOR'));
