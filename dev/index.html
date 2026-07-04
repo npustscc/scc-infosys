@@ -8727,6 +8727,15 @@ function _renderPsychTestReport(c, idx) {
   );
 }
 
+// 學期主責顯示名稱：已連結帳號（counselorEmail）時以帳號名稱為準，
+// 避免匯入時的原始文字（counselorText）蓋過後續轉派結果（#023：歷屆主責不隨變更）
+function _semCounselorDisplay(c, sem) {
+  const pick = (o) => !o ? '' : (o.counselorEmail
+    ? (configData?.users?.[o.counselorEmail]?.name || o.counselorName || o.counselorEmail)
+    : (o.counselorText || o.counselorName || ''));
+  return pick(c.basicInfoSnapshots?.[sem]) || pick(c) || '—';
+}
+
 function _buildCounselorHistoryBtn(c, activeSem) {
   const sems = (c.semesters || []).filter(s => c.basicInfoSnapshots?.[s]);
   if (sems.length <= 1) return '';
@@ -8742,8 +8751,7 @@ function toggleCounselorHistory(btn, caseId) {
   if (!c) return;
   const sems = Array.isArray(c.semesters) ? [...c.semesters].sort() : [openDateToSemPrefix(c.openDate)].filter(Boolean);
   const rows = sems.map(s => {
-    const snap = c.basicInfoSnapshots?.[s];
-    const display = snap?.counselorText || snap?.counselorName || snap?.counselorEmail || c.counselorText || c.counselorName || c.counselorEmail || '—';
+    const display = _semCounselorDisplay(c, s);
     const isCurrent = s === _caseDetailActiveSem;
     return `<div style="padding:3px 0;font-size:.85rem;color:${isCurrent?'#2b6cb0':'#4a5568'};font-weight:${isCurrent?600:400};">${escHtml(semesterLabel(s))}：${escHtml(display)}${isCurrent?' <span style="font-size:.7rem;color:#4299e1;">（本學期）</span>':''}</div>`;
   }).join('');
@@ -10041,9 +10049,11 @@ async function _directChangeCounselor(caseId, newEmail, semester) {
   const oldName = configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '';
   c.counselorEmail = newEmail;
   c.counselorName = newName;
+  c.counselorText = ''; // 清除匯入原始文字，避免顯示時蓋過新主責（#023）
   if (semester && c.basicInfoSnapshots?.[semester]) {
     c.basicInfoSnapshots[semester].counselorEmail = newEmail;
     c.basicInfoSnapshots[semester].counselorName  = newName;
+    c.basicInfoSnapshots[semester].counselorText  = '';
   }
   const semLabel = semester ? `（${semesterLabel(semester)}）` : '';
   const jobId = bgJobAdd(`直接轉派主責 → ${newName}`);
@@ -18597,9 +18607,11 @@ async function _confirmInternalTransfer(todoId) {
   if (_cardEl) { _cardEl.style.background='#c6f6d5'; _cardEl.style.borderColor='#68d391'; _cardEl.style.opacity='.7'; const _b=_cardEl.querySelector('.btn-primary'); if(_b){_b.disabled=true;_b.textContent='確認中…';} }
   casesData[cidx].counselorEmail = counselorEmail;
   casesData[cidx].counselorName  = counselorName;
+  casesData[cidx].counselorText  = ''; // 清除匯入原始文字，避免顯示時蓋過新主責（#023）
   if (targetSem && casesData[cidx].basicInfoSnapshots?.[targetSem]) {
     casesData[cidx].basicInfoSnapshots[targetSem].counselorEmail = counselorEmail;
     casesData[cidx].basicInfoSnapshots[targetSem].counselorName  = counselorName;
+    casesData[cidx].basicInfoSnapshots[targetSem].counselorText  = '';
   }
   t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
   _syncTodoBadge();
@@ -18633,9 +18645,11 @@ async function _confirmCaseAssignment(todoId) {
   // 更新個案主責（全案層級 + 目標學期快照）
   casesData[cidx].counselorEmail = counselorEmail;
   casesData[cidx].counselorName  = counselorName;
+  casesData[cidx].counselorText  = ''; // 清除匯入原始文字，避免顯示時蓋過新主責（#023）
   if (targetSem && casesData[cidx].basicInfoSnapshots?.[targetSem]) {
     casesData[cidx].basicInfoSnapshots[targetSem].counselorEmail = counselorEmail;
     casesData[cidx].basicInfoSnapshots[targetSem].counselorName  = counselorName;
+    casesData[cidx].basicInfoSnapshots[targetSem].counselorText  = '';
   }
   // 標記 todo 完成
   t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
@@ -19157,9 +19171,7 @@ function renderTodosPage() {
         const caseRows = [];
         casesData.filter(c => !c.deleted).forEach(c => {
           _pastUnclosedSems(c).forEach(sem => {
-            const snap = c.basicInfoSnapshots?.[sem] || {};
-            const counselor = snap.counselorText || snap.counselorName || snap.counselorEmail ||
-              c.counselorText || c.counselorName || c.counselorEmail || '—';
+            const counselor = _semCounselorDisplay(c, sem);
             caseRows.push({ c, sem, counselor });
           });
         });
@@ -23471,6 +23483,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-04', v: 84, title: '回應 #023 歷屆主責顯示 + 問題回報驗證/狀態操作體驗', isProd: false, items: [
+      item('修復', '個案詳細資料「歷屆」下拉選單與「過去學期未結案」提醒的主責顯示：已連結系統帳號時改以帳號目前名稱為準，不再被匯入時的原始文字蓋過；變更主責（直接轉派/確認轉案/確認派案）時同步清除過時的原始文字（回應 #023）'),
+      item('改善', '問題回報「更新狀態」按鈕點選後即時鎖定並顯示「更新中…」，選擇與目前相同的狀態時提示「狀態未變更」，不再看起來像沒反應'),
+      item('新功能', '待驗證回報新增「驗證後仍有問題」選項：回報者可填寫仍遇到的狀況（必填），送出後自動留言、退回「處理中」並通知系統管理者；時間軸如實記錄本人與時間'),
+    ]},
     { date: '2026-07-04', v: 83, title: '家族圖：修正三代親子方向誤判 + 模版子女改為方形', isProd: true, items: [
       item('修復', '新增親子關係線時，原本用「哪一側已成家」判斷誰是父母，導致新增祖父母世代時（祖父尚未成家、父母已成家有子女）會誤把祖父判斷成父母的孩子。改為依兩節點的垂直位置判斷（畫面上方＝父母，下方＝子女），不受點擊順序或是否已成家影響，正確支援三代以上的家族圖'),
       item('改善', '常用模版產生的子女節點改為正方形（男性）而非菱形（性別不明），選取後仍可於側欄「人物節點」點選形狀改變'),
@@ -37008,7 +37025,12 @@ async function updateIssueStatus(issueId, newStatus) {
   const issue = issuesData.find(x => x.id === issueId);
   if (!issue) return;
   const prev = issue.status;
-  if (prev === newStatus) return;
+  if (prev === newStatus) { showToast('狀態未變更（選擇的狀態與目前相同）', 'warn', 2500); return; }
+  // 按鈕即時回饋：鎖定並顯示更新中（成功後 renderIssuesPage 會整頁重繪，失敗時還原）
+  const _btn = document.getElementById('issue-status-btn-' + issueId);
+  const _sel = document.getElementById('issue-status-' + issueId);
+  if (_btn) { _btn.disabled = true; _btn.textContent = '更新中…'; }
+  if (_sel) _sel.disabled = true;
   issue.status = newStatus;
   if (!issue.statusHistory) issue.statusHistory = [];
   issue.statusHistory.push({
@@ -37027,6 +37049,8 @@ async function updateIssueStatus(issueId, newStatus) {
   } catch (e) {
     issue.status = prev;
     issue.statusHistory.pop();
+    if (_btn) { _btn.disabled = false; _btn.textContent = '更新狀態'; }
+    if (_sel) _sel.disabled = false;
     bgJobFail(jobId, e.message);
     alert('儲存失敗：' + e.message);
   }
@@ -37043,6 +37067,68 @@ async function _issueVerifyOk(issueId) {
     relatedTodo.done = true; relatedTodo.doneAt = new Date().toISOString();
     saveUserTodos().catch(() => {});
     _syncTodoBadge();
+  }
+}
+
+// 回報者「驗證後仍有問題」→ 留下理由留言並退回處理中（statusHistory/時間軸如實記錄本人與時間）
+async function _issueVerifyNotOk(issueId) {
+  const issue = issuesData.find(x => x.id === issueId);
+  if (!issue) return;
+  if (issue.submittedBy !== currentUser?.email) return; // 安全防呆：僅原回報者可按
+  const ta = document.getElementById('issue-verify-reason-' + issueId);
+  const reason = (ta?.value || '').trim();
+  if (!reason) { alert('請描述驗證時仍遇到的狀況，方便後續修正。'); ta?.focus(); return; }
+  const sendBtn = document.getElementById('issue-verify-notok-send-' + issueId);
+  if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = '送出中…'; }
+  if (!issue.comments) issue.comments = [];
+  const comment = {
+    id: 'c_' + Date.now(),
+    content: '❌ 驗證後仍有問題：' + reason,
+    attachments: [],
+    authorEmail: currentUser?.email || '',
+    authorName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
+    createdAt: new Date().toISOString(),
+  };
+  issue.comments.push(comment);
+  const prev = issue.status;
+  issue.status = 'in_progress';
+  if (!issue.statusHistory) issue.statusHistory = [];
+  issue.statusHistory.push({
+    from: prev, to: 'in_progress',
+    by: currentUser?.email || '',
+    byName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
+    at: new Date().toISOString(),
+  });
+  const jobId = bgJobAdd(`驗證未通過退回（#${String(issue.serial).padStart(3,'0')}）`);
+  try {
+    await _saveIssues();
+    // 通知所有系統管理者（主任 or 管理者 extraRole）：驗證未通過需重新處理
+    let notified = false;
+    const _label = `#${String(issue.serial).padStart(3, '0')}`;
+    Object.entries(configData?.users || {}).forEach(([email, u]) => {
+      if (u.role === '主任' || u.extraRole === '管理者') {
+        notified = addNotificationToUser(email, 'issue_comment', issue.id, issue.serial,
+          `回報 ${_label} 驗證未通過，已退回處理中：${reason.slice(0, 60)}`) || notified;
+      }
+    });
+    if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    // 本人已完成驗證動作，收掉待辦提醒卡
+    const relatedTodo = todosData.find(t => t.type === 'issue_pending_verification' && t.issueId === issueId && !t.done);
+    if (relatedTodo) {
+      relatedTodo.done = true; relatedTodo.doneAt = new Date().toISOString();
+      saveUserTodos().catch(() => {});
+      _syncTodoBadge();
+    }
+    bgJobDone(jobId);
+    auditLog('回報驗證未通過退回', null, null, `#${String(issue.serial).padStart(3,'0')}：pending_verification → in_progress`);
+    renderIssuesPage();
+  } catch (e) {
+    issue.comments.pop();
+    issue.status = prev;
+    issue.statusHistory.pop();
+    if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = '送出並退回處理中'; }
+    bgJobFail(jobId, e.message);
+    alert('儲存失敗：' + e.message);
   }
 }
 
@@ -37295,16 +37381,28 @@ function renderIssuesPage() {
           <option value="pending_verification"  ${issue.status==='pending_verification'?'selected':''}>待驗證</option>
           <option value="resolved"              ${issue.status==='resolved'?'selected':''}>已解決</option>
         </select>
-        <button class="btn btn-secondary btn-sm"
+        <button class="btn btn-secondary btn-sm" id="issue-status-btn-${sid}"
           onclick="updateIssueStatus('${sid}',document.getElementById('issue-status-${sid}').value)">更新狀態</button>
       </div>` : '';
-    // 回報者「驗證OK」：僅本人、且狀態為待驗證時可見
+    // 回報者「驗證OK / 驗證後仍有問題」：僅本人、且狀態為待驗證時可見
     const verifyControl = (issue.status === 'pending_verification' && issue.submittedBy === currentUser?.email) ? `
       <div style="margin-top:8px;padding:8px 12px;background:#faf5ff;border:1px solid #d6bcfa;border-radius:6px;">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.85rem;color:#553c9a;font-weight:600;">
           <input type="checkbox" onchange="if(this.checked){this.disabled=true;_issueVerifyOk('${sid}');}" style="width:16px;height:16px;cursor:pointer;">
           驗證OK（確認此問題已修正，將回報標記為已解決）
         </label>
+        <div style="margin-top:6px;">
+          <button class="btn btn-secondary btn-sm" id="issue-verify-notok-btn-${sid}" style="font-size:.78rem;"
+            onclick="const w=document.getElementById('issue-verify-notok-${sid}');const on=w.style.display==='none';w.style.display=on?'':'none';if(on)document.getElementById('issue-verify-reason-${sid}').focus();">
+            ✕ 驗證後仍有問題…</button>
+          <div id="issue-verify-notok-${sid}" style="display:none;margin-top:6px;">
+            <textarea id="issue-verify-reason-${sid}" rows="2" placeholder="請描述驗證時仍遇到的狀況（必填），送出後回報將退回「處理中」。"
+              style="width:100%;padding:6px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;resize:vertical;box-sizing:border-box;"></textarea>
+            <div style="display:flex;justify-content:flex-end;margin-top:4px;">
+              <button class="btn btn-danger btn-sm" id="issue-verify-notok-send-${sid}" onclick="_issueVerifyNotOk('${sid}')">送出並退回處理中</button>
+            </div>
+          </div>
+        </div>
       </div>` : '';
 
     const commentInput = `
