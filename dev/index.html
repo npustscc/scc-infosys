@@ -6409,13 +6409,12 @@ function _caseNormallyAccessible(c) {
   return _caseVisibleToUser(c, currentUser?.email, allowedSet);
 }
 async function loadAccessLog() {
-  try { _accessLogCache = await driveReadJson(CASE_ACCESS_LOG_FILE); } catch { _accessLogCache = null; }
+  _accessLogCache = await driveReadJsonOptional(CASE_ACCESS_LOG_FILE);
   if (!_accessLogCache || !Array.isArray(_accessLogCache.entries)) _accessLogCache = { entries: [] };
 }
 // append 一筆 feed 條目（RMW：讀最新→push→寫回；低頻，容忍極少數 race，auditLog 另有永久留存）
 async function _appendAccessLog(entry) {
-  let latest;
-  try { latest = await driveReadJson(CASE_ACCESS_LOG_FILE); } catch { latest = null; }
+  let latest = await driveReadJsonOptional(CASE_ACCESS_LOG_FILE);
   if (!latest || !Array.isArray(latest.entries)) latest = { entries: [] };
   latest.entries.push(entry);
   latest.updatedAt = new Date().toISOString();
@@ -6471,12 +6470,12 @@ function _isCaseRelatedAction(a) {
   return kw.some(k => a.includes(k));
 }
 async function loadOffHoursLog() {
-  try { _offHoursLogCache = await driveReadJson(OFF_HOURS_LOG_FILE); } catch { _offHoursLogCache = null; }
+  _offHoursLogCache = await driveReadJsonOptional(OFF_HOURS_LOG_FILE);
   if (!_offHoursLogCache || !Array.isArray(_offHoursLogCache.entries)) _offHoursLogCache = { entries: [] };
 }
 async function _appendOffHoursLog(entry) {
   let latest;
-  try { latest = await driveReadJson(OFF_HOURS_LOG_FILE); } catch { latest = null; }
+  latest = await driveReadJsonOptional(OFF_HOURS_LOG_FILE);
   if (!latest || !Array.isArray(latest.entries)) latest = { entries: [] };
   latest.entries.push(entry);
   latest.updatedAt = new Date().toISOString();
@@ -7151,7 +7150,7 @@ window.addEventListener('beforeunload', function(e) {
 
 function bgJobAdd(label, detail) {
   const id = 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-  _bgJobs.unshift({ id, label, detail: detail || '', state: 'running', progress: 10, error: '' });
+  _bgJobs.unshift({ id, label, detail: detail || '', state: 'running', progress: 10, error: '', startedAt: Date.now(), endedAt: null });
   if (_bgJobs.length > 20) _bgJobs.length = 20;
   _syncBellBadge();
   if (_notifTab === 'jobs' && document.getElementById('notif-panel')?.style.display !== 'none') renderJobList();
@@ -7166,27 +7165,36 @@ function bgJobProgress(id, pct) {
 function bgJobDone(id) {
   const j = _bgJobs.find(x => x.id === id);
   if (!j) return;
-  j.state = 'done'; j.progress = 100;
+  j.state = 'done'; j.progress = 100; j.endedAt = Date.now();
   _syncBellBadge();
   if (_notifTab === 'jobs' && document.getElementById('notif-panel')?.style.display !== 'none') renderJobList();
 }
 function bgJobFail(id, err) {
   const j = _bgJobs.find(x => x.id === id);
   if (!j) return;
-  j.state = 'failed'; j.error = err || '未知錯誤';
+  j.state = 'failed'; j.error = err || '未知錯誤'; j.endedAt = Date.now();
   _syncBellBadge();
   if (document.getElementById('notif-panel')?.style.display !== 'none') renderJobList();
 }
 
 // 頁面「重新整理」按鈕統一背景化：不鎖畫面（不呼叫 showLoading），進工作執行分頁追蹤，完成/失敗即時 toast 提醒
+// 按鈕本身即時回饋：鎖定+「整理中…」，完成短暫顯示 ✓ 後還原（頁面若已重繪則自然以新按鈕呈現）
 async function _bgRefreshClick(label, fn) {
+  const btn = (typeof event !== 'undefined' && event?.currentTarget?.tagName === 'BUTTON') ? event.currentTarget : null;
+  const origHtml = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '⏳ 整理中…'; }
   const jobId = bgJobAdd(label);
   try {
     await fn();
     bgJobDone(jobId);
+    if (btn) {
+      btn.innerHTML = '✓ 完成';
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = origHtml; }, 1500);
+    }
     showToast(`✓ ${label}完成`, 'success', 4000);
   } catch (e) {
     bgJobFail(jobId, e.message);
+    if (btn) { btn.disabled = false; btn.innerHTML = origHtml; }
     showToast(`❌ ${label}失敗：${e.message}`, 'error', 8000);
   }
 }
@@ -7231,16 +7239,25 @@ function renderJobList() {
     el.innerHTML = '<div style="padding:24px;text-align:center;color:#718096;font-size:.875rem;">目前沒有工作記錄（重新整理後清空）</div>';
     return;
   }
+  const _t = ms => ms ? new Date(ms).toLocaleTimeString('zh-TW', { hour12: false }) : '';
+  const _dur = ms => ms < 1000 ? '<1 秒' : ms < 60000 ? Math.round(ms / 1000) + ' 秒' : Math.floor(ms / 60000) + ' 分 ' + Math.round((ms % 60000) / 1000) + ' 秒';
   el.innerHTML = _bgJobs.map(j => {
     const stateLabel = j.state === 'running' ? '執行中…'
       : j.state === 'done' ? '✓ 完成'
       : '✕ 失敗：' + escHtml(j.error || '');
+    // 時間戳：建立時間；完成/失敗加結束時間與耗時；執行中顯示已執行多久（可看出是否卡住）
+    const timeLine = j.startedAt
+      ? (j.endedAt
+          ? `${_t(j.startedAt)} 建立 → ${_t(j.endedAt)} ${j.state === 'done' ? '完成' : '失敗'}（耗時 ${_dur(j.endedAt - j.startedAt)}）`
+          : `${_t(j.startedAt)} 建立，已執行 ${_dur(Date.now() - j.startedAt)}`)
+      : '';
     return `<div class="bg-job-item" data-state="${j.state}">
       <div class="bg-job-bar" style="width:${j.progress}%"></div>
       <div class="bg-job-meta">
         <div class="bg-job-label">${escHtml(j.label)}</div>
         ${j.detail ? `<div class="bg-job-detail">${escHtml(j.detail)}</div>` : ''}
         <div class="bg-job-status-text">${stateLabel}</div>
+        ${timeLine ? `<div class="bg-job-detail" style="color:#a0aec0;">${escHtml(timeLine)}</div>` : ''}
       </div>
     </div>`;
   }).join('');
@@ -8728,6 +8745,46 @@ function _renderPsychTestReport(c, idx) {
   );
 }
 
+// 個案的最新學期（semesters 排序最後；無 semesters 用 openDate 推）
+function _caseLatestSem(c) {
+  const sems = (Array.isArray(c.semesters) && c.semesters.length
+    ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean)).sort();
+  return sems[sems.length - 1] || '';
+}
+// 轉派前置：把「全案層級目前的主責」定格到所有尚無主責資訊的學期快照。
+// 沒有這步，之後只改單一學期＋全案層級時，其他學期的顯示（fallback 到全案層級）會跟著變（#023 第二輪）
+function _stampSemCounselorSnapshots(c) {
+  if (!c?.basicInfoSnapshots) return;
+  Object.values(c.basicInfoSnapshots).forEach(snap => {
+    if (!snap) return;
+    if (snap.counselorEmail || snap.counselorName || snap.counselorText) return; // 已有主責資訊，不動
+    if (c.counselorEmail) {
+      snap.counselorEmail = c.counselorEmail;
+      snap.counselorName  = c.counselorName || '';
+    } else if (c.counselorText || c.counselorName) {
+      snap.counselorText = c.counselorText || '';
+      snap.counselorName = c.counselorName || '';
+    }
+  });
+}
+// 轉派共用寫入：只寫目標學期快照；「目標學期＝最新學期」才同步更新全案層級主責
+function _applyCounselorChange(c, targetSem, newEmail, newName) {
+  _stampSemCounselorSnapshots(c);
+  const sem = targetSem || _caseLatestSem(c);
+  if (sem) {
+    if (!c.basicInfoSnapshots) c.basicInfoSnapshots = {};
+    if (!c.basicInfoSnapshots[sem]) c.basicInfoSnapshots[sem] = {};
+    c.basicInfoSnapshots[sem].counselorEmail = newEmail;
+    c.basicInfoSnapshots[sem].counselorName  = newName;
+    c.basicInfoSnapshots[sem].counselorText  = '';
+  }
+  if (!sem || sem === _caseLatestSem(c)) {
+    c.counselorEmail = newEmail;
+    c.counselorName  = newName;
+    c.counselorText  = '';
+  }
+}
+
 // 學期主責顯示名稱：已連結帳號（counselorEmail）時以帳號名稱為準，
 // 避免匯入時的原始文字（counselorText）蓋過後續轉派結果（#023：歷屆主責不隨變更）
 function _semCounselorDisplay(c, sem) {
@@ -10048,14 +10105,8 @@ async function _directChangeCounselor(caseId, newEmail, semester) {
   if (!c) return;
   const newName = configData?.users?.[newEmail]?.name || newEmail;
   const oldName = configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '';
-  c.counselorEmail = newEmail;
-  c.counselorName = newName;
-  c.counselorText = ''; // 清除匯入原始文字，避免顯示時蓋過新主責（#023）
-  if (semester && c.basicInfoSnapshots?.[semester]) {
-    c.basicInfoSnapshots[semester].counselorEmail = newEmail;
-    c.basicInfoSnapshots[semester].counselorName  = newName;
-    c.basicInfoSnapshots[semester].counselorText  = '';
-  }
+  // 只寫目標學期快照；目標為最新學期才動全案層級（#023 第二輪：改舊學期不得影響其他學期）
+  _applyCounselorChange(c, semester, newEmail, newName);
   const semLabel = semester ? `（${semesterLabel(semester)}）` : '';
   const jobId = bgJobAdd(`直接轉派主責 → ${newName}`);
   try {
@@ -14138,24 +14189,57 @@ function getCollegeFromDept(dept) { return _getDeptToCollege()[dept] || ''; }
 // ── 系所簡寫對照與全員協助歸類 ──────────────────────────────
 // configData.deptAbbrevMap：{ 原始文字（如信件中的系所簡寫）: 正式系所名 }；值為 '' 表示已確認無法對應（不再請大家協助）
 function _getDeptAbbrevMap() { return configData?.deptAbbrevMap || {}; }
-// 將原始系所文字解析為正式系所名；已是正式名稱則原樣回傳；查無對照回 ''
+// 從班級/簡寫原文抽出「系所核心簡寫」：去除數字/空白、尾端班別（甲乙丙丁/ABC）與年級（一~五），
+// 再去學制前綴（四技/二技/五專/碩專…或單字 四二五碩博技）。例：四應外一A / 四應外二A → 應外（視為同一系所）
+function _deptRawCore(s) {
+  let t = (s || '').trim().replace(/[0-9０-９\s]/g, '');
+  if (!t) return '';
+  t = t.replace(/[甲乙丙丁ABCabcＡＢＣａｂｃ]$/, '').replace(/[一二三四五]$/, '');
+  t = t.replace(/^(四技|二技|五專|二專|碩專|進修|夜間|日間)/, '');
+  if (t.length > 2) t = t.replace(/^[四二五碩博技]/, '');
+  return t || (s || '').trim();
+}
+// 將原始系所文字解析為正式系所名：正式名稱原樣回傳 → 對照表原文比對 → 對照表核心簡寫比對；查無回 ''
 function resolveDeptName(raw) {
   const s = (raw || '').trim();
   if (!s) return '';
-  if (_getDeptToCollege()[s] !== undefined) return s;
-  return _getDeptAbbrevMap()[s] || '';
+  const dc = _getDeptToCollege(), map = _getDeptAbbrevMap();
+  if (dc[s] !== undefined) return s;
+  if (map[s]) return map[s];
+  const core = _deptRawCore(s);
+  if (core && core !== s) {
+    if (dc[core] !== undefined) return core;
+    if (map[core]) return map[core];
+  }
+  return '';
 }
-// 收集身心調適假紀錄中無法對應正式系所的原始文字（含出現次數，多的排前）
+// 唯一符合建議：正式系所名稱中依序包含核心簡寫的每個字、且只有一個候選時回傳之
+function _deptSuggest(core) {
+  if (!core) return '';
+  const hits = Object.keys(_getDeptToCollege()).filter(d => {
+    let i = 0;
+    for (const ch of core) { i = d.indexOf(ch, i); if (i < 0) return false; i++; }
+    return true;
+  });
+  return hits.length === 1 ? hits[0] : '';
+}
+// 收集身心調適假紀錄中無法對應正式系所的原文，依核心簡寫歸組（四應外一A/四應外二A 算同一題）
 function _collectUnmappedDepts() {
   const map = _getDeptAbbrevMap();
-  const cnt = {};
+  const groups = {};
   (mentalLeavesData || []).forEach(l => {
     if (l.deleted) return;
     const s = (l.department || '').trim();
-    if (!s || resolveDeptName(s) || map[s] === '') return;
-    cnt[s] = (cnt[s] || 0) + 1;
+    if (!s || resolveDeptName(s)) return;
+    const core = _deptRawCore(s);
+    if (map[s] === '' || map[core] === '') return; // 已確認無法判別
+    const g = groups[core] || (groups[core] = { count: 0, variants: {} });
+    g.count++;
+    g.variants[s] = (g.variants[s] || 0) + 1;
   });
-  return Object.entries(cnt).map(([raw, count]) => ({ raw, count })).sort((a, b) => b.count - a.count);
+  return Object.entries(groups)
+    .map(([raw, g]) => ({ raw, count: g.count, variants: Object.keys(g.variants) }))
+    .sort((a, b) => b.count - a.count);
 }
 async function _saveDeptAbbrev(raw, dept, btn) {
   if (!configData.deptAbbrevMap) configData.deptAbbrevMap = {};
@@ -14197,19 +14281,26 @@ function _renderClassifyHelpSection() {
   const items = _collectUnmappedDepts();
   if (!items.length) { section.innerHTML = ''; return; }
   const collapsed = !!window._classifyHelpCollapsed;
-  const deptOpts = Object.keys(_getDeptToCollege()).sort((a, b) => a.localeCompare(b, 'zh-TW'))
-    .map(d => `<option value="${escHtml(d)}">${escHtml(d)}</option>`).join('');
-  const rows = collapsed ? '' : items.map(({ raw, count }) => `
+  const deptNames = Object.keys(_getDeptToCollege()).sort((a, b) => a.localeCompare(b, 'zh-TW'));
+  const rows = collapsed ? '' : items.map(({ raw, count, variants }) => {
+    const sug = _deptSuggest(raw); // 唯一符合時預選＋標示系統建議
+    const opts = deptNames.map(d => `<option value="${escHtml(d)}"${d === sug ? ' selected' : ''}>${escHtml(d)}</option>`).join('');
+    const varNote = (variants && (variants.length > 1 || variants[0] !== raw))
+      ? `<div style="flex-basis:100%;font-size:.75rem;color:#a0aec0;padding-left:2px;">來自：${variants.map(v => escHtml(v)).join('、')}</div>` : '';
+    return `
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 10px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;margin-bottom:6px;">
       <span style="font-weight:700;font-size:.9rem;color:#2d3748;">「${escHtml(raw)}」</span>
       <span style="font-size:.75rem;color:#a0aec0;">出現 ${count} 筆</span>
+      ${sug ? '<span style="font-size:.72rem;color:#276749;background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:1px 7px;">系統建議已預選，確認無誤即可送出</span>' : ''}
       <span style="font-size:.82rem;color:#718096;margin-left:auto;">應該是：</span>
       <select class="field-select" style="max-width:200px;font-size:.83rem;">
-        <option value="">—請選擇正式系所—</option>${deptOpts}
+        <option value=""${sug ? '' : ' selected'}>—請選擇正式系所—</option>${opts}
       </select>
       <button class="btn btn-primary btn-sm" data-raw="${encodeURIComponent(raw)}" onclick="_classifyConfirm(this)">確認</button>
       <button class="btn btn-secondary btn-sm" data-raw="${encodeURIComponent(raw)}" onclick="_classifyIgnore(this)" data-tip="確定不是任何系所（如亂碼、班級代號）才點選">無法判別</button>
-    </div>`).join('');
+      ${varNote}
+    </div>`;
+  }).join('');
   section.innerHTML = `
     <div style="background:#fffaf0;border:1px solid #fbd38d;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
       <div onclick="_toggleClassifyHelp()" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;cursor:pointer;user-select:none;margin-bottom:${collapsed ? '0' : '8px'};" data-tip="點選整列可收起/展開">
@@ -18694,14 +18785,8 @@ async function _confirmInternalTransfer(todoId) {
   if (!confirm(`確定將「${casesData[cidx].name}」轉派給 ${counselorName}？\n\n本次派案學期：${_semNote}`)) return;
   const _cardEl = document.getElementById('todo-card-' + todoId);
   if (_cardEl) { _cardEl.style.background='#c6f6d5'; _cardEl.style.borderColor='#68d391'; _cardEl.style.opacity='.7'; const _b=_cardEl.querySelector('.btn-primary'); if(_b){_b.disabled=true;_b.textContent='確認中…';} }
-  casesData[cidx].counselorEmail = counselorEmail;
-  casesData[cidx].counselorName  = counselorName;
-  casesData[cidx].counselorText  = ''; // 清除匯入原始文字，避免顯示時蓋過新主責（#023）
-  if (targetSem && casesData[cidx].basicInfoSnapshots?.[targetSem]) {
-    casesData[cidx].basicInfoSnapshots[targetSem].counselorEmail = counselorEmail;
-    casesData[cidx].basicInfoSnapshots[targetSem].counselorName  = counselorName;
-    casesData[cidx].basicInfoSnapshots[targetSem].counselorText  = '';
-  }
+  // 只寫目標學期快照；目標為最新學期才動全案層級（#023 第二輪：改舊學期不得影響其他學期）
+  _applyCounselorChange(casesData[cidx], targetSem, counselorEmail, counselorName);
   t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
   _syncTodoBadge();
   const jobId = bgJobAdd('確認內部轉案', casesData[cidx].name);
@@ -18731,15 +18816,8 @@ async function _confirmCaseAssignment(todoId) {
   if (!confirm(`確定將「${casesData[cidx].name}」派案給 ${counselorName}？\n\n本次派案學期：${_semNote2}`)) return;
   const _cardEl2 = document.getElementById('todo-card-' + todoId);
   if (_cardEl2) { _cardEl2.style.background='#c6f6d5'; _cardEl2.style.borderColor='#68d391'; _cardEl2.style.opacity='.7'; const _b=_cardEl2.querySelector('.btn-primary'); if(_b){_b.disabled=true;_b.textContent='確認中…';} }
-  // 更新個案主責（全案層級 + 目標學期快照）
-  casesData[cidx].counselorEmail = counselorEmail;
-  casesData[cidx].counselorName  = counselorName;
-  casesData[cidx].counselorText  = ''; // 清除匯入原始文字，避免顯示時蓋過新主責（#023）
-  if (targetSem && casesData[cidx].basicInfoSnapshots?.[targetSem]) {
-    casesData[cidx].basicInfoSnapshots[targetSem].counselorEmail = counselorEmail;
-    casesData[cidx].basicInfoSnapshots[targetSem].counselorName  = counselorName;
-    casesData[cidx].basicInfoSnapshots[targetSem].counselorText  = '';
-  }
+  // 更新個案主責：只寫目標學期快照；目標為最新學期才動全案層級（#023 第二輪）
+  _applyCounselorChange(casesData[cidx], targetSem, counselorEmail, counselorName);
   // 標記 todo 完成
   t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
   _syncTodoBadge();
@@ -21045,6 +21123,13 @@ async function driveQuery(q, fields = 'id,name') {
 
 async function driveReadJson(path) {
   return proxyCall('readJson', { path });
+}
+
+// 選用型資料檔（feed/快取類，首次使用前不存在屬正常）：靜默讀取，
+// 不存在或讀取失敗一律回 null，不寫入系統錯誤紀錄（避免回報 modal 出現「未預期的錯誤」噪音）
+async function driveReadJsonOptional(path) {
+  try { return await proxyCall('readJson', { path }, true); }
+  catch { return null; }
 }
 
 async function driveReadJsonById(fileId) {
@@ -23575,6 +23660,13 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-04', v: 86, title: '#023 二輪修正（轉派舊學期不影響其他學期）+ 重新整理/工作執行回饋 + 簡寫智慧歸組', isProd: false, items: [
+      item('修復', '轉派主責到「舊學期」時，其他學期（含最新學期）的主責顯示會全部跟著變成新主責——現改為：只寫入目標學期，且轉派前先把目前主責「定格」到所有尚無主責資訊的學期快照；只有轉派「最新學期」才會更新全案層級主責（回應 #023 驗證回饋）'),
+      item('修復', '危機閱讀記錄、心理測驗資料庫等選用型資料檔首次使用前不存在時，不再產生「系統發生未預期的錯誤」記錄（改為靜默讀取，檔案會在首次寫入時自動建立）'),
+      item('改善', '所有頁面「重新整理」按鈕點選後即時鎖定顯示「⏳ 整理中…」，完成短暫顯示 ✓ 後還原（個案列表/空間預約/待辦事項/問題回報/轉銜/精神科/未歸屬記錄/稽核記錄）'),
+      item('改善', '通知鈴鐺「工作執行」分頁每筆工作顯示建立時間、完成/失敗時間與耗時；執行中的工作顯示已執行多久，方便判斷是否卡住'),
+      item('改善', '協助系統歸類變聰明：同系所的不同班級寫法（如四應外一A、四應外二A）自動抽出核心簡寫歸為同一題並列出來源；能唯一對應正式系所時自動預選為系統建議，確認無誤直接送出即可'),
+    ]},
     { date: '2026-07-04', v: 85, title: 'Google 日曆補註建立者安全化（追加式寫入 + 修復重複補註）', isProd: false, items: [
       item('修復', 'Google 日曆事件自動補註建立者後，仍會被驗證判定「缺建立者註記」，導致每小時自動同步時重複追加補註、備註無限累積；驗證規則現已認得「[系統補註]」標記，補註一次後即不再重複'),
       item('改善', '自動補註改用專用的「僅追加備註」後端操作：不再整顆事件重寫（標題/時間完全不動、既有備註不覆蓋），流水號固定保持在備註末端不被破壞；已重複補註過的舊事件會自動略過並清出待確認清單'),
@@ -25779,7 +25871,7 @@ async function syncFromCalendar(silent = false) {
 //  GC 事件驗證（六類錯誤 + 自動補註 + 廣播）
 // ══════════════════════════════════════════════
 async function loadGcErrorsCache() {
-  try { _gcErrorsCache = await driveReadJson(GC_VALIDATION_ERRORS_FILE); } catch { _gcErrorsCache = null; }
+  _gcErrorsCache = await driveReadJsonOptional(GC_VALIDATION_ERRORS_FILE);
   if (!_gcErrorsCache || !Array.isArray(_gcErrorsCache.entries)) _gcErrorsCache = { entries: [] };
 }
 async function _saveGcErrorsCache() {
@@ -26086,10 +26178,8 @@ async function loadTransfer() {
 }
 
 async function loadPsychTestDB() {
-  try {
-    const data = await driveReadJson(PSYCH_TEST_DB_FILE);
-    psychTestDB = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
-  } catch(e) { psychTestDB = {}; }
+  const data = await driveReadJsonOptional(PSYCH_TEST_DB_FILE);
+  psychTestDB = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
 }
 async function savePsychTestDB() {
   try {
