@@ -14,7 +14,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+
+// 自動開啟預設瀏覽器（win32 用 rundll32 避免 cmd 對 & 的解析問題）
+function openBrowser(url) {
+  try {
+    if (process.platform === 'win32') spawn('rundll32', ['url.dll,FileProtocolHandler', url], { detached: true, stdio: 'ignore' }).unref();
+    else if (process.platform === 'darwin') spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+    else spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+  } catch (_) { /* 失敗就靠使用者手動複製網址 */ }
+}
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CREDS_PATH = path.join(ROOT, 'creds.json');
@@ -84,8 +94,10 @@ async function interactiveAuth(creds) {
         prompt: 'select_account consent',            // 強制跳出帳號選擇，避免瀏覽器預設帳號直接授權
         login_hint: 'npust.scc@heartnpust.tw',       // 預選/提示正確帳號
       });
-      console.log('\n請在瀏覽器開啟以下網址完成授權（請用 npust.scc@heartnpust.tw 登入）：\n');
+      console.log('\n已嘗試自動開啟瀏覽器，請用 npust.scc@heartnpust.tw 完成授權。');
+      console.log('若瀏覽器未自動開啟，請「完整複製」以下整行網址貼到網址列（不要直接點終端機裡的連結，換行處會被截斷）：\n');
       console.log(authUrl + '\n');
+      openBrowser(authUrl);
     });
   });
 }
