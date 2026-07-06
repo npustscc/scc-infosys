@@ -78,6 +78,7 @@ function doPost(e) {
       case 'listCalendarEvents':   result = listCalendarEvents_(params, ctx); break;
       case 'shareCalendarWriters': result = shareCalendarWriters_(params, ctx); break;
       case 'gcAnnotateEvent':      result = gcAnnotateEvent_(params, ctx); break;
+      case 'getCalendarMeta':      result = getCalendarMeta_(params, ctx); break;
       case 'uploadFile':           result = uploadFile_(params); break;
       case 'downloadFileBase64':   result = downloadFileBase64_(params); break;
       case 'fetchMentalLeaves':    result = fetchMentalLeaves_(ctx, params); break;
@@ -570,6 +571,11 @@ function gcAnnotateEvent_({ eventId, noteText, marker }, ctx) {
   }
   event.setDescription(newDesc);
   return { ok: true, skipped: false };
+}
+
+// 提供前端組「開啟 Google 日曆事件」連結所需的日曆識別碼
+function getCalendarMeta_(params, ctx) {
+  return { calendarId: getOrCreateCalendar_(ctx).getId() };
 }
 
 // 授與（或撤除）指定 email 對本行事曆的 owner（進行變更並管理共用設定）權限
