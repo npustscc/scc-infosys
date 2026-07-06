@@ -1327,20 +1327,6 @@ function startupBatch_(params, ctx) {
       result[key] = null;
     }
   });
-  // 暫時 debug：回傳 Phase 1 查詢結果，協助診斷
-  result._debug = {
-    ctxRoot: ctx.root,
-    configOverride: ctx.configOverride || null,
-    phase1Keys: p1Keys,
-    phase1Codes: p1Results.map(function(r) { return r.getResponseCode(); }),
-    phase1Results: p1Results.map(function(r) {
-      try {
-        var b = JSON.parse(r.getContentText());
-        return { fileCount: (b.files || []).length, fileIds: (b.files || []).map(function(f){ return f.id; }), error: b.error || null };
-      } catch(e) { return { parseError: r.getContentText().slice(0, 200) }; }
-    }),
-    fileIdsFound: Object.keys(fileIds),
-  };
   return result;
 }
 

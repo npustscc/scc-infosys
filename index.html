@@ -3440,6 +3440,7 @@
       <div id="todos-major-events-section"></div>
       <div id="todos-assignment-section"></div>
       <div id="todos-unclosed-summary"></div>
+      <div id="todos-classify-help-section"></div>
       <div id="todos-body"></div>
     </div>
 
@@ -6408,13 +6409,12 @@ function _caseNormallyAccessible(c) {
   return _caseVisibleToUser(c, currentUser?.email, allowedSet);
 }
 async function loadAccessLog() {
-  try { _accessLogCache = await driveReadJson(CASE_ACCESS_LOG_FILE); } catch { _accessLogCache = null; }
+  _accessLogCache = await driveReadJsonOptional(CASE_ACCESS_LOG_FILE);
   if (!_accessLogCache || !Array.isArray(_accessLogCache.entries)) _accessLogCache = { entries: [] };
 }
 // append 一筆 feed 條目（RMW：讀最新→push→寫回；低頻，容忍極少數 race，auditLog 另有永久留存）
 async function _appendAccessLog(entry) {
-  let latest;
-  try { latest = await driveReadJson(CASE_ACCESS_LOG_FILE); } catch { latest = null; }
+  let latest = await driveReadJsonOptional(CASE_ACCESS_LOG_FILE);
   if (!latest || !Array.isArray(latest.entries)) latest = { entries: [] };
   latest.entries.push(entry);
   latest.updatedAt = new Date().toISOString();
@@ -6470,12 +6470,12 @@ function _isCaseRelatedAction(a) {
   return kw.some(k => a.includes(k));
 }
 async function loadOffHoursLog() {
-  try { _offHoursLogCache = await driveReadJson(OFF_HOURS_LOG_FILE); } catch { _offHoursLogCache = null; }
+  _offHoursLogCache = await driveReadJsonOptional(OFF_HOURS_LOG_FILE);
   if (!_offHoursLogCache || !Array.isArray(_offHoursLogCache.entries)) _offHoursLogCache = { entries: [] };
 }
 async function _appendOffHoursLog(entry) {
   let latest;
-  try { latest = await driveReadJson(OFF_HOURS_LOG_FILE); } catch { latest = null; }
+  latest = await driveReadJsonOptional(OFF_HOURS_LOG_FILE);
   if (!latest || !Array.isArray(latest.entries)) latest = { entries: [] };
   latest.entries.push(entry);
   latest.updatedAt = new Date().toISOString();
@@ -7150,7 +7150,7 @@ window.addEventListener('beforeunload', function(e) {
 
 function bgJobAdd(label, detail) {
   const id = 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-  _bgJobs.unshift({ id, label, detail: detail || '', state: 'running', progress: 10, error: '' });
+  _bgJobs.unshift({ id, label, detail: detail || '', state: 'running', progress: 10, error: '', startedAt: Date.now(), endedAt: null });
   if (_bgJobs.length > 20) _bgJobs.length = 20;
   _syncBellBadge();
   if (_notifTab === 'jobs' && document.getElementById('notif-panel')?.style.display !== 'none') renderJobList();
@@ -7165,27 +7165,36 @@ function bgJobProgress(id, pct) {
 function bgJobDone(id) {
   const j = _bgJobs.find(x => x.id === id);
   if (!j) return;
-  j.state = 'done'; j.progress = 100;
+  j.state = 'done'; j.progress = 100; j.endedAt = Date.now();
   _syncBellBadge();
   if (_notifTab === 'jobs' && document.getElementById('notif-panel')?.style.display !== 'none') renderJobList();
 }
 function bgJobFail(id, err) {
   const j = _bgJobs.find(x => x.id === id);
   if (!j) return;
-  j.state = 'failed'; j.error = err || '未知錯誤';
+  j.state = 'failed'; j.error = err || '未知錯誤'; j.endedAt = Date.now();
   _syncBellBadge();
   if (document.getElementById('notif-panel')?.style.display !== 'none') renderJobList();
 }
 
 // 頁面「重新整理」按鈕統一背景化：不鎖畫面（不呼叫 showLoading），進工作執行分頁追蹤，完成/失敗即時 toast 提醒
+// 按鈕本身即時回饋：鎖定+「整理中…」，完成短暫顯示 ✓ 後還原（頁面若已重繪則自然以新按鈕呈現）
 async function _bgRefreshClick(label, fn) {
+  const btn = (typeof event !== 'undefined' && event?.currentTarget?.tagName === 'BUTTON') ? event.currentTarget : null;
+  const origHtml = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '⏳ 整理中…'; }
   const jobId = bgJobAdd(label);
   try {
     await fn();
     bgJobDone(jobId);
+    if (btn) {
+      btn.innerHTML = '✓ 完成';
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = origHtml; }, 1500);
+    }
     showToast(`✓ ${label}完成`, 'success', 4000);
   } catch (e) {
     bgJobFail(jobId, e.message);
+    if (btn) { btn.disabled = false; btn.innerHTML = origHtml; }
     showToast(`❌ ${label}失敗：${e.message}`, 'error', 8000);
   }
 }
@@ -7230,16 +7239,25 @@ function renderJobList() {
     el.innerHTML = '<div style="padding:24px;text-align:center;color:#718096;font-size:.875rem;">目前沒有工作記錄（重新整理後清空）</div>';
     return;
   }
+  const _t = ms => ms ? new Date(ms).toLocaleTimeString('zh-TW', { hour12: false }) : '';
+  const _dur = ms => ms < 1000 ? '<1 秒' : ms < 60000 ? Math.round(ms / 1000) + ' 秒' : Math.floor(ms / 60000) + ' 分 ' + Math.round((ms % 60000) / 1000) + ' 秒';
   el.innerHTML = _bgJobs.map(j => {
     const stateLabel = j.state === 'running' ? '執行中…'
       : j.state === 'done' ? '✓ 完成'
       : '✕ 失敗：' + escHtml(j.error || '');
+    // 時間戳：建立時間；完成/失敗加結束時間與耗時；執行中顯示已執行多久（可看出是否卡住）
+    const timeLine = j.startedAt
+      ? (j.endedAt
+          ? `${_t(j.startedAt)} 建立 → ${_t(j.endedAt)} ${j.state === 'done' ? '完成' : '失敗'}（耗時 ${_dur(j.endedAt - j.startedAt)}）`
+          : `${_t(j.startedAt)} 建立，已執行 ${_dur(Date.now() - j.startedAt)}`)
+      : '';
     return `<div class="bg-job-item" data-state="${j.state}">
       <div class="bg-job-bar" style="width:${j.progress}%"></div>
       <div class="bg-job-meta">
         <div class="bg-job-label">${escHtml(j.label)}</div>
         ${j.detail ? `<div class="bg-job-detail">${escHtml(j.detail)}</div>` : ''}
         <div class="bg-job-status-text">${stateLabel}</div>
+        ${timeLine ? `<div class="bg-job-detail" style="color:#a0aec0;">${escHtml(timeLine)}</div>` : ''}
       </div>
     </div>`;
   }).join('');
@@ -8727,6 +8745,55 @@ function _renderPsychTestReport(c, idx) {
   );
 }
 
+// 個案的最新學期（semesters 排序最後；無 semesters 用 openDate 推）
+function _caseLatestSem(c) {
+  const sems = (Array.isArray(c.semesters) && c.semesters.length
+    ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean)).sort();
+  return sems[sems.length - 1] || '';
+}
+// 轉派前置：把「全案層級目前的主責」定格到所有尚無主責資訊的學期快照。
+// 沒有這步，之後只改單一學期＋全案層級時，其他學期的顯示（fallback 到全案層級）會跟著變（#023 第二輪）
+function _stampSemCounselorSnapshots(c) {
+  if (!c?.basicInfoSnapshots) return;
+  Object.values(c.basicInfoSnapshots).forEach(snap => {
+    if (!snap) return;
+    if (snap.counselorEmail || snap.counselorName || snap.counselorText) return; // 已有主責資訊，不動
+    if (c.counselorEmail) {
+      snap.counselorEmail = c.counselorEmail;
+      snap.counselorName  = c.counselorName || '';
+    } else if (c.counselorText || c.counselorName) {
+      snap.counselorText = c.counselorText || '';
+      snap.counselorName = c.counselorName || '';
+    }
+  });
+}
+// 轉派共用寫入：只寫目標學期快照；「目標學期＝最新學期」才同步更新全案層級主責
+function _applyCounselorChange(c, targetSem, newEmail, newName) {
+  _stampSemCounselorSnapshots(c);
+  const sem = targetSem || _caseLatestSem(c);
+  if (sem) {
+    if (!c.basicInfoSnapshots) c.basicInfoSnapshots = {};
+    if (!c.basicInfoSnapshots[sem]) c.basicInfoSnapshots[sem] = {};
+    c.basicInfoSnapshots[sem].counselorEmail = newEmail;
+    c.basicInfoSnapshots[sem].counselorName  = newName;
+    c.basicInfoSnapshots[sem].counselorText  = '';
+  }
+  if (!sem || sem === _caseLatestSem(c)) {
+    c.counselorEmail = newEmail;
+    c.counselorName  = newName;
+    c.counselorText  = '';
+  }
+}
+
+// 學期主責顯示名稱：已連結帳號（counselorEmail）時以帳號名稱為準，
+// 避免匯入時的原始文字（counselorText）蓋過後續轉派結果（#023：歷屆主責不隨變更）
+function _semCounselorDisplay(c, sem) {
+  const pick = (o) => !o ? '' : (o.counselorEmail
+    ? (configData?.users?.[o.counselorEmail]?.name || o.counselorName || o.counselorEmail)
+    : (o.counselorText || o.counselorName || ''));
+  return pick(c.basicInfoSnapshots?.[sem]) || pick(c) || '—';
+}
+
 function _buildCounselorHistoryBtn(c, activeSem) {
   const sems = (c.semesters || []).filter(s => c.basicInfoSnapshots?.[s]);
   if (sems.length <= 1) return '';
@@ -8742,8 +8809,7 @@ function toggleCounselorHistory(btn, caseId) {
   if (!c) return;
   const sems = Array.isArray(c.semesters) ? [...c.semesters].sort() : [openDateToSemPrefix(c.openDate)].filter(Boolean);
   const rows = sems.map(s => {
-    const snap = c.basicInfoSnapshots?.[s];
-    const display = snap?.counselorText || snap?.counselorName || snap?.counselorEmail || c.counselorText || c.counselorName || c.counselorEmail || '—';
+    const display = _semCounselorDisplay(c, s);
     const isCurrent = s === _caseDetailActiveSem;
     return `<div style="padding:3px 0;font-size:.85rem;color:${isCurrent?'#2b6cb0':'#4a5568'};font-weight:${isCurrent?600:400};">${escHtml(semesterLabel(s))}：${escHtml(display)}${isCurrent?' <span style="font-size:.7rem;color:#4299e1;">（本學期）</span>':''}</div>`;
   }).join('');
@@ -10039,12 +10105,8 @@ async function _directChangeCounselor(caseId, newEmail, semester) {
   if (!c) return;
   const newName = configData?.users?.[newEmail]?.name || newEmail;
   const oldName = configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '';
-  c.counselorEmail = newEmail;
-  c.counselorName = newName;
-  if (semester && c.basicInfoSnapshots?.[semester]) {
-    c.basicInfoSnapshots[semester].counselorEmail = newEmail;
-    c.basicInfoSnapshots[semester].counselorName  = newName;
-  }
+  // 只寫目標學期快照；目標為最新學期才動全案層級（#023 第二輪：改舊學期不得影響其他學期）
+  _applyCounselorChange(c, semester, newEmail, newName);
   const semLabel = semester ? `（${semesterLabel(semester)}）` : '';
   const jobId = bgJobAdd(`直接轉派主責 → ${newName}`);
   try {
@@ -14123,6 +14185,134 @@ function _getDeptToCollege() {
   return (c && Object.keys(c).length > 0) ? c : DEPT_TO_COLLEGE;
 }
 function getCollegeFromDept(dept) { return _getDeptToCollege()[dept] || ''; }
+
+// ── 系所簡寫對照與全員協助歸類 ──────────────────────────────
+// configData.deptAbbrevMap：{ 原始文字（如信件中的系所簡寫）: 正式系所名 }；值為 '' 表示已確認無法對應（不再請大家協助）
+function _getDeptAbbrevMap() { return configData?.deptAbbrevMap || {}; }
+// 從班級/簡寫原文抽出「系所核心簡寫」：去除數字/空白、尾端班別（甲乙丙丁/ABC）與年級（一~五），
+// 再去學制前綴（四技/二技/五專/碩專…或單字 四二五碩博技）。例：四應外一A / 四應外二A → 應外（視為同一系所）
+function _deptRawCore(s) {
+  let t = (s || '').trim().replace(/[0-9０-９\s]/g, '');
+  if (!t) return '';
+  t = t.replace(/[甲乙丙丁ABCabcＡＢＣａｂｃ]$/, '').replace(/[一二三四五]$/, '');
+  t = t.replace(/^(四技|二技|五專|二專|碩專|進修|夜間|日間)/, '');
+  if (t.length > 2) t = t.replace(/^[四二五碩博技]/, '');
+  return t || (s || '').trim();
+}
+// 將原始系所文字解析為正式系所名：正式名稱原樣回傳 → 對照表原文比對 → 對照表核心簡寫比對；查無回 ''
+function resolveDeptName(raw) {
+  const s = (raw || '').trim();
+  if (!s) return '';
+  const dc = _getDeptToCollege(), map = _getDeptAbbrevMap();
+  if (dc[s] !== undefined) return s;
+  if (map[s]) return map[s];
+  const core = _deptRawCore(s);
+  if (core && core !== s) {
+    if (dc[core] !== undefined) return core;
+    if (map[core]) return map[core];
+  }
+  return '';
+}
+// 唯一符合建議：正式系所名稱中依序包含核心簡寫的每個字、且只有一個候選時回傳之
+function _deptSuggest(core) {
+  if (!core) return '';
+  const hits = Object.keys(_getDeptToCollege()).filter(d => {
+    let i = 0;
+    for (const ch of core) { i = d.indexOf(ch, i); if (i < 0) return false; i++; }
+    return true;
+  });
+  return hits.length === 1 ? hits[0] : '';
+}
+// 收集身心調適假紀錄中無法對應正式系所的原文，依核心簡寫歸組（四應外一A/四應外二A 算同一題）
+function _collectUnmappedDepts() {
+  const map = _getDeptAbbrevMap();
+  const groups = {};
+  (mentalLeavesData || []).forEach(l => {
+    if (l.deleted) return;
+    const s = (l.department || '').trim();
+    if (!s || resolveDeptName(s)) return;
+    const core = _deptRawCore(s);
+    if (map[s] === '' || map[core] === '') return; // 已確認無法判別
+    const g = groups[core] || (groups[core] = { count: 0, variants: {} });
+    g.count++;
+    g.variants[s] = (g.variants[s] || 0) + 1;
+  });
+  return Object.entries(groups)
+    .map(([raw, g]) => ({ raw, count: g.count, variants: Object.keys(g.variants) }))
+    .sort((a, b) => b.count - a.count);
+}
+async function _saveDeptAbbrev(raw, dept, btn) {
+  if (!configData.deptAbbrevMap) configData.deptAbbrevMap = {};
+  const prev = configData.deptAbbrevMap[raw];
+  configData.deptAbbrevMap[raw] = dept;
+  if (btn) { btn.disabled = true; btn.textContent = '儲存中…'; }
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('系所簡寫歸類', null, null, `「${raw}」→ ${dept || '（標記為無法判別）'}`);
+    showToast(dept ? `已歸類：「${raw}」→ ${dept}，謝謝協助！` : `已標記「${raw}」為無法判別`, 'success');
+    _renderClassifyHelpSection();
+    if (typeof renderAdminDeptCollege === 'function') renderAdminDeptCollege();
+  } catch (e) {
+    if (prev === undefined) delete configData.deptAbbrevMap[raw]; else configData.deptAbbrevMap[raw] = prev;
+    if (btn) { btn.disabled = false; btn.textContent = '確認'; }
+    showToast('儲存失敗：' + e.message, 'error');
+  }
+}
+function _classifyConfirm(btn) {
+  const raw = decodeURIComponent(btn.getAttribute('data-raw') || '');
+  const sel = btn.parentElement.querySelector('select');
+  const dept = sel?.value || '';
+  if (!dept) { alert('請先選擇要對應的正式系所。'); return; }
+  _saveDeptAbbrev(raw, dept, btn);
+}
+function _classifyIgnore(btn) {
+  const raw = decodeURIComponent(btn.getAttribute('data-raw') || '');
+  if (!confirm(`確定將「${raw}」標記為無法判別的系所？\n之後不會再出現在協助歸類清單。`)) return;
+  _saveDeptAbbrev(raw, '', btn);
+}
+function _toggleClassifyHelp() {
+  window._classifyHelpCollapsed = !window._classifyHelpCollapsed;
+  _renderClassifyHelpSection();
+}
+// 待辦頁「協助系統歸類」區塊：全員可見的小遊戲區——目前收錄「身心調適假系所簡寫 → 正式系所」
+function _renderClassifyHelpSection() {
+  const section = document.getElementById('todos-classify-help-section');
+  if (!section) return;
+  const items = _collectUnmappedDepts();
+  if (!items.length) { section.innerHTML = ''; return; }
+  const collapsed = !!window._classifyHelpCollapsed;
+  const deptNames = Object.keys(_getDeptToCollege()).sort((a, b) => a.localeCompare(b, 'zh-TW'));
+  const rows = collapsed ? '' : items.map(({ raw, count, variants }) => {
+    const sug = _deptSuggest(raw); // 唯一符合時預選＋標示系統建議
+    const opts = deptNames.map(d => `<option value="${escHtml(d)}"${d === sug ? ' selected' : ''}>${escHtml(d)}</option>`).join('');
+    const varNote = (variants && (variants.length > 1 || variants[0] !== raw))
+      ? `<div style="flex-basis:100%;font-size:.75rem;color:#a0aec0;padding-left:2px;">來自：${variants.map(v => escHtml(v)).join('、')}</div>` : '';
+    return `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:7px 10px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;margin-bottom:6px;">
+      <span style="font-weight:700;font-size:.9rem;color:#2d3748;">「${escHtml(raw)}」</span>
+      <span style="font-size:.75rem;color:#a0aec0;">出現 ${count} 筆</span>
+      ${sug ? '<span style="font-size:.72rem;color:#276749;background:#f0fff4;border:1px solid #9ae6b4;border-radius:8px;padding:1px 7px;">系統建議已預選，確認無誤即可送出</span>' : ''}
+      <span style="font-size:.82rem;color:#718096;margin-left:auto;">應該是：</span>
+      <select class="field-select" style="max-width:200px;font-size:.83rem;">
+        <option value=""${sug ? '' : ' selected'}>—請選擇正式系所—</option>${opts}
+      </select>
+      <button class="btn btn-primary btn-sm" data-raw="${encodeURIComponent(raw)}" onclick="_classifyConfirm(this)">確認</button>
+      <button class="btn btn-secondary btn-sm" data-raw="${encodeURIComponent(raw)}" onclick="_classifyIgnore(this)" data-tip="確定不是任何系所（如亂碼、班級代號）才點選">無法判別</button>
+      ${varNote}
+    </div>`;
+  }).join('');
+  section.innerHTML = `
+    <div style="background:#fffaf0;border:1px solid #fbd38d;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
+      <div onclick="_toggleClassifyHelp()" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;cursor:pointer;user-select:none;margin-bottom:${collapsed ? '0' : '8px'};" data-tip="點選整列可收起/展開">
+        <span style="font-weight:600;font-size:.9rem;color:#975a16;">
+          <span style="display:inline-block;width:14px;">${collapsed ? '▶' : '▼'}</span>
+          🧩 協助系統歸類（${items.length} 項待協助）
+        </span>
+        <span style="font-size:.78rem;color:#b7791f;">有空的話，幫系統認一下這些對不起來的系所簡寫吧！</span>
+      </div>
+      ${collapsed ? '' : `<div style="font-size:.78rem;color:#975a16;margin-bottom:8px;">以下是身心調適假信件中擷取到、但系統無法自動對應到正式系所的文字。您的歸類會讓學院/系所統計立即變準確，全中心共用、只需做一次。</div>${rows}`}
+    </div>`;
+}
 
 const ETH_NOTE_IDS = {
   '漢民族': 'nc-eth-note-han',
@@ -18595,12 +18785,8 @@ async function _confirmInternalTransfer(todoId) {
   if (!confirm(`確定將「${casesData[cidx].name}」轉派給 ${counselorName}？\n\n本次派案學期：${_semNote}`)) return;
   const _cardEl = document.getElementById('todo-card-' + todoId);
   if (_cardEl) { _cardEl.style.background='#c6f6d5'; _cardEl.style.borderColor='#68d391'; _cardEl.style.opacity='.7'; const _b=_cardEl.querySelector('.btn-primary'); if(_b){_b.disabled=true;_b.textContent='確認中…';} }
-  casesData[cidx].counselorEmail = counselorEmail;
-  casesData[cidx].counselorName  = counselorName;
-  if (targetSem && casesData[cidx].basicInfoSnapshots?.[targetSem]) {
-    casesData[cidx].basicInfoSnapshots[targetSem].counselorEmail = counselorEmail;
-    casesData[cidx].basicInfoSnapshots[targetSem].counselorName  = counselorName;
-  }
+  // 只寫目標學期快照；目標為最新學期才動全案層級（#023 第二輪：改舊學期不得影響其他學期）
+  _applyCounselorChange(casesData[cidx], targetSem, counselorEmail, counselorName);
   t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
   _syncTodoBadge();
   const jobId = bgJobAdd('確認內部轉案', casesData[cidx].name);
@@ -18630,13 +18816,8 @@ async function _confirmCaseAssignment(todoId) {
   if (!confirm(`確定將「${casesData[cidx].name}」派案給 ${counselorName}？\n\n本次派案學期：${_semNote2}`)) return;
   const _cardEl2 = document.getElementById('todo-card-' + todoId);
   if (_cardEl2) { _cardEl2.style.background='#c6f6d5'; _cardEl2.style.borderColor='#68d391'; _cardEl2.style.opacity='.7'; const _b=_cardEl2.querySelector('.btn-primary'); if(_b){_b.disabled=true;_b.textContent='確認中…';} }
-  // 更新個案主責（全案層級 + 目標學期快照）
-  casesData[cidx].counselorEmail = counselorEmail;
-  casesData[cidx].counselorName  = counselorName;
-  if (targetSem && casesData[cidx].basicInfoSnapshots?.[targetSem]) {
-    casesData[cidx].basicInfoSnapshots[targetSem].counselorEmail = counselorEmail;
-    casesData[cidx].basicInfoSnapshots[targetSem].counselorName  = counselorName;
-  }
+  // 更新個案主責：只寫目標學期快照；目標為最新學期才動全案層級（#023 第二輪）
+  _applyCounselorChange(casesData[cidx], targetSem, counselorEmail, counselorName);
   // 標記 todo 完成
   t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
   _syncTodoBadge();
@@ -19051,6 +19232,7 @@ function renderTodosPage() {
   _renderAssignmentTodos();
   _renderMlNotifSection();
   _renderMajorEventNotifs();
+  _renderClassifyHelpSection();
 
   // Show/hide sections by tab
   const _showAdmin = _tab === 'all' || _tab === 'admin';
@@ -19062,6 +19244,7 @@ function renderTodosPage() {
   if (document.getElementById('todos-ml-notif-section'))     document.getElementById('todos-ml-notif-section').style.display     = _showAdmin ? '' : 'none';
   if (document.getElementById('todos-major-events-section')) document.getElementById('todos-major-events-section').style.display = _showCases ? '' : 'none';
   if (document.getElementById('todos-assignment-section'))   document.getElementById('todos-assignment-section').style.display   = _showCases ? '' : 'none';
+  if (document.getElementById('todos-classify-help-section')) document.getElementById('todos-classify-help-section').style.display = _showAdmin ? '' : 'none';
 
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
 
@@ -19157,9 +19340,7 @@ function renderTodosPage() {
         const caseRows = [];
         casesData.filter(c => !c.deleted).forEach(c => {
           _pastUnclosedSems(c).forEach(sem => {
-            const snap = c.basicInfoSnapshots?.[sem] || {};
-            const counselor = snap.counselorText || snap.counselorName || snap.counselorEmail ||
-              c.counselorText || c.counselorName || c.counselorEmail || '—';
+            const counselor = _semCounselorDisplay(c, sem);
             caseRows.push({ c, sem, counselor });
           });
         });
@@ -20942,6 +21123,13 @@ async function driveQuery(q, fields = 'id,name') {
 
 async function driveReadJson(path) {
   return proxyCall('readJson', { path });
+}
+
+// 選用型資料檔（feed/快取類，首次使用前不存在屬正常）：靜默讀取，
+// 不存在或讀取失敗一律回 null，不寫入系統錯誤紀錄（避免回報 modal 出現「未預期的錯誤」噪音）
+async function driveReadJsonOptional(path) {
+  try { return await proxyCall('readJson', { path }, true); }
+  catch { return null; }
 }
 
 async function driveReadJsonById(fileId) {
@@ -23081,7 +23269,8 @@ async function renderStats() {
     // ── 學院 / 系所統計 ──
     const _dg = {};
     data.forEach(l => {
-      const dept = l.department || '（未填系所）';
+      // 先套系所簡寫對照（deptAbbrevMap），對得到就用正式系所名歸組（學院也能跟著對到）
+      const dept = resolveDeptName(l.department) || l.department || '（未填系所）';
       if (!_dg[dept]) _dg[dept] = [];
       _dg[dept].push(l);
     });
@@ -23471,6 +23660,24 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-04', v: 86, title: '#023 二輪修正（轉派舊學期不影響其他學期）+ 重新整理/工作執行回饋 + 簡寫智慧歸組', isProd: true, items: [
+      item('修復', '轉派主責到「舊學期」時，其他學期（含最新學期）的主責顯示會全部跟著變成新主責——現改為：只寫入目標學期，且轉派前先把目前主責「定格」到所有尚無主責資訊的學期快照；只有轉派「最新學期」才會更新全案層級主責（回應 #023 驗證回饋）'),
+      item('修復', '危機閱讀記錄、心理測驗資料庫等選用型資料檔首次使用前不存在時，不再產生「系統發生未預期的錯誤」記錄（改為靜默讀取，檔案會在首次寫入時自動建立）'),
+      item('改善', '所有頁面「重新整理」按鈕點選後即時鎖定顯示「⏳ 整理中…」，完成短暫顯示 ✓ 後還原（個案列表/空間預約/待辦事項/問題回報/轉銜/精神科/未歸屬記錄/稽核記錄）'),
+      item('改善', '通知鈴鐺「工作執行」分頁每筆工作顯示建立時間、完成/失敗時間與耗時；執行中的工作顯示已執行多久，方便判斷是否卡住'),
+      item('改善', '協助系統歸類變聰明：同系所的不同班級寫法（如四應外一A、四應外二A）自動抽出核心簡寫歸為同一題並列出來源；能唯一對應正式系所時自動預選為系統建議，確認無誤直接送出即可'),
+    ]},
+    { date: '2026-07-04', v: 85, title: 'Google 日曆補註建立者安全化（追加式寫入 + 修復重複補註）', isProd: true, items: [
+      item('修復', 'Google 日曆事件自動補註建立者後，仍會被驗證判定「缺建立者註記」，導致每小時自動同步時重複追加補註、備註無限累積；驗證規則現已認得「[系統補註]」標記，補註一次後即不再重複'),
+      item('改善', '自動補註改用專用的「僅追加備註」後端操作：不再整顆事件重寫（標題/時間完全不動、既有備註不覆蓋），流水號固定保持在備註末端不被破壞；已重複補註過的舊事件會自動略過並清出待確認清單'),
+    ]},
+    { date: '2026-07-04', v: 84, title: '回應 #023 歷屆主責顯示 + 問題回報驗證/狀態操作體驗', isProd: true, items: [
+      item('修復', '個案詳細資料「歷屆」下拉選單與「過去學期未結案」提醒的主責顯示：已連結系統帳號時改以帳號目前名稱為準，不再被匯入時的原始文字蓋過；變更主責（直接轉派/確認轉案/確認派案）時同步清除過時的原始文字（回應 #023）'),
+      item('改善', '問題回報「更新狀態」按鈕點選後即時鎖定並顯示「更新中…」，選擇與目前相同的狀態時提示「狀態未變更」，不再看起來像沒反應'),
+      item('新功能', '待驗證回報新增「驗證後仍有問題」選項：回報者可填寫仍遇到的狀況（必填），送出後自動留言、退回「處理中」並通知系統管理者；時間軸如實記錄本人與時間'),
+      item('新功能', '系所簡寫對照：身心調適假信件擷取到的系所簡寫可對應到正式系所（學院/系所統計隨之變準確）；系統管理→系所與學院對照頁可管理對照表'),
+      item('新功能', '待辦事項頁新增「🧩 協助系統歸類」區塊：系統無法自動對應的系所簡寫會列出請全體同仁協助認領歸類（選定正式系所或標記無法判別），做一次全中心共用，含稽核日誌'),
+    ]},
     { date: '2026-07-04', v: 83, title: '家族圖：修正三代親子方向誤判 + 模版子女改為方形', isProd: true, items: [
       item('修復', '新增親子關係線時，原本用「哪一側已成家」判斷誰是父母，導致新增祖父母世代時（祖父尚未成家、父母已成家有子女）會誤把祖父判斷成父母的孩子。改為依兩節點的垂直位置判斷（畫面上方＝父母，下方＝子女），不受點擊順序或是否已成家影響，正確支援三代以上的家族圖'),
       item('改善', '常用模版產生的子女節點改為正方形（男性）而非菱形（性別不明），選取後仍可於側欄「人物節點」點選形狀改變'),
@@ -25664,7 +25871,7 @@ async function syncFromCalendar(silent = false) {
 //  GC 事件驗證（六類錯誤 + 自動補註 + 廣播）
 // ══════════════════════════════════════════════
 async function loadGcErrorsCache() {
-  try { _gcErrorsCache = await driveReadJson(GC_VALIDATION_ERRORS_FILE); } catch { _gcErrorsCache = null; }
+  _gcErrorsCache = await driveReadJsonOptional(GC_VALIDATION_ERRORS_FILE);
   if (!_gcErrorsCache || !Array.isArray(_gcErrorsCache.entries)) _gcErrorsCache = { entries: [] };
 }
 async function _saveGcErrorsCache() {
@@ -25681,8 +25888,8 @@ function _gcValidateEvent(ev, bookingsIndex, usersByName, usersByEmail) {
   const title = ev.title || '';
   // 1. MISSING_SERIAL
   if (!/\n#\d+\s*$/.test(desc)) kinds.add('MISSING_SERIAL');
-  // 2. MISSING_CREATOR
-  if (!/\S+\s+(建立|編輯)/.test(desc)) kinds.add('MISSING_CREATOR');
+  // 2. MISSING_CREATOR（系統寫入的「某人 建立/編輯」行，或已由系統補註過建立者皆算有）
+  if (!/\S+\s+(建立|編輯)/.test(desc) && desc.indexOf('[系統補註') === -1) kinds.add('MISSING_CREATOR');
   // 3. BAD_TITLE
   const titleMatch = title.match(/^([^\.]+)\.(.+)$/);
   if (!titleMatch) kinds.add('BAD_TITLE');
@@ -25753,20 +25960,14 @@ async function _runGcValidationAndBackfill(gcEvents) {
     const note = creatorName
       ? `[系統補註] 由 ${creatorName}（${creatorEmail}）建立，於 ${new Date().toLocaleString('zh-TW')} 補註`
       : `[系統補註] 建立者為非本系統帳號：${creatorEmail}，於 ${new Date().toLocaleString('zh-TW')} 標註`;
-    const newDesc = ((ev.description || '').trimEnd() + '\n---\n' + note).trim();
     try {
-      // 沿用原標題/時間，只改 description
-      const titleMatch = (ev.title || '').match(/^([^\.]+)\.(.+)$/);
-      const roomChar = titleMatch ? titleMatch[1] : '其他';
-      const roomFull = ROOMS.find(r => r !== '其他' && r.charAt(0) === roomChar) || roomChar;
-      const counselorName = titleMatch ? titleMatch[2] : '';
-      await proxyCall('updateCalendarEvent', {
-        eventId: ev.id,
-        room: roomFull, customRoom: roomFull === roomChar ? roomChar : '',
-        date: ev.date, startTime: ev.startTime, endTime: ev.endTime,
-        counselorName, notes: newDesc, creatorName: '',
-        createdAt: '', updatedAt: '', isEdit: false, bkSerial: null,
-      });
+      // 專用追加 action：不動標題/時間、不覆蓋既有備註、流水號保持在末端；
+      // 後端以 '[系統補註' 標記防重複（配合 _gcValidateEvent 認得此標記，補註後不再判定缺建立者）
+      const r = await proxyCall('gcAnnotateEvent', { eventId: ev.id, noteText: note });
+      if (r?.skipped) { // 先前已補註過（可能是舊版重複補註留下的），僅清 feed 不再寫入
+        _gcErrorsCache.entries = _gcErrorsCache.entries.filter(e => !(e.eventId === ev.id && e.kind === 'MISSING_CREATOR'));
+        continue;
+      }
       backfilled++;
       // 補完後從 feed 移除該 MISSING_CREATOR 記錄
       _gcErrorsCache.entries = _gcErrorsCache.entries.filter(e => !(e.eventId === ev.id && e.kind === 'MISSING_CREATOR'));
@@ -25977,10 +26178,8 @@ async function loadTransfer() {
 }
 
 async function loadPsychTestDB() {
-  try {
-    const data = await driveReadJson(PSYCH_TEST_DB_FILE);
-    psychTestDB = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
-  } catch(e) { psychTestDB = {}; }
+  const data = await driveReadJsonOptional(PSYCH_TEST_DB_FILE);
+  psychTestDB = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
 }
 async function savePsychTestDB() {
   try {
@@ -30582,7 +30781,64 @@ function renderAdminDeptCollege() {
             </span>`).join('') || '<span style="font-size:.78rem;color:#a0aec0;">（可從其他學院拖曳系所過來）</span>'}
         </div>
       </div>`).join('')}
-    ${Object.keys(dc).length === 0 ? '<div style="color:#a0aec0;font-size:.85rem;">尚無對應資料。</div>' : ''}`;
+    ${Object.keys(dc).length === 0 ? '<div style="color:#a0aec0;font-size:.85rem;">尚無對應資料。</div>' : ''}
+    ${_renderDeptAbbrevAdmin(dc)}`;
+}
+
+// 系所簡寫對照管理（renderAdminDeptCollege 的附加區塊）
+function _renderDeptAbbrevAdmin(dc) {
+  const map = _getDeptAbbrevMap();
+  const entries = Object.entries(map).sort((a, b) => a[0].localeCompare(b[0], 'zh-TW'));
+  const deptOpts = Object.keys(dc).sort((a, b) => a.localeCompare(b, 'zh-TW'))
+    .map(d => `<option value="${escHtml(d)}">${escHtml(d)}</option>`).join('');
+  const rows = entries.map(([raw, dept]) => `
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 10px;border-bottom:1px solid #f0f4f8;font-size:.85rem;">
+      <span style="font-weight:600;color:#2d3748;">${escHtml(raw)}</span>
+      <span style="color:#a0aec0;">→</span>
+      <span style="color:${dept ? '#2b6cb0' : '#a0aec0'};">${dept ? escHtml(dept) : '（無法判別）'}</span>
+      <button data-raw="${encodeURIComponent(raw)}" onclick="_adminRemoveDeptAbbrev(this)" title="移除此對照（會重新出現在待辦頁協助歸類清單）"
+        style="margin-left:auto;background:none;border:none;cursor:pointer;color:#718096;font-size:1rem;line-height:1;">×</button>
+    </div>`).join('');
+  return `
+    <div style="margin-top:24px;border-top:2px solid #e2e8f0;padding-top:14px;">
+      <div style="font-weight:700;font-size:.92rem;color:#2d3748;margin-bottom:6px;">🧩 系所簡寫對照（身心調適假信件擷取用）</div>
+      <div style="font-size:.78rem;color:#718096;margin-bottom:10px;padding:6px 10px;background:#f7fafc;border-radius:5px;">
+        信件中擷取到的系所簡寫會依此表對應到正式系所（進而對到學院統計）。無法自動對應的簡寫會出現在「待辦事項」頁的「協助系統歸類」區塊，全體同仁都可協助認領歸類。
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center;">
+        <input type="text" id="da-input-raw" class="field-input" placeholder="簡寫（如信件中的原文）" style="flex:1;min-width:160px;max-width:240px;" />
+        <select id="da-input-dept" class="field-select" style="max-width:220px;">
+          <option value="">—對應正式系所—</option>${deptOpts}
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="_adminAddDeptAbbrev()">新增對照</button>
+      </div>
+      ${rows || '<div style="color:#a0aec0;font-size:.85rem;">尚無簡寫對照。</div>'}
+    </div>`;
+}
+
+async function _adminAddDeptAbbrev() {
+  const raw = (document.getElementById('da-input-raw')?.value || '').trim();
+  const dept = document.getElementById('da-input-dept')?.value || '';
+  if (!raw) { alert('請填寫簡寫原文。'); return; }
+  if (!dept) { alert('請選擇對應的正式系所。'); return; }
+  await _saveDeptAbbrev(raw, dept, null);
+  renderAdminDeptCollege();
+}
+
+async function _adminRemoveDeptAbbrev(btn) {
+  const raw = decodeURIComponent(btn.getAttribute('data-raw') || '');
+  if (!confirm(`確認移除「${raw}」的簡寫對照？`)) return;
+  const prev = configData.deptAbbrevMap?.[raw];
+  if (configData.deptAbbrevMap) delete configData.deptAbbrevMap[raw];
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('移除系所簡寫對照', null, null, `「${raw}」（原對應：${prev || '無法判別'}）`);
+    renderAdminDeptCollege();
+    _renderClassifyHelpSection();
+  } catch (e) {
+    if (prev !== undefined) { if (!configData.deptAbbrevMap) configData.deptAbbrevMap = {}; configData.deptAbbrevMap[raw] = prev; }
+    alert('儲存失敗：' + e.message);
+  }
 }
 // ── 系所→學院 拖曳 handlers ──
 function _dcDragStart(ev) {
@@ -37008,7 +37264,12 @@ async function updateIssueStatus(issueId, newStatus) {
   const issue = issuesData.find(x => x.id === issueId);
   if (!issue) return;
   const prev = issue.status;
-  if (prev === newStatus) return;
+  if (prev === newStatus) { showToast('狀態未變更（選擇的狀態與目前相同）', 'warn', 2500); return; }
+  // 按鈕即時回饋：鎖定並顯示更新中（成功後 renderIssuesPage 會整頁重繪，失敗時還原）
+  const _btn = document.getElementById('issue-status-btn-' + issueId);
+  const _sel = document.getElementById('issue-status-' + issueId);
+  if (_btn) { _btn.disabled = true; _btn.textContent = '更新中…'; }
+  if (_sel) _sel.disabled = true;
   issue.status = newStatus;
   if (!issue.statusHistory) issue.statusHistory = [];
   issue.statusHistory.push({
@@ -37027,6 +37288,8 @@ async function updateIssueStatus(issueId, newStatus) {
   } catch (e) {
     issue.status = prev;
     issue.statusHistory.pop();
+    if (_btn) { _btn.disabled = false; _btn.textContent = '更新狀態'; }
+    if (_sel) _sel.disabled = false;
     bgJobFail(jobId, e.message);
     alert('儲存失敗：' + e.message);
   }
@@ -37043,6 +37306,68 @@ async function _issueVerifyOk(issueId) {
     relatedTodo.done = true; relatedTodo.doneAt = new Date().toISOString();
     saveUserTodos().catch(() => {});
     _syncTodoBadge();
+  }
+}
+
+// 回報者「驗證後仍有問題」→ 留下理由留言並退回處理中（statusHistory/時間軸如實記錄本人與時間）
+async function _issueVerifyNotOk(issueId) {
+  const issue = issuesData.find(x => x.id === issueId);
+  if (!issue) return;
+  if (issue.submittedBy !== currentUser?.email) return; // 安全防呆：僅原回報者可按
+  const ta = document.getElementById('issue-verify-reason-' + issueId);
+  const reason = (ta?.value || '').trim();
+  if (!reason) { alert('請描述驗證時仍遇到的狀況，方便後續修正。'); ta?.focus(); return; }
+  const sendBtn = document.getElementById('issue-verify-notok-send-' + issueId);
+  if (sendBtn) { sendBtn.disabled = true; sendBtn.textContent = '送出中…'; }
+  if (!issue.comments) issue.comments = [];
+  const comment = {
+    id: 'c_' + Date.now(),
+    content: '❌ 驗證後仍有問題：' + reason,
+    attachments: [],
+    authorEmail: currentUser?.email || '',
+    authorName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
+    createdAt: new Date().toISOString(),
+  };
+  issue.comments.push(comment);
+  const prev = issue.status;
+  issue.status = 'in_progress';
+  if (!issue.statusHistory) issue.statusHistory = [];
+  issue.statusHistory.push({
+    from: prev, to: 'in_progress',
+    by: currentUser?.email || '',
+    byName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
+    at: new Date().toISOString(),
+  });
+  const jobId = bgJobAdd(`驗證未通過退回（#${String(issue.serial).padStart(3,'0')}）`);
+  try {
+    await _saveIssues();
+    // 通知所有系統管理者（主任 or 管理者 extraRole）：驗證未通過需重新處理
+    let notified = false;
+    const _label = `#${String(issue.serial).padStart(3, '0')}`;
+    Object.entries(configData?.users || {}).forEach(([email, u]) => {
+      if (u.role === '主任' || u.extraRole === '管理者') {
+        notified = addNotificationToUser(email, 'issue_comment', issue.id, issue.serial,
+          `回報 ${_label} 驗證未通過，已退回處理中：${reason.slice(0, 60)}`) || notified;
+      }
+    });
+    if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    // 本人已完成驗證動作，收掉待辦提醒卡
+    const relatedTodo = todosData.find(t => t.type === 'issue_pending_verification' && t.issueId === issueId && !t.done);
+    if (relatedTodo) {
+      relatedTodo.done = true; relatedTodo.doneAt = new Date().toISOString();
+      saveUserTodos().catch(() => {});
+      _syncTodoBadge();
+    }
+    bgJobDone(jobId);
+    auditLog('回報驗證未通過退回', null, null, `#${String(issue.serial).padStart(3,'0')}：pending_verification → in_progress`);
+    renderIssuesPage();
+  } catch (e) {
+    issue.comments.pop();
+    issue.status = prev;
+    issue.statusHistory.pop();
+    if (sendBtn) { sendBtn.disabled = false; sendBtn.textContent = '送出並退回處理中'; }
+    bgJobFail(jobId, e.message);
+    alert('儲存失敗：' + e.message);
   }
 }
 
@@ -37295,16 +37620,28 @@ function renderIssuesPage() {
           <option value="pending_verification"  ${issue.status==='pending_verification'?'selected':''}>待驗證</option>
           <option value="resolved"              ${issue.status==='resolved'?'selected':''}>已解決</option>
         </select>
-        <button class="btn btn-secondary btn-sm"
+        <button class="btn btn-secondary btn-sm" id="issue-status-btn-${sid}"
           onclick="updateIssueStatus('${sid}',document.getElementById('issue-status-${sid}').value)">更新狀態</button>
       </div>` : '';
-    // 回報者「驗證OK」：僅本人、且狀態為待驗證時可見
+    // 回報者「驗證OK / 驗證後仍有問題」：僅本人、且狀態為待驗證時可見
     const verifyControl = (issue.status === 'pending_verification' && issue.submittedBy === currentUser?.email) ? `
       <div style="margin-top:8px;padding:8px 12px;background:#faf5ff;border:1px solid #d6bcfa;border-radius:6px;">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.85rem;color:#553c9a;font-weight:600;">
           <input type="checkbox" onchange="if(this.checked){this.disabled=true;_issueVerifyOk('${sid}');}" style="width:16px;height:16px;cursor:pointer;">
           驗證OK（確認此問題已修正，將回報標記為已解決）
         </label>
+        <div style="margin-top:6px;">
+          <button class="btn btn-secondary btn-sm" id="issue-verify-notok-btn-${sid}" style="font-size:.78rem;"
+            onclick="const w=document.getElementById('issue-verify-notok-${sid}');const on=w.style.display==='none';w.style.display=on?'':'none';if(on)document.getElementById('issue-verify-reason-${sid}').focus();">
+            ✕ 驗證後仍有問題…</button>
+          <div id="issue-verify-notok-${sid}" style="display:none;margin-top:6px;">
+            <textarea id="issue-verify-reason-${sid}" rows="2" placeholder="請描述驗證時仍遇到的狀況（必填），送出後回報將退回「處理中」。"
+              style="width:100%;padding:6px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;resize:vertical;box-sizing:border-box;"></textarea>
+            <div style="display:flex;justify-content:flex-end;margin-top:4px;">
+              <button class="btn btn-danger btn-sm" id="issue-verify-notok-send-${sid}" onclick="_issueVerifyNotOk('${sid}')">送出並退回處理中</button>
+            </div>
+          </div>
+        </div>
       </div>` : '';
 
     const commentInput = `

@@ -77,6 +77,7 @@ function doPost(e) {
       case 'deleteCalendarEvent':  result = deleteCalendarEvent_(params, ctx); break;
       case 'listCalendarEvents':   result = listCalendarEvents_(params, ctx); break;
       case 'shareCalendarWriters': result = shareCalendarWriters_(params, ctx); break;
+      case 'gcAnnotateEvent':      result = gcAnnotateEvent_(params, ctx); break;
       case 'uploadFile':           result = uploadFile_(params); break;
       case 'downloadFileBase64':   result = downloadFileBase64_(params); break;
       case 'fetchMentalLeaves':    result = fetchMentalLeaves_(ctx, params); break;
@@ -544,6 +545,31 @@ function listCalendarEvents_({ startDate, endDate }, ctx) {
       colorId:      colorId,
     };
   });
+}
+
+// 補註 GC 事件備註：僅追加文字，不動標題/時間/既有內容。
+// - 防重複：description 已含 marker（預設 '[系統補註'）時直接跳過
+// - 流水號保護：description 以 #流水號 結尾時，補註插在流水號之前，讓 \n#\d+$ 解析不被破壞
+function gcAnnotateEvent_({ eventId, noteText, marker }, ctx) {
+  const cal = getOrCreateCalendar_(ctx);
+  const event = cal.getEventById(eventId);
+  if (!event) throw new Error('Event not found: ' + eventId);
+  const desc = event.getDescription() || '';
+  const mk = marker || '[系統補註';
+  if (desc.indexOf(mk) !== -1) return { ok: true, skipped: true };
+  const add = String(noteText || '').slice(0, 500);
+  if (!add) throw new Error('noteText required');
+  const serialMatch = desc.match(/\n#\d+\s*$/);
+  let newDesc;
+  if (serialMatch) {
+    const body = desc.slice(0, desc.length - serialMatch[0].length).replace(/\s+$/, '');
+    newDesc = (body ? body + '\n---\n' : '') + add + serialMatch[0];
+  } else {
+    const body = desc.replace(/\s+$/, '');
+    newDesc = (body ? body + '\n---\n' : '') + add;
+  }
+  event.setDescription(newDesc);
+  return { ok: true, skipped: false };
 }
 
 // 授與（或撤除）指定 email 對本行事曆的 owner（進行變更並管理共用設定）權限
@@ -1301,20 +1327,6 @@ function startupBatch_(params, ctx) {
       result[key] = null;
     }
   });
-  // 暫時 debug：回傳 Phase 1 查詢結果，協助診斷
-  result._debug = {
-    ctxRoot: ctx.root,
-    configOverride: ctx.configOverride || null,
-    phase1Keys: p1Keys,
-    phase1Codes: p1Results.map(function(r) { return r.getResponseCode(); }),
-    phase1Results: p1Results.map(function(r) {
-      try {
-        var b = JSON.parse(r.getContentText());
-        return { fileCount: (b.files || []).length, fileIds: (b.files || []).map(function(f){ return f.id; }), error: b.error || null };
-      } catch(e) { return { parseError: r.getContentText().slice(0, 200) }; }
-    }),
-    fileIdsFound: Object.keys(fileIds),
-  };
   return result;
 }
 
