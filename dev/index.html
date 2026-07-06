@@ -21897,7 +21897,13 @@ function renderLeaveApplyPage() {
       </div>
     </div>
     <div class="card" style="margin-bottom:20px;">
-      <div class="card-header"><h3>本月打卡工時（${escHtml(thisMonth)}）</h3></div>
+      <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+        <h3>本月打卡工時（${escHtml(thisMonth)}）</h3>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <input id="la-print-month" type="month" value="${thisMonth}" style="padding:4px 6px;border:1px solid #cbd5e0;border-radius:6px;font-size:.82rem;">
+          <button class="btn btn-secondary btn-sm" onclick="printAttendanceMonthlyReport(currentUser.email, document.getElementById('la-print-month').value)">🖨️ 列印月報表</button>
+        </div>
+      </div>
       <div style="padding:16px 20px;">
         <div style="font-size:.85rem;color:#4a5568;margin-bottom:10px;">目前可用補休時數：<strong style="color:${compRemain > 0 ? '#276749' : '#718096'};">${compRemain}</strong> 小時（已認證加班 − 已用補休）</div>
         <div style="overflow-x:auto;">
@@ -22223,6 +22229,12 @@ function renderClockPage() {
 
         <div id="clock-geo-status" style="font-size:.8rem;color:#718096;text-align:center;margin-bottom:12px;"></div>
 
+        ${isIntern ? `
+        <div style="display:flex;gap:8px;align-items:center;justify-content:center;margin-bottom:16px;">
+          <input id="clock-print-month" type="month" value="${today.slice(0, 7)}" style="padding:6px 8px;border:1px solid #cbd5e0;border-radius:8px;font-size:.85rem;">
+          <button class="btn btn-secondary btn-sm" onclick="printAttendanceMonthlyReport(currentUser.email, document.getElementById('clock-print-month').value)">🖨️ 列印月報表</button>
+        </div>` : ''}
+
         ${canPunch ? `
         ${!isIntern ? '<div class="alert alert-info" style="margin-bottom:12px;">您以管理者／督導身分檢視；打卡將以您的帳號建立（供驗證用）。</div>' : ''}
         <button id="clock-punch-btn" onclick="clockAction()" style="width:100%;padding:18px;font-size:1.1rem;font-weight:700;border:none;border-radius:12px;cursor:pointer;background:#3182ce;color:#fff;margin-bottom:16px;">
@@ -22444,6 +22456,11 @@ function renderAttendancePage() {
         <input id="att-filter-date" type="date" class="field-input" value="${filterDate}" onchange="renderAttendancePage()" />
       </div>
       <button class="btn btn-secondary btn-sm" onclick="document.getElementById('att-map-wrap').style.display='';renderAttendanceMap()">📍 顯示地圖</button>
+      <div>
+        <label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">列印月份</label>
+        <input id="att-print-month" type="month" class="field-input" value="${thisMonth}" />
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="printAttendanceMonthlyReport(document.getElementById('att-filter-email').value, document.getElementById('att-print-month').value)">🖨️ 列印月報表</button>
     </div>
 
     <div style="overflow-x:auto;margin-bottom:24px;">
@@ -22493,6 +22510,145 @@ function renderAttendancePage() {
     </div>
   `;
   _initGeoFenceCard();
+}
+
+// ══════════════════════════════════════════════
+//  出勤月報表列印（A4 直式，供紙本核章）
+// ══════════════════════════════════════════════
+// 權限：印自己＝一律可以；印別人＝需為主任／系統管理者／實習生行政或專業督導
+function printAttendanceMonthlyReport(email, yyyymm) {
+  if (!email) { alert('請先選擇要列印的實習生'); return; }
+  const isMgr = currentRole === '主任' || extraRole === '管理者' || isInternAdminSupervisor || isInternProSupervisor;
+  if (email !== currentUser.email && !isMgr) { alert('您沒有權限列印其他人的月報表'); return; }
+  const ym = (yyyymm && /^\d{4}-\d{2}$/.test(yyyymm)) ? yyyymm : _fmtDate(new Date()).slice(0, 7);
+  const [yearStr, monthStr] = ym.split('-');
+  const year = Number(yearStr), month = Number(monthStr);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const name = configData?.users?.[email]?.name || email;
+  const esc = s => escHtml(String(s == null ? '' : s));
+  const r1 = n => Math.round((Number(n) || 0) * 10) / 10;
+  const pad2 = n => String(n).padStart(2, '0');
+  const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
+
+  // 打卡資料（沿用 _dailyWorkHours）
+  const workByDate = {};
+  _dailyWorkHours(email, ym).forEach(d => { workByDate[d.date] = d; });
+  const allRecords = attendanceData?.records || [];
+
+  // 假別 / 加班（approved，且日期範圍與本月有重疊）
+  const monthStart = `${ym}-01`, monthEnd = `${ym}-${pad2(daysInMonth)}`;
+  const apps = (leavesData?.applications || []).filter(a =>
+    a.email === email && a.status === 'approved' &&
+    (a.fromDate || '') <= monthEnd && (a.toDate || a.fromDate || '') >= monthStart);
+
+  const leaveTotals = {}; // leaveTypeName -> 小時
+  let overtimeTotal = 0;
+  apps.forEach(a => {
+    if (a.kind === 'overtime') overtimeTotal += Number(a.hours) || 0;
+    else leaveTotals[a.leaveTypeName] = (leaveTotals[a.leaveTypeName] || 0) + (Number(a.hours) || 0);
+  });
+  const leaveTotal = Object.values(leaveTotals).reduce((s, h) => s + h, 0);
+
+  const rows = [];
+  let totalWorkHours = 0;
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${ym}-${pad2(day)}`;
+    const dow = new Date(dateStr + 'T00:00:00').getDay();
+    const isWeekend = dow === 0 || dow === 6;
+    const w = workByDate[dateStr];
+    const isManual = allRecords.some(r => r.email === email && r.date === dateStr && r.manual);
+
+    let inCell = '', outCell = '', hoursCell = '';
+    if (w) {
+      inCell = w.first ? _fmtTime(w.first) : '';
+      if (w.count >= 2) { outCell = _fmtTime(w.last); hoursCell = w.hours + ' 小時'; totalWorkHours += w.hours; }
+      else { hoursCell = '單筆打卡'; }
+    }
+
+    const notes = [];
+    if (isManual) notes.push('手動補登');
+    apps.forEach(a => {
+      const from = a.fromDate || '', to = a.toDate || a.fromDate || '';
+      if (dateStr < from || dateStr > to) return;
+      notes.push(a.kind === 'overtime' ? `加班認證 ${a.hours} 小時` : `${a.leaveTypeName} ${a.hours} 小時`);
+    });
+
+    rows.push(`<tr${isWeekend ? ' class="we"' : ''}>
+      <td>${month}/${day}（${weekdays[dow]}）</td>
+      <td>${esc(inCell)}</td>
+      <td>${esc(outCell)}</td>
+      <td>${esc(hoursCell)}</td>
+      <td class="note">${esc(notes.join('、'))}</td>
+    </tr>`);
+  }
+
+  const leaveDetailStr = Object.entries(leaveTotals).map(([n, h]) => `${n} ${r1(h)} 小時`).join('、') || '無';
+  const printDateTime = new Date().toLocaleString('zh-TW');
+  const printerName = configData?.users?.[currentUser?.email]?.name || currentUser?.name || currentUser?.email || '';
+
+  const html = `<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<title>出勤月報表 ${esc(name)} ${esc(ym)}</title>
+<style>
+  @page { size: A4 portrait; margin: 15mm 18mm; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Microsoft JhengHei','微軟正黑體','Noto Sans TC',sans-serif; font-size: 11pt; color: #1a202c; margin: 0; padding: 0; }
+  .hdr1 { text-align:center; font-size:16pt; font-weight:700; letter-spacing:.04em; }
+  .hdr2 { text-align:center; font-size:14pt; font-weight:700; margin-top:2mm; letter-spacing:.06em; }
+  .hdr3 { text-align:center; font-size:11pt; color:#2d3748; margin-top:4mm; }
+  .hdr4 { text-align:right; font-size:9pt; color:#718096; margin-top:2mm; }
+  .hr { border-top:1px solid #333; margin:3mm 0 4mm; }
+  table.rpt { width:100%; border-collapse:collapse; font-size:10pt; }
+  table.rpt th, table.rpt td { border:1px solid #555; padding:2.2pt 4pt; text-align:center; }
+  table.rpt th { background:#f0f0f0; font-weight:700; }
+  table.rpt td.note { text-align:left; font-size:9pt; color:#4a5568; }
+  tr.we { background:#f0f0f0; }
+  .summary { margin-top:5mm; font-size:11pt; line-height:1.9; }
+  .summary b { color:#1a202c; }
+  .sig-wrap { margin-top:10mm; page-break-inside: avoid; break-inside: avoid; }
+  table.sig-tbl { width:100%; border-collapse:collapse; table-layout:fixed; }
+  table.sig-tbl td { border:1px solid #333; height:25mm; width:25%; vertical-align:top; padding:5pt 6pt; }
+  .sig-cell { display:flex; flex-direction:column; justify-content:space-between; height:100%; }
+  .sig-cell .lbl { text-align:center; font-weight:700; font-size:11pt; }
+  .sig-cell .dt { text-align:center; font-size:9pt; color:#333; }
+  .foot { margin-top:6mm; font-size:8pt; color:#a0aec0; text-align:right; }
+</style>
+</head>
+<body>
+<div class="hdr1">國立屏東科技大學學生事務處學生諮商中心</div>
+<div class="hdr2">實習心理師出勤月報表</div>
+<div class="hdr3">姓名：${esc(name)}　年月：${year} 年 ${month} 月</div>
+<div class="hdr4">列印時間：${esc(printDateTime)}</div>
+<div class="hr"></div>
+<table class="rpt">
+  <thead><tr><th style="width:20%;">日期</th><th style="width:14%;">簽到</th><th style="width:14%;">簽退</th><th style="width:14%;">工時</th><th>註記</th></tr></thead>
+  <tbody>${rows.join('')}</tbody>
+</table>
+<div class="summary">
+  <div>當月總工時：<b>${r1(totalWorkHours)} 小時</b></div>
+  <div>請假總時數：<b>${r1(leaveTotal)} 小時</b>（${esc(leaveDetailStr)}）</div>
+  <div>加班認證總時數：<b>${r1(overtimeTotal)} 小時</b></div>
+</div>
+<div class="sig-wrap">
+  <table class="sig-tbl"><tr>
+    <td><div class="sig-cell"><div class="lbl">實習生簽名</div><div class="dt">日期：＿＿＿＿＿＿</div></div></td>
+    <td><div class="sig-cell"><div class="lbl">行政督導</div><div class="dt">日期：＿＿＿＿＿＿</div></div></td>
+    <td><div class="sig-cell"><div class="lbl">專業督導</div><div class="dt">日期：＿＿＿＿＿＿</div></div></td>
+    <td><div class="sig-cell"><div class="lbl">主任</div><div class="dt">日期：＿＿＿＿＿＿</div></div></td>
+  </tr></table>
+</div>
+<div class="foot">${esc(printerName)} 列印　國立屏東科技大學學生諮商中心資訊系統</div>
+</body>
+</html>`;
+
+  const win = window.open('', '_blank', 'width=820,height=1060');
+  if (!win) { alert('請允許彈出視窗以開啟列印預覽'); return; }
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 700);
 }
 
 let _attMapInstance = null;
@@ -23668,6 +23824,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-06', v: 89, title: '回應 #027：打卡系統新增列印月報表（供紙本核章）', isProd: false, items: [
+      item('新功能', '差勤管理後台「打卡紀錄」分頁新增「列印月報表」：管理者／督導可選任一實習生＋月份，列印該生的出勤月報表'),
+      item('新功能', '打卡頁、差勤申請頁新增「列印月報表」：實習生可列印自己的月報表（預設當月，可切換月份）'),
+      item('新功能', '月報表為 A4 直式版面，逐日列出簽到／簽退／工時／請假或加班認證註記，週六日整列淡灰底；底部含當月總工時、請假時數（分假別）、加班認證總時數合計，以及「實習生簽名／行政督導／專業督導／主任」四格核章欄供紙本用印'),
+    ]},
     { date: '2026-07-06', v: 88, title: '回應 #030（第一批）：身心調適假燈號可覆寫、A/B案與主責標示、異動追蹤', isProd: false, items: [
       item('修復', '身心調適假資料庫列表同一筆連請三天的請假不再重複顯示兩顆「連請三天」標籤，僅保留群組標題列那顆'),
       item('新功能', '燈號改為可手動覆寫：風險欄改為下拉選單，可選擇🔴紅燈/🟡黃燈/🔵關注/無燈號，或選回「依關鍵字自動判定」還原自動判定；有手動覆寫時會加註「手動」小字，覆寫值會優先套用於畫面顯示、篩選與統計；任何人變更皆會寫入稽核日誌（含學號、變更前後）'),
