@@ -11788,25 +11788,21 @@ async function saveRecord() {
     const _editOldBkId = _editingRecordId
       ? (casesData[cidx]?.records?.find(r => r.id === _editingRecordId)?.nextBkId || '')
       : '';
-    const conflict = bookingsData.find(b =>
-      b.id !== _editOldBkId &&
-      b.room === nextBkRoom && b.date === nextBkDate &&
-      b.startTime < nextBkEnd && b.endTime > nextBkStart
-    );
-    if (conflict) {
+    const _nbConflict = _bkFindConflict(bookingsData,
+      { id: _editOldBkId || null, date: nextBkDate, room: nextBkRoom, customRoom: '',
+        startTime: nextBkStart, endTime: nextBkEnd, counselors: [{ value: currentUser.email }] },
+      { ignoreIds: _editOldBkId ? [_editOldBkId] : [] });
+    if (_nbConflict) {
+      const w = _nbConflict.with;
+      const wRoom = w.room === '其他' ? (w.customRoom || '其他') : w.room;
       const cEl = document.getElementById('rec-next-bk-conflict');
-      if (cEl) { cEl.style.display = ''; cEl.textContent = `衝突：${nextBkRoom} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已有預約（${conflict.counselorName || '—'}）。`; }
-      _recAlert('預約下次的時間與既有預約衝突，請修改。'); return;
-    }
-    const counselorConflict = bookingsData.find(b =>
-      b.id !== _editOldBkId &&
-      b.date === nextBkDate && _bkHasCounselor(b, currentUser.email) &&
-      b.startTime < nextBkEnd && b.endTime > nextBkStart
-    );
-    if (counselorConflict) {
-      const cEl = document.getElementById('rec-next-bk-conflict');
-      if (cEl) { cEl.style.display = ''; cEl.textContent = `您在 ${(counselorConflict.startTime||'').slice(0,5)}–${(counselorConflict.endTime||'').slice(0,5)} 已有另一預約（${counselorConflict.room || '—'}${counselorConflict.caseName ? '，' + counselorConflict.caseName : ''}）。`; }
-      _recAlert('您在此時段已有其他預約，請修改下次預約時間。'); return;
+      if (_nbConflict.type === 'room') {
+        if (cEl) { cEl.style.display = ''; cEl.textContent = `衝突：${wRoom} 在 ${(w.startTime||'').slice(0,5)}–${(w.endTime||'').slice(0,5)} 已有預約（${w.counselorName || '—'}）。`; }
+        _recAlert('預約下次的時間與既有預約衝突，請修改。'); return;
+      } else {
+        if (cEl) { cEl.style.display = ''; cEl.textContent = `您在 ${(w.startTime||'').slice(0,5)}–${(w.endTime||'').slice(0,5)} 已有另一預約（${wRoom || '—'}${w.caseName ? '，' + w.caseName : ''}）。`; }
+        _recAlert('您在此時段已有其他預約，請修改下次預約時間。'); return;
+      }
     }
   }
   const counselorList = [..._recCounselors];
@@ -11899,38 +11895,32 @@ async function saveRecord() {
               caseId: _recordCaseId, caseName: casesData[cidx]?.name || '',
               notes: '', createdAt: _nbNow, updatedAt: _nbNow };
             bookingsData.push(newBk);
+            const calParamsNb = { room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
+              counselorName: myName, notes: '', creatorName: configData?.users?.[currentUser.email]?.name || myName,
+              createdAt: _nbNow, updatedAt: _nbNow, isEdit: false, bkSerial: newBk.bkSerial };
             const _calLabel2 = `新增行事曆事件：${myName} ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
-            const _calJobId2 = bgJobAdd(_calLabel2);
-            (async () => {
-              try {
-                const _gcCalId = await _bkCalModalSync(_editNextBkId, {
-                  room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
-                  counselorName: myName, notes: '',
-                  creatorName: configData?.users?.[currentUser.email]?.name || myName,
-                  createdAt: _nbNow, updatedAt: _nbNow, isEdit: false, bkSerial: newBk.bkSerial,
-                });
-                if (_gcCalId) newBk.calendarEventId = _gcCalId;
-                bgJobDone(_calJobId2);
-              } catch(e) {
-                bgJobFail(_calJobId2, e.message);
-              }
-            })();
-            _bkGcQueue.set(newBk.id, { ...newBk });
+            const _committed = await _bkCommitOne(newBk, 'create', calParamsNb, _calLabel2);
+            if (!_committed) {
+              const _i = bookingsData.findIndex(x => x.id === newBk.id);
+              if (_i >= 0) bookingsData.splice(_i, 1);
+            }
           } else {
             const bkIdx = bookingsData.findIndex(b => b.id === _editNextBkId);
             if (bkIdx >= 0) {
               const _updLabel = `更新行事曆預約：${myName} `
                 + `${_prevBkSnap?.date||''} ${(_prevBkSnap?.startTime||'').slice(0,5)}–${(_prevBkSnap?.endTime||'').slice(0,5)} ${_prevBkSnap?.room||''}`
                 + ` → ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
-              const _updJobId = bgJobAdd(_updLabel);
               Object.assign(bookingsData[bkIdx], { room: nextBkRoom, date: nextBkDate,
                 startTime: nextBkStart, endTime: nextBkEnd, updatedAt: _nbNow });
-              _bkGcQueue.set(bookingsData[bkIdx].id, { ...bookingsData[bkIdx] });
-              bgJobDone(_updJobId);
+              const calParamsNb2 = { room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
+                counselorName: bookingsData[bkIdx].counselorName || myName, notes: bookingsData[bkIdx].notes || '',
+                creatorName: bookingsData[bkIdx].creatorName || myName,
+                createdAt: bookingsData[bkIdx].createdAt || _nbNow, updatedAt: _nbNow, isEdit: true,
+                bkSerial: bookingsData[bkIdx].bkSerial };
+              const gcMode = bookingsData[bkIdx].calendarEventId ? 'update' : 'create';
+              await _bkCommitOne(bookingsData[bkIdx], gcMode, calParamsNb2, _updLabel);
             }
           }
-          await saveBookings().catch(e => console.warn('預約儲存失敗:', e));
-          _bkGcFlush();
         }
         bgJobProgress(jobId, 90);
         let _auditBkNote = '';
@@ -12021,27 +12011,16 @@ async function saveRecord() {
         }
         bgJobProgress(jobId, 75);
         if (_newBkObj) {
-          await saveBookings().catch(e => console.warn('預約儲存失敗:', e));
-          // Calendar event 建立：獨立 bgJob 以顯示詳細資訊
+          const calParamsNb = { room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
+            counselorName: _newBkObj.counselorName, notes: '',
+            creatorName: configData?.users?.[currentUser.email]?.name || _newBkObj.counselorName,
+            createdAt: _newBkObj.createdAt, updatedAt: _newBkObj.updatedAt, isEdit: false, bkSerial: _newBkObj.bkSerial };
           const _calLabel = `新增行事曆事件：${_newBkObj.counselorName} ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
-          const _calJobId = bgJobAdd(_calLabel);
-          (async () => {
-            try {
-              const _gcCalId = await _bkCalModalSync(_newBkId, {
-                room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
-                counselorName: _newBkObj.counselorName, notes: '',
-                creatorName: configData?.users?.[currentUser.email]?.name || _newBkObj.counselorName,
-                createdAt: _newBkObj.createdAt, updatedAt: _newBkObj.updatedAt,
-                isEdit: false, bkSerial: _newBkObj.bkSerial,
-              });
-              if (_gcCalId) _newBkObj.calendarEventId = _gcCalId;
-              bgJobDone(_calJobId);
-            } catch(e) {
-              bgJobFail(_calJobId, e.message);
-            }
-          })();
-          _bkGcQueue.set(_newBkObj.id, { ..._newBkObj });
-          _bkGcFlush();
+          const _committed = await _bkCommitOne(_newBkObj, 'create', calParamsNb, _calLabel);
+          if (!_committed) {
+            const _bi = bookingsData.findIndex(x => x.id === _newBkObj.id);
+            if (_bi >= 0) bookingsData.splice(_bi, 1);
+          }
         }
         bgJobProgress(jobId, 90);
         const _coupleNote = _savedCoupleCaseId ? `；共用對象：${newRecord.couplePartnerName || _savedCoupleCaseId}` : '';
@@ -19246,8 +19225,17 @@ async function _gcImportAsBooking(entryId) {
       createdAt: now, updatedAt: now, creatorName: myName,
       calendarEventId: ev.id,
     };
-    bookingsData.push(bk);
-    await saveBookings();
+    // 此路徑事件已存在於 GC（匯入既有事件），bkCommit 只負責併發安全寫入 bookings.json，不重複建立/覆蓋 GC 事件
+    const _importResult = await bkCommit([{ op: 'upsert', booking: { ...bk }, gc: { mode: 'none' } }], { checkConflicts: false });
+    if (_importResult.fallback) {
+      bookingsData.push(bk);
+      await saveBookings();
+    } else if (!_importResult.error) {
+      const fb = (_importResult.bookings || []).find(x => x.id === bk.id);
+      bookingsData.push(fb || bk);
+    } else {
+      bookingsData.push(bk); // 理論上不會有 conflict（checkConflicts:false），保底仍寫入本機
+    }
     bgJobProgress(jobId, 70);
     try {
       const _bkClr = _bkEffColor(bk);
@@ -21515,7 +21503,9 @@ async function proxyCall(action, params = {}, _silent = false, _retry = 0, _auth
       throw new Error('身份驗證失敗，請重新登入');
     }
     if (!data.success && data.pong === undefined) throw new Error(data.error || 'Apps Script 回應錯誤');
-    if (data.data && typeof data.data === 'object' && data.data.error && !data.data.ok) throw new Error(data.data.error);
+    // bookingsCommit 的 { error:'conflict', conflictType, with } 是正常業務結果（非後端故障），
+    // 由 bkCommit() 自行判讀，不可在此攔截丟棄成一般 Error（會遺失 conflictType/with 細節）。
+    if (action !== 'bookingsCommit' && data.data && typeof data.data === 'object' && data.data.error && !data.data.ok) throw new Error(data.data.error);
     if (!_silent) _syslog(_isRead ? 'debug' : 'success', `✓ ${action} (${Date.now() - _t0}ms)${_retry > 0 ? ` [重試${_retry}次]` : ''}`);
     if (_retry > 0) _hideRetryNotice();
     return data.data;
@@ -24104,6 +24094,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 94, title: '預約表重構 Slice A：後端 bookingsCommit 寫入閘＋寫入當下衝突檢查', isProd: false, items: [
+      item('改善', '空間預約新增後端 bookingsCommit 動作（LockService 併發鎖）：所有預約新增/編輯/刪除/複製/GC 匯入/GC 同步一律改經此動作寫入 bookings.json，取代前端整檔覆寫，杜絕多人同時操作互相覆蓋彼此的異動'),
+      item('改善', '撞房／撞人衝突改為在後端寫入當下即時檢查（前端本機檢查僅作即時提示），杜絕兩人同時搶訂同房同時段或同一人同時段被排進兩個空間；偵測到衝突時整批不寫入，並提示為「與其他使用者同時操作發生衝突」'),
+    ]},
     { date: '2026-07-06', v: 93, title: 'Google 日曆事件待確認清單三動作＋問題回報7日開放協助驗證', isProd: false, items: [
       item('新功能', '「Google 日曆事件待確認」清單每筆新增「忽略」按鈕：忽略後不再顯示於清單，直到該事件於日曆上再度異動；區塊底部提供收合的「已忽略」小節可隨時取消忽略'),
       item('新功能', '「無對應學諮資訊系統預約」（UNMATCHED）事件新增「匯入為預約」按鈕：一鍵依日曆事件內容建立對應的系統預約，並將標題／流水號／建立者回寫至日曆事件'),
@@ -26216,6 +26210,7 @@ async function syncFromCalendar(silent = false) {
     const auditActions = [];
     let changed = false;
     const deletedIds = new Set();
+    const changedIds = new Set();
     const serialRestoreQueue = [];
     const gcPushBackQueue = [];  // 系統比 GC 新 → 推回 GC
 
@@ -26303,6 +26298,7 @@ async function syncFromCalendar(silent = false) {
 
         if (Object.keys(update).length > 0) {
           changed = true;
+          changedIds.add(b.id);
           auditActions.push({ action: '因' + myName + '同步日曆而更新', caseId: b.caseId || null, detail: rd + (b.counselorName ? '　' + b.counselorName : '') + '　' + diffs.join('；') });
           return { ...b, ...update };
         }
@@ -26310,10 +26306,26 @@ async function syncFromCalendar(silent = false) {
       return b;
     });
 
-    if (deletedIds.size > 0) bookingsData = bookingsData.filter(b => !deletedIds.has(b.id));
-
     if (changed) {
-      await saveBookings();
+      // 批次 bkCommit（gc:'none'，checkConflicts:false）：這裡的變更全部來自 GC 現況比對，不是新的使用者操作，
+      // 不需再做撞房/撞人檢查；GC 事件本身已是最終狀態，不需再回頭觸碰 GC。
+      const ops = [];
+      bookingsData.forEach(b => { if (changedIds.has(b.id)) ops.push({ op: 'upsert', booking: { ...b }, gc: { mode: 'none' } }); });
+      deletedIds.forEach(id => ops.push({ op: 'delete', id, gcEventId: null }));
+      if (deletedIds.size > 0) bookingsData = bookingsData.filter(b => !deletedIds.has(b.id));
+      if (ops.length > 0) {
+        try {
+          const result = await bkCommit(ops, { checkConflicts: false });
+          if (result.fallback) {
+            await saveBookings();
+          } else if (!result.error) {
+            (result.bookings || []).forEach(fb => {
+              const idx = bookingsData.findIndex(x => x.id === fb.id);
+              if (idx >= 0) bookingsData[idx] = fb;
+            });
+          }
+        } catch (e) { console.warn('syncFromCalendar bkCommit failed', e); }
+      }
       auditActions.forEach(a => auditLog(a.action, a.caseId, null, a.detail));
       renderBookingsPage();
     }
@@ -26656,6 +26668,8 @@ async function renderBookingsAuditLog(forceRefresh = false) {
   } catch (_) {}
 }
 
+// 僅供舊後端 fallback（bookingsCommit 尚未部署時）使用，勿新增呼叫——整檔覆寫會被併發操作互相蓋掉。
+// 新寫入一律走 bkCommit()。
 async function saveBookings() {
   try {
     await driveUpdateJsonFile(BOOKINGS_FILE, { bookings: bookingsData });
@@ -26663,6 +26677,53 @@ async function saveBookings() {
     if (e.message.includes('找不到')) {
       await driveCreateJsonFile(BOOKINGS_FILE, { bookings: bookingsData }, DRIVE_FOLDER_ID);
     } else throw e;
+  }
+}
+
+// 併發安全的預約批次寫入（Slice A）：優先走後端 bookingsCommit（LockService＋寫入當下撞房/撞人檢查）。
+// ops: [{op:'upsert', booking, gc:{mode:'create'|'update'|'none', params}} | {op:'delete', id, gcEventId}]
+// 回傳：{ ok:true, bookings:[...], gcErrors:[...] } | { error:'conflict', conflictType, with } | { fallback:true }
+// fallback:true 表示舊後端尚未部署（Unknown action），呼叫端需自行沿用 saveBookings() 整檔覆寫路徑。
+async function bkCommit(ops, opts = {}) {
+  const checkConflicts = opts.checkConflicts !== false;
+  const skipPersonConflict = !!opts.skipPersonConflict;
+  const res = await proxyCall('bookingsCommit', { ops, checkConflicts, skipPersonConflict });
+  if (res == null) return { fallback: true };
+  if (res.error && /Unknown action/i.test(res.error)) return { fallback: true };
+  return res;
+}
+
+// 單筆預約 upsert 的 bkCommit 便利包裝（供個案紀錄「下次預約」新增/編輯使用）。
+// bk 為 bookingsData 內的實際物件參照，成功時會被就地合併回後端最終狀態（含新 calendarEventId）。
+// 回傳 bk（成功／fallback）或 null（衝突或失敗，已透過 bgJobFail 記錄，呼叫端應自行回滾 bk）。
+async function _bkCommitOne(bk, gcMode, gcParams, jobLabel) {
+  const jobId = bgJobAdd(jobLabel);
+  try {
+    const res = await bkCommit([{ op: 'upsert', booking: { ...bk }, gc: { mode: gcMode, params: gcParams || null } }]);
+    if (res.fallback) {
+      try {
+        if (gcMode === 'create') {
+          const eid = await proxyCall('createCalendarEvent', gcParams);
+          if (eid) bk.calendarEventId = eid;
+        } else if (gcMode === 'update' && bk.calendarEventId) {
+          await proxyCall('updateCalendarEvent', { eventId: bk.calendarEventId, ...gcParams });
+        }
+      } catch (_) {}
+      await saveBookings().catch(() => {});
+      bgJobDone(jobId);
+      return bk;
+    }
+    if (res.error) {
+      bgJobFail(jobId, res.conflictType ? `與其他人${res.conflictType === 'person' ? '人員' : '空間'}衝突` : res.error);
+      return null;
+    }
+    const fb = (res.bookings || []).find(x => x.id === bk.id);
+    if (fb) Object.assign(bk, fb);
+    bgJobDone(jobId);
+    return bk;
+  } catch (e) {
+    bgJobFail(jobId, e.message);
+    return null;
   }
 }
 
@@ -29502,6 +29563,39 @@ function _bkNormalizeCounselors(b) {
 }
 function _bkHasCounselor(b, value) { return !!value && _bkNormalizeCounselors(b).some(c => c.value === value); }
 
+// 統一撞房／撞人衝突檢查（純函式）。與後端 Code.gs 的 _bkFindConflictGs_ 邏輯一致（各自實作、規則相同）。
+// existing: 要比對的既有預約陣列；candidate: {id,date,room,customRoom,startTime,endTime,counselors}
+// opts: { ignoreIds: Set|Array, skipPerson: bool }；回傳 null 或 { type:'room'|'person', with: booking }
+// 註：簽名不用預設參數 `opts = {}`——test/harness.js 以 indexOf('{') 找函式本體，會被預設參數的大括號誤導。
+function _bkFindConflict(existing, candidate, opts) {
+  opts = opts || {};
+  const ignoreIds = opts.ignoreIds instanceof Set ? opts.ignoreIds : new Set(opts.ignoreIds || []);
+  const cStart = (candidate.startTime || '').slice(0, 5);
+  const cEnd   = (candidate.endTime   || '').slice(0, 5);
+  const cRoom  = candidate.room === '其他' ? (candidate.customRoom || '') : (candidate.room || '');
+  const cCounselorValues = (candidate.counselors || [])
+    .map(c => c && c.value).filter(v => v && v !== '中心會議');
+
+  for (const b of existing) {
+    if (!b || !b.id) continue;
+    if (candidate.id && b.id === candidate.id) continue;
+    if (ignoreIds.has(b.id)) continue;
+    if (b.date !== candidate.date) continue;
+    const bStart = (b.startTime || '').slice(0, 5);
+    const bEnd   = (b.endTime   || '').slice(0, 5);
+    if (!(cStart < bEnd && cEnd > bStart)) continue;
+
+    const bRoom = b.room === '其他' ? (b.customRoom || '') : (b.room || '');
+    if (cRoom && bRoom && cRoom === bRoom) return { type: 'room', with: b };
+
+    if (!opts.skipPerson && cRoom !== bRoom) {
+      const bCounselorValues = _bkNormalizeCounselors(b).map(c => c.value).filter(v => v && v !== '中心會議');
+      if (cCounselorValues.some(v => bCounselorValues.includes(v))) return { type: 'person', with: b };
+    }
+  }
+  return null;
+}
+
 function _populateBookingCounselorSelect(restoreOpts) {
   if (restoreOpts !== undefined) _bkSelectedOpts = Array.isArray(restoreOpts) ? [...restoreOpts] : [];
   const opts = _bkBuildAllOpts();
@@ -29806,7 +29900,14 @@ async function syncBookingToCalendar(id) {
     if (calendarEventId) {
       const idx = bookingsData.findIndex(x => x.id === id);
       if (idx >= 0) bookingsData[idx].calendarEventId = calendarEventId;
-      await saveBookings();
+      // 先拿到 eventId 再補寫：bkCommit 只負責併發安全寫回 calendarEventId，GC 已在上一步建立完成（gc:'none'）
+      const result = await bkCommit([{ op: 'upsert', booking: { ...(idx >= 0 ? bookingsData[idx] : b) }, gc: { mode: 'none' } }], { checkConflicts: false });
+      if (result.fallback) {
+        await saveBookings();
+      } else if (!result.error) {
+        const fb = (result.bookings || []).find(x => x.id === id);
+        if (fb && idx >= 0) bookingsData[idx] = fb;
+      }
       const statusEl = document.getElementById('bk-cal-sync-status');
       if (statusEl) statusEl.innerHTML = '✅ <strong>同步完成！</strong>';
     } else {
@@ -30047,16 +30148,26 @@ async function _bkCopyToNextWeekConfirm() {
   document.getElementById('bk-copy-options-modal').style.display = 'none';
   const newDate = _bkAddDays(b.date, 7);
   showLoading('複製中…');
+  const newBk = { ...b, id: `bk_${Date.now()}`, bkSerial: _bkNextSerial(),
+    date: newDate, calendarEventId: null, createdAt: new Date().toISOString(), createdBy: currentUser?.email };
   try {
-    const newBk = { ...b, id: `bk_${Date.now()}`, bkSerial: _bkNextSerial(),
-      date: newDate, calendarEventId: null, createdAt: new Date().toISOString(), createdBy: currentUser?.email };
-    bookingsData.push(newBk);
-    await saveBookings();
+    const result = await bkCommit([{ op: 'upsert', booking: newBk, gc: { mode: 'none' } }]);
+    if (result.fallback) {
+      bookingsData.push(newBk);
+      await saveBookings();
+    } else if (result.error === 'conflict') {
+      const w = result.with || {};
+      const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+      const kind = result.conflictType === 'person' ? '人員' : '空間';
+      throw new Error(`與其他使用者同時操作發生${kind}衝突（${wRoom} ${w.date||''} ${(w.startTime||'').slice(0,5)}–${(w.endTime||'').slice(0,5)}${w.counselorName ? '　'+w.counselorName : ''}）`);
+    } else {
+      const fb = (result.bookings || []).find(x => x.id === newBk.id);
+      bookingsData.push(fb || newBk);
+    }
     auditLog(`空間預約 複製到下週`, null, null, `${b.room} ${newDate} ${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)}`);
     renderBookingsPage();
     setAlert('bookings-alert', 'ok', `已複製到 ${newDate}。`);
   } catch (e) {
-    bookingsData.pop();
     alert('複製失敗：' + e.message);
   } finally {
     hideLoading();
@@ -30139,6 +30250,7 @@ async function saveBooking() {
       return;
     }
   }
+  const skipPersonConflict = _bkSkipPersonConflict;
   _bkSkipPersonConflict = false;
 
   // counselorName：所有選中人員姓名以半形逗號串接，同時作為畫面顯示與 GC 標題來源
@@ -30153,7 +30265,7 @@ async function saveBooking() {
   const repeatCount = isRepeat ? Math.max(2, Math.min(16, parseInt(document.getElementById('bk-repeat-count')?.value || '4'))) : 1;
   const seriesId = isRepeat ? `series_${Date.now()}` : null;
 
-  // 先取舊的 calendarEventId 與舊狀態快照（編輯時用，供稽核日誌差異比對）
+  // 先取舊的 calendarEventId 與舊狀態快照（編輯時用，供稽核日誌差異比對與衝突回滾）
   const _oldBkSnap = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
   const newSerial = _editingBookingId ? (_oldBkSnap?.bkSerial) : _bkNextSerial();
   const _bkOverride = _bkPickedColor || '';
@@ -30166,11 +30278,19 @@ async function saveBooking() {
   const existingCalEventId = _oldBkSnap?.calendarEventId;
   const newId = _editingBookingId || `bk_${Date.now()}`;
 
-  // 立即更新本機資料
+  // 動手前先快照，供後端回報衝突時回滾本機樂觀更新
+  const _bkSnapshot = bookingsData.map(b => ({ ...b }));
+  const ops = []; // bkCommit 的 upsert 清單
+  const _pushOp = (bk, gcMode, gcParams) => {
+    ops.push({ op: 'upsert', booking: { ...bk }, gc: { mode: gcMode, params: gcParams || null } });
+  };
+
+  // 立即更新本機資料（樂觀更新）
   if (_editingBookingId) {
     const _editedB = bookingsData.find(x => x.id === _editingBookingId);
     if (_editedB?.seriesId && _bkEditScope !== 'this') {
       // T3：系列編輯 — 套用到選定範圍（不改日期，只改其他欄位）
+      // 沿用既有行為：GC 事件僅同步當初被點選編輯的那一筆，其餘系列筆數不觸碰 GC
       bookingsData
         .filter(x => x.seriesId === _editedB.seriesId && (_bkEditScope === 'all' || x.date >= _editedB.date))
         .forEach(sb => {
@@ -30180,6 +30300,8 @@ async function saveBooking() {
           sb.caseId = caseId || ''; sb.caseName = caseObj?.name || '';
           sb.notes = notes; sb.updatedAt = now;
           if (_bkOverride) sb.bkOverrideColor = _bkOverride; else delete sb.bkOverrideColor;
+          const isPrimary = sb.id === _editingBookingId;
+          _pushOp(sb, isPrimary ? (existingCalEventId ? 'update' : 'create') : 'none', isPrimary ? calParams : null);
         });
     } else {
       const idx = bookingsData.findIndex(x => x.id === _editingBookingId);
@@ -30189,10 +30311,11 @@ async function saveBooking() {
           counselors, counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
           notes, updatedAt: now };
         if (_bkOverride) bookingsData[idx].bkOverrideColor = _bkOverride; else delete bookingsData[idx].bkOverrideColor;
+        _pushOp(bookingsData[idx], existingCalEventId ? 'update' : 'create', calParams);
       }
     }
   } else {
-    // T2：單筆或系列建立
+    // T2：單筆或系列建立 — 沿用既有行為：僅第一筆（si===0）建立 GC 事件，其餘系列筆數待手動同步
     for (let _si = 0; _si < repeatCount; _si++) {
       const _sDate = _si === 0 ? date : _bkAddDays(date, _si * repeatFreqDays);
       const _sObj = {
@@ -30205,6 +30328,7 @@ async function saveBooking() {
       if (seriesId) _sObj.seriesId = seriesId;
       if (_bkOverride) _sObj.bkOverrideColor = _bkOverride;
       bookingsData.push(_sObj);
+      _pushOp(_sObj, _si === 0 ? 'create' : 'none', _si === 0 ? calParams : null);
     }
   }
 
@@ -30213,29 +30337,49 @@ async function saveBooking() {
   _recordBkFreq(_bkSelectedOpts[0]?.value);
   renderBookingsPage();
 
-  // 背景：同步 GC + 儲存至 Drive（不阻擋 UI）
+  // 背景：bookingsCommit（併發安全寫入＋衝突檢查）+ GC 同步（不阻擋 UI）
   const _bkJobLabel = _editingBookingId ? '編輯空間預約' : '新增空間預約';
   const _bkJobDetail = `${room} ${date} ${(start||'').slice(0,5)}–${(end||'').slice(0,5)}`;
   const jobId = bgJobAdd(_bkJobLabel, _bkJobDetail);
   (async () => {
     try {
-      let calendarEventId = undefined;
-      try {
-        if (_editingBookingId && existingCalEventId) {
-          await proxyCall('updateCalendarEvent', { eventId: existingCalEventId, ...calParams });
-          calendarEventId = existingCalEventId;
-        } else {
-          calendarEventId = await proxyCall('createCalendarEvent', calParams);
-        }
-      } catch (_) {}
-      bgJobProgress(jobId, 60);
+      const result = await bkCommit(ops, { skipPersonConflict });
 
-      if (calendarEventId !== undefined) {
-        const bk = bookingsData.find(x => x.id === newId);
-        if (bk) bk.calendarEventId = calendarEventId;
+      if (result.error === 'conflict') {
+        // 與其他使用者同時操作衝突：整批不寫入，回滾本機樂觀更新並重新載入
+        bookingsData = _bkSnapshot;
+        await refreshBookings();
+        const w = result.with || {};
+        const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+        const kind = result.conflictType === 'person' ? '人員' : '空間';
+        setAlert('bookings-alert', 'warn',
+          `⚠ 儲存失敗：與其他使用者同時操作發生${kind}衝突（${escHtml(wRoom)} ${escHtml(w.date||'')} ${escHtml((w.startTime||'').slice(0,5))}–${escHtml((w.endTime||'').slice(0,5))}${w.counselorName ? '　'+escHtml(w.counselorName) : ''}），請重新確認後再操作一次。`);
+        bgJobFail(jobId, `與其他使用者${kind}衝突`);
+        return;
       }
 
-      await saveBookings();
+      if (result.fallback) {
+        // 舊後端尚未部署：沿用原路徑（本機已樂觀更新，整檔覆寫＋前端自行呼叫 GC action）
+        for (const o of ops) {
+          if (o.gc.mode === 'none') continue;
+          try {
+            if (o.gc.mode === 'update' && o.booking.calendarEventId) {
+              await proxyCall('updateCalendarEvent', { eventId: o.booking.calendarEventId, ...o.gc.params });
+            } else if (o.gc.mode === 'create') {
+              const eid = await proxyCall('createCalendarEvent', o.gc.params);
+              if (eid) { const bk = bookingsData.find(x => x.id === o.booking.id); if (bk) bk.calendarEventId = eid; }
+            }
+          } catch (_) {}
+        }
+        await saveBookings();
+      } else {
+        // 成功：套用後端回傳的最終狀態（含新 calendarEventId）
+        (result.bookings || []).forEach(fb => {
+          const idx = bookingsData.findIndex(x => x.id === fb.id);
+          if (idx >= 0) bookingsData[idx] = fb;
+        });
+      }
+
       bgJobProgress(jobId, 90);
       let _bkDetail;
       if (_editingBookingId && _oldBkSnap) {
@@ -30295,7 +30439,8 @@ async function _bkConfirmDeleteSeries(scope) {
 }
 
 function _doDeleteBookings(idsToDelete, primaryB) {
-  const calEventIds = idsToDelete.map(id => bookingsData.find(x => x.id === id)?.calendarEventId).filter(Boolean);
+  const toDelete = idsToDelete.map(id => bookingsData.find(x => x.id === id)).filter(Boolean);
+  const ops = toDelete.map(b => ({ op: 'delete', id: b.id, gcEventId: b.calendarEventId || null }));
   const _delRoomD = primaryB.room === '其他' ? (primaryB.customRoom||'其他') : primaryB.room;
   const _delDetail = `${_delRoomD}　${primaryB.date}　${(primaryB.startTime||'').slice(0,5)}–${(primaryB.endTime||'').slice(0,5)}${primaryB.counselorName ? '　' + primaryB.counselorName : ''}`;
   const _suffix = idsToDelete.length > 1 ? ` (共${idsToDelete.length}筆)` : '';
@@ -30303,18 +30448,26 @@ function _doDeleteBookings(idsToDelete, primaryB) {
   bookingsData = bookingsData.filter(x => !idsToDelete.includes(x.id));
   renderBookingsPage();
   const jobId = bgJobAdd(`刪除空間預約：${_delDetail}${_suffix}`);
+  const _doCommitDelete = async () => {
+    const result = await bkCommit(ops, { checkConflicts: false });
+    if (result.fallback) {
+      toDelete.forEach(b => { if (b.calendarEventId) proxyCall('deleteCalendarEvent', { eventId: b.calendarEventId }).catch(() => {}); });
+      await saveBookings();
+    } else if (result.error) {
+      throw new Error(result.error);
+    }
+  };
   (async () => {
-    calEventIds.forEach(evId => proxyCall('deleteCalendarEvent', { eventId: evId }).catch(() => {}));
     bgJobProgress(jobId, 40);
     try {
-      await saveBookings();
+      await _doCommitDelete();
       bgJobDone(jobId);
       auditLog('刪除空間預約', primaryB.caseId || null, null, _delDetail + _suffix);
     } catch (e) {
       // 5 秒後自動重試一次，仍失敗才醒目提醒
       await new Promise(r => setTimeout(r, 5000));
       try {
-        await saveBookings();
+        await _doCommitDelete();
         bgJobDone(jobId);
         auditLog('刪除空間預約', primaryB.caseId || null, null, _delDetail + _suffix);
       } catch (_) {

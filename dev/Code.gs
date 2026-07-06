@@ -90,6 +90,7 @@ function doPost(e) {
       case 'submitUserApplication': result = submitUserApplication_({ ...params, submittedByEmail: userEmail, ctx }); break;
       case 'startupBatch':         result = startupBatch_(params, ctx); break;
       case 'casesUpsert':          result = casesUpsert_(params, ctx); break;
+      case 'bookingsCommit':       result = bookingsCommit_(params, ctx); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
     return jsonResp_(result);
@@ -1423,4 +1424,195 @@ function casesUpsert_({ path, upserts, removes }, ctx) {
   } finally {
     try { lock.releaseLock(); } catch (_) {}
   }
+}
+
+// ── bookings.json 併發安全的批次寫入（LockService）＋寫入當下撞房/撞人檢查 ──
+// 前端所有預約寫入路徑（新增/編輯/刪除/複製/GC 匯入/GC 同步）一律經此收斂，
+// 取代「前端整檔覆寫 bookings.json」與「衝突檢查只在前端本機快取做」兩個結構性風險。
+//
+// ops 元素：
+//   { op:'upsert', booking:{...完整預約物件}, gc:{ mode:'create'|'update'|'none', params:{...} } }
+//   { op:'delete', id, gcEventId }
+//
+// 與前端 _bkFindConflict() 同一套規則（各自實作，行為需保持一致）。
+function _bkNormalizeCounselorsGs_(b) {
+  if (b && Array.isArray(b.counselors) && b.counselors.length) return b.counselors;
+  if (b && (b.counselorEmail || b.counselorName)) {
+    return [{ value: b.counselorEmail || b.counselorName }];
+  }
+  return [];
+}
+
+function _bkFindConflictGs_(existing, candidate, opts) {
+  opts = opts || {};
+  var cStart = String(candidate.startTime || '').slice(0, 5);
+  var cEnd   = String(candidate.endTime   || '').slice(0, 5);
+  var cRoom  = candidate.room === '其他' ? (candidate.customRoom || '') : (candidate.room || '');
+  var cCounselorValues = (candidate.counselors || [])
+    .map(function (c) { return c && c.value; })
+    .filter(function (v) { return v && v !== '中心會議'; });
+
+  for (var i = 0; i < existing.length; i++) {
+    var b = existing[i];
+    if (!b || !b.id) continue;
+    if (b.date !== candidate.date) continue;
+    var bStart = String(b.startTime || '').slice(0, 5);
+    var bEnd   = String(b.endTime   || '').slice(0, 5);
+    if (!(cStart < bEnd && cEnd > bStart)) continue;
+
+    var bRoom = b.room === '其他' ? (b.customRoom || '') : (b.room || '');
+    if (cRoom && bRoom && cRoom === bRoom) return { type: 'room', with: b };
+
+    if (!opts.skipPerson && cRoom !== bRoom) {
+      var bCounselorValues = _bkNormalizeCounselorsGs_(b)
+        .map(function (c) { return c && c.value; })
+        .filter(function (v) { return v && v !== '中心會議'; });
+      if (cCounselorValues.some(function (v) { return bCounselorValues.indexOf(v) !== -1; })) {
+        return { type: 'person', with: b };
+      }
+    }
+  }
+  return null;
+}
+
+// 讀 bookings.json（檔不存在則回傳空殼）；回傳 { fileId, data }
+function _bkReadFile_(ctx) {
+  var path = 'bookings.json';
+  var fileId = null;
+  var data = { bookings: [] };
+  try {
+    fileId = resolvePathToId_(path, ctx);
+    var res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() < 400) {
+      try { data = JSON.parse(res.getContentText()); } catch (_) { data = { bookings: [] }; }
+      if (!data || !Array.isArray(data.bookings)) data = { bookings: [] };
+    }
+  } catch (_) { /* 檔不存在，稍後建立 */ }
+  return { fileId: fileId, data: data };
+}
+
+function _bkWriteFile_(fileId, data, ctx) {
+  if (fileId) {
+    driveUpdateContent_(fileId, data);
+    return fileId;
+  }
+  var pn = resolvePathToParentAndName_('bookings.json', ctx);
+  var created = driveUpload_(pn.fileName, data, pn.parentId);
+  return created.id;
+}
+
+function bookingsCommit_({ ops, checkConflicts, skipPersonConflict }, ctx) {
+  if (!Array.isArray(ops) || !ops.length) throw new Error('bookingsCommit: ops required');
+
+  const upsertOps = ops.filter(function (o) { return o && o.op === 'upsert' && o.booking && o.booking.id; });
+  const deleteOps  = ops.filter(function (o) { return o && o.op === 'delete' && o.id; });
+
+  // ── Phase 1：鎖內 RMW（衝突檢查 + 套用 upsert/delete + 寫檔）──
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  let data, fileId;
+  try {
+    const loaded = _bkReadFile_(ctx);
+    fileId = loaded.fileId;
+    data = loaded.data;
+
+    if (checkConflicts) {
+      const batchIds = {};
+      upsertOps.forEach(function (o) { batchIds[o.booking.id] = true; });
+      for (let i = 0; i < upsertOps.length; i++) {
+        const cand = upsertOps[i].booking;
+        const pool = data.bookings.filter(function (b) {
+          return b && b.id && b.id !== cand.id && !batchIds[b.id];
+        });
+        const conflict = _bkFindConflictGs_(pool, cand, { skipPerson: !!skipPersonConflict });
+        if (conflict) {
+          const w = conflict.with;
+          return {
+            error: 'conflict',
+            conflictType: conflict.type,
+            with: {
+              id: w.id, date: w.date, room: w.room, customRoom: w.customRoom || '',
+              startTime: w.startTime, endTime: w.endTime,
+              counselorName: w.counselorName || '', bkSerial: w.bkSerial
+            }
+          };
+        }
+      }
+    }
+
+    const pos = {};
+    data.bookings.forEach(function (b, idx) { if (b && b.id) pos[b.id] = idx; });
+    const usedSerials = {};
+    data.bookings.forEach(function (b) { if (b && b.bkSerial) usedSerials[b.bkSerial] = true; });
+
+    upsertOps.forEach(function (o) {
+      const entry = o.booking;
+      const isNew = pos[entry.id] === undefined;
+      if (isNew && entry.bkSerial && usedSerials[entry.bkSerial]) {
+        let maxSerial = 0;
+        data.bookings.forEach(function (b) { if (b && b.bkSerial > maxSerial) maxSerial = b.bkSerial; });
+        entry.bkSerial = maxSerial + 1;
+      }
+      if (entry.bkSerial) usedSerials[entry.bkSerial] = true;
+      if (pos[entry.id] !== undefined) data.bookings[pos[entry.id]] = entry;
+      else { pos[entry.id] = data.bookings.length; data.bookings.push(entry); }
+    });
+
+    const rmSet = {};
+    deleteOps.forEach(function (o) { rmSet[o.id] = true; });
+    if (Object.keys(rmSet).length) {
+      data.bookings = data.bookings.filter(function (b) { return b && b.id && !rmSet[b.id]; });
+    }
+
+    fileId = _bkWriteFile_(fileId, data, ctx);
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+
+  // ── Phase 2：鎖外，GC best-effort（不影響 Phase 1 已成功寫入的資料）──
+  const gcErrors = [];
+  const idToNewEventId = {};
+  ops.forEach(function (o) {
+    try {
+      if (o.op === 'upsert' && o.gc && o.gc.mode === 'create') {
+        const eid = createCalendarEvent_(o.gc.params, ctx);
+        if (eid) idToNewEventId[o.booking.id] = eid;
+      } else if (o.op === 'upsert' && o.gc && o.gc.mode === 'update' && o.booking.calendarEventId) {
+        updateCalendarEvent_(Object.assign({ eventId: o.booking.calendarEventId }, o.gc.params), ctx);
+      } else if (o.op === 'delete' && o.gcEventId) {
+        deleteCalendarEvent_({ eventId: o.gcEventId }, ctx);
+      }
+    } catch (e) {
+      gcErrors.push({ id: (o.booking && o.booking.id) || o.id, message: (e && e.message) || String(e) });
+    }
+  });
+
+  // ── Phase 3：僅在 Phase 2 拿到新 eventId 時，再次鎖內補寫 calendarEventId ──
+  if (Object.keys(idToNewEventId).length) {
+    const lock2 = LockService.getScriptLock();
+    lock2.waitLock(15000);
+    try {
+      const loaded2 = _bkReadFile_(ctx);
+      let fileId2 = loaded2.fileId;
+      const data2 = loaded2.data;
+      let touched = false;
+      data2.bookings = data2.bookings.map(function (b) {
+        if (b && idToNewEventId[b.id]) { touched = true; return Object.assign({}, b, { calendarEventId: idToNewEventId[b.id] }); }
+        return b;
+      });
+      if (touched) _bkWriteFile_(fileId2, data2, ctx);
+      data = data2;
+    } finally {
+      try { lock2.releaseLock(); } catch (_) {}
+    }
+  }
+
+  const affectedIds = {};
+  upsertOps.forEach(function (o) { affectedIds[o.booking.id] = true; });
+  const finalBookings = data.bookings.filter(function (b) { return b && affectedIds[b.id]; });
+
+  return { ok: true, bookings: finalBookings, gcErrors: gcErrors };
 }
