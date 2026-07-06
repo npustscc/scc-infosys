@@ -22638,6 +22638,10 @@ function printAttendanceMonthlyReport(email, yyyymm) {
       notes.push(a.kind === 'overtime' ? `加班認證 ${a.hours} 小時` : `${a.leaveTypeName} ${a.hours} 小時`);
     });
 
+    // 週六日預設不列印整列；但當天若有打卡（含手動補登）、核准請假或加班認證，仍照常呈現該列（含灰底標示週末）
+    const hasRecordToday = !!w || notes.length > 0;
+    if (isWeekend && !hasRecordToday) continue;
+
     rows.push(`<tr${isWeekend ? ' class="we"' : ''}>
       <td>${month}/${day}（${weekdays[dow]}）</td>
       <td>${esc(inCell)}</td>
@@ -23889,6 +23893,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-06', v: 91, title: '#030/#027 驗證回饋修正', isProd: false, items: [
+      item('修復', '身心調適假燈號下拉選單：「（依關鍵字自動判定）」選項文字改短為「系統判定」；下拉本身縮窄並改用較小字體，避免與右側「受理情況」下拉重疊'),
+      item('修復', '身心調適假受輔生清單「主責」標示改為只顯示姓名，不再附帶職稱，避免與其他標籤擠壓排版'),
+      item('修復', '「🔔 再次提醒」按鈕：位置從 A/B案資訊列移到學生姓名下方；改為僅顯示鈴鐺圖示，滑鼠移上顯示提示文字；可見範圍由「所有專任人員」收縮為「身心調適假窗口、主任、系統管理者」，A/B案標示、主責姓名、主責已讀/未讀標示不受影響仍維持專任可見'),
+      item('修復', '出勤月報表：週六日預設整列不列印；若該日有打卡（含手動補登）、核准請假或加班認證，仍照常列印該列並維持灰底標示為週末；平日與合計數字不受影響'),
+    ]},
     { date: '2026-07-06', v: 90, title: '回應 #030：身心狀態評估表數位化（身心調適假連續三日者適用）', isProd: false, items: [
       item('新功能', '身心調適假新增「身心狀態評估表」數位表單（113 年 4 月 17 日中心會議通過版）：含基本資料自動帶入、BSRS-5 簡式健康量表（自動計分，(1)-(5) 題總分與★自殺想法分數獨立顯示）、就醫史、支持系統、住宿情形、評估結果五大區塊'),
       item('新功能', '適用對象為「非受輔生且紅燈或連請三日」：身心調適假資料庫中符合條件的紀錄（連請三日區段掛第一筆、純紅燈掛該筆）顯示「📝 填寫評估表」按鈕，已填顯示「評估表 ✓」可檢視/編輯/列印；填寫/編輯僅身心調適假窗口、主任、系統管理者可用，其他人完全看不到入口'),
@@ -26760,13 +26770,13 @@ function _mlEffectiveRisk(l) {
 function _mlRiskOverrideSelect(l) {
   const { level, isOverride } = _mlEffectiveRisk(l);
   const opts = [
-    { v: '', lbl: '（依關鍵字自動判定）' },
+    { v: '', lbl: '系統判定' },
     { v: '3', lbl: '🔴 紅燈' },
     { v: '2', lbl: '🟡 黃燈' },
     { v: '1', lbl: '🔵 關注' },
     { v: '0', lbl: '無燈號' },
   ];
-  return `<select onchange="window._mlSetRiskOverride('${escHtml(l.id)}',this.value)" style="font-size:.75rem;border:1px solid #cbd5e0;border-radius:4px;padding:1px 3px;max-width:150px;cursor:pointer;">
+  return `<select onchange="window._mlSetRiskOverride('${escHtml(l.id)}',this.value)" style="font-size:.7rem;border:1px solid #cbd5e0;border-radius:4px;padding:1px 2px;max-width:78px;width:78px;cursor:pointer;">
     ${opts.map(o => `<option value="${o.v}"${(isOverride ? String(level) === o.v : o.v === '') ? ' selected' : ''}>${o.lbl}</option>`).join('')}
   </select>`;
 }
@@ -27578,6 +27588,8 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
   const allChecked = pageRecords.length > 0 && pageRecords.every(l => _mlCheckedIds.has(l.id));
 
   const _mlFT = _mlIsFullTimeStaff();
+  // ④c：🔔再次提醒按鈕收縮至窗口／主任／系統管理者可見（A/B案badge、主責姓名、已讀/未讀標示仍維持專任可見 _mlFT，不受此收縮影響）
+  const _mlBellVisible = isMentalLeaveContact || currentRole === '主任' || currentRole === '系統管理者' || extraRole === '管理者';
   const rowsHtml = pageRecords.length ? pageRecords.map(l => {
     const { matchedKeywords } = _mlMatchKeywords(l.reason);
     const { level: maxLevel, isOverride: _mlIsOverride } = _mlEffectiveRisk(l);
@@ -27585,9 +27597,17 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       `<span style="font-size:.7rem;background:${maxLevel===3?'#fed7d7':maxLevel===2?'#fef9c3':'#dbeafe'};color:${maxLevel===3?'#9b2c2c':maxLevel===2?'#854d0e':'#1e40af'};border-radius:4px;padding:0 5px;margin-right:2px;">${escHtml(k.kw)}</span>`
     ).join('') + (matchedKeywords.length > 4 ? `<span style="font-size:.7rem;color:#718096;">+${matchedKeywords.length-4}</span>` : '');
     const mc = casesData.find(c => !c.deleted && c.studentId === l.studentId);
-    const nameLink = mc
+    const _mlRecSem = l.semester || '';
+    const _mlHasCase = _mlRecSem ? _hasCaseInSem(l.studentId, _mlRecSem) : null;
+    // ④a：🔔再次提醒移至學生姓名下方；④c：僅窗口／主任／系統管理者可見（見 _mlBellVisible）
+    const _mlCounselorEmailForBell = (_mlFT && mc && _mlHasCase) ? (mc.counselorEmail || '') : '';
+    const _mlIsAckedForBell = _mlCounselorEmailForBell && (l.acknowledgedBy||[]).includes(_mlCounselorEmailForBell);
+    const _mlBellBtn = (_mlBellVisible && _mlCounselorEmailForBell && !_mlIsAckedForBell)
+      ? `<div style="margin-top:2px;"><button onclick="event.stopPropagation();window._mlRemind('${escHtml(l.id)}')" style="border:none;background:#fef3c7;color:#92400e;border-radius:4px;padding:1px 5px;font-size:.75rem;cursor:pointer;" data-tip="重新發送提醒給主責">🔔</button></div>`
+      : '';
+    const nameLink = (mc
       ? `<button onclick="showCaseDetail('${escHtml(mc.id)}')" style="border:none;background:none;cursor:pointer;color:#2b6cb0;font-weight:600;padding:0;font-size:inherit;">${escHtml(l.name||'—')}</button>`
-      : `<span>${escHtml(l.name||'—')}</span>`;
+      : `<span>${escHtml(l.name||'—')}</span>`) + _mlBellBtn;
     const runInfo = _runInfoMap[l.id] || {};
     const isRunChild = runInfo.isRun;
     const rowBg = isRunChild
@@ -27602,12 +27622,10 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     const dateBadge = runInfo.isRun
       ? `<div style="margin-top:2px;"><span style="background:#e8f4fd;color:#1e40af;border-radius:4px;padding:0 5px;font-size:.7rem;">連假</span></div>`
       : '';
-    const _mlRecSem = l.semester || '';
-    const _mlHasCase = _mlRecSem ? _hasCaseInSem(l.studentId, _mlRecSem) : null;
     const _mlCaseBadge = (_mlRecSem && !_mlHasCase)
       ? `<span style="display:inline-block;background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 5px;font-size:.68rem;margin-top:2px;">未開案</span>`
       : '';
-    // ③④：僅專任人員可見「A/B案＋主責」與「主責已讀／再次提醒」（不得向兼任/義務輔導老師/實習生等揭露該生為個案）
+    // ③④：僅專任人員可見「A/B案＋主責」與「主責已讀」標示（不得向兼任/義務輔導老師/實習生等揭露該生為個案）；🔔再次提醒已移至姓名欄下方且另行收縮可見範圍（見 _mlBellBtn/_mlBellVisible）
     const _mlCaseInfoBadge = (_mlFT && mc && _mlHasCase) ? (() => {
       const abT = mc.basicInfoSnapshots?.[_mlRecSem]?.abType || mc.abType || '';
       const abBadge = abT === 'A案'
@@ -27615,13 +27633,14 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
         : abT === 'B案'
         ? '<span style="display:inline-block;background:#fef3c7;color:#92400e;border-radius:4px;padding:0 5px;font-size:.68rem;font-weight:600;">B案</span>'
         : '';
-      const counselorLbl = formatCounselorLabel(mc.counselorEmail) || mc.counselorName || mc.counselorText || '—';
+      // 主責顯示僅姓名、不含職稱（避免與職稱過長排版擠壓）
+      const counselorLbl = configData?.users?.[mc.counselorEmail]?.name || mc.counselorName || mc.counselorText || '—';
       const counselorEmail = mc.counselorEmail || '';
       const isAcked = counselorEmail && (l.acknowledgedBy||[]).includes(counselorEmail);
       const ackBadge = counselorEmail
         ? (isAcked
             ? '<span style="display:inline-block;background:#c6f6d5;color:#276749;border-radius:4px;padding:0 5px;font-size:.68rem;">主責已讀 ✓</span>'
-            : `<span style="display:inline-block;background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 5px;font-size:.68rem;">主責未讀</span> <button onclick="event.stopPropagation();window._mlRemind('${escHtml(l.id)}')" style="border:none;background:#fef3c7;color:#92400e;border-radius:4px;padding:0 5px;font-size:.68rem;cursor:pointer;" data-tip="重新發送提醒給主責人員">🔔 再次提醒</button>`)
+            : '<span style="display:inline-block;background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 5px;font-size:.68rem;">主責未讀</span>')
         : '';
       return `<div style="margin-top:3px;display:flex;align-items:center;gap:4px;flex-wrap:wrap;">${abBadge}<span style="font-size:.72rem;color:#4a5568;">主責：${escHtml(counselorLbl)}</span>${ackBadge}</div>`;
     })() : '';
