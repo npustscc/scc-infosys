@@ -2178,11 +2178,11 @@
         <div id="nc-pending-match-list"></div>
       </div>
 
-      <!-- 學期重複開案警告 -->
-      <div id="nc-semester-dup-warn" style="display:none;margin-bottom:12px;padding:14px 16px;background:#fff5f5;border:2px solid #fc8181;border-radius:8px;">
-        <div style="font-size:.92rem;font-weight:700;color:#c53030;margin-bottom:6px;">🚨 本學期已有此個案的開案紀錄！</div>
-        <div id="nc-semester-dup-list" style="font-size:.85rem;color:#742a2a;"></div>
-        <div style="font-size:.82rem;color:#9b2c2c;margin-top:6px;">若確認本學期需再次開案，繼續填寫後儲存，儲存時系統將要求確認。</div>
+      <!-- 學期重複開案提示（一學生一案號：儲存時將自動沿用既有案號） -->
+      <div id="nc-semester-dup-warn" style="display:none;margin-bottom:12px;padding:14px 16px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:8px;">
+        <div style="font-size:.92rem;font-weight:700;color:#1a5276;margin-bottom:6px;">ℹ️ 本學期已有此學生的開案紀錄</div>
+        <div id="nc-semester-dup-list" style="font-size:.85rem;color:#2b6cb0;"></div>
+        <div style="font-size:.82rem;color:#2b6cb0;margin-top:6px;">儲存時將自動以同一案號新增本學期開案紀錄，不會產生新案號；如為同學期重複開案，儲存時系統將再次確認。</div>
       </div>
 
       <!-- 基本資料 -->
@@ -3963,13 +3963,20 @@ function openDateToSemPrefix(dateStr) {
   return `${rocYear - 1}2`;
 }
 function semesterLabel(prefix) {
-  if (!prefix || prefix.length < 4) return prefix || '—';
-  return `${prefix.slice(0, -1)}-${prefix.slice(-1)}`;
+  if (!prefix) return '—';
+  // 同學期重複開案的 sem key 帶 '#N' 後綴（如 '1142#2'）；base 轉一般標籤，附加 '_N' 後綴（'114-2_2'）
+  const hashIdx = prefix.indexOf('#');
+  const base   = hashIdx === -1 ? prefix : prefix.slice(0, hashIdx);
+  const suffix = hashIdx === -1 ? '' : '_' + prefix.slice(hashIdx + 1);
+  if (base.length < 4) return prefix;
+  return `${base.slice(0, -1)}-${base.slice(-1)}${suffix}`;
 }
 function semesterMonths(prefix) {
-  if (!prefix || prefix.length < 4) return [];
-  const semType = prefix.slice(-1);
-  const adYear = parseInt(prefix.slice(0, -1)) + 1911;
+  const hashIdx = prefix ? prefix.indexOf('#') : -1;
+  const base = !prefix ? '' : (hashIdx === -1 ? prefix : prefix.slice(0, hashIdx));
+  if (!base || base.length < 4) return [];
+  const semType = base.slice(-1);
+  const adYear = parseInt(base.slice(0, -1)) + 1911;
   if (semType === '1') {
     return [`${adYear}-08`,`${adYear}-09`,`${adYear}-10`,`${adYear}-11`,`${adYear}-12`,`${adYear+1}-01`];
   } else {
@@ -6461,7 +6468,7 @@ function _isOffHours(isoOrDate) {
 function _isCaseRelatedAction(a) {
   if (!a || typeof a !== 'string') return false;
   const kw = [
-    '查閱個案','編輯個案','新增個案','刪除個案','復原個案','再次開案','批次匯入個案','修改案號',
+    '查閱個案','編輯個案','新增個案','刪除個案','復原個案','再次開案','同學期強制再開案','批次匯入個案','修改案號',
     '晤談紀錄','晤談記錄','初次晤談','初談',
     '執行結案','取消結案','結案評估','學期評估','不開案',
     '精神科','事件處理','轉銜評估','轉銜','身心調適假','心理測驗',
@@ -7094,6 +7101,7 @@ function addNotificationToUser(toEmail, type, caseId, caseName, customMsg) {
   const msgs = {
     assigned_counselor:       `您已被指派為個案「${caseName}（${caseId}）」的主責輔導人員`,
     assigned_manager:         `您已被委任為個案「${caseName}（${caseId}）」的個案管理員`,
+    same_sem_reopen:          `個案「${caseName}（${caseId}）」本學期在原主責尚未結案的情況下被再次開案，主責已轉移，請確認是否符合規定`,
     removed_manager:          `您已被移除個案「${caseName}（${caseId}）」的個案管理員身分`,
     unassigned_record_match:  `未歸屬輔導記錄找到可能對應的個案「${caseName}（${caseId}）」，請至未歸屬記錄管理頁確認`,
     new_issue:                `新的錯誤回報/許願池 #${String(caseName).padStart(3,'0')}，請至錯誤回報/許願池頁面查看`,
@@ -8751,6 +8759,37 @@ function _caseLatestSem(c) {
     ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean)).sort();
   return sems[sems.length - 1] || '';
 }
+// ── 一學生一案號：sem key 可能帶 '#N' 後綴（同學期重複開案序號，如 '1142#2'）─────
+// base：去除 '#N' 後綴的原始學期前綴；無 '#' 原樣回傳
+function _semKeyBase(key) {
+  if (!key) return '';
+  const i = key.indexOf('#');
+  return i === -1 ? key : key.slice(0, i);
+}
+// 個案的學期 key 陣列（含可能的 #N 後綴）；無 semesters[] 時退回以 openDate 推算單一學期
+function _caseSems(c) {
+  return (Array.isArray(c.semesters) && c.semesters.length)
+    ? [...c.semesters]
+    : [openDateToSemPrefix(c.openDate)].filter(Boolean);
+}
+// 個案是否已開過某學期（以 base 比對，含 #N 重複開案的學期）
+function _caseHasSem(c, sem) {
+  return _caseSems(c).some(k => _semKeyBase(k) === sem);
+}
+// 取得某學期下一個可用的開案 key：該學期未開過→回傳原樣；已開過 N 次→回傳 'sem#(N+1)'
+function _nextSemOpenKey(c, sem) {
+  const sems = _caseSems(c);
+  if (!sems.some(k => _semKeyBase(k) === sem)) return sem;
+  let maxSeq = 1; // base key 本身視為序號 1
+  sems.forEach(k => {
+    if (_semKeyBase(k) !== sem) return;
+    const hashIdx = k.indexOf('#');
+    if (hashIdx === -1) return;
+    const n = parseInt(k.slice(hashIdx + 1), 10);
+    if (!isNaN(n) && n > maxSeq) maxSeq = n;
+  });
+  return `${sem}#${maxSeq + 1}`;
+}
 // 轉派前置：把「全案層級目前的主責」定格到所有尚無主責資訊的學期快照。
 // 沒有這步，之後只改單一學期＋全案層級時，其他學期的顯示（fallback 到全案層級）會跟著變（#023 第二輪）
 function _stampSemCounselorSnapshots(c) {
@@ -9340,17 +9379,25 @@ async function showCaseDetail(caseId) {
       ? `<span class="badge" style="background:#e9d8fd;color:#553c9a;border:1px solid #d6bcfa;${_cs}">伴侶：${escHtml(r.couplePartnerName)}</span>`
       : '';
 
+    // 下次預約（即時查 bookingsData；預約已被刪除則不顯示）
+    const _recNextBk = r.nextBkId ? bookingsData.find(b => b.id === r.nextBkId) : null;
+    const _recNextBkRoomD = _recNextBk ? (_recNextBk.room === '其他' ? (_recNextBk.customRoom || '其他') : (_recNextBk.room || '')) : '';
+    const _recNextBkFoldLine = _recNextBk
+      ? `<div style="margin-top:2px;font-size:.78rem;color:#a0aec0;">📅 ${escHtml((_recNextBk.date||'').slice(5).replace('-','/'))} ${escHtml((_recNextBk.startTime||'').slice(0,5))} ${escHtml(_recNextBkRoomD)}</div>` : '';
+    const _recNextBkFullLine = _recNextBk
+      ? `<div style="margin-top:4px;font-size:.85rem;color:#4a5568;">下次預約：${escHtml(_recNextBk.date||'')} ${escHtml((_recNextBk.startTime||'').slice(0,5))}–${escHtml((_recNextBk.endTime||'').slice(0,5))} ${escHtml(_recNextBkRoomD)}</div>` : '';
+
     const foldView = `<div class="rec-fold-view">
       ${r.summary ? `<div class="record-summary rec-summary-clamp">${renderMaybeHtml(r.summary)}</div>
       <div class="rec-fold-more"><span class="rec-dots">……</span><button class="rec-more-btn" onclick="toggleRecordExpand('${escHtml(r.id)}')">更多</button></div>` : ''}
-      ${r.nextPlan ? `<div style="margin-top:6px;font-size:.82rem;color:#718096;" class="rec-nextplan-clamp">📌 ${renderMaybeHtml(r.nextPlan)}</div>` : ''}
+      ${r.nextPlan ? `<div style="margin-top:6px;font-size:.82rem;color:#718096;" class="rec-nextplan-clamp">📌 ${renderMaybeHtml(r.nextPlan)}</div>${_recNextBkFoldLine}` : ''}
       ${r.notes ? `<div style="margin-top:4px;font-size:.82rem;color:#a0aec0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;">備註：${renderMaybeHtml(r.notes)}</div>` : ''}
     </div>`;
 
     const fullView = `<div class="rec-full-view">
       ${r.summary ? `<div class="rec-section-label">主述與會談資料</div><div class="record-summary">${renderMaybeHtml(r.summary)}</div>` : ''}
       ${r.assessment ? `<div class="rec-section-label">問題評估</div><div class="record-summary">${renderMaybeHtml(r.assessment)}</div>` : ''}
-      ${r.nextPlan ? `<div class="rec-section-label">後續處遇計畫</div><div class="record-summary">${renderMaybeHtml(r.nextPlan)}</div>` : ''}
+      ${r.nextPlan ? `<div class="rec-section-label">後續處遇計畫</div><div class="record-summary">${renderMaybeHtml(r.nextPlan)}</div>${_recNextBkFullLine}` : ''}
       ${r.notes ? `<div class="rec-section-label">備註</div><div class="record-summary">${renderMaybeHtml(r.notes)}</div>` : ''}
       ${(r.summaryImages?.length || r.image) ? `<div id="rec-img-view-${r.id}" style="margin-top:8px;display:none;gap:8px;flex-wrap:wrap;align-items:flex-start;"></div>` : ''}
       ${renderAttachChips(r.attachments)}
@@ -10480,6 +10527,36 @@ async function restoreRecord(caseId, recordId) {
   }
 }
 
+// 從系列預約自動帶入下次會談時：使用者是否已改動 UI 供後續 saveRecord 判斷（見 _recNextBkPrefill）。
+let _recNextBkPrefill = null; // { bkId, room, date, start, end } | null
+
+// 把一筆 booking 的空間/日期/時間套用到「預約下次諮商空間」UI 區塊（含節次比對）。
+// 供編輯既有紀錄還原 nextBkId、以及從系列預約寫紀錄自動帶入下次會談共用。
+function _recFillNextBkUi(_linkedBk) {
+  if (!_linkedBk) return;
+  const _nbTgl = document.getElementById('rec-next-bk-toggle');
+  if (_nbTgl) { _nbTgl.checked = true; toggleNextBookingFields(); }
+  const _nbDt = document.getElementById('rec-next-bk-date');
+  if (_nbDt) _nbDt.value = _linkedBk.date || '';
+  _recNextBkRoom = _linkedBk.room === '其他' ? (_linkedBk.customRoom || '其他') : (_linkedBk.room || '');
+  _populateRecNextBkRoomChips(_recNextBkRoom);
+  const _pSel = document.getElementById('rec-next-bk-period');
+  const _tRow = document.getElementById('rec-next-bk-time-row');
+  const _sH = (_linkedBk.startTime || '').slice(0, 5);
+  const _eH = (_linkedBk.endTime   || '').slice(0, 5);
+  let _matched = false;
+  if (_pSel) {
+    for (const opt of _pSel.options) {
+      const m = opt.value.match(/(\d{2}:\d{2})[-–](\d{2}:\d{2})/);
+      if (m && m[1] === _sH && m[2] === _eH) { _pSel.value = opt.value; _matched = true; break; }
+    }
+  }
+  document.getElementById('rec-next-bk-start').value = _sH;
+  document.getElementById('rec-next-bk-end').value   = _eH;
+  if (_tRow) _tRow.style.display = _matched ? 'none' : (_sH && _eH ? 'block' : 'none');
+  if (!_matched && _pSel && _sH && _eH) _pSel.value = '其他';
+}
+
 function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄', prefill = null) {
   _recordCaseId    = caseId;
   _editingRecordId = recordId || null;
@@ -10570,6 +10647,8 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
   document.getElementById('btn-save-record').disabled = false;
   _recFromBkRoom = '';
   _recFromBkId   = '';
+  _recNextBkPrefill = null;
+  let _seriesNextBk = null; // 若從系列預約「寫紀錄」進入，這裡存下次會談那一筆（供下方自動帶入使用）
 
   if (existingRec) {
     // ── 編輯模式：填入現有資料 ──
@@ -10637,6 +10716,11 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
     }
     _recFromBkRoom = prefill.room || '';
     _recFromBkId   = prefill.bookingId || '';
+    // 從系列預約的某一筆「寫紀錄」：找同系列下次會談（日期較晚的最早一筆），供下方自動帶入
+    if (prefill.bookingId) {
+      const _srcBk = bookingsData.find(b => b.id === prefill.bookingId);
+      if (_srcBk) _seriesNextBk = _bkNextInSeries(bookingsData, _srcBk);
+    }
   }
   // 重置預約下次欄位
   const nbToggle = document.getElementById('rec-next-bk-toggle');
@@ -10651,29 +10735,14 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
   // 編輯模式：若記錄有 nextBkId，還原「預約下次諮商空間」區塊
   if (existingRec?.nextBkId) {
     const _linkedBk = bookingsData.find(b => b.id === existingRec.nextBkId);
-    if (_linkedBk) {
-      const _nbTgl = document.getElementById('rec-next-bk-toggle');
-      if (_nbTgl) { _nbTgl.checked = true; toggleNextBookingFields(); }
-      const _nbDt = document.getElementById('rec-next-bk-date');
-      if (_nbDt) _nbDt.value = _linkedBk.date || '';
-      _recNextBkRoom = _linkedBk.room === '其他' ? (_linkedBk.customRoom || '其他') : (_linkedBk.room || '');
-      _populateRecNextBkRoomChips(_recNextBkRoom);
-      const _pSel = document.getElementById('rec-next-bk-period');
-      const _tRow = document.getElementById('rec-next-bk-time-row');
-      const _sH = (_linkedBk.startTime || '').slice(0, 5);
-      const _eH = (_linkedBk.endTime   || '').slice(0, 5);
-      let _matched = false;
-      if (_pSel) {
-        for (const opt of _pSel.options) {
-          const m = opt.value.match(/(\d{2}:\d{2})[-–](\d{2}:\d{2})/);
-          if (m && m[1] === _sH && m[2] === _eH) { _pSel.value = opt.value; _matched = true; break; }
-        }
-      }
-      document.getElementById('rec-next-bk-start').value = _sH;
-      document.getElementById('rec-next-bk-end').value   = _eH;
-      if (_tRow) _tRow.style.display = _matched ? 'none' : (_sH && _eH ? 'block' : 'none');
-      if (!_matched && _pSel && _sH && _eH) _pSel.value = '其他';
-    }
+    if (_linkedBk) _recFillNextBkUi(_linkedBk);
+  } else if (_seriesNextBk) {
+    // 從系列預約「寫紀錄」：自動帶入下次會談時段，記錄 prefill 供 saveRecord 判斷使用者是否已更動內容
+    _recFillNextBkUi(_seriesNextBk);
+    _recNextBkPrefill = {
+      bkId: _seriesNextBk.id, room: _recNextBkRoom, date: _seriesNextBk.date,
+      start: (_seriesNextBk.startTime || '').slice(0, 5), end: (_seriesNextBk.endTime || '').slice(0, 5),
+    };
   }
 
   showPage('page-new-record', null);
@@ -11014,22 +11083,34 @@ function _checkRecNextBkRealtime() {
   const oldBkId = _editingRecordId
     ? (casesData.find(c => c.id === _recordCaseId)?.records?.find(r => r.id === _editingRecordId)?.nextBkId || '')
     : '';
+  const _pfBkId = _recNextBkPrefill?.bkId || '';
   const conflict = bookingsData.find(b =>
-    b.id !== oldBkId && b.room === room && b.date === date &&
+    b.id !== oldBkId && b.id !== _pfBkId && b.room === room && b.date === date &&
     b.startTime < end && b.endTime > start
   );
   if (conflict) {
+    cEl.className = 'alert alert-warn';
     cEl.style.display = '';
     cEl.textContent = `衝突：${room} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已有預約（${conflict.counselorName || '—'}）。`;
     return;
   }
   const ccConflict = bookingsData.find(b =>
-    b.id !== oldBkId && b.date === date && _bkHasCounselor(b, currentUser?.email) &&
+    b.id !== oldBkId && b.id !== _pfBkId && b.date === date && _bkHasCounselor(b, currentUser?.email) &&
     b.startTime < end && b.endTime > start
   );
   if (ccConflict) {
+    cEl.className = 'alert alert-warn';
     cEl.style.display = '';
     cEl.textContent = `您在 ${(ccConflict.startTime||'').slice(0,5)}–${(ccConflict.endTime||'').slice(0,5)} 已有另一預約（${ccConflict.room || '—'}${ccConflict.caseName ? '，' + ccConflict.caseName : ''}）。`;
+    return;
+  }
+  // 無衝突：若目前值與系列自動帶入的 prefill 完全一致，顯示「已自動帶入」提示（非警示樣式）；
+  // 使用者已更動（與 prefill 不一致）或本來就無 prefill → 隱藏
+  if (_recNextBkPrefill && room === _recNextBkPrefill.room && date === _recNextBkPrefill.date &&
+      start === _recNextBkPrefill.start && end === _recNextBkPrefill.end) {
+    cEl.className = 'alert alert-info';
+    cEl.style.display = '';
+    cEl.textContent = '✓ 已自動帶入系列預約的下次會談（儲存時直接沿用該筆，不會重複建立預約）。';
     return;
   }
   cEl.style.display = 'none';
@@ -11622,6 +11703,109 @@ function _collectServiceItems() {
   return items;
 }
 
+// ── 系列預約自動帶入下次會談，使用者更動後的三選一詢問 ────────────────
+let _recNextBkChoiceResolver = null;
+function _recNextBkChoiceResolve(choice) {
+  document.getElementById('rec-next-bk-choice-modal').style.display = 'none';
+  const resolve = _recNextBkChoiceResolver; _recNextBkChoiceResolver = null;
+  if (resolve) resolve(choice);
+}
+function _recAskNextBkChoice() {
+  document.getElementById('rec-next-bk-choice-modal').style.display = 'flex';
+  return new Promise(resolve => { _recNextBkChoiceResolver = resolve; });
+}
+
+// 從系列預約自動帶入的下次會談值（_recNextBkPrefill）若被使用者更動，決定如何處理：
+// 回傳 { proceed:false } → 使用者取消，saveRecord 應中止整個儲存；
+// 回傳 { proceed:true, skipDefaultBk:false } → 沿用現行「（有需要就）另外新建一筆獨立預約」邏輯
+//   （本來就無 prefill，或使用者選擇「額外新增」）；
+// 回傳 { proceed:true, skipDefaultBk:true, nextBkId } → 已就地處理完畢（沿用不變/單筆修正/此筆之後修正），
+//   saveRecord 後續不應再另外建立或更新預約，直接把 nextBkId（可能是空字串＝該部分處理失敗）寫入紀錄。
+async function _recResolveNextBkPrefill(wantNextBooking, nextBkRoom, nextBkDate, nextBkStart, nextBkEnd) {
+  if (!_recNextBkPrefill || !wantNextBooking) return { proceed: true, skipDefaultBk: false };
+  const pf = _recNextBkPrefill;
+  const unchanged = nextBkRoom === pf.room && nextBkDate === pf.date &&
+    nextBkStart === pf.start && nextBkEnd === pf.end;
+  if (unchanged) return { proceed: true, skipDefaultBk: true, nextBkId: pf.bkId };
+
+  const choice = await _recAskNextBkChoice();
+  if (choice === 'cancel') return { proceed: false };
+  if (choice === 'extra') return { proceed: true, skipDefaultBk: false };
+
+  const srcBk = bookingsData.find(b => b.id === pf.bkId);
+  if (!srcBk) return { proceed: true, skipDefaultBk: false }; // 系列那筆已不存在（例如剛好被刪），退回額外新增
+
+  const myName = configData?.users?.[currentUser.email]?.name || currentUser.email || '';
+  const nbNow = new Date().toISOString();
+
+  if (choice === 'single') {
+    const snap = { ...srcBk };
+    srcBk.room = nextBkRoom; srcBk.customRoom = ''; srcBk.date = nextBkDate;
+    srcBk.startTime = nextBkStart; srcBk.endTime = nextBkEnd; srcBk.updatedAt = nbNow;
+    if (!srcBk.counselorEmail) { srcBk.counselorEmail = currentUser.email; srcBk.counselorName = myName; }
+    const gcMode = srcBk.calendarEventId ? 'update' : 'create';
+    const label = `修正下次預約（單筆）：${myName} ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
+    const committed = await _bkCommitOne(srcBk, gcMode, _bkGcParamsOf(srcBk, !!srcBk.calendarEventId), label);
+    if (!committed) {
+      Object.assign(srcBk, snap);
+      setAlert('new-record-alert', 'warn', '下次預約單筆修正未套用（與其他預約衝突或儲存失敗）；紀錄本身仍會照常儲存，請之後自行調整下次預約。');
+      return { proceed: true, skipDefaultBk: true, nextBkId: '' };
+    }
+    return { proceed: true, skipDefaultBk: true, nextBkId: srcBk.id };
+  }
+
+  if (choice === 'afterthis') {
+    const dateDelta = _bkDaysBetween(srcBk.date, nextBkDate);
+    const targets = _bkSeriesTargets(bookingsData, srcBk, 'future');
+    const snapshot = targets.map(t => ({ ...t }));
+    targets.forEach(t => {
+      t.room = nextBkRoom; t.customRoom = '';
+      t.startTime = nextBkStart; t.endTime = nextBkEnd;
+      if (dateDelta) t.date = _bkAddDays(t.date, dateDelta);
+      t.updatedAt = nbNow;
+      if (!t.counselorEmail) { t.counselorEmail = currentUser.email; t.counselorName = myName; }
+    });
+    const jobId = bgJobAdd('修正下次預約（此筆之後）', `共 ${targets.length} 筆`);
+    try {
+      const ops = targets.map(t => ({
+        op: 'upsert', booking: { ...t },
+        gc: { mode: t.calendarEventId ? 'update' : 'create', params: _bkGcParamsOf(t, true) },
+      }));
+      const result = await bkCommit(ops, { checkConflicts: true });
+      if (result.error === 'conflict') {
+        snapshot.forEach(s => {
+          const t = bookingsData.find(x => x.id === s.id);
+          if (t) Object.assign(t, s);
+        });
+        const kind = result.conflictType === 'person' ? '人員' : '空間';
+        bgJobFail(jobId, `修正下次預約${kind}衝突`);
+        setAlert('new-record-alert', 'warn', `下次預約修正未套用：系列中有一筆與其他預約發生${kind}衝突，已還原；紀錄本身仍會照常儲存，請之後自行調整下次預約。`);
+        return { proceed: true, skipDefaultBk: true, nextBkId: '' };
+      }
+      if (result.fallback) {
+        await saveBookings();
+        targets.forEach(t => { if (t.calendarEventId) { _bkGcQueue.set(t.id, { ...t }); _bkGcFlush(); } });
+      } else {
+        (result.bookings || []).forEach(fb => {
+          const idx = bookingsData.findIndex(x => x.id === fb.id);
+          if (idx >= 0) bookingsData[idx] = fb;
+        });
+      }
+      bgJobDone(jobId);
+      return { proceed: true, skipDefaultBk: true, nextBkId: srcBk.id };
+    } catch (e) {
+      snapshot.forEach(s => {
+        const t = bookingsData.find(x => x.id === s.id);
+        if (t) Object.assign(t, s);
+      });
+      bgJobFail(jobId, e.message);
+      setAlert('new-record-alert', 'warn', '下次預約修正失敗：' + e.message + '；紀錄本身仍會照常儲存。');
+      return { proceed: true, skipDefaultBk: true, nextBkId: '' };
+    }
+  }
+  return { proceed: true, skipDefaultBk: false };
+}
+
 async function saveRecord() {
   const date    = document.getElementById('rec-date').value;
   const rawTime = document.getElementById('rec-time').value;
@@ -11737,7 +11921,14 @@ async function saveRecord() {
     nextBkStart = document.getElementById('rec-next-bk-start')?.value || '';
     nextBkEnd   = document.getElementById('rec-next-bk-end')?.value   || '';
     if (!nextBkRoom || !nextBkDate || !nextBkStart || !nextBkEnd) {
-      _recAlert('已勾選「預約下次諮商空間」，請填寫空間、日期、開始與結束時間。'); return;
+      const _nbMissing = [
+        !nextBkRoom  && '空間（請點選一個空間名稱）',
+        !nextBkDate  && '日期',
+        !nextBkStart && '開始時間',
+        !nextBkEnd   && '結束時間',
+      ].filter(Boolean).join('、');
+      if (!nextBkRoom) _markSec('#rec-next-bk-room-wrap');
+      _recAlert(`已勾選「預約下次諮商空間」，尚缺：${_nbMissing}。`); return;
     }
     const _nbTRx = /^\d{2}:\d{2}$/;
     if (!_nbTRx.test(nextBkStart) || !_nbTRx.test(nextBkEnd)) {
@@ -11749,27 +11940,30 @@ async function saveRecord() {
     const _editOldBkId = _editingRecordId
       ? (casesData[cidx]?.records?.find(r => r.id === _editingRecordId)?.nextBkId || '')
       : '';
-    const conflict = bookingsData.find(b =>
-      b.id !== _editOldBkId &&
-      b.room === nextBkRoom && b.date === nextBkDate &&
-      b.startTime < nextBkEnd && b.endTime > nextBkStart
-    );
-    if (conflict) {
+    // 從系列預約自動帶入時，該筆本尊也要排除在衝突比對之外（使用者可能只是微調同一筆，而非新增另一筆）
+    const _pfIgnoreId = _recNextBkPrefill?.bkId || '';
+    const _nbConflict = _bkFindConflict(bookingsData,
+      { id: _editOldBkId || null, date: nextBkDate, room: nextBkRoom, customRoom: '',
+        startTime: nextBkStart, endTime: nextBkEnd, counselors: [{ value: currentUser.email }] },
+      { ignoreIds: [_editOldBkId, _pfIgnoreId].filter(Boolean) });
+    if (_nbConflict) {
+      const w = _nbConflict.with;
+      const wRoom = w.room === '其他' ? (w.customRoom || '其他') : w.room;
       const cEl = document.getElementById('rec-next-bk-conflict');
-      if (cEl) { cEl.style.display = ''; cEl.textContent = `衝突：${nextBkRoom} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已有預約（${conflict.counselorName || '—'}）。`; }
-      _recAlert('預約下次的時間與既有預約衝突，請修改。'); return;
-    }
-    const counselorConflict = bookingsData.find(b =>
-      b.id !== _editOldBkId &&
-      b.date === nextBkDate && _bkHasCounselor(b, currentUser.email) &&
-      b.startTime < nextBkEnd && b.endTime > nextBkStart
-    );
-    if (counselorConflict) {
-      const cEl = document.getElementById('rec-next-bk-conflict');
-      if (cEl) { cEl.style.display = ''; cEl.textContent = `您在 ${(counselorConflict.startTime||'').slice(0,5)}–${(counselorConflict.endTime||'').slice(0,5)} 已有另一預約（${counselorConflict.room || '—'}${counselorConflict.caseName ? '，' + counselorConflict.caseName : ''}）。`; }
-      _recAlert('您在此時段已有其他預約，請修改下次預約時間。'); return;
+      if (_nbConflict.type === 'room') {
+        if (cEl) { cEl.className = 'alert alert-warn'; cEl.style.display = ''; cEl.textContent = `衝突：${wRoom} 在 ${(w.startTime||'').slice(0,5)}–${(w.endTime||'').slice(0,5)} 已有預約（${w.counselorName || '—'}）。`; }
+        _recAlert('預約下次的時間與既有預約衝突，請修改。'); return;
+      } else {
+        if (cEl) { cEl.className = 'alert alert-warn'; cEl.style.display = ''; cEl.textContent = `您在 ${(w.startTime||'').slice(0,5)}–${(w.endTime||'').slice(0,5)} 已有另一預約（${wRoom || '—'}${w.caseName ? '，' + w.caseName : ''}）。`; }
+        _recAlert('您在此時段已有其他預約，請修改下次預約時間。'); return;
+      }
     }
   }
+
+  // 從系列預約自動帶入下次會談時，若使用者已更動時段/空間：詢問額外新增／單筆修正／此筆之後修正（取消則中止儲存）
+  const _pfRes = await _recResolveNextBkPrefill(wantNextBooking, nextBkRoom, nextBkDate, nextBkStart, nextBkEnd);
+  if (!_pfRes.proceed) return;
+
   const counselorList = [..._recCounselors];
   const counselorName = counselorList.map(c => c.label).join('、');
   if (!casesData[cidx].records) casesData[cidx].records = [];
@@ -11795,9 +11989,12 @@ async function saveRecord() {
     const prev = { ...casesData[cidx].records[ridx] };
     const editedId = _editingRecordId;
     // 決定 nextBkId：有填預約則沿用舊 ID 或新建；未勾選則清空
+    // （從系列預約帶入且已被 _recResolveNextBkPrefill 就地處理完畢時，直接沿用其結果，不再另外新建/更新）
     let _editNextBkId = '';
     let _editBkAction = 'none'; // 'create' | 'update' | 'none'
-    if (wantNextBooking && nextBkRoom && nextBkDate && nextBkStart && nextBkEnd) {
+    if (_pfRes.skipDefaultBk) {
+      _editNextBkId = _pfRes.nextBkId || '';
+    } else if (wantNextBooking && nextBkRoom && nextBkDate && nextBkStart && nextBkEnd) {
       const oldBkId = prev.nextBkId || '';
       const oldBkStillExists = oldBkId && bookingsData.find(b => b.id === oldBkId);
       if (oldBkStillExists) {
@@ -11860,38 +12057,32 @@ async function saveRecord() {
               caseId: _recordCaseId, caseName: casesData[cidx]?.name || '',
               notes: '', createdAt: _nbNow, updatedAt: _nbNow };
             bookingsData.push(newBk);
+            const calParamsNb = { room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
+              counselorName: myName, notes: '', creatorName: configData?.users?.[currentUser.email]?.name || myName,
+              createdAt: _nbNow, updatedAt: _nbNow, isEdit: false, bkSerial: newBk.bkSerial };
             const _calLabel2 = `新增行事曆事件：${myName} ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
-            const _calJobId2 = bgJobAdd(_calLabel2);
-            (async () => {
-              try {
-                const _gcCalId = await _bkCalModalSync(_editNextBkId, {
-                  room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
-                  counselorName: myName, notes: '',
-                  creatorName: configData?.users?.[currentUser.email]?.name || myName,
-                  createdAt: _nbNow, updatedAt: _nbNow, isEdit: false, bkSerial: newBk.bkSerial,
-                });
-                if (_gcCalId) newBk.calendarEventId = _gcCalId;
-                bgJobDone(_calJobId2);
-              } catch(e) {
-                bgJobFail(_calJobId2, e.message);
-              }
-            })();
-            _bkGcQueue.set(newBk.id, { ...newBk });
+            const _committed = await _bkCommitOne(newBk, 'create', calParamsNb, _calLabel2);
+            if (!_committed) {
+              const _i = bookingsData.findIndex(x => x.id === newBk.id);
+              if (_i >= 0) bookingsData.splice(_i, 1);
+            }
           } else {
             const bkIdx = bookingsData.findIndex(b => b.id === _editNextBkId);
             if (bkIdx >= 0) {
               const _updLabel = `更新行事曆預約：${myName} `
                 + `${_prevBkSnap?.date||''} ${(_prevBkSnap?.startTime||'').slice(0,5)}–${(_prevBkSnap?.endTime||'').slice(0,5)} ${_prevBkSnap?.room||''}`
                 + ` → ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
-              const _updJobId = bgJobAdd(_updLabel);
               Object.assign(bookingsData[bkIdx], { room: nextBkRoom, date: nextBkDate,
                 startTime: nextBkStart, endTime: nextBkEnd, updatedAt: _nbNow });
-              _bkGcQueue.set(bookingsData[bkIdx].id, { ...bookingsData[bkIdx] });
-              bgJobDone(_updJobId);
+              const calParamsNb2 = { room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
+                counselorName: bookingsData[bkIdx].counselorName || myName, notes: bookingsData[bkIdx].notes || '',
+                creatorName: bookingsData[bkIdx].creatorName || myName,
+                createdAt: bookingsData[bkIdx].createdAt || _nbNow, updatedAt: _nbNow, isEdit: true,
+                bkSerial: bookingsData[bkIdx].bkSerial };
+              const gcMode = bookingsData[bkIdx].calendarEventId ? 'update' : 'create';
+              await _bkCommitOne(bookingsData[bkIdx], gcMode, calParamsNb2, _updLabel);
             }
           }
-          await saveBookings().catch(e => console.warn('預約儲存失敗:', e));
-          _bkGcFlush();
         }
         bgJobProgress(jobId, 90);
         let _auditBkNote = '';
@@ -11914,8 +12105,10 @@ async function saveRecord() {
     })();
   } else {
     // ── 新增紀錄 ──
-    const _newBkId = (wantNextBooking && nextBkRoom && nextBkDate && nextBkStart && nextBkEnd)
-      ? `bk_${Date.now()}` : '';
+    // 從系列預約帶入且已被 _recResolveNextBkPrefill 就地處理完畢時，直接沿用其結果，不再另外新建預約
+    const _newBkId = _pfRes.skipDefaultBk
+      ? (_pfRes.nextBkId || '')
+      : ((wantNextBooking && nextBkRoom && nextBkDate && nextBkStart && nextBkEnd) ? `bk_${Date.now()}` : '');
     const newRecord = {
       id: `REC-${Date.now()}`,
       date, time, creatorEmail: currentUser.email, counselorEmail: currentUser.email,
@@ -11959,7 +12152,7 @@ async function saveRecord() {
 
     // 立刻把預約推入記憶體（讓同 session 的衝突檢查可立即偵測）
     let _newBkObj = null;
-    if (_newBkId) {
+    if (_newBkId && !_pfRes.skipDefaultBk) {
       const myName = configData?.users?.[currentUser.email]?.name || currentUser.email || '';
       const _nbNow = new Date().toISOString();
       _newBkObj = { id: _newBkId, bkSerial: _bkNextSerial(), room: nextBkRoom,
@@ -11982,27 +12175,16 @@ async function saveRecord() {
         }
         bgJobProgress(jobId, 75);
         if (_newBkObj) {
-          await saveBookings().catch(e => console.warn('預約儲存失敗:', e));
-          // Calendar event 建立：獨立 bgJob 以顯示詳細資訊
+          const calParamsNb = { room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
+            counselorName: _newBkObj.counselorName, notes: '',
+            creatorName: configData?.users?.[currentUser.email]?.name || _newBkObj.counselorName,
+            createdAt: _newBkObj.createdAt, updatedAt: _newBkObj.updatedAt, isEdit: false, bkSerial: _newBkObj.bkSerial };
           const _calLabel = `新增行事曆事件：${_newBkObj.counselorName} ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
-          const _calJobId = bgJobAdd(_calLabel);
-          (async () => {
-            try {
-              const _gcCalId = await _bkCalModalSync(_newBkId, {
-                room: nextBkRoom, date: nextBkDate, startTime: nextBkStart, endTime: nextBkEnd,
-                counselorName: _newBkObj.counselorName, notes: '',
-                creatorName: configData?.users?.[currentUser.email]?.name || _newBkObj.counselorName,
-                createdAt: _newBkObj.createdAt, updatedAt: _newBkObj.updatedAt,
-                isEdit: false, bkSerial: _newBkObj.bkSerial,
-              });
-              if (_gcCalId) _newBkObj.calendarEventId = _gcCalId;
-              bgJobDone(_calJobId);
-            } catch(e) {
-              bgJobFail(_calJobId, e.message);
-            }
-          })();
-          _bkGcQueue.set(_newBkObj.id, { ..._newBkObj });
-          _bkGcFlush();
+          const _committed = await _bkCommitOne(_newBkObj, 'create', calParamsNb, _calLabel);
+          if (!_committed) {
+            const _bi = bookingsData.findIndex(x => x.id === _newBkObj.id);
+            if (_bi >= 0) bookingsData.splice(_bi, 1);
+          }
         }
         bgJobProgress(jobId, 90);
         const _coupleNote = _savedCoupleCaseId ? `；共用對象：${newRecord.couplePartnerName || _savedCoupleCaseId}` : '';
@@ -12927,75 +13109,30 @@ function closeCaseConfirm(caseId) {
 }
 
 function nextSemesterPrefix(prefix) {
-  if (!prefix || prefix.length < 4) return prefix;
-  const semType = prefix.slice(-1);
-  const rocYear = parseInt(prefix.slice(0, -1));
+  if (!prefix) return prefix;
+  const hashIdx = prefix.indexOf('#');
+  const base = hashIdx === -1 ? prefix : prefix.slice(0, hashIdx);
+  if (base.length < 4) return prefix;
+  const semType = base.slice(-1);
+  const rocYear = parseInt(base.slice(0, -1));
   return semType === '1' ? `${rocYear}2` : `${rocYear + 1}1`;
 }
 
 function _semPrefixToApproxDate(prefix) {
-  if (!prefix || prefix.length < 4) return new Date().toISOString().slice(0, 10);
-  const rocYear = parseInt(prefix.slice(0, -1));
+  const hashIdx = prefix ? prefix.indexOf('#') : -1;
+  const base = !prefix ? '' : (hashIdx === -1 ? prefix : prefix.slice(0, hashIdx));
+  if (!base || base.length < 4) return new Date().toISOString().slice(0, 10);
+  const rocYear = parseInt(base.slice(0, -1));
   const adYear  = rocYear + 1911;
-  return prefix.slice(-1) === '1' ? `${adYear}-09-01` : `${adYear + 1}-02-01`;
+  return base.slice(-1) === '1' ? `${adYear}-09-01` : `${adYear + 1}-02-01`;
 }
 function _semPrefixToEndDate(prefix) {
-  if (!prefix || prefix.length < 4) return new Date().toISOString().slice(0, 10);
-  const rocYear = parseInt(prefix.slice(0, -1));
+  const hashIdx = prefix ? prefix.indexOf('#') : -1;
+  const base = !prefix ? '' : (hashIdx === -1 ? prefix : prefix.slice(0, hashIdx));
+  if (!base || base.length < 4) return new Date().toISOString().slice(0, 10);
+  const rocYear = parseInt(base.slice(0, -1));
   const adYear  = rocYear + 1911;
-  return prefix.slice(-1) === '1' ? `${adYear + 1}-01-31` : `${adYear + 1}-07-31`;
-}
-
-function _generateCaseIdForSem(semPrefix) {
-  const prefix = semPrefix.slice(0, 4);
-  const maxSeq = casesData.reduce((max, c) => {
-    if (c.id?.startsWith(prefix)) {
-      const n = parseInt(c.id.slice(prefix.length), 10);
-      if (!isNaN(n)) return Math.max(max, n);
-    }
-    return max;
-  }, 0);
-  return `${prefix}${String(maxSeq + 1).padStart(3, '0')}`;
-}
-
-async function _autoOpenNextSemCase(sourceCase, evalSem) {
-  const nextSem  = nextSemesterPrefix(evalSem);
-  const openDate = _semPrefixToApproxDate(nextSem);
-  // 確認同學生下一學期無既有個案
-  const existing = casesData.find(c => {
-    if (c.deleted || c.id === sourceCase.id) return false;
-    const sems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)];
-    return c.studentId === sourceCase.studentId && sems.includes(nextSem);
-  });
-  if (existing) {
-    bgJobDone(null, `${semesterLabel(nextSem)}個案已存在（${existing.id}），略過自動開案`);
-    return;
-  }
-  const newId = _generateCaseIdForSem(nextSem);
-  const COPY_FIELDS = ['name','studentId','legalGender','genderIdentity','birthday','idNumber','nationality','foreignCountry','ethnicity','ethnicityNote','department','grade','program','classNo','disability','phone','email','residence','address','emergencyName','emergencyPhone','emergencyRelation','source','topics'];
-  const newCase = { id: newId, openDate, status: 'active', semesters: [nextSem],
-    counselorEmail: sourceCase.counselorEmail, counselorName: sourceCase.counselorName, counselorText: sourceCase.counselorText,
-    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
-  COPY_FIELDS.forEach(f => { if (sourceCase[f] !== undefined) newCase[f] = sourceCase[f]; });
-  casesData.push(newCase);
-  // 個案管理員繼承：將舊案管理員加入新案
-  Object.entries(configData?.users || {}).forEach(([, info]) => {
-    if (!(info.allowedCases || []).includes(sourceCase.id)) return;
-    info.allowedCases = info.allowedCases || [];
-    if (!info.allowedCases.includes(newId)) info.allowedCases.push(newId);
-  });
-  renderCases();
-  const jobId2 = bgJobAdd('自動開下學期案', `${sourceCase.name}（${newId}）`);
-  try {
-    await saveCasesChunks(newId);
-    await driveUpdateJsonFile(CONFIG_FILE, configData);
-    auditLog('自動開下學期案', newId, null, `來源：${sourceCase.id}，${semesterLabel(nextSem)}學期`);
-    bgJobDone(jobId2, `已自動建立 ${semesterLabel(nextSem)} 學期新案 ${newId}`);
-  } catch (err) {
-    bgJobFail(jobId2, err.message);
-    const ri = casesData.findIndex(c => c.id === newId);
-    if (ri >= 0) casesData.splice(ri, 1);
-  }
+  return base.slice(-1) === '1' ? `${adYear + 1}-01-31` : `${adYear + 1}-07-31`;
 }
 
 function showNewSemModal(caseId) {
@@ -17253,23 +17390,15 @@ function checkCaseIdDuplicate() {
   const idnMatch  = curIdn  && curIdn  === dup.idNumber;
   const nameMatch = curName && curName === dup.name;
   const anyMatch  = sidMatch || idnMatch || nameMatch;
-  const isSameSem = dup.id.startsWith(currentSemesterPrefix());
   let html = '';
-  if (anyMatch && isSameSem) {
-    // 同學期同學生：警告 + 提供另行開案（產生新案號）
-    html = `<div style="margin-top:6px;padding:12px 14px;background:#fff5f5;border:2px solid #fc8181;border-radius:6px;font-size:.875rem;">
-      🚨 <strong>此學生本學期已開案</strong>（案號：${escHtml(dup.id)}）<br>
-      <span style="font-size:.82rem;color:#742a2a;">要另外開案嗎？點選下方按鈕產生新案號。</span>
+  if (anyMatch) {
+    // 同一學生（不論本學期或舊學期既有案號）：一學生一案號，資訊提示儲存時將自動沿用既有案號新增本學期開案
+    html = `<div style="margin-top:6px;padding:10px 14px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;font-size:.875rem;">
+      ℹ️ 此學生已有案號 <strong>${escHtml(dup.id)}</strong>，儲存時將自動採用該案號新增本學期開案。
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
-        <button class="btn btn-primary btn-sm" onclick="_confirmAnotherCase('${escHtml(dup.id)}')">是，另外開案</button>
+        <button class="btn btn-secondary btn-sm" onclick="_useExistingCaseId('${escHtml(dup.id)}')">帶入既有案號</button>
         <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();showCaseDetail('${escHtml(dup.id)}')">查看現有案號</button>
       </div>
-    </div>`;
-  } else if (anyMatch && !isSameSem) {
-    // 舊學期同學生：正常不會到這裡（fillFromCase 已改為 generateCaseId），手動輸入舊案號時才觸發
-    html = `<div style="margin-top:6px;padding:10px 14px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;font-size:.875rem;">
-      ℹ️ 此案號為「${escHtml(dup.name)}」的舊學期既有案號，若要本學期開案請使用新案號。
-      <div style="margin-top:6px;"><button class="btn btn-secondary btn-sm" onclick="_confirmAnotherCase('${escHtml(dup.id)}')">產生本學期新案號</button></div>
     </div>`;
   } else {
     // 不同學生：案號衝突，詢問是否同一學生（判斷流程在儲存時執行）
@@ -17283,9 +17412,10 @@ function checkCaseIdDuplicate() {
   msgEl.style.display = '';
 }
 
-function _confirmAnotherCase(dupId) {
+// 一學生一案號：帶入既有案號（取代舊版「另外開案產生新案號」）
+function _useExistingCaseId(dupId) {
   const el = document.getElementById('nc-id');
-  el.value = generateCaseId();
+  el.value = dupId;
   el.classList.remove('_nc-id-flash'); void el.offsetWidth; el.classList.add('_nc-id-flash');
   document.getElementById('nc-id-message').style.display = 'none';
   renderCaseIdSuggestions(); checkCaseIdDuplicate(); checkCurrentSemesterDuplicate();
@@ -17569,117 +17699,91 @@ async function saveCase() {
     return;
   }
 
-  // 案號重複（編輯時排除自己）
-  const duplicate = casesData.find(c => c.id === id && c.id !== _editingCaseId);
-  if (duplicate) {
-    const _dupSid = duplicate.studentId || '', _dupIdn = duplicate.idNumber || '', _dupName = duplicate.name || '';
-    const _sidM = studentId && studentId === _dupSid;
-    const _idnM = idNumber  && idNumber  === _dupIdn;
-    const _namM = name      && name      === _dupName;
-    const _anyM = _sidM || _idnM || _namM;
-    const _sameSem = duplicate.id.startsWith(currentSemesterPrefix());
-    if (_anyM) {
+  // ── 一學生一案號：既有學生比對＋案號收斂（僅新增路徑；_editingCaseId 編輯路徑維持原樣）──
+  let _reopenTarget = null;      // 收斂目標既有個案 record；null = 全新學生
+  let _reopenSemKey = null;      // 本次要開的 sem key（base 或 '#N'）
+  let _reopenFieldUpdates = {};  // 使用者逐項確認後要寫回 target root 的欄位
+  let _reopenFailsafe = null;    // 同學期未結案強制轉移時的轉移資訊
+
+  if (_editingCaseId) {
+    // 編輯模式：手動把案號改成撞到別的既有個案時單純擋下，不觸發下方新增流程
+    const _editDup = casesData.find(c => c.id === id && c.id !== _editingCaseId);
+    if (_editDup) {
+      _caseAlert(`案號「${id}」已被個案「${_editDup.name}」使用，請修改案號。`);
       document.getElementById('nc-id').focus();
-      checkCaseIdDuplicate();
-      _caseAlert(_sameSem
-        ? '此學生本學期已開案，請點選「是，另行開案（產生新案號）」後再儲存。'
-        : '此為舊學期案號，請修改為本學期格式後再儲存。');
       return;
     }
-    // 不同學生：詢問是否為同一學生
-    const _isSameStudent = confirm(
-      `案號「${id}」已被個案「${duplicate.name}」（學號：${duplicate.studentId}）使用。\n\n此是否為同一學生但學號、姓名或身分證字號有所異動？`
-    );
-    if (!_isSameStudent) {
-      document.getElementById('nc-id').focus(); checkCaseIdDuplicate();
-      _caseAlert('案號已被不同學生使用，請修改案號後再儲存。');
-      return;
-    }
-    // 同一學生，確認各欄位更新
-    const _fieldChecks = [
-      { label:'學號',       cur: studentId, old: _dupSid },
-      { label:'姓名',       cur: name,      old: _dupName },
-      { label:'身分證字號', cur: idNumber,  old: _dupIdn },
-    ].filter(f => f.cur && f.old && f.old !== f.cur);
-    for (const f of _fieldChecks) {
-      if (!confirm(`${f.label}：「${f.old}」→「${f.cur}」\n是否於本學期起更新此項目？`)) {
-        _caseAlert(`「${f.label}」更新未確認，儲存中止。如不需更新請恢復原值，或修改案號以區分。`);
-        return;
+  } else {
+    // 1. 找既有學生：學號或身分證相符即視為同一學生
+    let _existingMatches = casesData.filter(c => !c.deleted && c.id !== _editingCaseId &&
+      ((studentId && c.studentId === studentId) || (idNumber && c.idNumber === idNumber)));
+    // 學號/身分證皆不同或空，僅姓名相同 → 詢問是否同一學生
+    if (!_existingMatches.length && name) {
+      const _nameOnlyMatches = casesData.filter(c => !c.deleted && c.id !== _editingCaseId && c.name === name);
+      if (_nameOnlyMatches.length &&
+          confirm(`找到姓名相同的既有個案「${name}」（案號：${_nameOnlyMatches.map(c => c.id).join('、')}），但學號/身分證字號不同或未填。\n\n是否為同一學生？`)) {
+        _existingMatches = _nameOnlyMatches;
       }
     }
-    // 全部確認後自動產生新案號
-    const _newAutoId = generateCaseId();
-    document.getElementById('nc-id').value = _newAutoId;
-    checkCaseIdDuplicate();
-    _caseAlert(`已確認資料異動，系統已自動產生新案號「${_newAutoId}」，請確認後再次儲存。`);
-    return;
-  }
 
-  // ── 學生資料變動確認 ──
-  // 案號無衝突的情境下，仍需檢查學號/姓名/身分證是否與既有個案「部分相符」
-  // → 可能是「同一學生但欄位有異動」，逐一詢問使用者是否確認更新
-  const _dataChangeMatches = casesData.filter(c => {
-    if (c.deleted || c.id === _editingCaseId) return false;
-    const sidM = studentId && studentId === c.studentId;
-    const idnM = idNumber  && idNumber  === c.idNumber;
-    const namM = name      && name      === c.name;
-    const anyM = sidM || idnM || namM;
-    const allM = sidM && idnM && namM;
-    // 「三項皆同」由後續同學期重複開案邏輯處理；此處只抓「部分相符」
-    return anyM && !allM;
-  });
-  for (const dup of _dataChangeMatches) {
-    const _sidM = studentId && studentId === dup.studentId;
-    const _idnM = idNumber  && idNumber  === dup.idNumber;
-    const _namM = name      && name      === dup.name;
-    const _matchLabels = [];
-    if (_sidM) _matchLabels.push(`學號：${studentId}`);
-    if (_idnM) _matchLabels.push(`身分證：${idNumber}`);
-    if (_namM) _matchLabels.push(`姓名：${name}`);
-    const _diffFields = [];
-    if (!_sidM && studentId && dup.studentId) _diffFields.push({ label:'學號',       cur: studentId, old: dup.studentId });
-    if (!_idnM && idNumber  && dup.idNumber)  _diffFields.push({ label:'身分證字號', cur: idNumber,  old: dup.idNumber });
-    if (!_namM && name      && dup.name)      _diffFields.push({ label:'姓名',       cur: name,      old: dup.name });
-    if (!_diffFields.length) continue; // 無可比對的異動欄位，跳過
-    const _diffLines = _diffFields.map(f => `　${f.label}：「${f.old}」→「${f.cur}」`).join('\n');
-    const _semLbl = semesterLabel(openDateToSemPrefix(dup.openDate)) || '—';
-    const _isSameStudent = confirm(
-      `偵測到既有個案：\n　姓名：${dup.name}　案號：${dup.id}　開案學期：${_semLbl}\n\n` +
-      `相符欄位：\n　${_matchLabels.join('、')}\n\n` +
-      `以下欄位不同：\n${_diffLines}\n\n` +
-      `是否為同一學生（欄位有異動）？\n\n` +
-      `• 是 → 逐項確認是否於本學期起更新\n` +
-      `• 否 → 視為不同學生，此比對忽略、繼續儲存`
-    );
-    if (!_isSameStudent) continue;
-    // 同一學生 → 逐欄位確認
-    for (const f of _diffFields) {
-      if (!confirm(`${f.label}：「${f.old}」→「${f.cur}」\n是否於本學期起更新此項目？`)) {
-        _caseAlert(`「${f.label}」更新未確認，儲存中止。如要保留原資料請恢復該欄位；如確認為不同學生請點「否」略過此比對。`);
+    if (!_existingMatches.length) {
+      // 2. 全新學生：案號若與任何既有案號相同（不同學生）→ 擋下
+      const _idConflict = casesData.find(c => c.id === id && c.id !== _editingCaseId);
+      if (_idConflict) {
+        _caseAlert('案號已被使用，請用系統建議案號。');
+        document.getElementById('nc-id').focus();
+        checkCaseIdDuplicate();
         return;
       }
-    }
-    // 全部確認後：同步更新既有個案的 root-level 欄位（本學期起生效）
-    // 舊學期資料保存於 basicInfoSnapshots；不影響歷史
-    _diffFields.forEach(f => {
-      const key = { '學號':'studentId', '身分證字號':'idNumber', '姓名':'name' }[f.label];
-      if (key && dup[key] !== f.cur) dup[key] = f.cur;
-    });
-    dup.updatedAt = new Date().toISOString();
-    // 標記既有案需連帶儲存（於本次儲存後一併寫入 chunk）
-    if (!Array.isArray(window._pendingUpdateCaseIds)) window._pendingUpdateCaseIds = [];
-    window._pendingUpdateCaseIds.push(dup.id);
-    auditLog('學生資料異動更新', dup.id, null, _diffFields.map(f => `${f.label}：${f.old}→${f.cur}`).join('；'));
-  }
+    } else {
+      // 3. 有既有學生：收斂到同一案號（取 _caseLatestSem base 最大者）
+      const _target = _existingMatches.reduce((best, c) =>
+        (!best || _semKeyBase(_caseLatestSem(c)) > _semKeyBase(_caseLatestSem(best))) ? c : best, null);
+      const _firstSemKey = _caseSems(_target).slice().sort()[0] || '';
+      if (!confirm(
+        `此學生已有案號 ${_target.id}（${semesterLabel(_firstSemKey)}首次開案）。\n系統將以同一案號新增本學期開案紀錄，不再產生新案號。是否繼續？`
+      )) return;
 
-  // 同學期重複開案確認
-  const _semPfx = currentSemesterPrefix();
-  const _semDups = casesData.filter(c => !c.deleted && c.id !== _editingCaseId &&
-    c.id && c.id.startsWith(_semPfx) &&
-    ((studentId && c.studentId === studentId) || (idNumber && c.idNumber === idNumber)));
-  if (_semDups.length) {
-    const _dupInfo = _semDups.map(d => `案號 ${d.id}（${d.name}）`).join('、');
-    if (!confirm(`此學生本學期已有開案紀錄：${_dupInfo}\n\n確定要本學期重複開案？`)) return;
+      // 學號/姓名/身分證與 target root 不同的欄位 → 逐項確認是否更新
+      const _rootChecks = [
+        { key: 'studentId', label: '學號',       cur: studentId, old: _target.studentId },
+        { key: 'name',      label: '姓名',       cur: name,      old: _target.name },
+        { key: 'idNumber',  label: '身分證字號', cur: idNumber,  old: _target.idNumber },
+      ].filter(f => f.cur && f.old && f.old !== f.cur);
+      let _rootChecksOk = true;
+      for (const f of _rootChecks) {
+        if (!confirm(`${f.label}：「${f.old}」→「${f.cur}」\n是否於本學期起更新此項目？`)) {
+          _caseAlert(`「${f.label}」更新未確認，儲存中止。如不需更新請恢復原值。`);
+          _rootChecksOk = false;
+          break;
+        }
+        _reopenFieldUpdates[f.key] = f.cur;
+      }
+      if (!_rootChecksOk) return;
+
+      const _semBase = currentSemesterPrefix();
+      _reopenSemKey = _nextSemOpenKey(_target, _semBase);
+
+      if (_reopenSemKey !== _semBase) {
+        // 同學期重複開案：檢查是否需要 failsafe（原學期未結案 + 主責轉移）
+        const _priorKey = _caseSems(_target).filter(k => _semKeyBase(k) === _semBase).sort().pop();
+        const _oldEmail = _target.basicInfoSnapshots?.[_priorKey]?.counselorEmail || _getLatestCounselorEmail(_target);
+        const _oldName  = _target.basicInfoSnapshots?.[_priorKey]?.counselorName || _target.counselorName || _oldEmail;
+        const _needsFailsafe = _priorKey && _isSemesterUnclosed(_target, _priorKey) &&
+          _oldEmail && counselorEmail && _oldEmail !== counselorEmail;
+        if (_needsFailsafe) {
+          const _newCounselorName = counselorEmail ? (formatCounselorLabel(counselorEmail) || counselorEmail) : '未選擇';
+          if (!confirm(
+            `「${_oldName}」尚未結案，繼續將於同學期重複開案並使主責轉移至「${_newCounselorName}」，` +
+            `「${_oldName}」將自動成為此案個案管理員，並通知中心同仁與督導/主任。是否繼續？`
+          )) return;
+          _reopenFailsafe = { oldEmail: _oldEmail, oldName: _oldName, newEmail: counselorEmail, newName: _newCounselorName, semKey: _reopenSemKey };
+        } else if (!confirm(`此學生本學期已有開案紀錄（${semesterLabel(_priorKey || _semBase)}），確定同學期再次開案？`)) {
+          return;
+        }
+      }
+      _reopenTarget = _target;
+    }
   }
 
   // 系所需在列表或已確認建立
@@ -17741,6 +17845,94 @@ async function saveCase() {
       hideLoading();
       renderCases();
       showCaseDetail(newCase.id);
+    } else if (_reopenTarget) {
+      // ── 再次開案：一學生一案號，同案號新增本學期開案紀錄（回應 2026-07-06 個案架構重構 Slice 1）──
+      const target = _reopenTarget;
+      const semKey = _reopenSemKey;
+      Object.entries(_reopenFieldUpdates).forEach(([k, v]) => { target[k] = v; });
+      if (!Array.isArray(target.semesters)) target.semesters = _caseSems(target);
+      if (!target.semesters.includes(semKey)) target.semesters.push(semKey);
+      target.semesters.sort();
+      if (!target.basicInfoSnapshots) target.basicInfoSnapshots = {};
+      const _snap = {};
+      BASIC_INFO_SNAPSHOT_FIELDS.forEach(f => { if (newCase[f] !== undefined) _snap[f] = newCase[f]; });
+      target.basicInfoSnapshots[semKey] = _snap;
+      if (!target.semesterStatus) target.semesterStatus = {};
+      target.semesterStatus[semKey] = 'active';
+      // root 個資欄位更新為表單現值（識別欄位學號/姓名/身分證僅在使用者確認後才更新，見 _reopenFieldUpdates）
+      ['birthday','legalGender','genderIdentity','caseType','nationality','ethnicity','ethnicityNote','foreignCountry',
+       'program','disability','department','college','grade','classNo','phone','email','residence','address',
+       'emergencyName','emergencyPhone','emergencyRelation','source','pastRecords','topics',
+       'abType','bCaseReasons','isTransferCase'].forEach(f => { if (newCase[f] !== undefined) target[f] = newCase[f]; });
+      target.openDate = target.openDate || openDate; // 保留最早開案日期，不覆寫
+      target.bsrs = bsrs; target.bsrs6 = bsrs6; target.bsrsTotal = bsrsTotal;
+      const oldCounselorEmail = _getLatestCounselorEmail(target);
+      // 未選主責時不覆寫既有主責（否則空值會蓋掉原主責的全案層級與最新學期快照）；
+      // 僅定格既有快照，新學期快照留空 → 顯示 fallback 到全案層級（原主責不變）
+      if (counselorEmail) _applyCounselorChange(target, semKey, counselorEmail, counselorName);
+      else _stampSemCounselorSnapshots(target);
+      target.status = _recomputeCaseStatus(target);
+      target.updatedAt = now;
+      // psychTestDB 自動帶入沿用
+      if (studentId && Array.isArray(psychTestDB[studentId]) && psychTestDB[studentId].length) {
+        const existing = target.psychTestResults || [];
+        const existSems = new Set(existing.map(t => t.testSemester));
+        const toAdd = psychTestDB[studentId].filter(t => !existSems.has(t.testSemester));
+        if (toAdd.length) target.psychTestResults = [...existing, ...toAdd];
+      }
+      // 個案管理員繼承：若管理員有學期限制，自動將新學期加入可閱覽範圍（同 addCaseSemester）
+      Object.values(configData?.users || {}).forEach(info => {
+        if (!(info.allowedCases || []).includes(target.id)) return;
+        const sems = info.allowedCasesSems?.[target.id];
+        if (sems && !sems.includes(semKey)) sems.push(semKey);
+      });
+      if (_reopenFailsafe) {
+        // 同學期強制再開案 failsafe：保護原主責甲成為個管員 + 通知中心同仁與督導/主任
+        const fs = _reopenFailsafe;
+        const mgrInfo = configData?.users?.[fs.oldEmail];
+        if (mgrInfo) {
+          if (!mgrInfo.allowedCases) mgrInfo.allowedCases = [];
+          if (!mgrInfo.allowedCases.includes(target.id)) mgrInfo.allowedCases.push(target.id);
+          if (mgrInfo.allowedCasesSems?.[target.id] && !mgrInfo.allowedCasesSems[target.id].includes(fs.semKey)) {
+            mgrInfo.allowedCasesSems[target.id].push(fs.semKey);
+          }
+        }
+        const _msg = `${fs.newName} 在 ${fs.oldName} 尚未結案的情況下，對個案 ${target.id}（${target.name}）執行本學期再次開案，主責已轉移，請確認是否符合規定。`;
+        const _recipients = new Set();
+        Object.entries(configData?.users || {}).forEach(([email, info]) => {
+          if (!info || info.disabled) return;
+          const eligible = ML_FULL_TIME_ROLES.includes(info.role) || info.role === '主任' ||
+            info.extraRole === '管理者' || info.extraRole === '實習生行政督導' || info.extraRole === '實習生專業督導' ||
+            info.isAdmin === true;
+          if (eligible) _recipients.add(email);
+        });
+        if (fs.oldEmail) _recipients.add(fs.oldEmail);
+        if (fs.newEmail) _recipients.add(fs.newEmail);
+        _recipients.forEach(email => addNotificationToUser(email, 'same_sem_reopen', target.id, target.name, _msg));
+      } else if (counselorEmail && counselorEmail !== currentUser.email && counselorEmail !== oldCounselorEmail) {
+        addNotificationToUser(counselorEmail, 'assigned_counselor', target.id, target.name);
+      }
+      await saveCasesChunks(target.id);
+      await driveUpdateJsonFile(CONFIG_FILE, configData);
+      renderNotifBell();
+      if (window._transferPendingLink) {
+        const _tIdx = transferData.findIndex(t => t.id === window._transferPendingLink);
+        if (_tIdx >= 0) {
+          transferData[_tIdx].caseId = target.id;
+          await saveTransfer();
+        }
+        window._transferPendingLink = null;
+      }
+      auditLog('再次開案', target.id, null, semesterLabel(semKey) + '學期');
+      if (_reopenFailsafe) {
+        const fs = _reopenFailsafe;
+        auditLog('同學期強制再開案', target.id, null, `原主責：${fs.oldEmail}→新主責：${fs.newEmail}；${semesterLabel(semKey)}`);
+      }
+      document.getElementById('btn-save-case').disabled = false;
+      hideLoading();
+      renderCases();
+      showToast(`已以案號 ${target.id} 新增 ${semesterLabel(semKey)} 學期開案紀錄`, 'success');
+      showCaseDetailAtSem(target.id, semKey);
     } else {
       // Auto-attach psych test results from psychTestDB
       if (studentId && Array.isArray(psychTestDB[studentId]) && psychTestDB[studentId].length) {
@@ -17753,10 +17945,7 @@ async function saveCase() {
         }
       }
       casesData.push(newCase);
-      // 若有既有個案因學生資料異動需一併儲存，一起送入 saveCasesChunks
-      const _extraIds = Array.isArray(window._pendingUpdateCaseIds) ? [...new Set(window._pendingUpdateCaseIds)] : [];
-      window._pendingUpdateCaseIds = [];
-      await saveCasesChunks(newCase.id, ..._extraIds);
+      await saveCasesChunks(newCase.id);
       let cfgChanged = syncManagersFromForm(newCase.id, null);
       if (counselorEmail && counselorEmail !== currentUser.email)
         cfgChanged = addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name) || cfgChanged;
@@ -17777,7 +17966,14 @@ async function saveCase() {
       setAlert('cases-alert', 'info', `個案「${escHtml(name)}」（${escHtml(id)}）已建立。`);
     }
   } catch (err) {
-    if (!_editingCaseId) casesData.pop();
+    if (_reopenTarget) {
+      const target = _reopenTarget;
+      if (target.semesters) target.semesters = target.semesters.filter(s => s !== _reopenSemKey);
+      if (target.basicInfoSnapshots) delete target.basicInfoSnapshots[_reopenSemKey];
+      if (target.semesterStatus) delete target.semesterStatus[_reopenSemKey];
+    } else if (!_editingCaseId) {
+      casesData.pop();
+    }
     hideLoading();
     document.getElementById('btn-save-case').disabled = false;
     _caseAlert('儲存失敗：' + err.message);
@@ -17857,8 +18053,9 @@ function fillFromCase(caseId) {
   document.getElementById('nc-past-psych').checked   = (c.pastRecords||[]).includes('精神科就診');
   document.getElementById('nc-past-med').checked     = (c.pastRecords||[]).includes('服用精神藥物');
   document.getElementById('nc-past-counsel').checked = (c.pastRecords||[]).includes('心理諮商');
+  // 一學生一案號：帶入既有案號本身（不再產生新案號），儲存時將自動以此案號新增本學期開案
   const _ncIdFill = document.getElementById('nc-id');
-  _ncIdFill.value = generateCaseId();
+  _ncIdFill.value = c.id;
   _ncIdFill.classList.remove('_nc-id-flash');
   void _ncIdFill.offsetWidth;
   _ncIdFill.classList.add('_nc-id-flash');
@@ -17870,7 +18067,7 @@ function fillFromCase(caseId) {
   document.getElementById('nc-refill-q').value = '';
   document.getElementById('nc-refill-results').innerHTML =
     `<div style="color:#276749;background:#f0fff4;border:1px solid #9ae6b4;padding:8px 12px;border-radius:6px;font-size:.875rem;">
-      ✓ 已帶入「${escHtml(c.name || '—')}」的歷史資料，案號已自動產生本學期新案號，開案日期與主責人員請確認填寫
+      ✓ 已帶入「${escHtml(c.name || '—')}」的歷史資料，案號沿用既有案號「${escHtml(c.id)}」，儲存時將自動新增本學期開案紀錄，開案日期與主責人員請確認填寫
     </div>`;
 }
 
@@ -19057,7 +19254,8 @@ function _renderGcErrorsSection() {
   if (!section) return;
   if (!_canViewAccessAudit()) { section.innerHTML = ''; return; }
   const entries = (_gcErrorsCache && Array.isArray(_gcErrorsCache.entries)) ? _gcErrorsCache.entries : [];
-  if (!entries.length) { section.innerHTML = ''; return; }
+  const ignoredList = (_gcErrorsCache && Array.isArray(_gcErrorsCache.ignored)) ? _gcErrorsCache.ignored : [];
+  if (!entries.length && !ignoredList.length) { section.innerHTML = ''; return; }
   const kindLabel = { MISSING_SERIAL:'缺流水號', MISSING_CREATOR:'缺建立者註記', BAD_TITLE:'標題格式錯誤',
     UNKNOWN_ROOM:'未知空間', UNKNOWN_COUNSELOR:'未知輔導人員', UNMATCHED:'無對應學諮資訊系統預約' };
   const kindColor = { MISSING_SERIAL:'#dd6b20', MISSING_CREATOR:'#3182ce', BAD_TITLE:'#e53e3e',
@@ -19069,6 +19267,11 @@ function _renderGcErrorsSection() {
   const unread = entries.filter(e => (e.t || '') > seenAt).length;
   const isCollapsed = !!window._gcErrorsCollapsed;
   const fmtT = t => t ? new Date(t).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' }) : '';
+  const rowActions = (e, kind) => `<span style="margin-left:8px;display:inline-flex;gap:4px;white-space:nowrap;">
+      <button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" data-tip="在 Google 日曆開啟此事件" onclick="_gcOpenEvent('${escHtml(e.eventId)}')">🔗</button>
+      ${kind === 'UNMATCHED' ? `<button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" onclick="_gcImportAsBooking('${escHtml(e.id)}')">匯入為預約</button>` : ''}
+      <button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" data-tip="不再於待確認清單顯示此筆" onclick="_gcIgnoreEvent('${escHtml(e.id)}')">忽略</button>
+    </span>`;
   const kindHtml = kind => `<div style="padding:6px 0;border-top:1px solid #fcd34d;">
     <div style="font-weight:700;font-size:.85rem;color:${kindColor[kind]||'#c53030'};margin-bottom:4px;">
       <span style="background:${kindColor[kind]||'#c53030'}22;color:${kindColor[kind]||'#c53030'};border-radius:6px;padding:2px 8px;">${escHtml(kindLabel[kind]||kind)}</span>
@@ -19079,9 +19282,24 @@ function _renderGcErrorsSection() {
       <span style="color:#a0aec0;margin-left:6px;">${escHtml(e.date||'')} ${escHtml((e.startTime||'').slice(0,5))}–${escHtml((e.endTime||'').slice(0,5))}</span>
       ${e.creators?.[0] ? `<span style="color:#718096;margin-left:6px;font-family:monospace;font-size:.72rem;">建立者：${escHtml(e.creators[0])}</span>` : ''}
       <span style="color:#a0aec0;margin-left:6px;">${fmtT(e.t)}</span>
+      ${rowActions(e, kind)}
     </div>`).join('')}
     ${byKind[kind].length > 10 ? `<div style="font-size:.72rem;color:#a0aec0;padding-left:14px;">…另 ${byKind[kind].length - 10} 筆</div>` : ''}
   </div>`;
+  const isIgnoredCollapsed = window._gcIgnoredCollapsed !== false;
+  const ignoredHtml = !ignoredList.length ? '' : `<div style="margin-top:10px;border-top:1px dashed #d69e2e;padding-top:8px;">
+      <div style="cursor:pointer;font-size:.8rem;color:#92400e;font-weight:600;" onclick="window._gcIgnoredCollapsed = !window._gcIgnoredCollapsed; _renderGcErrorsSection();">
+        ${isIgnoredCollapsed ? '▶' : '▼'} 已忽略（${ignoredList.length}）
+      </div>
+      ${isIgnoredCollapsed ? '' : `<div style="margin-top:6px;">
+        ${ignoredList.map(x => `<div style="font-size:.76rem;color:#718096;padding:2px 0 2px 14px;">
+          → <span style="font-weight:600;">${escHtml(x.title || '(無標題)')}</span>
+          <span style="margin-left:6px;">${escHtml(kindLabel[x.kind]||x.kind)}</span>
+          <span style="margin-left:6px;color:#a0aec0;">${escHtml(x.byName||x.by||'')}　${fmtT(x.at)}</span>
+          <button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;margin-left:8px;" onclick="_gcUnignoreEvent('${escHtml(x.eventId)}','${escHtml(x.kind)}')">取消忽略</button>
+        </div>`).join('')}
+      </div>`}
+    </div>`;
   section.innerHTML = `
     <div style="background:#fffbeb;border:1px solid #fbbf24;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
@@ -19091,8 +19309,135 @@ function _renderGcErrorsSection() {
           <button class="btn btn-sm" style="font-size:.76rem;padding:2px 10px;background:#fff;" onclick="_toggleGcErrorsSection()">${isCollapsed ? '展開 ▼' : '收合 ▲'}</button>
         </div>
       </div>
-      ${isCollapsed ? '' : `<div style="margin-top:8px;">${Object.keys(byKind).sort().map(kindHtml).join('')}</div>`}
+      ${isCollapsed ? '' : `<div style="margin-top:8px;">${Object.keys(byKind).sort().map(kindHtml).join('')}${ignoredHtml}</div>`}
     </div>`;
+}
+
+// ── 忽略 / 取消忽略 GC 待確認事件 ──
+async function _gcIgnoreEvent(entryId) {
+  const entries = _gcErrorsCache?.entries || [];
+  const idx = entries.findIndex(e => e.id === entryId);
+  if (idx < 0) return;
+  const e = entries[idx];
+  if (!Array.isArray(_gcErrorsCache.ignored)) _gcErrorsCache.ignored = [];
+  _gcErrorsCache.ignored.push({
+    eventId: e.eventId, kind: e.kind, title: e.title || '',
+    by: currentUser?.email || '',
+    byName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
+    at: new Date().toISOString(),
+  });
+  entries.splice(idx, 1);
+  await _saveGcErrorsCache();
+  const kindLabel = { MISSING_SERIAL:'缺流水號', MISSING_CREATOR:'缺建立者註記', BAD_TITLE:'標題格式錯誤',
+    UNKNOWN_ROOM:'未知空間', UNKNOWN_COUNSELOR:'未知輔導人員', UNMATCHED:'無對應學諮資訊系統預約' };
+  auditLog('忽略GC待確認事件', null, null, `${kindLabel[e.kind]||e.kind}：${e.title||''}`);
+  _renderGcErrorsSection();
+}
+async function _gcUnignoreEvent(eventId, kind) {
+  if (!Array.isArray(_gcErrorsCache?.ignored)) return;
+  const before = _gcErrorsCache.ignored.length;
+  _gcErrorsCache.ignored = _gcErrorsCache.ignored.filter(x => !(x.eventId === eventId && x.kind === kind));
+  if (_gcErrorsCache.ignored.length === before) return;
+  await _saveGcErrorsCache();
+  _renderGcErrorsSection();
+}
+
+// ── 將 UNMATCHED GC 事件匯入為系統預約 ──
+async function _gcImportAsBooking(entryId) {
+  const entry = (_gcErrorsCache?.entries || []).find(e => e.id === entryId);
+  if (!entry) return;
+  const jobId = bgJobAdd('匯入GC事件為預約', entry.title || '');
+  try {
+    const dayEvents = await proxyCall('listCalendarEvents', { startDate: entry.date, endDate: entry.date });
+    const ev = Array.isArray(dayEvents) ? dayEvents.find(x => x.id === entry.eventId) : null;
+    if (!ev) {
+      alert('此 Google 日曆事件已不存在，已從待確認清單移除。');
+      _gcErrorsCache.entries = (_gcErrorsCache.entries || []).filter(e => e.id !== entryId);
+      await _saveGcErrorsCache();
+      _renderGcErrorsSection();
+      bgJobDone(jobId);
+      return;
+    }
+    const parsed = _parseBkGcTitle(ev.title) || { room: ev.title || '', counselors: [], counselorName: '', counselorEmail: '' };
+    // 解析備註（同 syncFromCalendar 對 description 的解析：去掉結尾 #serial 與 \n---\n 之後的系統行）
+    const _rawDesc = ev.description || '';
+    let notes = '';
+    const _serialMatch = _rawDesc.match(/\n#(\d+)\s*$/);
+    if (_serialMatch) {
+      let _body = _rawDesc.slice(0, _rawDesc.length - _serialMatch[0].length);
+      const _sepIdx = _body.lastIndexOf('\n---\n');
+      if (_sepIdx >= 0) _body = _body.slice(0, _sepIdx);
+      notes = _body.trim();
+    } else {
+      const _sepIdx = _rawDesc.lastIndexOf('\n---\n');
+      notes = (_sepIdx >= 0 ? _rawDesc.slice(0, _sepIdx) : _rawDesc).trim();
+    }
+    const room = parsed.room || '';
+    const counselorName = parsed.counselorName || '';
+    const confirmMsg = `確定將此 Google 日曆事件匯入為系統預約？\n\n空間：${room || '（無）'}\n日期：${ev.date}\n時間：${(ev.startTime||'').slice(0,5)}–${(ev.endTime||'').slice(0,5)}\n人員：${counselorName || '（無）'}`;
+    if (!confirm(confirmMsg)) { bgJobDone(jobId); return; }
+    const myName = configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '';
+    const now = new Date().toISOString();
+    const bk = {
+      id: 'bk_' + Date.now(),
+      bkSerial: _bkNextSerial(),
+      room, customRoom: '',
+      date: ev.date, startTime: ev.startTime, endTime: ev.endTime,
+      counselors: parsed.counselors || [], counselorEmail: parsed.counselorEmail || '', counselorName,
+      caseId: '', caseName: '',
+      notes,
+      createdAt: now, updatedAt: now, creatorName: myName,
+      calendarEventId: ev.id,
+    };
+    // 此路徑事件已存在於 GC（匯入既有事件），bkCommit 只負責併發安全寫入 bookings.json，不重複建立/覆蓋 GC 事件
+    const _importResult = await bkCommit([{ op: 'upsert', booking: { ...bk }, gc: { mode: 'none' } }], { checkConflicts: false });
+    if (_importResult.fallback) {
+      bookingsData.push(bk);
+      await saveBookings();
+    } else if (!_importResult.error) {
+      const fb = (_importResult.bookings || []).find(x => x.id === bk.id);
+      bookingsData.push(fb || bk);
+    } else {
+      bookingsData.push(bk); // 理論上不會有 conflict（checkConflicts:false），保底仍寫入本機
+    }
+    bgJobProgress(jobId, 70);
+    try {
+      const _bkClr = _bkEffColor(bk);
+      await proxyCall('updateCalendarEvent', {
+        eventId: ev.id, room: bk.room, customRoom: bk.customRoom || '',
+        date: bk.date, startTime: bk.startTime, endTime: bk.endTime,
+        counselorName: bk.counselorName || '', notes: bk.notes || '',
+        creatorName: bk.creatorName || bk.counselorName || '',
+        createdAt: bk.createdAt, updatedAt: bk.updatedAt, isEdit: false, bkSerial: bk.bkSerial,
+        colorId: _bkClr ? _nearestGcColorId(_bkClr) : null });
+    } catch (_) {}
+    // 匯入＋回寫後，該事件的所有錯誤 kind 都應消失
+    _gcErrorsCache.entries = (_gcErrorsCache.entries || []).filter(e => e.eventId !== ev.id);
+    await _saveGcErrorsCache();
+    auditLog('GC事件匯入為預約', null, null, `${room||'（無）'}　${ev.date}　${(ev.startTime||'').slice(0,5)}–${(ev.endTime||'').slice(0,5)}${counselorName?'　'+counselorName:''}`);
+    _renderGcErrorsSection();
+    renderBookingsPage?.();
+    bgJobDone(jobId);
+  } catch (e) {
+    bgJobFail(jobId, e.message);
+    alert('匯入失敗：' + e.message);
+  }
+}
+
+// ── 於 Google 日曆開啟指定事件 ──
+async function _gcOpenEvent(eventId) {
+  try {
+    if (!window._gcCalendarMeta) {
+      const meta = await proxyCall('getCalendarMeta', {});
+      if (!meta?.calendarId) { alert('無法取得日曆資訊，請確認 Apps Script 已部署最新版本。'); return; }
+      window._gcCalendarMeta = meta;
+    }
+    const calendarId = window._gcCalendarMeta.calendarId;
+    const eid = btoa(eventId.replace(/@google\.com$/, '') + ' ' + calendarId).replace(/=+$/, '');
+    window.open('https://calendar.google.com/calendar/event?eid=' + eid, '_blank');
+  } catch (e) {
+    alert('開啟失敗：' + e.message);
+  }
 }
 
 function _renderMlNotifSection() {
@@ -19467,6 +19812,16 @@ function renderTodosPage() {
   const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（轉銜窗口）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）', transfer_withdraw_coord: '教務處名單（轉銜窗口）', transfer_withdraw_mismatch: '教務處名單（姓名/學號不符）', transfer_reassign_assessor: '轉派評估者', transfer_reassign_assessor_notify: '轉銜評估者通知', leave_pending_review: '差勤申請（待審核）', leave_approved_notify: '差勤申請結果', issue_pending_verification: '問題回報（待您驗證）', ml_cumul3: '身心調適假累計提醒', ml_reminder: '身心調適假再次提醒', ml_assessment_due: '身心狀態評估表（待填寫）' };
 
   body.innerHTML = filtered.map(t => {
+    // 問題回報「待您驗證」待辦：若對應 issue 已不是 pending_verification（他人已代驗或管理者已改狀態），自動收掉此待辦
+    if (!readOnly && t.type === 'issue_pending_verification' && !t.done) {
+      const relIssue = issuesData.find(x => x.id === t.issueId);
+      if (relIssue && relIssue.status !== 'pending_verification') {
+        t.done = true; t.doneAt = new Date().toISOString();
+        saveUserTodos().catch(() => {});
+        _syncTodoBadge();
+        return '';
+      }
+    }
     const tLabel = typeLabels[t.type] || t.type;
     const createdAt = t.createdAt ? new Date(t.createdAt).toLocaleString('zh-TW', { dateStyle:'short', timeStyle:'short' }) : '';
     const doneAt = t.doneAt ? new Date(t.doneAt).toLocaleString('zh-TW', { dateStyle:'short', timeStyle:'short' }) : '';
@@ -19758,6 +20113,14 @@ function _continueTodo(id) {
     showPage('page-transfer', navEl);
     renderTransferPage();
   } else if (t.type === 'issue_pending_verification') {
+    const relIssue = issuesData.find(x => x.id === t.issueId);
+    if (relIssue && relIssue.status !== 'pending_verification') {
+      // 他人已代驗或管理者已改狀態：自動收掉待辦，不導頁
+      t.done = true; t.doneAt = new Date().toISOString();
+      saveUserTodos().catch(() => {});
+      _syncTodoBadge();
+      return;
+    }
     const navEl = document.querySelector('[data-nav-id="page-issues"]');
     showPage('page-issues', navEl);
     markIssuesSeen();
@@ -21304,7 +21667,9 @@ async function proxyCall(action, params = {}, _silent = false, _retry = 0, _auth
       throw new Error('身份驗證失敗，請重新登入');
     }
     if (!data.success && data.pong === undefined) throw new Error(data.error || 'Apps Script 回應錯誤');
-    if (data.data && typeof data.data === 'object' && data.data.error && !data.data.ok) throw new Error(data.data.error);
+    // bookingsCommit 的 { error:'conflict', conflictType, with } 是正常業務結果（非後端故障），
+    // 由 bkCommit() 自行判讀，不可在此攔截丟棄成一般 Error（會遺失 conflictType/with 細節）。
+    if (action !== 'bookingsCommit' && data.data && typeof data.data === 'object' && data.data.error && !data.data.ok) throw new Error(data.data.error);
     if (!_silent) _syslog(_isRead ? 'debug' : 'success', `✓ ${action} (${Date.now() - _t0}ms)${_retry > 0 ? ` [重試${_retry}次]` : ''}`);
     if (_retry > 0) _hideRetryNotice();
     return data.data;
@@ -22970,7 +23335,7 @@ function auditLog(action, caseId = null, recordId = null, detail = null, opts = 
 
 const AUDIT_PAGE_CATEGORIES = {
   '空間預約':     a => a.includes('空間預約') || a.includes('同步日曆'),
-  '個案列表':     a => ['新增個案','批次匯入個案','刪除個案','復原個案','修改案號','查閱個案','再次開案'].some(k => a.includes(k)),
+  '個案列表':     a => ['新增個案','批次匯入個案','刪除個案','復原個案','修改案號','查閱個案','再次開案','同學期強制再開案'].some(k => a.includes(k)),
   '個案詳細資料': a => ['編輯個案','執行結案','不開案'].some(k => a.includes(k)),
   '晤談紀錄':     a => a.includes('晤談紀錄') || a.includes('晤談記錄'),
   '初次晤談':     a => a.includes('初次晤談') || (a.includes('初談') && !a.includes('初談記錄')),
@@ -23893,6 +24258,57 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 101, title: '系列預約儲存前確認預覽', isProd: true, items: [
+      item('新功能', '新增預約勾選「重複預約」時，按儲存會先跳出預覽視窗，逐筆列出即將建立的每一筆（日期含週幾、時間、空間，主責列於頂部），確認後才實際建立'),
+      item('新功能', '編輯系列預約且會影響多筆時（套用範圍為「此筆及之後」／「全部系列」，或調整了頻率／次數觸發系列重排），儲存前先顯示「修正前 → 修正後」對照表：每筆標示不變／修改／新增／刪除，有變動的日期時間空間以粗體強調、未變的以灰色呈現，人員／備註等內容變更加註「內容更新」；純單筆修改（僅此筆且未動頻率次數）不跳預覽'),
+      item('改善', '預覽視窗按「返回修改」只關閉預覽，預約表單保持開啟且所有欄位維持剛填的值，可直接調整後再儲存；按「確認執行」才進入原本的衝突檢查與儲存流程。預覽顯示的重排結果與實際套用共用同一份計算，保證所見即所得'),
+    ]},
+    { date: '2026-07-07', v: 100, title: '編輯系列預約可調整重複頻率與次數', isProd: true, items: [
+      item('新功能', '編輯系列預約中的某一筆時，「重複預約」區塊改為可調整（先前為唯讀）：調整頻率會把「此筆之後」的預約依新頻率重排（依原日期排序決定順序，會覆蓋先前個別調整過的日期，更早的筆與被編輯這筆本身不受影響）；調整次數會從系列尾端新增或刪除（減少時優先刪除日期最晚者，被編輯這筆一律不會被刪）'),
+      item('改善', '調整頻率／次數是否觸發系列重排，與「套用範圍」（僅此筆／此筆及之後／全部系列）互相獨立：範圍只決定空間／時間／人員／案號／備註套用到哪些筆；新增筆的欄位一律取被編輯這筆在表單上的最新值'),
+      item('改善', '系列重排若會刪除的預約有晤談紀錄的「下次預約」掛接在上面，儲存前會先提示掛接筆數，確認後才繼續刪除'),
+      item('改善', '系列重排整批試算後若偵測到撞房／撞人衝突，不會直接套用，改開「拖曳衝突修正」視窗讓使用者逐筆調整（含新增與待刪除的筆），全部解決後才能套用並儲存'),
+    ]},
+    { date: '2026-07-07', v: 99, title: '拖曳衝突修正視窗支援節次選時間', isProd: true, items: [
+      item('改善', '拖曳衝突修正視窗的每個分頁新增「節次」下拉：選定節次即自動帶入該節的開始／結束時間，並立即重新偵測是否仍有衝突（分頁狀態 ⚠／✓ 與「套用並儲存」按鈕即時更新）；仍可改用下方時間欄位手動微調（此時節次顯示「自訂時間」）'),
+    ]},
+    { date: '2026-07-07', v: 98, title: '系列預約顯示與拖曳衝突修正視窗（驗證回饋）', isProd: true, items: [
+      item('改善', '空間預約單日檢視、多日表格檢視、列表檢視三處的預約卡片，屬於系列預約者一律加註「🔁 系列」徽章（多日表格空間較小僅顯示 🔁），滑鼠移入顯示「系列預約（共 N 筆）」，避免看不出這筆屬於系列'),
+      item('修復', '編輯系列預約中的某一筆時，「重複預約」區塊改為唯讀呈現系列建立當初的設定（頻率／次數皆鎖定不可互動，並附註「共 N 筆」），先前會誤呈現為未勾選、頻率與次數皆變回預設值；非系列預約的編輯則直接隱藏此區塊，避免誤以為勾選/調整會生效'),
+      item('新功能', '拖曳調整預約（含系列選定範圍後）改為前端本機立即判斷是否撞房／撞人，不必再等後端來回；有衝突時不再整批還原了事，改開「拖曳衝突修正」視窗：每筆衝突各一個分頁，可個別調整日期／時間／空間或直接刪除該筆，全部解決（或刪除）後才能套用並儲存'),
+      item('改善', '晤談紀錄時間軸收束狀態顯示的下次預約，補上空間名稱（原僅顯示日期時間）'),
+      item('修復', '系列預約寫紀錄自動帶入下次會談時段時，即時衝突檢查與儲存前的驗證都會排除該筆本身，不再對自動帶入的同一筆誤報衝突；未更動自動帶入內容時另顯示「已自動帶入」提示（非警示樣式），避免誤以為需要另外處理'),
+    ]},
+    { date: '2026-07-07', v: 97, title: '紀錄呈現下次預約＋系列寫紀錄自動帶入與改期三選', isProd: true, items: [
+      item('新功能', '晤談紀錄「後續處遇計畫」下方即時顯示連結的下次預約：展開狀態顯示完整日期時間空間，收束狀態顯示精簡版（📅 月/日 時間）；預約已被刪除則不顯示'),
+      item('新功能', '從系列預約的某一筆點「寫紀錄」時，若同系列有更晚一筆會談，開啟紀錄表單會自動勾選「預約下次諮商空間」並帶入該筆的空間／日期／時間'),
+      item('新功能', '上述自動帶入的下次會談時段若被更動後儲存，會詢問「額外新增（保留原筆另增一筆）／單筆修正（只改這一筆）／此筆之後修正（該筆及之後同系列一併調整，日期依差值平移）」；未更動則直接沿用原筆，不重複建立預約或觸發 Google 日曆同步'),
+    ]},
+    { date: '2026-07-07', v: 96, title: '系列預約編輯整修＋拖曳遷移套用範圍與衝突把關', isProd: true, items: [
+      item('修復', '系列預約編輯選擇「此筆及之後」或「全部系列」時，變更日期現在會確實生效：被編輯的這一筆套用表單填的日期，範圍內其餘筆依相同天數平移（先前系列分支寫死不改日期，改了也沒反應）'),
+      item('改善', '編輯系列預約時，Modal 標題下方即時顯示「套用範圍：僅此筆／此筆及之後（共 N 筆）／全部系列（共 N 筆）」，範圍非僅此筆時加註「變更日期將平移套用範圍內所有預約」；並顯示「此預約屬於系列預約（共 N 筆）」提示，避免誤以為系列已不存在'),
+      item('新功能', '拖曳調整系列預約時會先詢問套用範圍（僅此筆／此筆及之後／全部系列），日期平移語意與表單編輯一致；拖曳（不論系列與否）改走後端衝突檢查，偵測到撞房/撞人會自動還原拖曳前狀態並顯示警示，不再直接整檔覆寫略過檢查'),
+    ]},
+    { date: '2026-07-07', v: 95, title: '系列預約全系列同步 Google 日曆＋下次預約驗證訊息精確化', isProd: true, items: [
+      item('修正', '系列預約（重複 N 次）改為每一筆都建立 Google 日曆事件（先前僅第一筆）；系列編輯時已有事件者更新、尚無事件者自動補建，歷史系列缺漏的日曆事件會在下次系列編輯時一併回填'),
+      item('改善', '個案紀錄「預約下次諮商空間」驗證訊息精確指出缺少的欄位（空間／日期／開始時間／結束時間），缺空間時同步標示空間選取區塊'),
+    ]},
+    { date: '2026-07-07', v: 94, title: '預約表重構 Slice A：後端 bookingsCommit 寫入閘＋寫入當下衝突檢查', isProd: true, items: [
+      item('改善', '空間預約新增後端 bookingsCommit 動作（LockService 併發鎖）：所有預約新增/編輯/刪除/複製/GC 匯入/GC 同步一律改經此動作寫入 bookings.json，取代前端整檔覆寫，杜絕多人同時操作互相覆蓋彼此的異動'),
+      item('改善', '撞房／撞人衝突改為在後端寫入當下即時檢查（前端本機檢查僅作即時提示），杜絕兩人同時搶訂同房同時段或同一人同時段被排進兩個空間；偵測到衝突時整批不寫入，並提示為「與其他使用者同時操作發生衝突」'),
+    ]},
+    { date: '2026-07-06', v: 93, title: 'Google 日曆事件待確認清單三動作＋問題回報7日開放協助驗證', isProd: true, items: [
+      item('新功能', '「Google 日曆事件待確認」清單每筆新增「忽略」按鈕：忽略後不再顯示於清單，直到該事件於日曆上再度異動；區塊底部提供收合的「已忽略」小節可隨時取消忽略'),
+      item('新功能', '「無對應學諮資訊系統預約」（UNMATCHED）事件新增「匯入為預約」按鈕：一鍵依日曆事件內容建立對應的系統預約，並將標題／流水號／建立者回寫至日曆事件'),
+      item('新功能', '待確認清單每筆新增🔗按鈕，一鍵開啟該事件的 Google 日曆頁面以便直接查閱或編輯'),
+      item('改善', '問題回報「待驗證」狀態超過 7 日、原回報者尚未確認時，開放所有人協助點擊「驗證OK」或「驗證後仍有問題」；他人已代驗或管理者已改狀態後，原回報者殘留的「待您驗證」待辦會自動收掉，不再顯示過期提醒'),
+    ]},
+    { date: '2026-07-06', v: 92, title: '個案架構重構第一階段：一學生一案號（saveCase 收斂＋同學期 failsafe）', isProd: true, items: [
+      item('新功能', '再次開案改為同一案號新增本學期開案紀錄：儲存時系統自動偵測既有學生（依學號／身分證，或姓名相符後詢問確認），收斂到既有案號，不再產生新案號；學號／姓名／身分證有異動時逐項詢問是否於本學期起更新'),
+      item('新功能', '同學期重複開案以 sem key 附加序號區分（顯示為「114-2_2」），沿用同一案號、不影響既有排序與統計'),
+      item('新功能', '同學期重複開案且原學期尚未結案、主責即將轉移時：強制二次確認，確認後原主責自動成為此案個案管理員，並通知專任／實習心理師與社工師、主任、系統管理者及行政/專業督導'),
+      item('改善', '新增個案表單的案號重複提示改為資訊性文字＋「帶入既有案號」按鈕，移除「另外開案（產生新案號）」選項；「帶入歷史個案」改為帶入既有案號本身'),
+    ]},
     { date: '2026-07-06', v: 91, title: '#030/#027 驗證回饋修正', isProd: true, items: [
       item('修復', '身心調適假燈號下拉選單：「（依關鍵字自動判定）」選項文字改短為「系統判定」；下拉本身縮窄並改用較小字體，避免與右側「受理情況」下拉重疊'),
       item('修復', '身心調適假受輔生清單「主責」標示改為只顯示姓名，不再附帶職稱，避免與其他標籤擠壓排版'),
@@ -25835,7 +26251,28 @@ function _bkConfirmSeriesScope(scope) {
   _bkEditScope = scope;
   document.getElementById('bk-series-scope-modal').style.display = 'none';
   document.getElementById('booking-modal').style.display = 'flex';
+  _bkUpdateScopeInfo();
   _checkBkConflict();
+}
+
+// 範圍透明化：於預約 Modal 標題下方顯示目前套用範圍（含筆數）與系列 badge；非系列編輯時隱藏。
+function _bkUpdateScopeInfo() {
+  const el = document.getElementById('bk-scope-info');
+  if (!el) return;
+  const b = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
+  if (!b?.seriesId) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const seriesTotal = bookingsData.filter(x => x.seriesId === b.seriesId).length;
+  const n = _bkSeriesTargets(bookingsData, b, _bkEditScope).length;
+  const scopeLabel = _bkEditScope === 'all' ? `全部系列（共 ${n} 筆）`
+    : _bkEditScope === 'future' ? `此筆及之後（共 ${n} 筆）`
+    : '僅此筆';
+  const shiftNote = _bkEditScope !== 'this'
+    ? '<br><span style="color:#c05621;">變更日期將平移套用範圍內所有預約</span>' : '';
+  el.style.display = '';
+  el.innerHTML = `<div style="font-size:.82rem;color:#4a5568;background:#f7fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px 10px;margin-bottom:10px;">
+    套用範圍：${scopeLabel}${shiftNote}
+    <div style="margin-top:2px;color:#718096;">此預約屬於系列預約（共 ${seriesTotal} 筆）</div>
+  </div>`;
 }
 
 // T1：⋯ 浮動選單
@@ -25993,6 +26430,7 @@ async function syncFromCalendar(silent = false) {
     const auditActions = [];
     let changed = false;
     const deletedIds = new Set();
+    const changedIds = new Set();
     const serialRestoreQueue = [];
     const gcPushBackQueue = [];  // 系統比 GC 新 → 推回 GC
 
@@ -26080,6 +26518,7 @@ async function syncFromCalendar(silent = false) {
 
         if (Object.keys(update).length > 0) {
           changed = true;
+          changedIds.add(b.id);
           auditActions.push({ action: '因' + myName + '同步日曆而更新', caseId: b.caseId || null, detail: rd + (b.counselorName ? '　' + b.counselorName : '') + '　' + diffs.join('；') });
           return { ...b, ...update };
         }
@@ -26087,10 +26526,26 @@ async function syncFromCalendar(silent = false) {
       return b;
     });
 
-    if (deletedIds.size > 0) bookingsData = bookingsData.filter(b => !deletedIds.has(b.id));
-
     if (changed) {
-      await saveBookings();
+      // 批次 bkCommit（gc:'none'，checkConflicts:false）：這裡的變更全部來自 GC 現況比對，不是新的使用者操作，
+      // 不需再做撞房/撞人檢查；GC 事件本身已是最終狀態，不需再回頭觸碰 GC。
+      const ops = [];
+      bookingsData.forEach(b => { if (changedIds.has(b.id)) ops.push({ op: 'upsert', booking: { ...b }, gc: { mode: 'none' } }); });
+      deletedIds.forEach(id => ops.push({ op: 'delete', id, gcEventId: null }));
+      if (deletedIds.size > 0) bookingsData = bookingsData.filter(b => !deletedIds.has(b.id));
+      if (ops.length > 0) {
+        try {
+          const result = await bkCommit(ops, { checkConflicts: false });
+          if (result.fallback) {
+            await saveBookings();
+          } else if (!result.error) {
+            (result.bookings || []).forEach(fb => {
+              const idx = bookingsData.findIndex(x => x.id === fb.id);
+              if (idx >= 0) bookingsData[idx] = fb;
+            });
+          }
+        } catch (e) { console.warn('syncFromCalendar bkCommit failed', e); }
+      }
       auditActions.forEach(a => auditLog(a.action, a.caseId, null, a.detail));
       renderBookingsPage();
     }
@@ -26135,6 +26590,7 @@ async function syncFromCalendar(silent = false) {
 async function loadGcErrorsCache() {
   _gcErrorsCache = await driveReadJsonOptional(GC_VALIDATION_ERRORS_FILE);
   if (!_gcErrorsCache || !Array.isArray(_gcErrorsCache.entries)) _gcErrorsCache = { entries: [] };
+  if (!Array.isArray(_gcErrorsCache.ignored)) _gcErrorsCache.ignored = [];
 }
 async function _saveGcErrorsCache() {
   _gcErrorsCache.updatedAt = new Date().toISOString();
@@ -26183,14 +26639,16 @@ async function _runGcValidationAndBackfill(gcEvents) {
   const prevKeys = new Set((_gcErrorsCache.entries || []).map(e => `${e.eventId}|${e.kind}`));
   const currentKeys = new Set();
   const newErrors = []; // 本輪偵測新增（非快取內）
-  const survivedEntries = []; // 本輪仍存在的錯誤（舊+新）
+  const survivedEntries = []; // 本輪仍存在的錯誤（舊+新，忽略中的不計入）
   const backfillCandidates = []; // MISSING_CREATOR 且有 creator email
+  const ignoredKeys = new Set((_gcErrorsCache.ignored || []).map(x => `${x.eventId}|${x.kind}`));
 
   for (const ev of gcEvents) {
     const kinds = _gcValidateEvent(ev, bookingsIndex, usersByName, usersByEmail);
     for (const kind of kinds) {
       const key = `${ev.id}|${kind}`;
       currentKeys.add(key);
+      if (ignoredKeys.has(key)) continue; // 使用者已忽略此筆：不進入待確認清單、不廣播
       const entry = {
         id: `gce-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
         eventId: ev.id, kind,
@@ -26211,6 +26669,14 @@ async function _runGcValidationAndBackfill(gcEvents) {
 
   // 移除已消失的錯誤（GC 端已修正 → 從 feed 移除）
   _gcErrorsCache.entries = survivedEntries;
+
+  // 清出：忽略名單中已不在本輪 currentKeys 的項目（事件已修正或超出查詢視窗）自動出清
+  let ignoredCleaned = false;
+  if (Array.isArray(_gcErrorsCache.ignored) && _gcErrorsCache.ignored.length) {
+    const beforeLen = _gcErrorsCache.ignored.length;
+    _gcErrorsCache.ignored = _gcErrorsCache.ignored.filter(x => currentKeys.has(`${x.eventId}|${x.kind}`));
+    ignoredCleaned = _gcErrorsCache.ignored.length !== beforeLen;
+  }
 
   // 自動補註（每輪最多 5 筆，避免長時間佔用）
   const maxBackfill = 5;
@@ -26237,7 +26703,7 @@ async function _runGcValidationAndBackfill(gcEvents) {
   }
 
   // 儲存 feed（若有變動）
-  if (newErrors.length || backfilled > 0 || prevKeys.size !== currentKeys.size) {
+  if (newErrors.length || backfilled > 0 || prevKeys.size !== currentKeys.size || ignoredCleaned) {
     await _saveGcErrorsCache();
   }
 
@@ -26422,6 +26888,8 @@ async function renderBookingsAuditLog(forceRefresh = false) {
   } catch (_) {}
 }
 
+// 僅供舊後端 fallback（bookingsCommit 尚未部署時）使用，勿新增呼叫——整檔覆寫會被併發操作互相蓋掉。
+// 新寫入一律走 bkCommit()。
 async function saveBookings() {
   try {
     await driveUpdateJsonFile(BOOKINGS_FILE, { bookings: bookingsData });
@@ -26429,6 +26897,53 @@ async function saveBookings() {
     if (e.message.includes('找不到')) {
       await driveCreateJsonFile(BOOKINGS_FILE, { bookings: bookingsData }, DRIVE_FOLDER_ID);
     } else throw e;
+  }
+}
+
+// 併發安全的預約批次寫入（Slice A）：優先走後端 bookingsCommit（LockService＋寫入當下撞房/撞人檢查）。
+// ops: [{op:'upsert', booking, gc:{mode:'create'|'update'|'none', params}} | {op:'delete', id, gcEventId}]
+// 回傳：{ ok:true, bookings:[...], gcErrors:[...] } | { error:'conflict', conflictType, with } | { fallback:true }
+// fallback:true 表示舊後端尚未部署（Unknown action），呼叫端需自行沿用 saveBookings() 整檔覆寫路徑。
+async function bkCommit(ops, opts = {}) {
+  const checkConflicts = opts.checkConflicts !== false;
+  const skipPersonConflict = !!opts.skipPersonConflict;
+  const res = await proxyCall('bookingsCommit', { ops, checkConflicts, skipPersonConflict });
+  if (res == null) return { fallback: true };
+  if (res.error && /Unknown action/i.test(res.error)) return { fallback: true };
+  return res;
+}
+
+// 單筆預約 upsert 的 bkCommit 便利包裝（供個案紀錄「下次預約」新增/編輯使用）。
+// bk 為 bookingsData 內的實際物件參照，成功時會被就地合併回後端最終狀態（含新 calendarEventId）。
+// 回傳 bk（成功／fallback）或 null（衝突或失敗，已透過 bgJobFail 記錄，呼叫端應自行回滾 bk）。
+async function _bkCommitOne(bk, gcMode, gcParams, jobLabel) {
+  const jobId = bgJobAdd(jobLabel);
+  try {
+    const res = await bkCommit([{ op: 'upsert', booking: { ...bk }, gc: { mode: gcMode, params: gcParams || null } }]);
+    if (res.fallback) {
+      try {
+        if (gcMode === 'create') {
+          const eid = await proxyCall('createCalendarEvent', gcParams);
+          if (eid) bk.calendarEventId = eid;
+        } else if (gcMode === 'update' && bk.calendarEventId) {
+          await proxyCall('updateCalendarEvent', { eventId: bk.calendarEventId, ...gcParams });
+        }
+      } catch (_) {}
+      await saveBookings().catch(() => {});
+      bgJobDone(jobId);
+      return bk;
+    }
+    if (res.error) {
+      bgJobFail(jobId, res.conflictType ? `與其他人${res.conflictType === 'person' ? '人員' : '空間'}衝突` : res.error);
+      return null;
+    }
+    const fb = (res.bookings || []).find(x => x.id === bk.id);
+    if (fb) Object.assign(bk, fb);
+    bgJobDone(jobId);
+    return bk;
+  } catch (e) {
+    bgJobFail(jobId, e.message);
+    return null;
   }
 }
 
@@ -28829,6 +29344,35 @@ function _bkCellStyle(b) {
   return `background:${hex}22;border-left:4px solid ${hex};`;
 }
 
+// 系列預約 badge：同 seriesId 筆數建一次 Map（呼叫端於 render 開頭建立一次並傳入，避免每筆重新掃描 bookingsData）。
+function _bkBuildSeriesCountMap(bookings) {
+  const m = new Map();
+  (bookings || []).forEach(b => { if (b.seriesId) m.set(b.seriesId, (m.get(b.seriesId) || 0) + 1); });
+  return m;
+}
+// compact=true 時只顯示 🔁（多日表格空間較小）；否則顯示「🔁 系列」徽章。
+function _bkSeriesBadge(b, seriesCountMap, compact) {
+  if (!b?.seriesId) return '';
+  const n = seriesCountMap?.get(b.seriesId) || 1;
+  const title = escHtml(`系列預約（共 ${n} 筆）`);
+  if (compact) return `<span title="${title}" style="font-size:.7rem;">🔁</span>`;
+  return `<span title="${title}" style="font-size:.7rem;background:#e9d8fd;color:#553c9a;border:1px solid #d6bcfa;border-radius:8px;padding:0 5px;white-space:nowrap;">🔁 系列</span>`;
+}
+
+// 從 booking 物件組出 GC 事件參數（含依有效顏色算出的 colorId）。
+// 供拖曳（bkDrop/_bkDragConfirmScope）與 saveBooking 系列編輯逐筆 GC 同步共用，避免重複組裝邏輯。
+function _bkGcParamsOf(b, isEdit) {
+  const clr = _bkEffColor(b);
+  return {
+    room: b.room, customRoom: b.customRoom, date: b.date, startTime: b.startTime, endTime: b.endTime,
+    counselorName: b.counselorName, notes: b.notes,
+    creatorName: configData?.users?.[b.creatorEmail]?.name || b.creatorName || '',
+    createdAt: b.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
+    isEdit: !!isEdit, bkSerial: b.bkSerial,
+    colorId: clr ? _nearestGcColorId(clr) : null,
+  };
+}
+
 // ── 單筆預約自訂顏色（僅影響該筆預約，複製/重複預約沿用）──
 let _bkPickedColor = '';
 function _toggleBkOverridePanel() {
@@ -28889,6 +29433,7 @@ function renderBookingsPage() {
     return `${d.getMonth()+1}/${d.getDate()} (${WD[d.getDay()]})`;
   };
   const isToday = (dateStr) => dateStr === new Date().toISOString().slice(0,10);
+  const _seriesCountMap = _bkBuildSeriesCountMap(bookingsData);
 
   if (_bkDaySpan === 1) {
     // 單日模式：原始垂直列表（較寬鬆）
@@ -28911,6 +29456,7 @@ function renderBookingsPage() {
           html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 8px;${_bkCellStyle(b)}border-radius:6px;margin-bottom:4px;cursor:grab;">
             <span style="font-size:.85rem;font-weight:600;color:#2d3748;min-width:105px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</span>
             <span style="font-size:.875rem;color:#4a5568;" title="${escHtml(b.counselorName || '')}">${escHtml(b.counselorName || '—')}</span>
+            ${_bkSeriesBadge(b, _seriesCountMap, false)}
             ${caseTag}${noteTag}${calTag}
             <span style="margin-left:auto;display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
               <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="editBooking('${escHtml(b.id)}')">編輯</button>
@@ -28954,7 +29500,7 @@ function renderBookingsPage() {
               ? `<span title="已同步" style="font-size:.75rem;">📅</span>`
               : `<button class="btn btn-secondary btn-sm" style="padding:0 3px;font-size:.65rem;" data-sync-id="${escHtml(b.id)}" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅</button>`;
             html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="padding:3px 5px;${_bkCellStyle(b)}border-radius:4px;margin-bottom:3px;font-size:.78rem;cursor:grab;">` +
-              `<div style="font-weight:600;color:#2d3748;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</div>` +
+              `<div style="display:flex;align-items:center;justify-content:space-between;gap:4px;font-weight:600;color:#2d3748;">${fmtT(b.startTime)}–${fmtT(b.endTime)}${_bkSeriesBadge(b, _seriesCountMap, true)}</div>` +
               `<div style="color:#4a5568;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(b.counselorName||'')}">${escHtml(b.counselorName||'—')}</div>` +
               (b.caseId ? `<div style="color:#2471a3;font-size:.72rem;">${escHtml(b.caseId)}</div>` : '') +
               (b.notes ? `<div style="color:#718096;font-size:.72rem;">${escHtml(b.notes.slice(0,20))}${b.notes.length>20?'…':''}</div>` : '') +
@@ -29037,6 +29583,7 @@ function renderBkListView(body) {
     const d = new Date(ds + 'T00:00:00');
     return `${d.getFullYear()-1911}/${d.getMonth()+1}/${d.getDate()} (${WD[d.getDay()]})`;
   };
+  const _seriesCountMap = _bkBuildSeriesCountMap(bookingsData);
 
   body.innerHTML = pageRows.map(b => {
     const isPast   = b.date < today;
@@ -29049,7 +29596,7 @@ function renderBkListView(body) {
       : `<button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:.75rem;" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅 同步</button>`;
     return `<div style="display:flex;align-items:flex-start;gap:12px;padding:12px 16px;border-bottom:1px solid #e2e8f0;background:${rowBg};flex-wrap:wrap;">
       <div style="min-width:140px;">
-        <div style="font-weight:700;font-size:.88rem;color:${dateClr};">${fmtDate(b.date)}</div>
+        <div style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:.88rem;color:${dateClr};">${fmtDate(b.date)}${_bkSeriesBadge(b, _seriesCountMap, false)}</div>
         <div style="font-size:.85rem;color:#4a5568;margin-top:2px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</div>
       </div>
       <div style="min-width:90px;">
@@ -29112,6 +29659,8 @@ function bkDragLeave(el) {
 }
 
 // GC 背景同步佇列（Map 確保同一筆快速拖曳只推送最終狀態）
+// 現況（bkDrop 改走 bkCommit 後）：僅剩「舊後端尚未部署（bkCommit 回傳 fallback）」時的相容路徑會用到，
+// 正常路徑的 GC 同步已交由後端 bookingsCommit 逐 op 處理。
 const _bkGcQueue = new Map();
 let _bkGcRunning = false;
 async function _bkGcFlush() {
@@ -29138,6 +29687,9 @@ async function _bkGcFlush() {
   _bkGcRunning = false;
 }
 
+// 拖曳調整：非系列預約直接套用＋衝突檢查；系列預約先詢問套用範圍（見 _bkDragConfirmScope）。
+let _bkDragPending = null; // { id, newRoom, newDate }（等待系列範圍確認時暫存，尚未套用到 bookingsData）
+
 async function bkDrop(event, newRoom, newDate) {
   event.preventDefault();
   const dropEl = event.currentTarget;
@@ -29147,29 +29699,410 @@ async function bkDrop(event, newRoom, newDate) {
   if (!b) return;
   const changed = (newRoom && b.room !== newRoom) || (newDate && b.date !== newDate);
   if (!changed) return;
+
+  if (b.seriesId) {
+    // 系列預約：先不套用，詢問範圍後由 _bkDragConfirmScope 處理
+    _bkDragPending = { id: bookingId, newRoom: newRoom || '', newDate: newDate || '' };
+    document.getElementById('bk-drag-scope-modal').style.display = 'flex';
+    return;
+  }
+
+  // 前端本機衝突檢查（放開拖曳當下先算，不必等後端來回）：有衝突就不套用任何變更，改開衝突修正 modal
+  const proposal = { ...b };
+  if (newRoom) proposal.room = newRoom;
+  if (newDate) proposal.date = newDate;
+  if (_bkLocalConflicts([proposal], new Set([b.id])).length) {
+    _bkOpenDragFixModal([b], [proposal], '拖曳調整預約');
+    return;
+  }
+
   const oldRoom = b.room, oldDate = b.date;
   if (newRoom) b.room = newRoom;
   if (newDate) b.date = newDate;
 
-  // 立即更新畫面（不顯示 loading）
+  // 立即更新畫面（樂觀更新，不顯示 loading）
   renderBookingsPage();
 
   const jobId = bgJobAdd('拖曳調整預約', `${b.room} ${b.date}`);
   try {
     bgJobProgress(jobId, 40);
-    await saveBookings();
+    const gcMode = b.calendarEventId ? 'update' : 'create';
+    const result = await bkCommit(
+      [{ op: 'upsert', booking: { ...b }, gc: { mode: gcMode, params: _bkGcParamsOf(b, true) } }],
+      { checkConflicts: true });
     bgJobProgress(jobId, 75);
-    auditLog(`空間預約調整：${oldRoom}${oldDate !== (newDate||oldDate) ? ' '+oldDate : ''} → ${b.room}${b.date !== oldDate ? ' '+b.date : ''}（${b.counselorName || '—'}）`);
-    if (b.calendarEventId) {
-      _bkGcQueue.set(bookingId, { ...b });
-      _bkGcFlush();
+
+    if (result.error === 'conflict') {
+      b.room = oldRoom; b.date = oldDate;
+      renderBookingsPage();
+      const w = result.with || {};
+      const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+      const kind = result.conflictType === 'person' ? '人員' : '空間';
+      setAlert('bookings-alert', 'warn',
+        `⚠ 拖曳未套用：與其他預約發生${kind}衝突（${escHtml(wRoom)} ${escHtml(w.date||'')} ${escHtml((w.startTime||'').slice(0,5))}–${escHtml((w.endTime||'').slice(0,5))}${w.counselorName ? '　'+escHtml(w.counselorName) : ''}），已還原原時段。`);
+      bgJobFail(jobId, `拖曳${kind}衝突`);
+      return;
     }
+
+    if (result.fallback) {
+      // 舊後端尚未部署：沿用原路徑（整檔覆寫＋既有 calendarEventId 才進 GC 佇列）
+      await saveBookings();
+      if (b.calendarEventId) { _bkGcQueue.set(bookingId, { ...b }); _bkGcFlush(); }
+    } else {
+      const fb = (result.bookings || []).find(x => x.id === b.id);
+      if (fb) Object.assign(b, fb);
+    }
+
+    auditLog(`空間預約調整：${oldRoom}${oldDate !== (newDate||oldDate) ? ' '+oldDate : ''} → ${b.room}${b.date !== oldDate ? ' '+b.date : ''}（${b.counselorName || '—'}）`);
     bgJobDone(jobId);
+    renderBookingsPage();
   } catch(e) {
     b.room = oldRoom; b.date = oldDate;
     renderBookingsPage();
     bgJobFail(jobId, e.message);
   }
+}
+
+// 系列拖曳：使用者選定套用範圍後套用（房間變更套用所有 targets；日期依 delta 平移，語意與 saveBooking T3 相同）。
+async function _bkDragConfirmScope(scope) {
+  document.getElementById('bk-drag-scope-modal').style.display = 'none';
+  const pending = _bkDragPending; _bkDragPending = null;
+  if (!pending) return;
+  const b = bookingsData.find(x => x.id === pending.id);
+  if (!b) return;
+
+  const dateDelta = pending.newDate ? _bkDaysBetween(b.date, pending.newDate) : 0;
+  const targets = _bkSeriesTargets(bookingsData, b, scope);
+  if (!targets.length) return;
+
+  // 前端本機衝突檢查（放開拖曳當下先算）：有衝突就整批先不套用，改開衝突修正 modal（逐筆調整或刪除）
+  const proposals = targets.map(t => {
+    const p = { ...t };
+    if (pending.newRoom) p.room = pending.newRoom;
+    if (dateDelta) p.date = _bkAddDays(t.date, dateDelta);
+    return p;
+  });
+  const excludeIds = new Set(targets.map(t => t.id));
+  if (_bkLocalConflicts(proposals, excludeIds).length) {
+    _bkOpenDragFixModal(targets, proposals, '拖曳調整系列預約');
+    return;
+  }
+
+  const snapshot = targets.map(t => ({ id: t.id, room: t.room, customRoom: t.customRoom, date: t.date }));
+
+  targets.forEach(t => {
+    if (pending.newRoom) t.room = pending.newRoom;
+    if (dateDelta) t.date = _bkAddDays(t.date, dateDelta);
+  });
+  renderBookingsPage();
+
+  const jobId = bgJobAdd('拖曳調整系列預約', `共 ${targets.length} 筆`);
+  try {
+    const ops = targets.map(t => ({
+      op: 'upsert', booking: { ...t },
+      gc: { mode: t.calendarEventId ? 'update' : 'create', params: _bkGcParamsOf(t, true) },
+    }));
+    const result = await bkCommit(ops, { checkConflicts: true });
+
+    if (result.error === 'conflict') {
+      snapshot.forEach(s => {
+        const t = bookingsData.find(x => x.id === s.id);
+        if (t) { t.room = s.room; t.customRoom = s.customRoom; t.date = s.date; }
+      });
+      renderBookingsPage();
+      const w = result.with || {};
+      const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+      const kind = result.conflictType === 'person' ? '人員' : '空間';
+      const skipHint = kind === '人員' ? '（拖曳不提供略過人員衝突，如需忽略請改用編輯表單處理）' : '';
+      setAlert('bookings-alert', 'warn',
+        `⚠ 拖曳未套用：系列預約中有一筆與其他預約發生${kind}衝突（${escHtml(wRoom)} ${escHtml(w.date||'')} ${escHtml((w.startTime||'').slice(0,5))}–${escHtml((w.endTime||'').slice(0,5))}${w.counselorName ? '　'+escHtml(w.counselorName) : ''}），整批已還原。${skipHint}`);
+      bgJobFail(jobId, `拖曳系列${kind}衝突`);
+      return;
+    }
+
+    if (result.fallback) {
+      await saveBookings();
+      targets.forEach(t => { if (t.calendarEventId) { _bkGcQueue.set(t.id, { ...t }); _bkGcFlush(); } });
+    } else {
+      (result.bookings || []).forEach(fb => {
+        const idx = bookingsData.findIndex(x => x.id === fb.id);
+        if (idx >= 0) bookingsData[idx] = fb;
+      });
+    }
+
+    auditLog(`空間預約調整（系列拖曳，共 ${targets.length} 筆）：${pending.newRoom ? '空間→'+pending.newRoom+'；' : ''}${dateDelta ? `日期平移 ${dateDelta} 天` : ''}`);
+    bgJobDone(jobId);
+    renderBookingsPage();
+  } catch (e) {
+    snapshot.forEach(s => {
+      const t = bookingsData.find(x => x.id === s.id);
+      if (t) { t.room = s.room; t.customRoom = s.customRoom; t.date = s.date; }
+    });
+    renderBookingsPage();
+    bgJobFail(jobId, e.message);
+  }
+}
+
+// ── 拖曳衝突修正 modal ──────────────────────────────────────────────
+// 拖曳前端本機偵測到衝突時，不整批還原了事，改開這個 modal：每個衝突的預約一個 tab，
+// 可逐筆調整時間/空間或直接刪除，全部解決（或刪除）前不能套用。
+// _bkDragFix 形狀：
+//   proposals: Map<id, proposal>  擬議狀態（可編輯）
+//   originals: Map<id, booking>   原始筆（未套用任何拖曳變更，供還原/GC 對照）
+//   deletedIds: Set<id>           使用者標記要刪除的筆
+//   tabIds: string[]              曾經衝突過而開出 tab 的 id（保留順序，解決後仍顯示 ✓）
+//   activeTabId: string|null
+//   conflicts: [{id,type,with}]   最近一次重算的衝突清單（排除已標記刪除者）
+//   scopeLabel: string            供背景工作/稽核日誌描述用
+let _bkDragFix = null;
+
+// preDeletedIds（v100，選填）：呼叫端已決定要刪除的既有筆 id（如系列重排減少次數要刪掉的筆）——
+// 預先加入 deletedIds，這些筆若沒有衝突就不會開 tab，但 _bkDragFixApply 迭代時仍會歸入 delete ops。
+function _bkOpenDragFixModal(originals, proposals, scopeLabel, preDeletedIds) {
+  _bkDragFix = {
+    proposals: new Map(proposals.map(p => [p.id, { ...p }])),
+    originals: new Map(originals.map(o => [o.id, o])),
+    deletedIds: new Set(preDeletedIds || []),
+    tabIds: [],
+    activeTabId: null,
+    conflicts: [],
+    scopeLabel: scopeLabel || '拖曳調整預約',
+  };
+  _bkDragFixRecompute();
+  document.getElementById('bk-drag-fix-modal').style.display = 'flex';
+}
+
+// 任何欄位變更／標記刪除後呼叫：排除已標記刪除者整批重算 _bkLocalConflicts，
+// 新出現衝突的筆自動開 tab（保留已開過的 tab，即使該筆衝突已解決也繼續顯示 ✓）。
+function _bkDragFixRecompute() {
+  const st = _bkDragFix;
+  if (!st) return;
+  const allIds = new Set(st.proposals.keys());
+  const live = [...st.proposals.values()].filter(p => !st.deletedIds.has(p.id));
+  st.conflicts = _bkLocalConflicts(live, allIds);
+  st.conflicts.forEach(c => { if (!st.tabIds.includes(c.id)) st.tabIds.push(c.id); });
+  if (!st.activeTabId || !st.tabIds.includes(st.activeTabId)) st.activeTabId = st.tabIds[0] || null;
+  _bkDragFixRender();
+}
+
+function _bkDragFixSwitchTab(id) {
+  if (!_bkDragFix) return;
+  _bkDragFix.activeTabId = id;
+  _bkDragFixRender();
+}
+
+function _bkDragFixFieldChange(id, field, value) {
+  const st = _bkDragFix;
+  if (!st) return;
+  const p = st.proposals.get(id);
+  if (!p) return;
+  if (field === 'room') { p.room = value; if (value !== '其他') p.customRoom = ''; }
+  else p[field] = value;
+  _bkDragFixRecompute();
+}
+
+function _bkDragFixToggleDelete(id) {
+  const st = _bkDragFix;
+  if (!st) return;
+  if (st.deletedIds.has(id)) st.deletedIds.delete(id); else st.deletedIds.add(id);
+  _bkDragFixRecompute();
+}
+
+function _bkDragFixCancel() {
+  document.getElementById('bk-drag-fix-modal').style.display = 'none';
+  _bkDragFix = null;
+}
+
+function _bkDragFixRoomLabel(p) {
+  return p.room === '其他' ? (p.customRoom || '其他') : (p.room || '');
+}
+
+// 節次下拉：選定節次即帶入該節開始/結束時間並整批重算衝突；選「自訂時間」則保留手動輸入值
+function _bkDragFixPeriodChange(id, label) {
+  const st = _bkDragFix;
+  if (!st) return;
+  const p = st.proposals.get(id);
+  if (!p) return;
+  const period = BK_PERIODS.find(x => x.label === label);
+  if (!period) return; // 「— 自訂時間 —」：不動現值，維持手動輸入
+  p.startTime = period.start;
+  p.endTime = period.end;
+  _bkDragFixRecompute();
+}
+
+function _bkDragFixRenderTabContent(id) {
+  const st = _bkDragFix;
+  if (!st || !id) return '';
+  const p = st.proposals.get(id);
+  if (!p) return '';
+  const isDeleted = st.deletedIds.has(id);
+  const conflict = st.conflicts.find(c => c.id === id);
+  const roomVal = p.room === '其他' ? '其他' : p.room;
+  const roomOpts = _getBkDisplayRooms().map(r =>
+    `<option value="${escHtml(r)}" ${r === roomVal ? 'selected' : ''}>${escHtml(r)}</option>`).join('');
+
+  let statusHtml;
+  if (isDeleted) {
+    statusHtml = `<div class="alert alert-warn" style="margin-top:10px;">此筆將被刪除，不會套用任何變更。</div>`;
+  } else if (conflict) {
+    const w = conflict.with || {};
+    const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+    const kind = conflict.type === 'person' ? '人員' : '空間';
+    statusHtml = `<div class="alert alert-warn" style="margin-top:10px;">⚠ ${kind}衝突：與 ${escHtml(wRoom)} ${escHtml(w.date || '')} ${escHtml((w.startTime || '').slice(0,5))}–${escHtml((w.endTime || '').slice(0,5))}${w.counselorName ? '　' + escHtml(w.counselorName) : ''} 衝突，請調整時間／空間或刪除此筆。</div>`;
+  } else {
+    statusHtml = `<div class="alert alert-info" style="margin-top:10px;">✓ 已解決衝突。</div>`;
+  }
+
+  const curPeriod = BK_PERIODS.find(x => x.start === (p.startTime || '').slice(0,5) && x.end === (p.endTime || '').slice(0,5));
+  const periodOpts = `<option value="">— 自訂時間 —</option>` + BK_PERIODS.map(x =>
+    `<option value="${escHtml(x.label)}" ${curPeriod && curPeriod.label === x.label ? 'selected' : ''}>${escHtml(x.label)}</option>`).join('');
+
+  return `
+    <div style="opacity:${isDeleted ? '.55' : '1'};">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div>
+          <label style="font-size:.8rem;color:#718096;">日期</label>
+          <input type="date" class="field-input" value="${escHtml(p.date || '')}" ${isDeleted ? 'disabled' : ''}
+            onchange="_bkDragFixFieldChange('${escHtml(id)}','date',this.value)">
+        </div>
+        <div>
+          <label style="font-size:.8rem;color:#718096;">空間</label>
+          <select class="field-input" ${isDeleted ? 'disabled' : ''}
+            onchange="_bkDragFixFieldChange('${escHtml(id)}','room',this.value)">${roomOpts}</select>
+        </div>
+        <div style="grid-column:1/-1;">
+          <label style="font-size:.8rem;color:#718096;">節次（選定即帶入該節時間）</label>
+          <select class="field-input" ${isDeleted ? 'disabled' : ''}
+            onchange="_bkDragFixPeriodChange('${escHtml(id)}',this.value)">${periodOpts}</select>
+        </div>
+        <div>
+          <label style="font-size:.8rem;color:#718096;">開始時間</label>
+          <input type="time" class="field-input" value="${escHtml((p.startTime || '').slice(0,5))}" ${isDeleted ? 'disabled' : ''}
+            onchange="_bkDragFixFieldChange('${escHtml(id)}','startTime',this.value)">
+        </div>
+        <div>
+          <label style="font-size:.8rem;color:#718096;">結束時間</label>
+          <input type="time" class="field-input" value="${escHtml((p.endTime || '').slice(0,5))}" ${isDeleted ? 'disabled' : ''}
+            onchange="_bkDragFixFieldChange('${escHtml(id)}','endTime',this.value)">
+        </div>
+      </div>
+      <div style="margin-top:8px;font-size:.82rem;color:#4a5568;">${escHtml(p.counselorName || '—')}${p.caseId ? '　個案 ' + escHtml(p.caseId) : ''}</div>
+      ${statusHtml}
+      <div style="margin-top:10px;">
+        <button type="button" class="btn ${isDeleted ? 'btn-secondary' : 'btn-danger'} btn-sm" onclick="_bkDragFixToggleDelete('${escHtml(id)}')">${isDeleted ? '↩ 復原刪除' : '🗑 刪除此筆'}</button>
+      </div>
+    </div>`;
+}
+
+function _bkDragFixRender() {
+  const st = _bkDragFix;
+  if (!st) return;
+  const countEl = document.getElementById('bk-drag-fix-count');
+  if (countEl) countEl.textContent = String(st.tabIds.length);
+
+  const tabsEl = document.getElementById('bk-drag-fix-tabs');
+  if (tabsEl) {
+    tabsEl.innerHTML = st.tabIds.map(id => {
+      const p = st.proposals.get(id);
+      if (!p) return '';
+      const isDeleted = st.deletedIds.has(id);
+      const isConflict = st.conflicts.some(c => c.id === id);
+      const icon = isDeleted ? '🗑' : isConflict ? '⚠' : '✓';
+      const label = `${(p.date || '').slice(5).replace('-', '/')} ${_bkDragFixRoomLabel(p)}`;
+      const active = id === st.activeTabId;
+      return `<button type="button" class="btn btn-sm ${active ? 'btn-primary' : 'btn-secondary'}" style="white-space:nowrap;" onclick="_bkDragFixSwitchTab('${escHtml(id)}')">${icon} ${escHtml(label)}</button>`;
+    }).join('');
+  }
+
+  const contentEl = document.getElementById('bk-drag-fix-content');
+  if (contentEl) contentEl.innerHTML = _bkDragFixRenderTabContent(st.activeTabId);
+
+  const applyBtn = document.getElementById('bk-drag-fix-apply-btn');
+  if (applyBtn) {
+    const unresolved = st.tabIds.some(id => !st.deletedIds.has(id) && st.conflicts.some(c => c.id === id));
+    applyBtn.disabled = unresolved;
+  }
+}
+
+async function _bkDragFixApply() {
+  const st = _bkDragFix;
+  if (!st) return;
+  const unresolved = st.tabIds.some(id => !st.deletedIds.has(id) && st.conflicts.some(c => c.id === id));
+  if (unresolved) return;
+
+  document.getElementById('bk-drag-fix-modal').style.display = 'none';
+
+  const survivors = [];
+  const deleted = [];
+  st.proposals.forEach((p, id) => { if (st.deletedIds.has(id)) deleted.push(p); else survivors.push(p); });
+
+  const _snapshot = bookingsData.map(b => ({ ...b }));
+
+  // 樂觀更新：套用存活筆變更、移除刪除筆
+  // v100：survivors 可能含 bookingsData 尚不存在的新筆（如系列重排新增筆）——找不到既有筆就 push 而非略過。
+  survivors.forEach(p => {
+    const idx = bookingsData.findIndex(x => x.id === p.id);
+    if (idx >= 0) bookingsData[idx] = { ...bookingsData[idx], ...p };
+    else bookingsData.push({ ...p });
+  });
+  const deletedIdSet = new Set(deleted.map(b => b.id));
+  if (deletedIdSet.size) bookingsData = bookingsData.filter(b => !deletedIdSet.has(b.id));
+  renderBookingsPage();
+
+  const jobId = bgJobAdd(st.scopeLabel, `共 ${survivors.length} 筆，刪除 ${deleted.length} 筆`);
+  try {
+    const ops = [
+      ...survivors.map(p => ({
+        op: 'upsert', booking: { ...p },
+        gc: { mode: p.calendarEventId ? 'update' : 'create', params: _bkGcParamsOf(p, true) },
+      })),
+      ...deleted.map(b => ({ op: 'delete', id: b.id, gcEventId: b.calendarEventId || null })),
+    ];
+    const result = await bkCommit(ops, { checkConflicts: true });
+
+    if (result.error === 'conflict') {
+      bookingsData = _snapshot;
+      renderBookingsPage();
+      const w = result.with || {};
+      const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+      const kind = result.conflictType === 'person' ? '人員' : '空間';
+      setAlert('bookings-alert', 'warn',
+        `⚠ 拖曳未套用：與其他使用者同時操作發生${kind}衝突（${escHtml(wRoom)} ${escHtml(w.date || '')} ${escHtml((w.startTime || '').slice(0,5))}–${escHtml((w.endTime || '').slice(0,5))}${w.counselorName ? '　' + escHtml(w.counselorName) : ''}），整批已還原，請重新確認後再操作一次。`);
+      bgJobFail(jobId, `拖曳${kind}衝突`);
+      _bkDragFix = null;
+      return;
+    }
+
+    if (result.fallback) {
+      // 舊後端尚未部署：整檔覆寫＋既有 calendarEventId 才進 GC 佇列（_bkGcFlush 只處理 update）；
+      // v100：survivors 可能含新增筆（無 calendarEventId），改直接呼叫 createCalendarEvent 補建。
+      await saveBookings();
+      for (const p of survivors) {
+        if (p.calendarEventId) { _bkGcQueue.set(p.id, { ...p }); continue; }
+        try {
+          const eid = await proxyCall('createCalendarEvent', _bkGcParamsOf(p, false));
+          if (eid) { const bk = bookingsData.find(x => x.id === p.id); if (bk) bk.calendarEventId = eid; }
+        } catch (_) {}
+      }
+      _bkGcFlush();
+      deleted.forEach(b => { if (b.calendarEventId) proxyCall('deleteCalendarEvent', { eventId: b.calendarEventId }).catch(() => {}); });
+    } else {
+      (result.bookings || []).forEach(fb => {
+        const idx = bookingsData.findIndex(x => x.id === fb.id);
+        if (idx >= 0) bookingsData[idx] = fb;
+      });
+    }
+
+    const _fixFirst = survivors[0] ? `${_bkDragFixRoomLabel(survivors[0])} ${survivors[0].date} ${(survivors[0].startTime||'').slice(0,5)}–${(survivors[0].endTime||'').slice(0,5)}${survivors[0].counselorName ? '　'+survivors[0].counselorName : ''}` : '';
+    auditLog(`空間預約調整（拖曳＋衝突修正，共 ${survivors.length} 筆，刪除 ${deleted.length} 筆）：${_fixFirst}${survivors.length > 1 ? ' 等' : ''}`);
+    bgJobDone(jobId);
+    renderBookingsPage();
+  } catch (e) {
+    bookingsData = _snapshot;
+    renderBookingsPage();
+    bgJobFail(jobId, e.message);
+  }
+  _bkDragFix = null;
 }
 
 function shiftBookingDate(delta) {
@@ -29267,6 +30200,57 @@ function _bkNormalizeCounselors(b) {
   return [];
 }
 function _bkHasCounselor(b, value) { return !!value && _bkNormalizeCounselors(b).some(c => c.value === value); }
+
+// 統一撞房／撞人衝突檢查（純函式）。與後端 Code.gs 的 _bkFindConflictGs_ 邏輯一致（各自實作、規則相同）。
+// existing: 要比對的既有預約陣列；candidate: {id,date,room,customRoom,startTime,endTime,counselors}
+// opts: { ignoreIds: Set|Array, skipPerson: bool }；回傳 null 或 { type:'room'|'person', with: booking }
+// 註：簽名不用預設參數 `opts = {}`——test/harness.js 以 indexOf('{') 找函式本體，會被預設參數的大括號誤導。
+function _bkFindConflict(existing, candidate, opts) {
+  opts = opts || {};
+  const ignoreIds = opts.ignoreIds instanceof Set ? opts.ignoreIds : new Set(opts.ignoreIds || []);
+  const cStart = (candidate.startTime || '').slice(0, 5);
+  const cEnd   = (candidate.endTime   || '').slice(0, 5);
+  const cRoom  = candidate.room === '其他' ? (candidate.customRoom || '') : (candidate.room || '');
+  const cCounselorValues = (candidate.counselors || [])
+    .map(c => c && c.value).filter(v => v && v !== '中心會議');
+
+  for (const b of existing) {
+    if (!b || !b.id) continue;
+    if (candidate.id && b.id === candidate.id) continue;
+    if (ignoreIds.has(b.id)) continue;
+    if (b.date !== candidate.date) continue;
+    const bStart = (b.startTime || '').slice(0, 5);
+    const bEnd   = (b.endTime   || '').slice(0, 5);
+    if (!(cStart < bEnd && cEnd > bStart)) continue;
+
+    const bRoom = b.room === '其他' ? (b.customRoom || '') : (b.room || '');
+    if (cRoom && bRoom && cRoom === bRoom) return { type: 'room', with: b };
+
+    if (!opts.skipPerson && cRoom !== bRoom) {
+      const bCounselorValues = _bkNormalizeCounselors(b).map(c => c.value).filter(v => v && v !== '中心會議');
+      if (cCounselorValues.some(v => bCounselorValues.includes(v))) return { type: 'person', with: b };
+    }
+  }
+  return null;
+}
+
+// 拖曳前端本機衝突檢查（放開拖曳當下先算，不必等後端 bkCommit 來回才知道有沒有衝突）。
+// proposals：擬議狀態陣列（{id,room,customRoom,date,startTime,endTime,counselors,...}，id 與原始筆相同）。
+// excludeIds：這批要移動的原始 id 集合（Set 或陣列）——比對現況 bookingsData 時排除，避免拿同批其他筆尚未套用變更的舊狀態誤判。
+// 回傳 [{id, type:'room'|'person', with}]（每筆最多回報一個衝突：先比對既有 bookingsData，再比對批內彼此是否互撞）。
+function _bkLocalConflicts(proposals, excludeIds) {
+  const exclude = excludeIds instanceof Set ? excludeIds : new Set(excludeIds || []);
+  const results = [];
+  (proposals || []).forEach(p => {
+    let hit = _bkFindConflict(bookingsData, p, { ignoreIds: exclude });
+    if (!hit) {
+      const others = proposals.filter(o => o.id !== p.id);
+      hit = _bkFindConflict(others, p, {});
+    }
+    if (hit) results.push({ id: p.id, type: hit.type, with: hit.with });
+  });
+  return results;
+}
 
 function _populateBookingCounselorSelect(restoreOpts) {
   if (restoreOpts !== undefined) _bkSelectedOpts = Array.isArray(restoreOpts) ? [...restoreOpts] : [];
@@ -29572,7 +30556,14 @@ async function syncBookingToCalendar(id) {
     if (calendarEventId) {
       const idx = bookingsData.findIndex(x => x.id === id);
       if (idx >= 0) bookingsData[idx].calendarEventId = calendarEventId;
-      await saveBookings();
+      // 先拿到 eventId 再補寫：bkCommit 只負責併發安全寫回 calendarEventId，GC 已在上一步建立完成（gc:'none'）
+      const result = await bkCommit([{ op: 'upsert', booking: { ...(idx >= 0 ? bookingsData[idx] : b) }, gc: { mode: 'none' } }], { checkConflicts: false });
+      if (result.fallback) {
+        await saveBookings();
+      } else if (!result.error) {
+        const fb = (result.bookings || []).find(x => x.id === id);
+        if (fb && idx >= 0) bookingsData[idx] = fb;
+      }
       const statusEl = document.getElementById('bk-cal-sync-status');
       if (statusEl) statusEl.innerHTML = '✅ <strong>同步完成！</strong>';
     } else {
@@ -29642,6 +30633,77 @@ function _initBkPeriodSelect() {
     + '<option value="其他">其他（自填時間）</option>';
 }
 
+// v100：編輯系列預約時，UI 帶入推導值後使用者是否改動了頻率／次數的比對基準；
+// { freq: 7|14|null（null＝非固定頻率，未勾選）, count: N }。由 _bkShowSeriesRepeatEditable 設定，
+// _bkResetRepeatUi／非系列編輯路徑設回 null（代表本次編輯與系列重排無關）。
+let _bkSeriesRepeatBaseline = null;
+
+// 重複預約 UI 恢復為可互動預設值（新增／複製入口共用）：toggle 未勾選且可用、panel 隱藏、
+// 頻率預設每週且可用、次數預設 4 且可用、移除系列附註（若有）。
+function _bkResetRepeatUi() {
+  const wrap = document.getElementById('bk-repeat-wrap');
+  if (wrap) wrap.style.display = '';
+  const toggle = document.getElementById('bk-repeat-toggle');
+  if (toggle) { toggle.checked = false; toggle.disabled = false; }
+  const panel = document.getElementById('bk-repeat-panel');
+  if (panel) panel.style.display = 'none';
+  document.querySelectorAll('input[name="bk-repeat-freq"]').forEach(r => {
+    r.disabled = false;
+    r.checked = r.value === '7';
+  });
+  const countInp = document.getElementById('bk-repeat-count');
+  if (countInp) { countInp.disabled = false; countInp.value = '4'; countInp.max = '16'; }
+  const note = document.getElementById('bk-repeat-readonly-note');
+  if (note) note.remove();
+  _bkSeriesRepeatBaseline = null;
+}
+
+// v100：編輯系列預約時，帶入系列建立當初的重複設定，並開放調整頻率／次數（先前為唯讀呈現，
+// 使用者驗證後拍板改為可調整：改頻率＝此筆之後的預約依新頻率重排，改次數＝從系列尾端增刪）。
+// 依系列成員日期差判斷頻率：全部相鄰日期差相同且為 7／14 → 對應勾選；否則（曾被個別調整）不勾任何頻率。
+// 推導基準值存 _bkSeriesRepeatBaseline，供 saveBooking 判斷使用者這次是否改動了頻率／次數。
+function _bkShowSeriesRepeatEditable(b) {
+  const seriesAll = bookingsData.filter(x => x.seriesId === b.seriesId).sort((x, y) => x.date < y.date ? -1 : (x.date > y.date ? 1 : 0));
+  const n = seriesAll.length;
+  let freqDays = null;
+  for (let i = 1; i < seriesAll.length; i++) {
+    const d = _bkDaysBetween(seriesAll[i - 1].date, seriesAll[i].date);
+    if (freqDays === null) freqDays = d;
+    else if (d !== freqDays) { freqDays = NaN; break; }
+  }
+  const wrap = document.getElementById('bk-repeat-wrap');
+  if (wrap) wrap.style.display = '';
+  const toggle = document.getElementById('bk-repeat-toggle');
+  if (toggle) { toggle.checked = true; toggle.disabled = true; } // 系列身分本身不可退出，僅頻率／次數可調
+  const panel = document.getElementById('bk-repeat-panel');
+  if (panel) panel.style.display = '';
+  document.querySelectorAll('input[name="bk-repeat-freq"]').forEach(r => {
+    r.disabled = false;
+    r.checked = (freqDays === 7 && r.value === '7') || (freqDays === 14 && r.value === '14');
+  });
+  const countInp = document.getElementById('bk-repeat-count');
+  if (countInp) {
+    countInp.disabled = false;
+    countInp.min = '2';
+    countInp.max = String(Math.max(16, n));
+    countInp.value = String(n);
+  }
+  // baseline.freq 只存 radio 能呈現的值（7/14）：日期差一致但非 7/14（如兩筆系列其中一筆被單獨改過日期）
+  // 時 radio 無法勾選，若 baseline 存原始天數會與 UI 讀值（null）恆不相等，導致一般編輯誤觸系列重排。
+  _bkSeriesRepeatBaseline = { freq: (freqDays === 7 || freqDays === 14) ? freqDays : null, count: n };
+  let note = document.getElementById('bk-repeat-readonly-note');
+  if (!note && panel) {
+    note = document.createElement('p');
+    note.id = 'bk-repeat-readonly-note';
+    note.style.cssText = 'font-size:.78rem;color:#8a6d3b;background:#fff8e6;border:1px solid #f0d490;border-radius:6px;padding:6px 10px;margin:8px 0 0;';
+    panel.appendChild(note);
+  }
+  if (note) {
+    const baseNote = `系列重複設定（共 ${n} 筆）。調整頻率會把此筆之後的預約依新頻率重排（會覆蓋先前個別調整的日期）；調整次數會從系列尾端新增或刪除。`;
+    note.textContent = Number.isNaN(freqDays) ? `此系列的日期曾個別調整，頻率非固定。${baseNote}` : baseNote;
+  }
+}
+
 function openBookingModal(prefillCaseId) {
   _editingBookingId = null;
   _bkSkipPersonConflict = false;
@@ -29665,15 +30727,11 @@ function openBookingModal(prefillCaseId) {
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
   _bkEditScope = 'this';
-  // 新增時顯示「重複預約」區塊
-  const _rw = document.getElementById('bk-repeat-wrap');
-  if (_rw) _rw.style.display = '';
-  const _rt = document.getElementById('bk-repeat-toggle');
-  if (_rt) { _rt.checked = false; }
-  const _rp = document.getElementById('bk-repeat-panel');
-  if (_rp) _rp.style.display = 'none';
+  // 新增時顯示「重複預約」區塊（可互動預設值）
+  _bkResetRepeatUi();
   _resetBkOverrideUi('');
   document.getElementById('booking-modal').style.display = 'flex';
+  _bkUpdateScopeInfo();
 }
 
 function editBooking(id) {
@@ -29703,13 +30761,14 @@ function editBooking(id) {
   document.getElementById('bk-room-conflict-warn').style.display = 'none';
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb2 = document.getElementById('btn-save-booking'); if (sb2) sb2.disabled = false;
-  // 編輯/複製時也顯示重複預約（可選擇再新增後續）
-  const _erw = document.getElementById('bk-repeat-wrap');
-  if (_erw) _erw.style.display = '';
-  const _ert = document.getElementById('bk-repeat-toggle');
-  if (_ert) _ert.checked = false;
-  const _erp = document.getElementById('bk-repeat-panel');
-  if (_erp) _erp.style.display = 'none';
+  // 重複預約區塊：系列預約唯讀呈現當初的重複設定；非系列直接隱藏（現況顯示但存檔會被忽略，是誤導）
+  if (b.seriesId) {
+    _bkShowSeriesRepeatEditable(b);
+  } else {
+    _bkSeriesRepeatBaseline = null;
+    const _erw = document.getElementById('bk-repeat-wrap');
+    if (_erw) _erw.style.display = 'none';
+  }
   _resetBkOverrideUi(b.bkOverrideColor || '');
   _bkEditScope = 'this';
   // 若屬系列，先選範圍
@@ -29717,6 +30776,7 @@ function editBooking(id) {
     document.getElementById('bk-series-scope-modal').style.display = 'flex';
   } else {
     document.getElementById('booking-modal').style.display = 'flex';
+    _bkUpdateScopeInfo();
     _checkBkConflict();
   }
 }
@@ -29729,6 +30789,171 @@ function _bkFmtDate(d) {
 function _bkAddDays(dateStr, n) {
   const [y, m, d] = dateStr.split('-').map(Number);
   return _bkFmtDate(new Date(y, m - 1, d + n));
+}
+
+// 系列日期平移用：回傳 b 相對於 a 的天數差（可正可負，可跨月跨年）。a, b 為 'YYYY-MM-DD'。
+function _bkDaysBetween(a, b) {
+  const [ay, am, ad] = a.split('-').map(Number);
+  const [by, bm, bd] = b.split('-').map(Number);
+  const da = new Date(ay, am - 1, ad);
+  const db = new Date(by, bm - 1, bd);
+  return Math.round((db - da) / 86400000);
+}
+
+// 系列編輯／拖曳共用：依範圍從 bookings 篩出目標預約清單（回傳實際物件參照，非複本）。
+// editedBooking：被操作的那一筆（以其 seriesId/date 為基準）；scope：'this' | 'future' | 'all'。
+// scope 為 'this' 或 editedBooking 非系列成員時，只回傳 editedBooking 自己（在 bookings 內找得到才回傳）。
+function _bkSeriesTargets(bookings, editedBooking, scope) {
+  if (scope === 'this' || !editedBooking?.seriesId) {
+    const self = bookings.find(x => x.id === editedBooking?.id);
+    return self ? [self] : [];
+  }
+  return bookings.filter(x => x.seriesId === editedBooking.seriesId &&
+    (scope === 'all' || x.date >= editedBooking.date));
+}
+
+// 系列預約中「下次會談」：同 seriesId、日期晚於 booking 的最早一筆；找不到（無系列或已是最後一筆）回 null。
+function _bkNextInSeries(bookings, booking) {
+  if (!booking?.seriesId) return null;
+  const later = bookings.filter(x => x.seriesId === booking.seriesId && x.date > booking.date);
+  if (!later.length) return null;
+  return later.reduce((earliest, x) => (x.date < earliest.date ? x : earliest));
+}
+
+// v100：編輯系列預約時調整頻率／次數（純函式，供 saveBooking 呼叫與單元測試共用）。
+// seriesSorted：同系列全部筆依日期升冪排序的陣列（至少含 {id, date}，為套用此次編輯「之前」的原始狀態）。
+// editedId／editedNewDate：被編輯筆的 id 與其於 modal 填的新日期（重排錨點）。
+// freqDays：本次生效頻率（天）；newCount：目標系列總筆數。
+// 語意（已與使用者確認）：被編輯筆本身視為錨點、不重排；同系列中「原日期晚於被編輯筆原日期」的筆
+// 依新頻率重排為 anchor+freqDays、anchor+2*freqDays……（依原日期排序決定順序，會覆蓋先前個別調整的日期）；
+// 更早的筆維持原日期不動。次數增加時從（重排後）系列最後一筆日期起依頻率往後新增；
+// 次數減少時刪除（重排後）日期最晚者，被編輯筆本身一律不可刪。
+// 回傳 { redates:[{id,date}], creates:[date,...], deleteIds:[id,...] }：
+//   redates 只含日期實際變動、且不會被刪除的筆；creates 為新增筆日期（依序）；deleteIds 為待刪既有筆 id。
+// 注意：簽名不可用預設參數（`opts = {}` 會被 test/harness.js 的 indexOf('{') 抽取誤導）。
+function _bkSeriesReplan(seriesSorted, editedId, editedNewDate, freqDays, newCount) {
+  const edited = seriesSorted.find(b => b.id === editedId);
+  const editedOrigDate = edited ? edited.date : editedNewDate;
+  const front = seriesSorted.filter(b => b.id !== editedId && b.date < editedOrigDate);
+  const back  = seriesSorted.filter(b => b.id !== editedId && b.date > editedOrigDate);
+
+  let redates = [];
+  const backNewDates = back.map((b, idx) => {
+    const nd = _bkAddDays(editedNewDate, (idx + 1) * freqDays);
+    if (nd !== b.date) redates.push({ id: b.id, date: nd });
+    return nd;
+  });
+
+  const currentTotal = front.length + 1 + back.length;
+  const creates = [];
+  let deleteIds = [];
+
+  if (newCount > currentTotal) {
+    const allDates = [...front.map(f => f.date), editedNewDate, ...backNewDates];
+    let lastDate = allDates.reduce((max, d) => (d > max ? d : max), allDates[0]);
+    for (let k = 0; k < newCount - currentTotal; k++) {
+      lastDate = _bkAddDays(lastDate, freqDays);
+      creates.push(lastDate);
+    }
+  } else if (newCount < currentTotal) {
+    const removeCount = currentTotal - newCount;
+    const others = [
+      ...front.map(b => ({ id: b.id, date: b.date })),
+      ...back.map((b, idx) => ({ id: b.id, date: backNewDates[idx] })),
+    ];
+    others.sort((a, b) => (a.date < b.date ? 1 : (a.date > b.date ? -1 : 0))); // 日期新→舊
+    deleteIds = others.slice(0, removeCount).map(o => o.id);
+    const delSet = new Set(deleteIds);
+    redates = redates.filter(r => !delSet.has(r.id));
+  }
+
+  return { redates, creates, deleteIds };
+}
+
+// v101：系列重排「生效頻率推導＋重排試算」共用入口。儲存前預覽與 saveBooking 實際套用
+// 都呼叫這一個函式取結果（同輸入同輸出），保證預覽顯示的內容＝實際套用的內容，不會算兩次不一致。
+// 生效頻率：UI 勾選 > 開啟編輯時的基準頻率（_bkSeriesRepeatBaseline.freq）> 系列最後兩筆日期差 > 預設 7 天。
+function _bkSeriesReplanCompute(originalSeries, editedId, editedNewDate, uiFreqSel, uiCountVal) {
+  let effFreq = uiFreqSel;
+  if (effFreq == null) effFreq = _bkSeriesRepeatBaseline?.freq ?? null;
+  if (effFreq == null) {
+    if (originalSeries.length >= 2) {
+      const _a = originalSeries[originalSeries.length - 2], _c = originalSeries[originalSeries.length - 1];
+      effFreq = _bkDaysBetween(_a.date, _c.date) || 7;
+    } else effFreq = 7;
+  }
+  const replan = _bkSeriesReplan(
+    originalSeries.map(b => ({ id: b.id, date: b.date })),
+    editedId, editedNewDate, effFreq, uiCountVal);
+  return { effFreq, replan };
+}
+
+// ── v101：系列預約儲存前確認預覽 modal（Promise resolve 寫法，比照 rec-next-bk-choice-modal）──
+let _bkSeriesPreviewResolver = null;
+function _bkSeriesPreviewResolve(ok) {
+  document.getElementById('bk-series-preview-modal').style.display = 'none';
+  const resolve = _bkSeriesPreviewResolver; _bkSeriesPreviewResolver = null;
+  if (resolve) resolve(!!ok);
+}
+// 回傳 Promise<boolean>：true＝確認執行、false＝返回修改（呼叫端應保持預約 modal 開啟、不套用任何變更）。
+function _bkSeriesPreviewConfirm(previewHtml, title) {
+  document.getElementById('bk-series-preview-title').textContent = title || '系列預約確認';
+  document.getElementById('bk-series-preview-content').innerHTML = previewHtml;
+  document.getElementById('bk-series-preview-modal').style.display = 'flex';
+  return new Promise(resolve => { _bkSeriesPreviewResolver = resolve; });
+}
+
+function _bkDateWithWeekday(dateStr) {
+  const [y, m, d] = (dateStr || '').split('-').map(Number);
+  if (!y || !m || !d) return dateStr || '';
+  const WD = ['日','一','二','三','四','五','六'];
+  return `${dateStr}（週${WD[new Date(y, m - 1, d).getDay()]}）`;
+}
+
+// v101：編輯系列預約的「修正前 → 修正後」對照表 HTML。
+// beforeArr：同系列全部筆依日期排序（原始狀態）；afterMap：Map<id, {date,startTime,endTime,room,customRoom}>
+//（模擬套用後的狀態，不含將被刪除的筆）；creates：新增筆陣列（同形狀）；deleteIds：Set<id>；
+// contentChangedIds：Set<id>（人員/案號/備註/顏色等非日期時間空間的內容有變的筆，列尾附註「內容更新」）。
+function _bkBuildSeriesEditPreview(beforeArr, afterMap, creates, deleteIds, contentChangedIds) {
+  const roomOf = (b) => b.room === '其他' ? (b.customRoom || '其他') : (b.room || '');
+  const fmt = (b) => ({
+    d: _bkDateWithWeekday(b.date),
+    t: `${(b.startTime || '').slice(0, 5)}–${(b.endTime || '').slice(0, 5)}`,
+    r: roomOf(b),
+  });
+  const seg = (val, changed) => changed
+    ? `<span style="color:#1a202c;font-weight:700;">${escHtml(val)}</span>`
+    : `<span style="color:#a0aec0;">${escHtml(val)}</span>`;
+  const badge = (label, color, bg) =>
+    `<span style="display:inline-block;min-width:36px;text-align:center;font-size:.72rem;border-radius:6px;padding:1px 6px;margin-right:8px;color:${color};background:${bg};flex-shrink:0;">${label}</span>`;
+  const row = (inner) => `<div style="display:flex;align-items:baseline;padding:5px 0;border-bottom:1px solid #f0f4f8;line-height:1.5;"><div style="flex:1;min-width:0;">${inner}</div></div>`;
+  const rows = [];
+  beforeArr.forEach(b => {
+    const bf = fmt(b);
+    const bfStr = `${bf.d} ${bf.t} ${bf.r}`;
+    if (deleteIds.has(b.id)) {
+      rows.push(row(`${badge('刪除', '#742a2a', '#fed7d7')}<span style="text-decoration:line-through;color:#742a2a;">${escHtml(bfStr)}</span>`));
+      return;
+    }
+    const a = afterMap.get(b.id);
+    if (!a) return; // 防禦：afterMap 缺漏時不顯示（不應發生）
+    const af = fmt(a);
+    const dCh = af.d !== bf.d, tCh = af.t !== bf.t, rCh = af.r !== bf.r;
+    const contentCh = contentChangedIds.has(b.id);
+    if (!dCh && !tCh && !rCh && !contentCh) {
+      rows.push(row(`${badge('不變', '#4a5568', '#edf2f7')}<span style="color:#a0aec0;">${escHtml(bfStr)}</span>`));
+      return;
+    }
+    const note = contentCh ? `<span style="font-size:.75rem;color:#2b6cb0;margin-left:6px;">（內容更新）</span>` : '';
+    rows.push(row(
+      `${badge('修改', '#2a4365', '#bee3f8')}<span style="color:#718096;">${escHtml(bfStr)}</span>` +
+      `<span style="color:#a0aec0;margin:0 6px;">→</span>${seg(af.d, dCh)} ${seg(af.t, tCh)} ${seg(af.r, rCh)}${note}`));
+  });
+  (creates || []).forEach(c => {
+    const cf = fmt(c);
+    rows.push(row(`${badge('新增', '#22543d', '#c6f6d5')}<span style="font-weight:700;color:#22543d;">${escHtml(`${cf.d} ${cf.t} ${cf.r}`)}</span>`));
+  });
+  return rows.join('');
 }
 
 function copyBooking(id) {
@@ -29771,15 +30996,11 @@ function _bkCopyOpenModal() {
   document.getElementById('bk-room-conflict-warn').style.display = 'none';
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
-  const _crw = document.getElementById('bk-repeat-wrap');
-  if (_crw) _crw.style.display = '';
-  const _crt = document.getElementById('bk-repeat-toggle');
-  if (_crt) _crt.checked = false;
-  const _crp = document.getElementById('bk-repeat-panel');
-  if (_crp) _crp.style.display = 'none';
+  _bkResetRepeatUi();
   _resetBkOverrideUi(b.bkOverrideColor || '');
   _bkEditScope = 'this';
   document.getElementById('booking-modal').style.display = 'flex';
+  _bkUpdateScopeInfo();
   _checkBkConflict();
 }
 
@@ -29813,16 +31034,26 @@ async function _bkCopyToNextWeekConfirm() {
   document.getElementById('bk-copy-options-modal').style.display = 'none';
   const newDate = _bkAddDays(b.date, 7);
   showLoading('複製中…');
+  const newBk = { ...b, id: `bk_${Date.now()}`, bkSerial: _bkNextSerial(),
+    date: newDate, calendarEventId: null, createdAt: new Date().toISOString(), createdBy: currentUser?.email };
   try {
-    const newBk = { ...b, id: `bk_${Date.now()}`, bkSerial: _bkNextSerial(),
-      date: newDate, calendarEventId: null, createdAt: new Date().toISOString(), createdBy: currentUser?.email };
-    bookingsData.push(newBk);
-    await saveBookings();
+    const result = await bkCommit([{ op: 'upsert', booking: newBk, gc: { mode: 'none' } }]);
+    if (result.fallback) {
+      bookingsData.push(newBk);
+      await saveBookings();
+    } else if (result.error === 'conflict') {
+      const w = result.with || {};
+      const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+      const kind = result.conflictType === 'person' ? '人員' : '空間';
+      throw new Error(`與其他使用者同時操作發生${kind}衝突（${wRoom} ${w.date||''} ${(w.startTime||'').slice(0,5)}–${(w.endTime||'').slice(0,5)}${w.counselorName ? '　'+w.counselorName : ''}）`);
+    } else {
+      const fb = (result.bookings || []).find(x => x.id === newBk.id);
+      bookingsData.push(fb || newBk);
+    }
     auditLog(`空間預約 複製到下週`, null, null, `${b.room} ${newDate} ${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)}`);
     renderBookingsPage();
     setAlert('bookings-alert', 'ok', `已複製到 ${newDate}。`);
   } catch (e) {
-    bookingsData.pop();
     alert('複製失敗：' + e.message);
   } finally {
     hideLoading();
@@ -29905,6 +31136,7 @@ async function saveBooking() {
       return;
     }
   }
+  const skipPersonConflict = _bkSkipPersonConflict;
   _bkSkipPersonConflict = false;
 
   // counselorName：所有選中人員姓名以半形逗號串接，同時作為畫面顯示與 GC 標題來源
@@ -29919,7 +31151,7 @@ async function saveBooking() {
   const repeatCount = isRepeat ? Math.max(2, Math.min(16, parseInt(document.getElementById('bk-repeat-count')?.value || '4'))) : 1;
   const seriesId = isRepeat ? `series_${Date.now()}` : null;
 
-  // 先取舊的 calendarEventId 與舊狀態快照（編輯時用，供稽核日誌差異比對）
+  // 先取舊的 calendarEventId 與舊狀態快照（編輯時用，供稽核日誌差異比對與衝突回滾）
   const _oldBkSnap = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
   const newSerial = _editingBookingId ? (_oldBkSnap?.bkSerial) : _bkNextSerial();
   const _bkOverride = _bkPickedColor || '';
@@ -29932,21 +31164,276 @@ async function saveBooking() {
   const existingCalEventId = _oldBkSnap?.calendarEventId;
   const newId = _editingBookingId || `bk_${Date.now()}`;
 
-  // 立即更新本機資料
+  // 動手前先快照，供後端回報衝突時回滾本機樂觀更新
+  const _bkSnapshot = bookingsData.map(b => ({ ...b }));
+  const ops = []; // bkCommit 的 upsert 清單
+  const _pushOp = (bk, gcMode, gcParams) => {
+    ops.push({ op: 'upsert', booking: { ...bk }, gc: { mode: gcMode, params: gcParams || null } });
+  };
+
+  // v100：系列編輯時讀取「重複預約」UI 目前的頻率／次數，與開啟編輯時的推導基準值比對，
+  // 判斷使用者這次是否改動了頻率或次數——與 _bkEditScope（僅此筆／此筆及之後／全部系列）無關，
+  // scope 只決定 room/時間/人員/案號/備註 這些欄位套用到哪些筆。
+  const _editedBForReplan = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
+  let _uiFreqSel = null, _uiCountVal = null, _seriesReplanTriggered = false;
+  if (_editedBForReplan?.seriesId) {
+    const _freqChecked = document.querySelector('input[name="bk-repeat-freq"]:checked');
+    _uiFreqSel = _freqChecked ? parseInt(_freqChecked.value, 10) : null;
+    const _countInp = document.getElementById('bk-repeat-count');
+    const _countMax = parseInt(_countInp?.max || '16', 10) || 16;
+    _uiCountVal = Math.min(_countMax, Math.max(2, parseInt(_countInp?.value || '0', 10) || (_bkSeriesRepeatBaseline?.count || 2)));
+    if (_bkSeriesRepeatBaseline) {
+      _seriesReplanTriggered = (_uiFreqSel !== _bkSeriesRepeatBaseline.freq) || (_uiCountVal !== _bkSeriesRepeatBaseline.count);
+    }
+  }
+
+  // v101：系列預約儲存前確認預覽 — 任何樂觀更新／衝突預檢之前，先讓使用者看到套用後的樣子。
+  // 觸發：新增且勾重複預約（≥2 筆）；或編輯系列且影響多筆（scope 非僅此筆，或觸發 v100 重排）。
+  // scope='this' 且未觸發重排＝純單筆修改，不跳預覽（與非系列編輯一致，避免煩人）。
+  // 「返回修改」→ 只關預覽，預約 modal 保持開啟、欄位維持使用者剛填的值，不套用任何變更。
+  // _srPlan：重排觸發時預覽階段先算好的結果（effFreq＋replan），下方 v100 重排分支直接沿用
+  // 同一份，保證預覽顯示＝實際套用（不會算兩次不一致）。
+  let _srPlan = null;
+  if (isRepeat && repeatCount >= 2) {
+    const _pvRows = [];
+    for (let _pi = 0; _pi < repeatCount; _pi++) {
+      const _pd = _pi === 0 ? date : _bkAddDays(date, _pi * repeatFreqDays);
+      _pvRows.push(`<div style="padding:5px 0;border-bottom:1px solid #f0f4f8;">${escHtml(_bkDateWithWeekday(_pd))} ${escHtml(start)}–${escHtml(end)} ${escHtml(room)}</div>`);
+    }
+    const _pvHtml = (counselorName ? `<div style="color:#4a5568;margin-bottom:8px;">主責：${escHtml(counselorName)}</div>` : '') + _pvRows.join('');
+    const _pvOk = await _bkSeriesPreviewConfirm(_pvHtml, `即將建立系列預約（共 ${repeatCount} 筆）`);
+    if (!_pvOk) { if (saveBtn) saveBtn.disabled = false; return; }
+  } else if (_editedBForReplan?.seriesId && (_bkEditScope !== 'this' || _seriesReplanTriggered)) {
+    const _pvSeries = bookingsData.filter(x => x.seriesId === _editedBForReplan.seriesId)
+      .map(x => ({ ...x }))
+      .sort((a, b) => (a.date < b.date ? -1 : (a.date > b.date ? 1 : 0)));
+    const _pvScopeIds = new Set(_bkSeriesTargets(bookingsData, _editedBForReplan, _bkEditScope).map(t => t.id));
+    const _pvAfter = new Map();
+    let _pvCreates = [], _pvDeleteIds = new Set();
+    if (_seriesReplanTriggered) {
+      _srPlan = _bkSeriesReplanCompute(_pvSeries, _editingBookingId, date, _uiFreqSel, _uiCountVal);
+      _srPlan.originalSeries = _pvSeries;
+      _srPlan.scopeTargetIds = _pvScopeIds;
+      const _pvRedates = new Map(_srPlan.replan.redates.map(r => [r.id, r.date]));
+      _pvDeleteIds = new Set(_srPlan.replan.deleteIds);
+      _pvSeries.forEach(b => {
+        if (_pvDeleteIds.has(b.id)) return;
+        const _inScope = _pvScopeIds.has(b.id);
+        _pvAfter.set(b.id, {
+          date: b.id === _editingBookingId ? date : (_pvRedates.get(b.id) || b.date),
+          startTime: _inScope ? start : b.startTime,
+          endTime:   _inScope ? end   : b.endTime,
+          room:       _inScope ? room       : b.room,
+          customRoom: _inScope ? customRoom : b.customRoom,
+        });
+      });
+      _pvCreates = _srPlan.replan.creates.map(cd => ({ date: cd, startTime: start, endTime: end, room, customRoom }));
+    } else {
+      // 未觸發重排：沿用既有平移語意（delta = 表單日期 − 被編輯筆原日期，套用到 scope 目標筆）
+      const _pvDelta = _bkDaysBetween(_editedBForReplan.date, date);
+      _pvSeries.forEach(b => {
+        const _inScope = _pvScopeIds.has(b.id);
+        _pvAfter.set(b.id, {
+          date: (_inScope && _pvDelta) ? _bkAddDays(b.date, _pvDelta) : b.date,
+          startTime: _inScope ? start : b.startTime,
+          endTime:   _inScope ? end   : b.endTime,
+          room:       _inScope ? room       : b.room,
+          customRoom: _inScope ? customRoom : b.customRoom,
+        });
+      });
+    }
+    // 人員/案號/備註/顏色等內容變更（scope 目標筆才會被套用；日期時間空間另行比對強調）
+    const _pvContentIds = new Set();
+    _pvSeries.forEach(b => {
+      if (!_pvScopeIds.has(b.id) || _pvDeleteIds.has(b.id)) return;
+      if ((b.counselorName || '') !== (counselorName || '') ||
+          (b.caseId || '') !== (caseId || '') ||
+          (b.notes || '') !== (notes || '') ||
+          ((b.bkOverrideColor || '') !== (_bkOverride || ''))) _pvContentIds.add(b.id);
+    });
+    const _pvHtml = _bkBuildSeriesEditPreview(_pvSeries, _pvAfter, _pvCreates, _pvDeleteIds, _pvContentIds);
+    const _pvOk = await _bkSeriesPreviewConfirm(_pvHtml, '系列預約變更確認');
+    if (!_pvOk) { if (saveBtn) saveBtn.disabled = false; return; }
+  }
+
+  // 立即更新本機資料（樂觀更新）
   if (_editingBookingId) {
     const _editedB = bookingsData.find(x => x.id === _editingBookingId);
-    if (_editedB?.seriesId && _bkEditScope !== 'this') {
-      // T3：系列編輯 — 套用到選定範圍（不改日期，只改其他欄位）
-      bookingsData
-        .filter(x => x.seriesId === _editedB.seriesId && (_bkEditScope === 'all' || x.date >= _editedB.date))
-        .forEach(sb => {
-          sb.room = room; sb.customRoom = customRoom;
-          sb.startTime = start; sb.endTime = end;
-          sb.counselors = counselors; sb.counselorEmail = counselorEmail; sb.counselorName = counselorName;
-          sb.caseId = caseId || ''; sb.caseName = caseObj?.name || '';
-          sb.notes = notes; sb.updatedAt = now;
-          if (_bkOverride) sb.bkOverrideColor = _bkOverride; else delete sb.bkOverrideColor;
-        });
+    if (_editedB?.seriesId && _seriesReplanTriggered) {
+      // v100：頻率或次數被改動 — 系列重排／增刪；自成一個流程，處理完直接 return（不落入下方共用的
+      // bgJob／bkCommit 收尾，因為 ops 形狀與衝突處理路線都不同：可能需要改開拖曳衝突修正視窗）。
+      // v101：originalSeries/scope/effFreq/replan 沿用預覽階段（_srPlan）算好的同一份結果，
+      // 保證使用者在預覽視窗看到並確認的內容＝實際套用的內容；防禦性 fallback（不應發生）才重算。
+      if (!_srPlan) {
+        const _os = bookingsData.filter(x => x.seriesId === _editedB.seriesId)
+          .map(x => ({ ...x }))
+          .sort((a, b) => (a.date < b.date ? -1 : (a.date > b.date ? 1 : 0)));
+        _srPlan = _bkSeriesReplanCompute(_os, _editingBookingId, date, _uiFreqSel, _uiCountVal);
+        _srPlan.originalSeries = _os;
+        _srPlan.scopeTargetIds = new Set(_bkSeriesTargets(bookingsData, _editedB, _bkEditScope).map(t => t.id));
+      }
+      const originalSeries = _srPlan.originalSeries;
+      const scopeTargetIds = _srPlan.scopeTargetIds;
+      const effFreq = _srPlan.effFreq;
+      const replan = _srPlan.replan;
+
+      // 刪除前檢查：是否有晤談紀錄的「下次預約」掛接到將被刪除的筆
+      if (replan.deleteIds.length) {
+        const _delSet0 = new Set(replan.deleteIds);
+        let _hooked = 0;
+        casesData.forEach(c => (c.records || []).forEach(r => { if (r.nextBkId && _delSet0.has(r.nextBkId)) _hooked++; }));
+        if (_hooked > 0 && !confirm(`有 ${_hooked} 筆晤談紀錄的「下次預約」掛接到將被刪除的預約，刪除後該顯示會消失。確定繼續？`)) {
+          if (saveBtn) saveBtn.disabled = false;
+          return;
+        }
+      }
+
+      const deleteIdSet = new Set(replan.deleteIds);
+      const redateMap = new Map(replan.redates.map(r => [r.id, r.date]));
+      const editedFields = {
+        room, customRoom, startTime: start, endTime: end,
+        counselors, counselorEmail, counselorName,
+        caseId: caseId || '', caseName: caseObj?.name || '', notes, updatedAt: now,
+      };
+      // 系列全部既有筆的擬議狀態：scope 選定的筆套欄位變更；日期只由「被編輯筆＝modal 新日期」與
+      // replan.redates（重排的後段筆）決定，前段筆維持原日期不動（獨立於 scope）。
+      const seriesProposalsAll = originalSeries.map(b => {
+        const p = { ...b };
+        if (scopeTargetIds.has(b.id)) {
+          Object.assign(p, editedFields);
+          if (_bkOverride) p.bkOverrideColor = _bkOverride; else delete p.bkOverrideColor;
+        }
+        if (b.id === _editingBookingId) p.date = date;
+        else if (redateMap.has(b.id)) p.date = redateMap.get(b.id);
+        return p;
+      });
+      // 新增筆：欄位取被編輯筆在 modal 上的最新值；seriesId 沿用；bkSerial 用 _bkNextSerial() 起始遞增
+      const _newSerialBase = _bkNextSerial();
+      const createdProposals = replan.creates.map((cDate, ci) => {
+        const obj = {
+          id: `bk_${Date.now()}_${ci}`, bkSerial: _newSerialBase + ci,
+          room, customRoom, date: cDate, startTime: start, endTime: end,
+          counselors, counselorEmail, counselorName,
+          caseId: caseId || '', caseName: caseObj?.name || '',
+          notes, createdAt: now, updatedAt: now, creatorName,
+          seriesId: _editedB.seriesId,
+        };
+        if (_bkOverride) obj.bkOverrideColor = _bkOverride;
+        return obj;
+      });
+
+      const survivors = seriesProposalsAll.filter(p => !deleteIdSet.has(p.id));
+      // 衝突預檢排除預定刪除的筆（比照 _bkDragFixRecompute 的 live 過濾），避免對即將消失的筆誤報衝突
+      const liveProposals = [...survivors, ...createdProposals];
+      const excludeIds = new Set(originalSeries.map(b => b.id));
+      const localConflicts = _bkLocalConflicts(liveProposals, excludeIds);
+
+      if (localConflicts.length) {
+        // 有衝突：不套用任何變更，關閉預約 modal，改開拖曳衝突修正視窗逐筆調整
+        // （含將被刪除的筆，預先加入 deletedIds；_bkDragFixApply 迭代 proposals 時會自然歸入 delete ops）
+        closeBookingModal();
+        if (saveBtn) saveBtn.disabled = false;
+        _bkOpenDragFixModal(originalSeries, [...seriesProposalsAll, ...createdProposals],
+          '空間預約系列重排衝突修正', replan.deleteIds);
+        return;
+      }
+
+      // 無衝突：關閉 modal、樂觀更新、背景 bkCommit（比照既有系列編輯/拖曳衝突修正的收尾模式）
+      closeBookingModal();
+      const _bkSnapshotSR = bookingsData.map(b => ({ ...b }));
+      replan.deleteIds.forEach(id => {
+        const idx = bookingsData.findIndex(x => x.id === id);
+        if (idx >= 0) bookingsData.splice(idx, 1);
+      });
+      survivors.forEach(p => {
+        const idx = bookingsData.findIndex(x => x.id === p.id);
+        if (idx >= 0) bookingsData[idx] = p;
+      });
+      createdProposals.forEach(p => bookingsData.push(p));
+      renderBookingsPage();
+
+      const _srOldTotal = originalSeries.length;
+      const _srNewTotal = survivors.length + createdProposals.length;
+      const srJobId = bgJobAdd('編輯空間預約（系列重排）', `共 ${_srOldTotal}→${_srNewTotal} 筆`);
+      const srOps = [
+        ...survivors.map(p => ({
+          op: 'upsert', booking: { ...p },
+          gc: { mode: p.calendarEventId ? 'update' : 'create', params: _bkGcParamsOf(p, !!p.calendarEventId) },
+        })),
+        ...createdProposals.map(p => ({
+          op: 'upsert', booking: { ...p },
+          gc: { mode: 'create', params: _bkGcParamsOf(p, false) },
+        })),
+        ...replan.deleteIds.map(id => {
+          const orig = originalSeries.find(b => b.id === id);
+          return { op: 'delete', id, gcEventId: orig?.calendarEventId || null };
+        }),
+      ];
+      (async () => {
+        try {
+          const result = await bkCommit(srOps, { checkConflicts: true });
+
+          if (result.error === 'conflict') {
+            bookingsData = _bkSnapshotSR;
+            renderBookingsPage();
+            const w = result.with || {};
+            const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+            const kind = result.conflictType === 'person' ? '人員' : '空間';
+            setAlert('bookings-alert', 'warn',
+              `⚠ 儲存失敗：與其他使用者同時操作發生${kind}衝突（${escHtml(wRoom)} ${escHtml(w.date||'')} ${escHtml((w.startTime||'').slice(0,5))}–${escHtml((w.endTime||'').slice(0,5))}${w.counselorName ? '　'+escHtml(w.counselorName) : ''}），系列重排已還原，請重新確認後再操作一次。`);
+            bgJobFail(srJobId, `與其他使用者${kind}衝突`);
+            return;
+          }
+
+          if (result.fallback) {
+            // 舊後端尚未部署：逐 op 自行呼叫 GC action（含新增筆 create、既有筆 update、刪除筆 delete）
+            for (const o of srOps) {
+              try {
+                if (o.op === 'delete') {
+                  if (o.gcEventId) await proxyCall('deleteCalendarEvent', { eventId: o.gcEventId });
+                } else if (o.gc.mode === 'update' && o.booking.calendarEventId) {
+                  await proxyCall('updateCalendarEvent', { eventId: o.booking.calendarEventId, ...o.gc.params });
+                } else if (o.gc.mode === 'create') {
+                  const eid = await proxyCall('createCalendarEvent', o.gc.params);
+                  if (eid) { const bk = bookingsData.find(x => x.id === o.booking.id); if (bk) bk.calendarEventId = eid; }
+                }
+              } catch (_) {}
+            }
+            await saveBookings();
+          } else {
+            (result.bookings || []).forEach(fb => {
+              const idx = bookingsData.findIndex(x => x.id === fb.id);
+              if (idx >= 0) bookingsData[idx] = fb;
+            });
+          }
+
+          auditLog(`空間預約系列重排（頻率 ${effFreq} 天，共 ${_srOldTotal}→${_srNewTotal} 筆，新增 ${createdProposals.length} 筆，刪除 ${replan.deleteIds.length} 筆）`,
+            _editedB.caseId || null);
+          bgJobDone(srJobId);
+          renderBookingsPage();
+        } catch (e) {
+          bookingsData = _bkSnapshotSR;
+          renderBookingsPage();
+          setAlert('bookings-alert', 'warn', '儲存失敗：' + e.message);
+          bgJobFail(srJobId, e.message);
+        }
+      })();
+      return;
+    } else if (_editedB?.seriesId && _bkEditScope !== 'this') {
+      // T3：系列編輯 — 套用到選定範圍；日期依「被編輯這筆」的日期差平移到範圍內其餘筆，
+      // 被編輯這筆本身會恰好拿到 modal 填的日期（delta = date - _editedB.date，套用回自己等於 date）。
+      // GC 逐筆同步：已有事件者 update、尚無事件者 create（順便回填歷史系列缺漏的 GC 事件）
+      const _dateDelta = _bkDaysBetween(_editedB.date, date);
+      _bkSeriesTargets(bookingsData, _editedB, _bkEditScope).forEach(sb => {
+        sb.room = room; sb.customRoom = customRoom;
+        sb.startTime = start; sb.endTime = end;
+        sb.counselors = counselors; sb.counselorEmail = counselorEmail; sb.counselorName = counselorName;
+        sb.caseId = caseId || ''; sb.caseName = caseObj?.name || '';
+        sb.notes = notes; sb.updatedAt = now;
+        if (_dateDelta) sb.date = _bkAddDays(sb.date, _dateDelta);
+        if (_bkOverride) sb.bkOverrideColor = _bkOverride; else delete sb.bkOverrideColor;
+        _pushOp(sb, sb.calendarEventId ? 'update' : 'create', _bkGcParamsOf(sb, !!sb.calendarEventId));
+      });
     } else {
       const idx = bookingsData.findIndex(x => x.id === _editingBookingId);
       if (idx >= 0) {
@@ -29955,10 +31442,11 @@ async function saveBooking() {
           counselors, counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
           notes, updatedAt: now };
         if (_bkOverride) bookingsData[idx].bkOverrideColor = _bkOverride; else delete bookingsData[idx].bkOverrideColor;
+        _pushOp(bookingsData[idx], existingCalEventId ? 'update' : 'create', calParams);
       }
     }
   } else {
-    // T2：單筆或系列建立
+    // T2：單筆或系列建立 — 系列每一筆都建立 GC 事件（帶各自日期與流水號）
     for (let _si = 0; _si < repeatCount; _si++) {
       const _sDate = _si === 0 ? date : _bkAddDays(date, _si * repeatFreqDays);
       const _sObj = {
@@ -29971,6 +31459,7 @@ async function saveBooking() {
       if (seriesId) _sObj.seriesId = seriesId;
       if (_bkOverride) _sObj.bkOverrideColor = _bkOverride;
       bookingsData.push(_sObj);
+      _pushOp(_sObj, 'create', { ...calParams, date: _sDate, bkSerial: _sObj.bkSerial });
     }
   }
 
@@ -29979,29 +31468,49 @@ async function saveBooking() {
   _recordBkFreq(_bkSelectedOpts[0]?.value);
   renderBookingsPage();
 
-  // 背景：同步 GC + 儲存至 Drive（不阻擋 UI）
+  // 背景：bookingsCommit（併發安全寫入＋衝突檢查）+ GC 同步（不阻擋 UI）
   const _bkJobLabel = _editingBookingId ? '編輯空間預約' : '新增空間預約';
   const _bkJobDetail = `${room} ${date} ${(start||'').slice(0,5)}–${(end||'').slice(0,5)}`;
   const jobId = bgJobAdd(_bkJobLabel, _bkJobDetail);
   (async () => {
     try {
-      let calendarEventId = undefined;
-      try {
-        if (_editingBookingId && existingCalEventId) {
-          await proxyCall('updateCalendarEvent', { eventId: existingCalEventId, ...calParams });
-          calendarEventId = existingCalEventId;
-        } else {
-          calendarEventId = await proxyCall('createCalendarEvent', calParams);
-        }
-      } catch (_) {}
-      bgJobProgress(jobId, 60);
+      const result = await bkCommit(ops, { skipPersonConflict });
 
-      if (calendarEventId !== undefined) {
-        const bk = bookingsData.find(x => x.id === newId);
-        if (bk) bk.calendarEventId = calendarEventId;
+      if (result.error === 'conflict') {
+        // 與其他使用者同時操作衝突：整批不寫入，回滾本機樂觀更新並重新載入
+        bookingsData = _bkSnapshot;
+        await refreshBookings();
+        const w = result.with || {};
+        const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+        const kind = result.conflictType === 'person' ? '人員' : '空間';
+        setAlert('bookings-alert', 'warn',
+          `⚠ 儲存失敗：與其他使用者同時操作發生${kind}衝突（${escHtml(wRoom)} ${escHtml(w.date||'')} ${escHtml((w.startTime||'').slice(0,5))}–${escHtml((w.endTime||'').slice(0,5))}${w.counselorName ? '　'+escHtml(w.counselorName) : ''}），請重新確認後再操作一次。`);
+        bgJobFail(jobId, `與其他使用者${kind}衝突`);
+        return;
       }
 
-      await saveBookings();
+      if (result.fallback) {
+        // 舊後端尚未部署：沿用原路徑（本機已樂觀更新，整檔覆寫＋前端自行呼叫 GC action）
+        for (const o of ops) {
+          if (o.gc.mode === 'none') continue;
+          try {
+            if (o.gc.mode === 'update' && o.booking.calendarEventId) {
+              await proxyCall('updateCalendarEvent', { eventId: o.booking.calendarEventId, ...o.gc.params });
+            } else if (o.gc.mode === 'create') {
+              const eid = await proxyCall('createCalendarEvent', o.gc.params);
+              if (eid) { const bk = bookingsData.find(x => x.id === o.booking.id); if (bk) bk.calendarEventId = eid; }
+            }
+          } catch (_) {}
+        }
+        await saveBookings();
+      } else {
+        // 成功：套用後端回傳的最終狀態（含新 calendarEventId）
+        (result.bookings || []).forEach(fb => {
+          const idx = bookingsData.findIndex(x => x.id === fb.id);
+          if (idx >= 0) bookingsData[idx] = fb;
+        });
+      }
+
       bgJobProgress(jobId, 90);
       let _bkDetail;
       if (_editingBookingId && _oldBkSnap) {
@@ -30061,7 +31570,8 @@ async function _bkConfirmDeleteSeries(scope) {
 }
 
 function _doDeleteBookings(idsToDelete, primaryB) {
-  const calEventIds = idsToDelete.map(id => bookingsData.find(x => x.id === id)?.calendarEventId).filter(Boolean);
+  const toDelete = idsToDelete.map(id => bookingsData.find(x => x.id === id)).filter(Boolean);
+  const ops = toDelete.map(b => ({ op: 'delete', id: b.id, gcEventId: b.calendarEventId || null }));
   const _delRoomD = primaryB.room === '其他' ? (primaryB.customRoom||'其他') : primaryB.room;
   const _delDetail = `${_delRoomD}　${primaryB.date}　${(primaryB.startTime||'').slice(0,5)}–${(primaryB.endTime||'').slice(0,5)}${primaryB.counselorName ? '　' + primaryB.counselorName : ''}`;
   const _suffix = idsToDelete.length > 1 ? ` (共${idsToDelete.length}筆)` : '';
@@ -30069,18 +31579,26 @@ function _doDeleteBookings(idsToDelete, primaryB) {
   bookingsData = bookingsData.filter(x => !idsToDelete.includes(x.id));
   renderBookingsPage();
   const jobId = bgJobAdd(`刪除空間預約：${_delDetail}${_suffix}`);
+  const _doCommitDelete = async () => {
+    const result = await bkCommit(ops, { checkConflicts: false });
+    if (result.fallback) {
+      toDelete.forEach(b => { if (b.calendarEventId) proxyCall('deleteCalendarEvent', { eventId: b.calendarEventId }).catch(() => {}); });
+      await saveBookings();
+    } else if (result.error) {
+      throw new Error(result.error);
+    }
+  };
   (async () => {
-    calEventIds.forEach(evId => proxyCall('deleteCalendarEvent', { eventId: evId }).catch(() => {}));
     bgJobProgress(jobId, 40);
     try {
-      await saveBookings();
+      await _doCommitDelete();
       bgJobDone(jobId);
       auditLog('刪除空間預約', primaryB.caseId || null, null, _delDetail + _suffix);
     } catch (e) {
       // 5 秒後自動重試一次，仍失敗才醒目提醒
       await new Promise(r => setTimeout(r, 5000));
       try {
-        await saveBookings();
+        await _doCommitDelete();
         bgJobDone(jobId);
         auditLog('刪除空間預約', primaryB.caseId || null, null, _delDetail + _suffix);
       } catch (_) {
@@ -30245,8 +31763,8 @@ function checkCurrentSemesterDuplicate() {
   if (!sid && !idn) { warn.style.display = 'none'; return; }
   const dups = casesData.filter(c =>
     !c.deleted &&
-    c.id && c.id.startsWith(prefix) &&
     c.id !== _editingCaseId &&
+    _caseHasSem(c, prefix) &&
     ((sid && c.studentId === sid) || (idn && c.idNumber === idn))
   );
   if (!dups.length) { warn.style.display = 'none'; return; }
@@ -37463,6 +38981,7 @@ function toggleNavPin(navId) {
       <h3 id="booking-modal-title" style="font-size:1.1rem;color:#1a202c;">新增預約</h3>
       <button onclick="closeBookingModal()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
     </div>
+    <div id="bk-scope-info" style="display:none;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
       <div style="grid-column:1/-1;">
         <label class="field-label">空間<span class="req">*</span></label>
@@ -37614,6 +39133,65 @@ function toggleNavPin(navId) {
     </div>
     <div style="margin-top:14px;text-align:right;">
       <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bk-series-scope-modal').style.display='none'">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 系列預約拖曳調整範圍 Modal -->
+<div id="bk-drag-scope-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10001;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:12px;max-width:360px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+    <h3 style="margin:0 0 8px;font-size:1rem;color:#2d3748;">拖曳調整系列預約</h3>
+    <p style="font-size:.875rem;color:#718096;margin-bottom:16px;">此預約屬於系列，請選擇套用範圍（房間變更套用所有選定範圍；日期變更將依此筆的日期差平移）：</p>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button class="btn btn-secondary" onclick="_bkDragConfirmScope('this')">僅此筆</button>
+      <button class="btn btn-secondary" onclick="_bkDragConfirmScope('future')">此筆及之後</button>
+      <button class="btn btn-secondary" onclick="_bkDragConfirmScope('all')">全部系列</button>
+    </div>
+    <div style="margin-top:14px;text-align:right;">
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bk-drag-scope-modal').style.display='none';_bkDragPending=null;">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 拖曳衝突修正 Modal：前端本機偵測到拖曳後衝突，逐筆調整或刪除，全部解決前不能套用 -->
+<div id="bk-drag-fix-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10001;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:12px;max-width:520px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+    <h3 style="margin:0 0 8px;font-size:1rem;color:#2d3748;">拖曳衝突修正</h3>
+    <p style="font-size:.875rem;color:#718096;margin-bottom:14px;">以下 <b id="bk-drag-fix-count">0</b> 筆拖曳後與其他預約衝突，請逐筆調整或刪除；全部解決後才能套用。</p>
+    <div id="bk-drag-fix-tabs" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;"></div>
+    <div id="bk-drag-fix-content"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
+      <button class="btn btn-secondary" onclick="_bkDragFixCancel()">取消</button>
+      <button class="btn btn-primary" id="bk-drag-fix-apply-btn" onclick="_bkDragFixApply()">套用並儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- v101：系列預約儲存前確認預覽 Modal（新增系列＝逐筆清單；編輯系列＝修正前→修正後對照） -->
+<div id="bk-series-preview-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10001;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:12px;max-width:560px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+    <h3 id="bk-series-preview-title" style="margin:0 0 8px;font-size:1rem;color:#2d3748;"></h3>
+    <p style="font-size:.82rem;color:#718096;margin-bottom:12px;">請確認以下內容是否符合預期；「返回修改」不會套用任何變更，可回到表單重新設定。</p>
+    <div id="bk-series-preview-content" style="max-height:50vh;overflow-y:auto;font-size:.875rem;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
+      <button class="btn btn-secondary" onclick="_bkSeriesPreviewResolve(false)">↩ 返回修改</button>
+      <button class="btn btn-primary" onclick="_bkSeriesPreviewResolve(true)">✓ 確認執行</button>
+    </div>
+  </div>
+</div>
+
+<!-- 系列預約寫紀錄：自動帶入的下次會談被更動後的三選一 Modal -->
+<div id="rec-next-bk-choice-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10001;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:12px;max-width:400px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+    <h3 style="margin:0 0 8px;font-size:1rem;color:#2d3748;">下次預約時段已變更</h3>
+    <p style="font-size:.875rem;color:#718096;margin-bottom:16px;">此紀錄自動帶入了系列預約中的下次會談，您已更動空間／日期／時間。請選擇如何處理：</p>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button class="btn btn-secondary" onclick="_recNextBkChoiceResolve('extra')">額外新增<br><span style="font-weight:400;font-size:.78rem;color:#a0aec0;">保留系列原本那筆不變，另外新增一筆獨立預約</span></button>
+      <button class="btn btn-secondary" onclick="_recNextBkChoiceResolve('single')">單筆修正<br><span style="font-weight:400;font-size:.78rem;color:#a0aec0;">只修改系列中的這一筆</span></button>
+      <button class="btn btn-secondary" onclick="_recNextBkChoiceResolve('afterthis')">此筆之後修正<br><span style="font-weight:400;font-size:.78rem;color:#a0aec0;">這一筆及同系列之後所有預約一併調整（日期依差值平移）</span></button>
+    </div>
+    <div style="margin-top:14px;text-align:right;">
+      <button class="btn btn-secondary btn-sm" onclick="_recNextBkChoiceResolve('cancel')">取消（不儲存本次紀錄）</button>
     </div>
   </div>
 </div>
@@ -38197,11 +39775,29 @@ async function updateIssueStatus(issueId, newStatus) {
   }
 }
 
+// 回報最後一次進入「待驗證」的時間（statusHistory 由新到舊找 to==='pending_verification'）
+function _issuePendingSince(issue) {
+  const h = Array.isArray(issue?.statusHistory) ? issue.statusHistory : [];
+  for (let i = h.length - 1; i >= 0; i--) {
+    if (h[i]?.to === 'pending_verification' && h[i]?.at) return h[i].at;
+  }
+  return issue?.updatedAt || issue?.createdAt || issue?.submittedAt || '';
+}
+// 待驗證超過 7 日 → 開放所有人協助驗證（原回報者遲遲未回應時，避免問題永久卡住）
+function _issueHelperVerifiable(issue) {
+  if (!issue || issue.status !== 'pending_verification') return false;
+  const since = _issuePendingSince(issue);
+  if (!since) return false;
+  const t = new Date(since).getTime();
+  if (!t || isNaN(t)) return false;
+  return (Date.now() - t) >= 86400000 * 7;
+}
+
 // 回報者確認「驗證OK」→ 狀態改為已解決（沿用 updateIssueStatus，statusHistory 會如實記錄本人與時間）
 async function _issueVerifyOk(issueId) {
   const issue = issuesData.find(x => x.id === issueId);
   if (!issue) return;
-  if (issue.submittedBy !== currentUser?.email) return; // 安全防呆：僅原回報者可按
+  if (issue.submittedBy !== currentUser?.email && !_issueHelperVerifiable(issue)) return; // 安全防呆：僅原回報者或協助驗證者可按
   await updateIssueStatus(issueId, 'resolved');
   const relatedTodo = todosData.find(t => t.type === 'issue_pending_verification' && t.issueId === issueId && !t.done);
   if (relatedTodo) {
@@ -38215,7 +39811,7 @@ async function _issueVerifyOk(issueId) {
 async function _issueVerifyNotOk(issueId) {
   const issue = issuesData.find(x => x.id === issueId);
   if (!issue) return;
-  if (issue.submittedBy !== currentUser?.email) return; // 安全防呆：僅原回報者可按
+  if (issue.submittedBy !== currentUser?.email && !_issueHelperVerifiable(issue)) return; // 安全防呆：僅原回報者或協助驗證者可按
   const ta = document.getElementById('issue-verify-reason-' + issueId);
   const reason = (ta?.value || '').trim();
   if (!reason) { alert('請描述驗證時仍遇到的狀況，方便後續修正。'); ta?.focus(); return; }
@@ -38525,12 +40121,15 @@ function renderIssuesPage() {
         <button class="btn btn-secondary btn-sm" id="issue-status-btn-${sid}"
           onclick="updateIssueStatus('${sid}',document.getElementById('issue-status-${sid}').value)">更新狀態</button>
       </div>` : '';
-    // 回報者「驗證OK / 驗證後仍有問題」：僅本人、且狀態為待驗證時可見
-    const verifyControl = (issue.status === 'pending_verification' && issue.submittedBy === currentUser?.email) ? `
+    // 回報者「驗證OK / 驗證後仍有問題」：本人可見；待驗證超過 7 日未回應時開放所有人協助驗證
+    const _isOrigReporter = issue.submittedBy === currentUser?.email;
+    const _isHelperVerify = !_isOrigReporter && _issueHelperVerifiable(issue);
+    const verifyControl = (issue.status === 'pending_verification' && (_isOrigReporter || _isHelperVerify)) ? `
       <div style="margin-top:8px;padding:8px 12px;background:#faf5ff;border:1px solid #d6bcfa;border-radius:6px;">
+        ${_isHelperVerify ? `<div style="font-size:.78rem;color:#805ad5;margin-bottom:6px;">⏳ 回報者超過 7 日未驗證，已開放所有人協助驗證</div>` : ''}
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:.85rem;color:#553c9a;font-weight:600;">
           <input type="checkbox" onchange="if(this.checked){this.disabled=true;_issueVerifyOk('${sid}');}" style="width:16px;height:16px;cursor:pointer;">
-          驗證OK（確認此問題已修正，將回報標記為已解決）
+          ${_isHelperVerify ? '驗證OK（協助驗證：確認此問題已修正，將回報標記為已解決）' : '驗證OK（確認此問題已修正，將回報標記為已解決）'}
         </label>
         <div style="margin-top:6px;">
           <button class="btn btn-secondary btn-sm" id="issue-verify-notok-btn-${sid}" style="font-size:.78rem;"
