@@ -23267,9 +23267,10 @@ let _attMgrTab = 'punch';
 function renderAttendanceMgr() {
   const bar = document.getElementById('att-mgr-tabs');
   const tabs = [
-    { id: 'punch',  label: '打卡紀錄' },
-    { id: 'review', label: '請假審核' },
-    { id: 'types',  label: '假別與額度' },
+    { id: 'punch',   label: '打卡紀錄' },
+    { id: 'summary', label: '差勤匯總' },
+    { id: 'review',  label: '請假審核' },
+    { id: 'types',   label: '假別與額度' },
   ];
   const pend = (leavesData?.applications || []).filter(a => a.status === 'pending').length;
   if (bar) {
@@ -23285,7 +23286,8 @@ function renderAttendanceMgr() {
     if (typeof _initGeoFenceCard === 'function') _initGeoFenceCard();
   } else {
     if (geo) geo.style.display = 'none';
-    if (_attMgrTab === 'review') renderLeaveReview();
+    if (_attMgrTab === 'summary') renderAttendanceSummary();
+    else if (_attMgrTab === 'review') renderLeaveReview();
     else if (_attMgrTab === 'types') renderLeaveTypesAdmin();
   }
 }
@@ -24197,17 +24199,6 @@ function renderAttendancePage() {
     (!filterDate  || r.date  === filterDate)
   ).sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
 
-  // 日期區間彙總（本月）
-  const thisMonth = today.slice(0, 7);
-  const monthRecords = records.filter(r => r.date.startsWith(thisMonth));
-
-  const summaryMap = {};
-  monthRecords.forEach(r => {
-    if (!summaryMap[r.email]) summaryMap[r.email] = {};
-    if (!summaryMap[r.email][r.date]) summaryMap[r.email][r.date] = { times: [] };
-    summaryMap[r.email][r.date].times.push(r.timestamp);
-  });
-
   document.getElementById('attendance-body').innerHTML = `
 
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:20px;">
@@ -24223,11 +24214,6 @@ function renderAttendancePage() {
         <input id="att-filter-date" type="date" class="field-input" value="${filterDate}" onchange="renderAttendancePage()" />
       </div>
       <button class="btn btn-secondary btn-sm" onclick="document.getElementById('att-map-wrap').style.display='';renderAttendanceMap()">📍 顯示地圖</button>
-      <div>
-        <label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">列印月份</label>
-        <input id="att-print-month" type="month" class="field-input" value="${thisMonth}" />
-      </div>
-      <button class="btn btn-secondary btn-sm" onclick="printAttendanceMonthlyReport(document.getElementById('att-filter-email').value, document.getElementById('att-print-month').value)">🖨️ 列印月報表</button>
     </div>
 
     <div style="overflow-x:auto;margin-bottom:24px;">
@@ -24254,29 +24240,109 @@ function renderAttendancePage() {
       <div style="font-weight:600;color:#2d3748;margin-bottom:8px;">打卡位置地圖</div>
       <div id="att-map" style="height:340px;border-radius:10px;overflow:hidden;"></div>
     </div>
+  `;
+  _initGeoFenceCard();
+}
 
-    <div style="margin-bottom:8px;font-weight:600;color:#2d3748;">本月差勤彙總（${thisMonth}）</div>
+// ── 打卡紀錄／定位／手動 小徽章（差勤匯總表用）──
+function _attLocBadgeHtml(rec) {
+  if (!rec) return '';
+  if (rec.lat == null) return '<span style="background:#edf2f7;color:#718096;border-radius:10px;padding:1px 7px;font-size:.7rem;margin-left:5px;">無定位</span>';
+  return _isNearCampus(rec.lat, rec.lng)
+    ? '<span style="background:#c6f6d5;color:#276749;border-radius:10px;padding:1px 7px;font-size:.7rem;margin-left:5px;">校內</span>'
+    : '<span style="background:#edf2f7;color:#718096;border-radius:10px;padding:1px 7px;font-size:.7rem;margin-left:5px;">校外</span>';
+}
+function _attManualBadgeHtml(rec) {
+  return rec?.manual ? '<span style="background:#feebc8;color:#c05621;border-radius:10px;padding:1px 7px;font-size:.7rem;margin-left:5px;">手動</span>' : '';
+}
+
+// ══════════════════════════════════════════════
+//  差勤匯總（分頁）：可依日期／月份＋實習生篩選，並可就地列印月報表
+// ══════════════════════════════════════════════
+let _attSumMode = 'date'; // 'date' | 'month'
+function _attSumSetMode(mode) {
+  _attSumMode = mode;
+  renderAttendanceSummary();
+}
+function renderAttendanceSummary() {
+  const body = document.getElementById('attendance-body');
+  if (!body) return;
+  const records = attendanceData?.records || [];
+  const users = configData?.users || {};
+  const today = _fmtDate(new Date());
+  const thisMonth = today.slice(0, 7);
+  const filterEmailVal = document.getElementById('att-sum-email')?.value ?? '';
+  const filterDate  = document.getElementById('att-sum-date')?.value  || today;
+  const filterMonth = document.getElementById('att-sum-month')?.value || thisMonth;
+
+  const allInterns = Object.entries(users)
+    .filter(([, u]) => u.role === '實習諮商心理師')
+    .map(([email, u]) => ({ email, name: u.name || email, active: _isInternActive(u, today), disabled: !!u.disabled }));
+  const _ig = (cat) => allInterns.filter(i => i.cat === cat).sort((a, b) => a.name.localeCompare(b.name, 'zh-TW'));
+  allInterns.forEach(i => { i.cat = i.disabled ? 2 : i.active ? 0 : 1; });
+  const _opt = i => `<option value="${i.email}" ${filterEmailVal === i.email ? 'selected' : ''}>${i.name}${i.cat === 1 ? ' (非在任)' : i.cat === 2 ? ' (停用)' : ''}</option>`;
+  const internSelectHtml = [
+    ...(_ig(0).length ? [`<optgroup label="在任實習生">`, ..._ig(0).map(_opt), `</optgroup>`] : []),
+    ...(_ig(1).length ? [`<optgroup label="非在任實習生">`, ..._ig(1).map(_opt), `</optgroup>`] : []),
+    ...(_ig(2).length ? [`<optgroup label="已停用">`, ..._ig(2).map(_opt), `</optgroup>`] : []),
+  ].join('');
+
+  const filtered = records.filter(r =>
+    (!filterEmailVal || r.email === filterEmailVal) &&
+    (_attSumMode === 'date' ? r.date === filterDate : r.date.startsWith(filterMonth))
+  );
+  const summaryMap = {};
+  filtered.forEach(r => {
+    if (!summaryMap[r.email]) summaryMap[r.email] = {};
+    if (!summaryMap[r.email][r.date]) summaryMap[r.email][r.date] = [];
+    summaryMap[r.email][r.date].push(r);
+  });
+  const printMonth = _attSumMode === 'month' ? filterMonth : filterDate.slice(0, 7);
+
+  body.innerHTML = `
+    <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:20px;">
+      <div style="display:flex;gap:6px;">
+        <label class="bk-view-chip${_attSumMode === 'date' ? ' bk-view-chip-sel' : ''}" onclick="_attSumSetMode('date')"><span class="bk-view-chip-box">${_attSumMode === 'date' ? '✓' : ''}</span>依日期</label>
+        <label class="bk-view-chip${_attSumMode === 'month' ? ' bk-view-chip-sel' : ''}" onclick="_attSumSetMode('month')"><span class="bk-view-chip-box">${_attSumMode === 'month' ? '✓' : ''}</span>依月份</label>
+      </div>
+      <div style="display:${_attSumMode === 'date' ? '' : 'none'};">
+        <label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">日期</label>
+        <input id="att-sum-date" type="date" class="field-input" value="${filterDate}" onchange="renderAttendanceSummary()" />
+      </div>
+      <div style="display:${_attSumMode === 'month' ? '' : 'none'};">
+        <label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">月份</label>
+        <input id="att-sum-month" type="month" class="field-input" value="${filterMonth}" onchange="renderAttendanceSummary()" />
+      </div>
+      <div>
+        <label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">實習生</label>
+        <select id="att-sum-email" class="field-select" onchange="renderAttendanceSummary()" style="min-width:160px;">
+          <option value="">全部</option>
+          ${internSelectHtml}
+        </select>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="printAttendanceMonthlyReport(document.getElementById('att-sum-email').value, '${printMonth}')">🖨️ 列印月報表</button>
+    </div>
     <div style="overflow-x:auto;">
-      <table class="data-table" style="min-width:460px;">
+      <table class="data-table" style="min-width:520px;">
         <thead><tr><th>實習生</th><th>日期</th><th>簽到</th><th>簽退</th><th>工時</th></tr></thead>
         <tbody>
           ${Object.entries(summaryMap).flatMap(([email, dates]) =>
-              Object.entries(dates).map(([date, { times }]) => {
-                const sorted = [...times].sort();
+              Object.entries(dates).map(([date, recs]) => {
+                const sorted = [...recs].sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
                 const name = users[email]?.name || email;
-                const inT  = sorted.length > 0 ? _fmtTime(sorted[0]) : '—';
-                const outT = sorted.length > 1 ? _fmtTime(sorted[sorted.length - 1]) : '—';
+                const inRec  = sorted.length > 0 ? sorted[0] : null;
+                const outRec = sorted.length > 1 ? sorted[sorted.length - 1] : null;
+                const inT  = inRec  ? _fmtTime(inRec.timestamp)  + _attLocBadgeHtml(inRec)  + _attManualBadgeHtml(inRec)  : '—';
+                const outT = outRec ? _fmtTime(outRec.timestamp) + _attLocBadgeHtml(outRec) + _attManualBadgeHtml(outRec) : '—';
                 const hrs  = sorted.length > 1
-                  ? ((new Date(sorted[sorted.length - 1]) - new Date(sorted[0])) / 3600000).toFixed(1) + ' h'
+                  ? ((new Date(sorted[sorted.length - 1].timestamp) - new Date(sorted[0].timestamp)) / 3600000).toFixed(1) + ' h'
                   : '—';
-                return `<tr><td>${name}</td><td>${date}</td><td>${inT}</td><td>${outT}</td><td>${hrs}</td></tr>`;
+                return `<tr><td>${escHtml(name)}</td><td>${date}</td><td>${inT}</td><td>${outT}</td><td>${hrs}</td></tr>`;
               })
           ).join('') || '<tr><td colspan="5" style="text-align:center;color:#a0aec0;padding:16px;">無紀錄</td></tr>'}
         </tbody>
       </table>
-    </div>
-  `;
-  _initGeoFenceCard();
+    </div>`;
 }
 
 // ══════════════════════════════════════════════
@@ -25605,10 +25671,16 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 128, title: '差勤管理新增「差勤匯總」分頁：可依日期／月份＋實習生篩選，並顯示定位／手動標記（#26-2 #26-3）', isProd: false, items: [
+      item('新功能', '差勤管理後台新增「差勤匯總」分頁（原本掛在「打卡紀錄」分頁下方的「本月差勤彙總」改為獨立分頁並更名）：篩選列可切換「依日期」（單日）／「依月份」，並可再疊加「實習生」篩選（全部或指定某位）'),
+      item('新功能', '原本在「打卡紀錄」分頁的「列印月報表」功能搬到「差勤匯總」分頁的篩選列旁，列印月份會依目前篩選（依日期時取該日所在月份，依月份時取所選月份）自動帶入'),
+      item('改善', '差勤匯總表的簽到／簽退欄，時間後方加上定位小徽章（🟩校內／⬜校外／⬜無定位）與手動補打卡的橙色「手動」小徽章，一眼看出是否為現場打卡或事後補登'),
+    ]},
     { date: '2026-07-07', v: 127, title: '差勤管理：打卡紀錄預設最新在上＋月報表請假註記補上核准資訊（#26-1 #4）', isProd: false, items: [
       item('改善', '差勤管理「打卡紀錄」分頁的清單改為依日期／時間降冪排序，最新一筆固定顯示在最上方，不必往下捲'),
       item('改善', '出勤月報表列印：備註欄的請假項目補上「幾月幾日由誰核准」（如「事假 8 小時（7/3 王主任核准）」），舊資料若無核准時間/核准人則維持原樣不受影響'),
     ]},
+    { date: '2026-07-07', v: 126, title: '重大事件通知全面支援「收到」即封存（#30）', isProd: false, items: [
       item('新功能', '待辦頁「重大事件通知」區塊中，原本只有「標記已讀」的 Gmail 變更（gmail_changed）與非上班時間活動（off_hours_activity）兩類，比照空間預約成功/他人代為建立兩類，改為顯示「收到」按鈕，點擊即從畫面封存（該使用者不再看到），四種重大事件通知的操作方式全數統一'),
       item('技術', '沿用 v58/v109 既有 MAJOR_EVENT_DISMISS_ON_READ／MAJOR_EVENT_BTN_LABEL 共用機制，僅擴充 Set／Label 對照表；通知本體仍保留於 configData（7 天後自動清除），僅畫面上「收到」後立即不再顯示；若需事後稽核，off_hours_log.json（活動全量 feed）與 audit_log.json（major:true）不受影響，仍可追查'),
     ]},
