@@ -19913,6 +19913,7 @@ function _renderGcErrorsSection() {
       ${e.creators?.[0] ? `<span style="color:#718096;margin-left:6px;font-family:monospace;font-size:.72rem;">建立者：${escHtml(e.creators[0])}</span>` : ''}
       <span style="color:#a0aec0;margin-left:6px;">${fmtT(e.t)}</span>
       ${rowActions(e, kind)}
+      ${kind === 'UNMATCHED' ? _gcUnmatchedRowExtra(e) : ''}
     </div>`).join('')}
     ${byKind[kind].length > 10 ? `<div style="font-size:.72rem;color:#a0aec0;padding-left:14px;">…另 ${byKind[kind].length - 10} 筆</div>` : ''}
   </div>`;
@@ -20050,6 +20051,81 @@ async function _gcImportAsBooking(entryId) {
   } catch (e) {
     bgJobFail(jobId, e.message);
     alert('匯入失敗：' + e.message);
+  }
+}
+
+// ── #5-7：UNMATCHED（無對應學諮資訊系統預約）孤兒事件——找疑似對應的既有預約供使用者連結 ──
+// 判斷依據：同日期＋開始/結束時間有重疊＋（標題解析出的人名與該預約主責/人員相符其一，
+// 標題解析不到人名則僅憑時間/空間比對，寬鬆處理）。由於 entry 本身即代表「無 booking 的
+// calendarEventId 指向此事件」，找到的候選必然尚未綁定此 eventId；優先挑完全沒有 calendarEventId
+// 的（真正孤兒），其次才挑已綁別的事件者（提示可能是重複事件）。
+function _gcFindProbableMatch(entry) {
+  if (!entry?.date || !entry?.startTime || !entry?.endTime) return null;
+  const parsed = _parseBkGcTitle(entry.title) || {};
+  const names = new Set((parsed.counselors || []).map(c => c.label).filter(Boolean));
+  const candidates = (bookingsData || []).filter(b => {
+    if (b.date !== entry.date) return false;
+    if (!(b.startTime < entry.endTime && b.endTime > entry.startTime)) return false;
+    if (!names.size) return true;
+    const bNames = new Set([
+      ...(b.counselors || []).map(c => c.name || c.label).filter(Boolean),
+      ...(b.counselorName ? b.counselorName.split(',').map(s => s.trim()).filter(Boolean) : []),
+    ]);
+    return [...names].some(n => bNames.has(n));
+  });
+  if (!candidates.length) return null;
+  return candidates.find(b => !b.calendarEventId) || candidates[0];
+}
+// 待確認清單裡 UNMATCHED 那一筆下方的「疑似對應」子區塊（含連結按鈕）
+function _gcUnmatchedRowExtra(e) {
+  const m = _gcFindProbableMatch(e);
+  if (!m) return '';
+  const mRoom = m.room === '其他' ? (m.customRoom || '其他') : (m.room || '');
+  const dupWarn = m.calendarEventId
+    ? '　<span style="color:#c05621;">⚠ 該預約已連結另一日曆事件，連結後原連結將變成未綁定，若為重複事件請至 Google 日曆刪除</span>'
+    : '';
+  return `<div style="font-size:.74rem;color:#2f855a;padding:2px 0 2px 10px;margin-top:2px;">
+    ↳ 疑似對應：${escHtml(mRoom)} ${escHtml(m.date||'')} ${escHtml((m.startTime||'').slice(0,5))}–${escHtml((m.endTime||'').slice(0,5))} ${escHtml(m.counselorName||'')}${dupWarn}
+    <button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;margin-left:6px;" onclick="_gcLinkProbableMatch('${escHtml(e.id)}','${escHtml(m.id)}')">連結到此預約</button>
+  </div>`;
+}
+// 將 UNMATCHED GC 事件連結到既有預約：改寫該預約的 calendarEventId 指向此事件（gc mode 'none'，
+// 不動 GC 事件本身），並從待確認清單移除該筆。
+async function _gcLinkProbableMatch(entryId, bookingId) {
+  const entry = (_gcErrorsCache?.entries || []).find(e => e.id === entryId);
+  const bk = bookingsData.find(b => b.id === bookingId);
+  if (!entry || !bk) return;
+  const roomD = bk.room === '其他' ? (bk.customRoom || '其他') : (bk.room || '');
+  let msg = `確定將此 Google 日曆事件連結到系統預約？\n\n${roomD}　${bk.date}　${(bk.startTime||'').slice(0,5)}–${(bk.endTime||'').slice(0,5)}${bk.counselorName ? '　'+bk.counselorName : ''}`;
+  if (bk.calendarEventId) {
+    msg += `\n\n⚠ 此預約原本已連結另一個日曆事件，連結後原事件將變成未綁定，若為重複事件請至 Google 日曆刪除。`;
+  }
+  if (!confirm(msg)) return;
+  const jobId = bgJobAdd('連結GC事件到預約', `${roomD} ${bk.date}`);
+  try {
+    const updated = { ...bk, calendarEventId: entry.eventId };
+    const result = await bkCommit([{ op: 'upsert', booking: { ...updated }, gc: { mode: 'none' } }], { checkConflicts: false });
+    if (result.fallback) {
+      const idx = bookingsData.findIndex(x => x.id === bk.id);
+      if (idx >= 0) bookingsData[idx] = updated;
+      await saveBookings();
+    } else if (!result.error) {
+      const fb = (result.bookings || []).find(x => x.id === bk.id);
+      const idx = bookingsData.findIndex(x => x.id === bk.id);
+      if (idx >= 0) bookingsData[idx] = fb || updated;
+    } else {
+      const idx = bookingsData.findIndex(x => x.id === bk.id);
+      if (idx >= 0) bookingsData[idx] = updated; // 理論上不會有 conflict（checkConflicts:false），保底仍寫入本機
+    }
+    _gcErrorsCache.entries = (_gcErrorsCache.entries || []).filter(e => e.id !== entryId);
+    await _saveGcErrorsCache();
+    auditLog('連結GC孤兒事件到預約', bk.caseId || null, null, `${roomD}　${bk.date}　${(bk.startTime||'').slice(0,5)}–${(bk.endTime||'').slice(0,5)}`);
+    _renderGcErrorsSection();
+    renderBookingsPage?.();
+    bgJobDone(jobId);
+  } catch (e) {
+    bgJobFail(jobId, e.message);
+    alert('連結失敗：' + e.message);
   }
 }
 
@@ -24963,6 +25039,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 112, title: 'GC「無對應學諮資訊系統預約」孤兒事件疑似對應連結（#5-7）', isProd: false, items: [
+      item('新功能', '待辦頁「Google 日曆事件待確認」的 UNMATCHED（無對應學諮資訊系統預約）項目，若能依「同日期＋時間重疊＋標題人名與主責相符其一」找到疑似對應的既有預約，會在該筆下方顯示「疑似對應：空間/日期/時段/主責」與「連結到此預約」按鈕'),
+      item('新功能', '點擊「連結到此預約」即把該預約的 calendarEventId 改指向此日曆事件（不動 GC 事件本身），並從待確認清單移除；若該預約原本已連結另一個日曆事件，會先提醒原連結將變成未綁定，若為重複事件請至 Google 日曆刪除'),
+    ]},
     { date: '2026-07-07', v: 111, title: '我的顏色分「INFOSYS 預設色」與「GC 預設色」（#5-3）', isProd: false, items: [
       item('新功能', '偏好設定頁與空間預約「我的顏色」彈窗新增「GC 預設色」：你建立的預約同步到 Google 日曆時套用此色，直接從 GC 支援的 11 色挑選（不做近似轉換），與既有「INFOSYS 預設色」（系統內卡片/列表顯示用）各自獨立設定，互不綁死'),
       item('改善', 'INFOSYS 預設色選色盤新增下排 GC 11 色選項，方便想讓兩邊一致的使用者直接挑同一色'),
