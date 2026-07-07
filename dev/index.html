@@ -1269,7 +1269,7 @@
         <span class="icon">🕐</span> 差勤打卡 <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" id="nav-leave-apply-item" data-nav-id="page-leave-apply" onclick="showPage('page-leave-apply', this); renderLeaveApplyPage()" style="display:none;">
-        <span class="icon">📝</span> 差勤申請 <span class="nav-drag-handle">⠿</span>
+        <span class="icon">📝</span> 我的差勤 <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" id="nav-attendance-item" data-nav-id="page-attendance" onclick="showPage('page-attendance', this); renderAttendanceMgr()" style="display:none;">
         <span class="icon">📊</span> 差勤管理後台 <span id="nav-leave-review-badge" style="display:none;background:#dd6b20;color:#fff;border-radius:10px;padding:0 4px;font-size:.72rem;margin-left:2px;"></span> <span id="nav-pending-users-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 4px;font-size:.72rem;margin-left:2px;"></span> <span class="nav-drag-handle">⠿</span>
@@ -1956,15 +1956,15 @@
       <div id="clock-body"></div>
     </div>
 
-    <!-- 差勤申請（實習生） -->
+    <!-- 我的差勤（實習生） -->
     <div id="page-leave-apply" class="page">
-      <div class="page-title">差勤申請</div>
+      <div class="page-title" style="display:flex;align-items:center;gap:8px;">我的差勤<button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="_bgRefreshClick('我的差勤重新整理', () => Promise.all([loadAttendance(), loadLeaves()]).then(() => renderLeaveApplyPage()))">🔄 重新整理</button></div>
       <div id="leave-apply-body"></div>
     </div>
 
     <!-- 差勤管理後台 -->
     <div id="page-attendance" class="page">
-      <div class="page-title">差勤管理</div>
+      <div class="page-title" style="display:flex;align-items:center;gap:8px;">差勤管理<button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="_bgRefreshClick('差勤管理重新整理', () => Promise.all([loadAttendance(), loadLeaves()]).then(() => renderAttendanceMgr()))">🔄 重新整理</button></div>
       <div id="att-mgr-tabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;border-bottom:2px solid #e2e8f0;padding-bottom:0;"></div>
       <div id="attendance-body"></div>
       <!-- 打卡地理範圍設定（靜態，不被 renderAttendancePage 覆寫） -->
@@ -23591,13 +23591,70 @@ async function saveInternQuota(email) {
 // ══════════════════════════════════════════════
 //  實習生差勤申請頁
 // ══════════════════════════════════════════════
+// ══════════════════════════════════════════════
+//  我的差勤（原「差勤申請」頁；改為 tab 結構：本週差勤／打卡／請假申請／月報表）
+// ══════════════════════════════════════════════
+let _myAttTab = 'week';
+let _myAttTabRestored = false;
+const _MYATT_TABS = [
+  { id: 'week',   label: '本週差勤' },
+  { id: 'clock',  label: '打卡' },
+  { id: 'apply',  label: '請假申請' },
+  { id: 'report', label: '月報表' },
+];
 function renderLeaveApplyPage() {
   const body = document.getElementById('leave-apply-body');
   if (!body) return;
   const isIntern = currentRole === '實習諮商心理師';
   const _isAdmin = currentRole === '主任' || extraRole === '管理者';
   const canApply = isIntern || _isAdmin || isInternAdminSupervisor || isInternProSupervisor;
-  if (!canApply) { body.innerHTML = '<div class="alert alert-info">此頁僅供實習生申請差勤。</div>'; return; }
+  if (!canApply) { body.innerHTML = '<div class="alert alert-info">此頁僅供實習生查看／申請差勤。</div>'; return; }
+  // 第一次渲染時從 config 還原上次所在的 tab（比照 _mlTabRestored／_bkPageTabRestored 的既有模式）
+  if (!_myAttTabRestored) {
+    _myAttTabRestored = true;
+    const saved = configData?.users?.[currentUser?.email]?.myAttTab;
+    if (saved && _MYATT_TABS.some(t => t.id === saved)) _myAttTab = saved;
+  }
+  body.innerHTML = `
+    <div style="display:flex;gap:2px;border-bottom:2px solid #e2e8f0;margin-bottom:20px;">
+      ${_MYATT_TABS.map(t => _myAttTabBtn(t.id, t.label)).join('')}
+    </div>
+    <div id="myatt-tab-content"></div>`;
+  _myAttRenderTab();
+}
+function _myAttTabBtn(id, label) {
+  const active = _myAttTab === id;
+  return `<button onclick="_myAttSwitchTab('${id}')" style="padding:8px 18px;border:none;cursor:pointer;background:none;font-size:.9rem;font-weight:${active ? 700 : 500};border-bottom:3px solid ${active ? '#2b6cb0' : 'transparent'};color:${active ? '#2b6cb0' : '#718096'};margin-bottom:-2px;">${label}</button>`;
+}
+function _myAttSwitchTab(id) {
+  _myAttTab = id;
+  syncUserPref_({ myAttTab: id });
+  _myAttRenderTab();
+}
+function _myAttRenderTab() {
+  const el = document.getElementById('myatt-tab-content');
+  if (!el) return;
+  if (_myAttTab === 'week') _myAttRenderWeekTab(el);
+  else if (_myAttTab === 'clock') _myAttRenderClockTab(el);
+  else if (_myAttTab === 'apply') _myAttRenderApplyTab(el);
+  else _myAttRenderReportTab(el);
+}
+
+// ── 本週差勤 tab：與差勤管理共用 renderWeekAttendanceOverview，只傳入自己的 email ──
+function _myAttRenderWeekTab(el) {
+  el.innerHTML = `<div id="myatt-week-overview"></div>`;
+  renderWeekAttendanceOverview('myatt-week-overview', [currentUser.email]);
+}
+
+// ── 打卡 tab：沿用打卡頁既有渲染邏輯（見 renderClockPage 的 ns 參數，此處用 'myatt-' 前綴避免與獨立打卡頁 id 衝突）──
+function _myAttRenderClockTab(el) {
+  el.innerHTML = `<div id="myatt-clock-body"></div>`;
+  renderClockPage('myatt-');
+}
+
+// ── 請假申請 tab：新增差勤申請表單＋我的申請紀錄（原「差勤申請」頁內容，只搬位置不改行為）──
+function _myAttRenderApplyTab(el) {
+  const isIntern = currentRole === '實習諮商心理師';
   const _adminNote = isIntern ? '' : '<div class="alert alert-info" style="margin-bottom:16px;">您以管理者／督導身分檢視此頁；送出的申請會以您的帳號建立（供驗證用）。</div>';
   const types = getLeaveTypes();
   const myApps = (leavesData?.applications || [])
@@ -23605,17 +23662,6 @@ function renderLeaveApplyPage() {
     .sort((a, b) => (b.appliedAt || '').localeCompare(a.appliedAt || ''));
   const typeOpts = types.map(t => `<option value="${t.id}">${escHtml(t.name)}${t.isComp ? '（用補休）' : t.deductsQuota ? '（扣抵額度）' : ''}</option>`).join('');
   const today = _fmtDate(new Date());
-  const thisMonth = today.slice(0, 7);
-  const compRemain = _compRemaining(currentUser.email);
-  const workDays = _dailyWorkHours(currentUser.email, thisMonth);
-  const workRows = workDays.length ? workDays.map(d => `
-    <tr>
-      <td>${escHtml(d.date)}</td>
-      <td>${d.first ? _fmtTime(d.first) : '—'}</td>
-      <td>${d.count >= 2 ? _fmtTime(d.last) : '—'}</td>
-      <td style="text-align:right;">${d.count >= 2 ? d.hours + ' 小時' : '單筆打卡'}</td>
-      <td>${d.count >= 2 ? (d.normal ? '<span style="color:#276749;">正常</span>' : '<span style="color:#c05621;">不足 ' + WORK_HOURS_NORMAL + 'hr</span>') : '—'}</td>
-    </tr>`).join('') : '<tr><td colspan="5" style="text-align:center;color:#a0aec0;padding:16px;">本月尚無打卡紀錄</td></tr>';
   const myRows = myApps.length ? myApps.map(a => `
     <tr>
       <td>${escHtml(a.leaveTypeName)}</td>
@@ -23626,7 +23672,7 @@ function renderLeaveApplyPage() {
       <td>${a.status === 'pending' ? `<button class="btn btn-secondary btn-sm" style="font-size:.74rem;" onclick="cancelLeave('${a.id}')">取消</button>` : ''}</td>
     </tr>`).join('') : '<tr><td colspan="6" style="text-align:center;color:#a0aec0;padding:20px;">尚無申請紀錄</td></tr>';
 
-  body.innerHTML = `
+  el.innerHTML = `
     ${_adminNote}
     <div class="card" style="margin-bottom:20px;">
       <div class="card-header"><h3>新增差勤申請</h3></div>
@@ -23664,7 +23710,36 @@ function renderLeaveApplyPage() {
         <div style="font-size:.78rem;color:#a0aec0;margin-top:8px;">送出後將通知督導審核；任一督導核准即生效，並通知您與主任。加班登記經督導認證後才會累積為補休時數。</div>
       </div>
     </div>
-    <div class="card" style="margin-bottom:20px;">
+    <div class="card">
+      <div class="card-header"><h3>我的申請紀錄</h3></div>
+      <div style="padding:16px 20px;overflow-x:auto;">
+        <table class="data-table" style="min-width:560px;">
+          <thead><tr><th>假別</th><th>日期</th><th style="text-align:right;">時數</th><th>事由</th><th>狀態</th><th></th></tr></thead>
+          <tbody>${myRows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  _laKindChange();
+  attachInit('la', [], { dropTargets: ['la-reason'] });
+}
+
+// ── 月報表 tab：本月打卡工時＋月份選擇＋列印（共用 printAttendanceMonthlyReport，只有自己的資料）──
+function _myAttRenderReportTab(el) {
+  const today = _fmtDate(new Date());
+  const thisMonth = today.slice(0, 7);
+  const compRemain = _compRemaining(currentUser.email);
+  const workDays = _dailyWorkHours(currentUser.email, thisMonth);
+  const workRows = workDays.length ? workDays.map(d => `
+    <tr>
+      <td>${escHtml(d.date)}</td>
+      <td>${d.first ? _fmtTime(d.first) : '—'}</td>
+      <td>${d.count >= 2 ? _fmtTime(d.last) : '—'}</td>
+      <td style="text-align:right;">${d.count >= 2 ? d.hours + ' 小時' : '單筆打卡'}</td>
+      <td>${d.count >= 2 ? (d.normal ? '<span style="color:#276749;">正常</span>' : '<span style="color:#c05621;">不足 ' + WORK_HOURS_NORMAL + 'hr</span>') : '—'}</td>
+    </tr>`).join('') : '<tr><td colspan="5" style="text-align:center;color:#a0aec0;padding:16px;">本月尚無打卡紀錄</td></tr>';
+
+  el.innerHTML = `
+    <div class="card">
       <div class="card-header" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
         <h3>本月打卡工時（${escHtml(thisMonth)}）</h3>
         <div style="display:flex;gap:6px;align-items:center;">
@@ -23682,18 +23757,7 @@ function renderLeaveApplyPage() {
         </div>
         <div style="font-size:.76rem;color:#a0aec0;margin-top:8px;">工時 = 當日最後一次打卡 − 第一次打卡，滿 ${WORK_HOURS_NORMAL} 小時為正常（午休不另扣）。如有加班，請以上方「加班登記」提出，由督導認證。</div>
       </div>
-    </div>
-    <div class="card">
-      <div class="card-header"><h3>我的申請紀錄</h3></div>
-      <div style="padding:16px 20px;overflow-x:auto;">
-        <table class="data-table" style="min-width:560px;">
-          <thead><tr><th>假別</th><th>日期</th><th style="text-align:right;">時數</th><th>事由</th><th>狀態</th><th></th></tr></thead>
-          <tbody>${myRows}</tbody>
-        </table>
-      </div>
     </div>`;
-  _laKindChange();
-  attachInit('la', [], { dropTargets: ['la-reason'] });
 }
 
 function _laKindChange() {
@@ -23950,7 +24014,14 @@ function _punchLabel(r, allRecords) {
 }
 
 // ── 打卡頁面 ──
-function renderClockPage() {
+// ns：容器 id 前綴（''＝獨立打卡頁 ?page=clock，沿用既有 id 完全不變；'myatt-'＝內嵌於「我的差勤」的
+// 「打卡」分頁時使用，容器與內部各 id 皆加此前綴，避免與獨立打卡頁的 id 重複）。
+// _clockNs 記錄「目前作用中」的那份，供 _startClockTick／clockAction／updateAttendanceLoc／_showClockMap
+// 這些不便逐一傳參的既有函式讀取，判斷該操作哪一份 DOM。
+let _clockNs = '';
+function renderClockPage(ns) {
+  _clockNs = ns || '';
+  const id = s => _clockNs + s;
   const isIntern = currentRole === '實習諮商心理師';
   const _isAdmin = currentRole === '主任' || extraRole === '管理者';
   const canPunch = isIntern || _isAdmin || isInternAdminSupervisor || isInternProSupervisor;
@@ -23959,12 +24030,14 @@ function renderClockPage() {
   const myRecords = allRecords
     .filter(r => r.email === currentUser.email && r.date === today)
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  const container = document.getElementById(id('clock-body'));
+  if (!container) return;
 
-  document.getElementById('clock-body').innerHTML = `
-    <div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:24px 16px;background:#f0f4f8;">
+  container.innerHTML = `
+    <div style="min-height:${_clockNs ? 'auto' : '100vh'};display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:${_clockNs ? '0' : '24px 16px'};background:${_clockNs ? 'transparent' : '#f0f4f8'};">
       <div style="width:100%;max-width:420px;">
         <div style="text-align:center;margin-bottom:28px;">
-          <div style="font-size:2rem;font-weight:700;color:#2d3748;letter-spacing:.04em;" id="clock-time-display">--:--:--</div>
+          <div style="font-size:2rem;font-weight:700;color:#2d3748;letter-spacing:.04em;" id="${id('clock-time-display')}">--:--:--</div>
           <div style="font-size:1rem;color:#718096;margin-top:4px;">${today}</div>
           <div style="font-size:.9rem;color:#4a5568;margin-top:4px;">${configData?.users?.[currentUser.email]?.name || currentUser.name || currentUser.email}</div>
         </div>
@@ -23995,9 +24068,9 @@ function renderClockPage() {
           }
         </div>
 
-        <div id="clock-geo-status" style="font-size:.8rem;color:#718096;text-align:center;margin-bottom:12px;"></div>
+        <div id="${id('clock-geo-status')}" style="font-size:.8rem;color:#718096;text-align:center;margin-bottom:12px;"></div>
 
-        ${isIntern ? `
+        ${isIntern && !_clockNs ? `
         <div style="display:flex;gap:8px;align-items:center;justify-content:center;margin-bottom:16px;">
           <input id="clock-print-month" type="month" value="${today.slice(0, 7)}" style="padding:6px 8px;border:1px solid #cbd5e0;border-radius:8px;font-size:.85rem;">
           <button class="btn btn-secondary btn-sm" onclick="printAttendanceMonthlyReport(currentUser.email, document.getElementById('clock-print-month').value)">🖨️ 列印月報表</button>
@@ -24005,14 +24078,14 @@ function renderClockPage() {
 
         ${canPunch ? `
         ${!isIntern ? '<div class="alert alert-info" style="margin-bottom:12px;">您以管理者／督導身分檢視；打卡將以您的帳號建立（供驗證用）。</div>' : ''}
-        <button id="clock-punch-btn" onclick="clockAction()" style="width:100%;padding:18px;font-size:1.1rem;font-weight:700;border:none;border-radius:12px;cursor:pointer;background:#3182ce;color:#fff;margin-bottom:16px;">
+        <button id="${id('clock-punch-btn')}" onclick="clockAction()" style="width:100%;padding:18px;font-size:1.1rem;font-weight:700;border:none;border-radius:12px;cursor:pointer;background:#3182ce;color:#fff;margin-bottom:16px;">
           ⏱ 打卡
         </button>` : '<div class="alert alert-info" style="margin-bottom:16px;">您目前不是實習生身分，僅可查看差勤紀錄。</div>'}
 
-        <div id="clock-msg" style="display:none;" class="alert"></div>
+        <div id="${id('clock-msg')}" style="display:none;" class="alert"></div>
 
-        <div id="clock-map-wrap" style="display:none;border-radius:12px;overflow:hidden;margin-top:16px;">
-          <div id="clock-map" style="height:200px;"></div>
+        <div id="${id('clock-map-wrap')}" style="display:none;border-radius:12px;overflow:hidden;margin-top:16px;">
+          <div id="${id('clock-map')}" style="height:200px;"></div>
         </div>
       </div>
     </div>`;
@@ -24023,7 +24096,7 @@ function renderClockPage() {
 let _clockTickTimer = null;
 function _startClockTick() {
   clearInterval(_clockTickTimer);
-  const el = document.getElementById('clock-time-display');
+  const el = document.getElementById(_clockNs + 'clock-time-display');
   if (!el) return;
   _clockTickTimer = setInterval(() => {
     const now = new Date();
@@ -24033,11 +24106,11 @@ function _startClockTick() {
 }
 
 async function clockAction() {
-  const msgEl = document.getElementById('clock-msg');
-  const btn = document.getElementById('clock-punch-btn');
+  const msgEl = document.getElementById(_clockNs + 'clock-msg');
+  const btn = document.getElementById(_clockNs + 'clock-punch-btn');
   msgEl.style.display = 'none';
   if (btn) btn.disabled = true;
-  document.getElementById('clock-geo-status').textContent = '正在取得定位…';
+  document.getElementById(_clockNs + 'clock-geo-status').textContent = '正在取得定位…';
 
   let lat = null, lng = null, accuracy = null;
   try {
@@ -24047,9 +24120,9 @@ async function clockAction() {
     lat = pos.coords.latitude;
     lng = pos.coords.longitude;
     accuracy = Math.round(pos.coords.accuracy);
-    document.getElementById('clock-geo-status').textContent = `定位成功（誤差約 ${accuracy} 公尺）`;
+    document.getElementById(_clockNs + 'clock-geo-status').textContent = `定位成功（誤差約 ${accuracy} 公尺）`;
   } catch (e) {
-    document.getElementById('clock-geo-status').textContent = '⚠️ 無法取得定位（仍可繼續打卡）';
+    document.getElementById(_clockNs + 'clock-geo-status').textContent = '⚠️ 無法取得定位（仍可繼續打卡）';
   }
 
   const now = new Date();
@@ -24070,13 +24143,14 @@ async function clockAction() {
     msgEl.className = 'alert alert-success';
     msgEl.textContent = '✅ 打卡成功！ ' + _fmtTime(record.timestamp);
     msgEl.style.display = '';
-    setTimeout(() => renderClockPage(), 800);
+    const ns = _clockNs;
+    setTimeout(() => renderClockPage(ns), 800);
   } catch (e) {
     attendanceData.records.pop();
     msgEl.className = 'alert alert-error';
     msgEl.textContent = '打卡失敗：' + e.message;
     msgEl.style.display = '';
-    document.getElementById('clock-geo-status').textContent = '';
+    document.getElementById(_clockNs + 'clock-geo-status').textContent = '';
     if (btn) btn.disabled = false;
   }
 }
@@ -24084,7 +24158,7 @@ async function clockAction() {
 async function updateAttendanceLoc(recordId) {
   const rec = (attendanceData?.records || []).find(r => r.id === recordId);
   if (!rec) return;
-  const statusEl = document.getElementById('clock-geo-status');
+  const statusEl = document.getElementById(_clockNs + 'clock-geo-status');
   if (statusEl) statusEl.textContent = '正在取得定位…';
   let lat, lng, accuracy;
   try {
@@ -24109,7 +24183,7 @@ async function updateAttendanceLoc(recordId) {
   try {
     await saveAttendance();
     if (statusEl) statusEl.textContent = `✅ 定位已更新（誤差約 ${accuracy} 公尺）`;
-    renderClockPage();
+    renderClockPage(_clockNs);
   } catch (e) {
     // 回滾
     rec.locationUpdated = false; rec.lat = rec.origLat; rec.lng = rec.origLng;
@@ -24121,10 +24195,10 @@ async function updateAttendanceLoc(recordId) {
 
 let _clockMapInstance = null;
 function _showClockMap(lat, lng) {
-  const wrap = document.getElementById('clock-map-wrap');
+  const wrap = document.getElementById(_clockNs + 'clock-map-wrap');
   wrap.style.display = '';
   if (_clockMapInstance) { _clockMapInstance.remove(); _clockMapInstance = null; }
-  _clockMapInstance = L.map('clock-map').setView([lat, lng], 16);
+  _clockMapInstance = L.map(_clockNs + 'clock-map').setView([lat, lng], 16);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' }).addTo(_clockMapInstance);
   L.marker([lat, lng]).addTo(_clockMapInstance);
 }
@@ -25734,6 +25808,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 130, title: '「差勤申請」頁改名「我的差勤」並改為 tab 結構＋兩頁新增重新整理按鈕（#26-5 #26-6）', isProd: false, items: [
+      item('新功能', '「差勤申請」頁改名「我的差勤」（nav 選單與頁面標題同步更新），並改為 tab 結構共四個分頁：「本週差勤」（與差勤管理同款總覽，僅顯示自己的資料）／「打卡」（原「差勤打卡」頁的簽到/簽退功能，內容與行為不變，獨立的 ?page=clock 快速打卡頁仍保留供手機捷徑使用）／「請假申請」（原有的新增差勤申請表單＋我的申請紀錄）／「月報表」（月份選擇＋列印，僅自己的資料），只搬位置不改行為，並記憶上次所在分頁（比照既有 per-user 分頁偏好機制）'),
+      item('新功能', '「我的差勤」與「差勤管理」頁標題列都新增「🔄 重新整理」按鈕：重新從 Drive 讀取差勤與差勤申請資料後重繪目前畫面，沿用既有的背景化重新整理機制（不鎖畫面、工作執行分頁可追蹤進度）'),
+    ]},
     { date: '2026-07-07', v: 129, title: '差勤管理「打卡紀錄」分頁上方新增「本週差勤」總覽（#26-4）', isProd: false, items: [
       item('新功能', '差勤管理「打卡紀錄」分頁上方（原本放月報表篩選＋列印的位置）改為「本週差勤」總覽：緊湊卡片式呈現每位在任實習生今日打卡情形（已簽到／已簽退／未打卡）與本週（週一~週日）逐日打卡概況小方塊，一眼掌握全體出勤狀況'),
       item('新功能', '卡片同時顯示本週請假中的人（假別＋日期），方便快速掌握誰請假、誰該來卻沒打卡'),
