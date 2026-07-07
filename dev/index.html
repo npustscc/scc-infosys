@@ -2604,11 +2604,11 @@
         <div class="form-grid">
           <div>
             <label class="field-label">晤談日期<span class="req">*</span></label>
-            <input type="date" class="field-input" id="rec-date" onchange="_checkRecBkConflict()" />
+            <input type="date" class="field-input" id="rec-date" onchange="_checkRecBkConflict();_checkRecDuplicate()" />
           </div>
           <div>
             <label class="field-label">晤談時間<span class="req">*</span></label>
-            <select class="field-select" id="rec-time" onchange="toggleRecTimeOther(this);_checkRecBkConflict()">
+            <select class="field-select" id="rec-time" onchange="toggleRecTimeOther(this);_checkRecBkConflict();_checkRecDuplicate()">
               <option value="">— 請選擇 —</option>
               <option value="其他">其他（自填時間）</option>
               <option>第1節 08:10-09:00</option>
@@ -2627,7 +2627,8 @@
             <input type="text" class="field-input" id="rec-time-other"
               style="display:none;margin-top:6px;max-width:160px;"
               placeholder="xx:xx-xx:xx" maxlength="11"
-              oninput="formatTimeInput(this);_checkRecBkConflict()" />
+              oninput="formatTimeInput(this);_checkRecBkConflict();_checkRecDuplicate()" />
+            <div id="rec-dup-alert" style="display:none;"></div>
           </div>
           <div>
             <label class="field-label">晤談者<span class="req">*</span></label>
@@ -3075,11 +3076,11 @@
       <div class="form-grid" style="margin-bottom:16px;">
         <div>
           <label class="field-label">初談日期<span class="req">*</span></label>
-          <input type="date" class="field-input" id="ii-interview-date" />
+          <input type="date" class="field-input" id="ii-interview-date" onchange="_checkIIDuplicate()" />
         </div>
         <div>
           <label class="field-label">初談時間</label>
-          <select class="field-select" id="ii-interview-time" onchange="toggleIITimeOther(this)">
+          <select class="field-select" id="ii-interview-time" onchange="toggleIITimeOther(this);_checkIIDuplicate()">
             <option value="">— 請選擇 —</option>
             <option value="其他">其他（自填時間）</option>
             <option>第1節 08:10-09:00</option>
@@ -3095,11 +3096,12 @@
             <option>第10節 18:55-19:45</option>
             <option>第11節 19:50-20:40</option>
           </select>
-          <input type="text" class="field-input" id="ii-interview-time-other" style="display:none;margin-top:6px;" placeholder="xx:xx-xx:xx" />
+          <input type="text" class="field-input" id="ii-interview-time-other" style="display:none;margin-top:6px;" placeholder="xx:xx-xx:xx" oninput="_checkIIDuplicate()" />
+          <div id="ii-dup-alert" style="display:none;"></div>
         </div>
         <div>
           <label class="field-label">初談者<span class="req">*</span></label>
-          <select class="field-select" id="ii-interviewer-sel" style="max-width:300px;"></select>
+          <select class="field-select" id="ii-interviewer-sel" style="max-width:300px;" onchange="_checkIIDuplicate()"></select>
         </div>
       </div>
 
@@ -10920,6 +10922,10 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
   _recordCaseId    = caseId;
   _editingRecordId = recordId || null;
   _recordKind      = recordKind;
+  // 重置同時段重複紀錄檢核（#9）的殘留狀態/警示區塊，避免帶到上一筆的選擇
+  delete _dupStates.rec;
+  const _recDupEl0 = document.getElementById('rec-dup-alert');
+  if (_recDupEl0) { _recDupEl0.style.display = 'none'; _recDupEl0.innerHTML = ''; }
   const c = casesData.find(x => x.id === caseId);
   const existingRec = recordId ? (c?.records || []).find(r => r.id === recordId) : null;
   _draftKey = `scc_draft_record_${currentUser?.email || ''}_${caseId}_${recordId || 'new'}`;
@@ -11133,7 +11139,7 @@ function renderRecCounselorChips() {
     x.type = 'button';
     x.style.cssText = 'background:none;border:none;cursor:pointer;color:#718096;font-weight:700;padding:0 2px;';
     x.innerHTML = '×';
-    x.onclick = () => { _recCounselors.splice(idx, 1); renderRecCounselorChips(); syncRecCounselorHidden(); _checkRecBkConflict(); };
+    x.onclick = () => { _recCounselors.splice(idx, 1); renderRecCounselorChips(); syncRecCounselorHidden(); _checkRecBkConflict(); _checkRecDuplicate(); };
     chip.appendChild(x);
     box.appendChild(chip);
   });
@@ -11165,6 +11171,7 @@ function addRecCounselor() {
   sel.value = '';
   renderRecCounselorChips();
   _checkRecBkConflict();
+  _checkRecDuplicate();
 }
 
 function initRecCounselorsForNew() {
@@ -12164,6 +12171,79 @@ async function _recResolveNextBkPrefill(wantNextBooking, nextBkRoom, nextBkDate,
   return { proceed: true, skipDefaultBk: false };
 }
 
+// ══════════════════════════════════════════════
+//  同時段重複紀錄檢核（#9）
+//  晤談紀錄／初次晤談紀錄表／精神科醫師評估／事件處理紀錄共用：
+//  使用者輸入/變更「會談（評估）日期＋時間」欄位後，即時檢查同一個案＋同一晤談
+//  （評估）人員＋同一日期時間＋同一紀錄類型是否已有既存紀錄（排除正在編輯的那筆本身）
+// ══════════════════════════════════════════════
+const _dupStates = {}; // key -> { matchId, choice: 'merge'|'keep'|null }（key 由各表單自訂，如 'rec'／'evr-0'）
+
+// 純比對邏輯：records 需由呼叫端先轉成統一形狀 { id, date, time, counselorEmails:[email,...], createdAt }
+// 註：opts 刻意不用解構參數寫在函式簽名上——測試 harness 以「第一個 '{' 之後配對括號」抽取函式主體，
+// 解構參數的 '{' 會被誤判為函式主體起點，因此改在函式內部解構。
+function _dupFindSameSlot(records, opts) {
+  const { date, time, counselorEmails, excludeId } = opts || {};
+  if (!date || !time || !(counselorEmails || []).length) return null;
+  return (records || []).find(r =>
+    r.id !== excludeId && r.date === date && r.time === time &&
+    (r.counselorEmails || []).some(e => counselorEmails.includes(e))
+  ) || null;
+}
+
+function _dupFormatWhen(match) {
+  return match?.createdAt ? new Date(match.createdAt).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' }) : '（時間不詳）';
+}
+
+// 顯示/隱藏「此時段已有一筆同類型紀錄」警示區塊（放在各表單日期/時間欄位下方預留的 <div>）
+function _dupRenderAlert(containerId, key, match) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  if (!match) { el.style.display = 'none'; el.innerHTML = ''; delete _dupStates[key]; return; }
+  _dupStates[key] = { matchId: match.id, choice: null };
+  el.style.display = '';
+  el.innerHTML = `<div class="alert alert-warn" style="margin-top:6px;">
+    此時段已有一筆同類型紀錄（建立於 ${escHtml(_dupFormatWhen(match))}），儲存時要整合嗎？
+    <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
+      <button type="button" class="btn btn-secondary btn-sm" onclick="_dupChoose('${key}','merge','${containerId}')">整合（取代既有紀錄）</button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="_dupChoose('${key}','keep','${containerId}')">保留兩筆</button>
+    </div>
+    <div id="${containerId}-choice" style="margin-top:4px;font-size:.78rem;color:#4a5568;"></div>
+  </div>`;
+}
+
+function _dupChoose(key, choice, containerId) {
+  if (!_dupStates[key]) return;
+  _dupStates[key].choice = choice;
+  const noteEl = document.getElementById(containerId + '-choice');
+  if (noteEl) noteEl.textContent = choice === 'merge' ? '已選擇：儲存時整合（取代既有紀錄）' : '已選擇：保留兩筆';
+}
+
+// 儲存前最後把關：偵測到同時段既存紀錄但使用者尚未於畫面上選擇時，跳出 confirm 詢問。
+// 回傳 'merge' | 'keep'（無既存紀錄時直接回 'keep'，即照常新增/更新）
+function _dupResolveAtSave(key, match) {
+  if (!match) return 'keep';
+  const st = _dupStates[key];
+  if (st && st.matchId === match.id && st.choice) return st.choice;
+  return confirm(`此時段已有一筆同類型紀錄（建立於 ${_dupFormatWhen(match)}），確定要整合（取代既有紀錄）嗎？\n\n「確定」＝整合取代既有紀錄；「取消」＝保留兩筆並存。`)
+    ? 'merge' : 'keep';
+}
+
+// 晤談紀錄：即時檢查同個案＋同晤談者＋同時段是否已有既存的（一般）晤談紀錄
+function _checkRecDuplicate() {
+  if (!_recordCaseId) return;
+  const date = document.getElementById('rec-date')?.value || '';
+  const rawTime = document.getElementById('rec-time')?.value || '';
+  const time = rawTime === '其他' ? (document.getElementById('rec-time-other')?.value || '').trim() : rawTime;
+  const c = casesData.find(x => x.id === _recordCaseId);
+  const records = ((c?.records) || [])
+    .filter(r => !r.deleted && !r.isEventRecord)
+    .map(r => ({ id: r.id, date: r.date, time: r.time, counselorEmails: (r.counselors || []).map(x => x.email).filter(Boolean), createdAt: r.createdAt }));
+  const counselorEmails = _recCounselors.map(cc => cc.email).filter(Boolean);
+  const match = _dupFindSameSlot(records, { date, time, counselorEmails, excludeId: _editingRecordId || null });
+  _dupRenderAlert('rec-dup-alert', 'rec', match);
+}
+
 async function saveRecord() {
   const date    = document.getElementById('rec-date').value;
   const rawTime = document.getElementById('rec-time').value;
@@ -12267,6 +12347,24 @@ async function saveRecord() {
 
   const cidx = casesData.findIndex(c => c.id === _recordCaseId);
   if (cidx === -1) return;
+
+  // ── 同時段重複紀錄檢核（#9）：儲存前最後把關 ──
+  // 選「整合」時把 _editingRecordId 改指向既存那筆，讓後面既有的「編輯現有紀錄」分支
+  // 直接把本次表單內容覆寫進去，等同整合取代（若原本就在編輯另一筆，原筆維持原樣不動，
+  // 屬於刻意縮小範圍的簡化：避免同時處理「刪除原筆」牽動的下游分支）。
+  let _recDidMerge = false;
+  {
+    const _recDupList = (casesData[cidx].records || [])
+      .filter(r => !r.deleted && !r.isEventRecord)
+      .map(r => ({ id: r.id, date: r.date, time: r.time, counselorEmails: (r.counselors || []).map(x => x.email).filter(Boolean), createdAt: r.createdAt }));
+    const _recDupMatch = _dupFindSameSlot(_recDupList, {
+      date, time, counselorEmails: _recCounselors.map(cc => cc.email).filter(Boolean), excludeId: _editingRecordId || null,
+    });
+    if (_recDupMatch && _dupResolveAtSave('rec', _recDupMatch) === 'merge') {
+      _editingRecordId = _recDupMatch.id;
+      _recDidMerge = true;
+    }
+  }
 
   // 預約下次：衝突檢查
   const nbToggle = document.getElementById('rec-next-bk-toggle');
@@ -12479,7 +12577,8 @@ async function saveRecord() {
         }
         const _coupleEditNote = _newPartnerRecOnEdit ? `；新增共用對象：${_editedRec.couplePartnerName || ''}` : '';
         auditLog('編輯晤談紀錄', _recordCaseId, editedId,
-          (date ? `${date}（${semesterLabel(openDateToSemPrefix(date))}）` : '') + _auditBkNote + _coupleEditNote);
+          (date ? `${date}（${semesterLabel(openDateToSemPrefix(date))}）` : '') + _auditBkNote + _coupleEditNote +
+          (_recDidMerge ? '；整合取代同時段紀錄' : ''));
         bgJobDone(jobId);
       } catch(err) {
         casesData[cidx].records[ridx] = prev;
@@ -17309,6 +17408,10 @@ function openInitialInterviewPage(caseId) {
   _initialInterviewCaseId = caseId;
   _initialInterviewSem = _caseDetailActiveSem || openDateToSemPrefix(c.openDate);
   document.getElementById('initial-interview-case-info').textContent = `個案：${c.name}（${c.id}）`;
+  // 重置同時段重複紀錄檢核（#9）的殘留狀態/警示區塊
+  delete _dupStates.ii;
+  const _iiDupEl0 = document.getElementById('ii-dup-alert');
+  if (_iiDupEl0) { _iiDupEl0.style.display = 'none'; _iiDupEl0.innerHTML = ''; }
 
   // Reset chip state and image
   _iiChipData = {};
@@ -17533,6 +17636,33 @@ function snapshotInitialInterview() {
   };
 }
 
+// 初次晤談紀錄表：把個案目前所有初談表（含各學期分頁）轉成同時段檢核共用的統一形狀
+function _iiDupEntries(c) {
+  const entries = [];
+  if (Array.isArray(c.semesters) && c.semesters.length > 1 && c.initialInterviews) {
+    Object.entries(c.initialInterviews).forEach(([sem, ii]) => {
+      if (ii && !ii.deleted) entries.push({ id: sem, date: ii.interviewDate, time: ii.interviewTime, counselorEmails: [ii.interviewerEmail].filter(Boolean), createdAt: ii.createdAt });
+    });
+  } else if (c.initialInterview && !c.initialInterview.deleted) {
+    const _selfKey = (Array.isArray(c.semesters) && c.semesters[0]) || openDateToSemPrefix(c.openDate) || 'default';
+    entries.push({ id: _selfKey, date: c.initialInterview.interviewDate, time: c.initialInterview.interviewTime, counselorEmails: [c.initialInterview.interviewerEmail].filter(Boolean), createdAt: c.initialInterview.createdAt });
+  }
+  return entries;
+}
+
+// 即時檢查同個案＋同初談者＋同時段是否已有既存的初談表（可能是別的學期分頁）
+function _checkIIDuplicate() {
+  if (!_initialInterviewCaseId) return;
+  const c = casesData.find(x => x.id === _initialInterviewCaseId);
+  if (!c) return;
+  const date = document.getElementById('ii-interview-date')?.value || '';
+  const timeSel = document.getElementById('ii-interview-time')?.value || '';
+  const time = timeSel === '其他' ? ('其他：' + (document.getElementById('ii-interview-time-other')?.value || '').trim()) : timeSel;
+  const interviewerEmail = document.getElementById('ii-interviewer-sel')?.value || '';
+  const match = _dupFindSameSlot(_iiDupEntries(c), { date, time, counselorEmails: [interviewerEmail].filter(Boolean), excludeId: _initialInterviewSem || null });
+  _dupRenderAlert('ii-dup-alert', 'ii', match);
+}
+
 async function saveInitialInterview() {
   if (!_initialInterviewCaseId) return;
   setAlert('initial-interview-alert', '', '');
@@ -17577,6 +17707,21 @@ async function saveInitialInterview() {
     const _iiMatchKey = (Array.isArray(casesData[cidx].semesters) ? casesData[cidx].semesters : [])
       .find(k => _semKeyBase(k) === _iiDateSemBase);
     _iiSemKey = _iiMatchKey || _iiDateSemBase;
+  }
+
+  // ── 同時段重複紀錄檢核（#9）：儲存前最後把關 ──
+  // 若同個案在別的學期分頁已有「同日期時間＋同初談者」的既存初談表，選「整合」時直接改存進
+  // 那個既有分頁的 key（等同編輯那一筆），而不是存進本次日期推得的 _iiSemKey
+  let _iiDidMerge = false;
+  {
+    const _iiDupMatch = _dupFindSameSlot(_iiDupEntries(casesData[cidx]), {
+      date: snap.interviewDate, time: snap.interviewTime,
+      counselorEmails: [snap.interviewerEmail].filter(Boolean), excludeId: _initialInterviewSem || null,
+    });
+    if (_iiDupMatch && _dupResolveAtSave('ii', _iiDupMatch) === 'merge') {
+      _iiSemKey = _iiDupMatch.id;
+      _iiDidMerge = true;
+    }
   }
 
   let _iiAttachments;
@@ -17646,7 +17791,7 @@ async function saveInitialInterview() {
     // #18：稽核日誌的學期標籤改以「初談日期推得的實際歸屬學期」為準（原本固定顯示個案開案學期，
     // 多學期個案在較晚學期補填初談表時會誤標成最早那個學期）
     const _iiSemLabel = semesterLabel(_iiSemKey || openDateToSemPrefix(casesData[cidx]?.openDate));
-    auditLog('儲存初次晤談表', `案號 ${_initialInterviewCaseId}（${_iiSemLabel} 學期）`);
+    auditLog('儲存初次晤談表', `案號 ${_initialInterviewCaseId}（${_iiSemLabel} 學期）` + (_iiDidMerge ? '；整合取代同時段紀錄' : ''));
     bgJobDone(jobId, '初次晤談表已儲存');
     clearIIDraft();
     _switchDetailSemTo(casesData[cidx], _iiSemKey);
@@ -21137,6 +21282,8 @@ async function _evrPick(caseId) {
 function openEventRecordForm(caseId, fromDraftData, origin) {
   _evrCaseId   = caseId;
   _evrDraftKey = `evr_draft_${caseId}_${currentUser?.email || 'anon'}`;
+  // 重置同時段重複紀錄檢核（#9）的殘留狀態（各卡片 key 為 'evr-<idx>'）
+  Object.keys(_dupStates).filter(k => k.startsWith('evr-')).forEach(k => delete _dupStates[k]);
   _evrOrigin   = origin || (fromDraftData ? 'todo' : 'search');
   if (fromDraftData) {
     _evrRecords    = fromDraftData.records || [_evrEmptyRecord()];
@@ -21415,12 +21562,13 @@ function _buildEvrCardHtml(r, idx) {
         <div class="form-grid">
           <div>
             <label class="field-label">晤談日期<span class="req">*</span></label>
-            <input type="date" class="field-input" id="${pfx}-date">
+            <input type="date" class="field-input" id="${pfx}-date" onchange="_checkEvrDuplicate(${idx})">
           </div>
           <div>
             <label class="field-label">晤談時間<span class="req">*</span></label>
-            <select class="field-select" id="${pfx}-time" onchange="_evrToggleTimeOther(${idx})">${periodOpts}</select>
-            <input type="text" class="field-input" id="${pfx}-time-other" style="display:${(!isStdTime && r.time)?'':'none'};margin-top:6px;max-width:160px;" placeholder="xx:xx-xx:xx" maxlength="11" value="${escHtml(!isStdTime ? r.time : '')}">
+            <select class="field-select" id="${pfx}-time" onchange="_evrToggleTimeOther(${idx});_checkEvrDuplicate(${idx})">${periodOpts}</select>
+            <input type="text" class="field-input" id="${pfx}-time-other" style="display:${(!isStdTime && r.time)?'':'none'};margin-top:6px;max-width:160px;" placeholder="xx:xx-xx:xx" maxlength="11" value="${escHtml(!isStdTime ? r.time : '')}" oninput="_checkEvrDuplicate(${idx})">
+            <div id="${pfx}-dup-alert" style="display:none;"></div>
           </div>
           <div>
             <label class="field-label">晤談空間</label>
@@ -21518,6 +21666,7 @@ function _evrAddCounselor(idx) {
   _evrCounselors[idx].push({ email, label: name, role });
   _evrRenderCounselorChips(idx);
   _evrPopulateCounselorSelect(idx);
+  _checkEvrDuplicate(idx);
 }
 
 function _evrRemoveCounselor(idx, email) {
@@ -21525,6 +21674,23 @@ function _evrRemoveCounselor(idx, email) {
   _evrCounselors[idx] = _evrCounselors[idx].filter(u => u.email !== email);
   _evrRenderCounselorChips(idx);
   _evrPopulateCounselorSelect(idx);
+  _checkEvrDuplicate(idx);
+}
+
+// 事件處理紀錄：即時檢查同個案＋同晤談者＋同時段是否已有既存的事件處理紀錄
+function _checkEvrDuplicate(idx) {
+  if (!_evrCaseId) return;
+  const pfx = `evr${idx}`;
+  const date = document.getElementById(`${pfx}-date`)?.value || '';
+  const rawTime = document.getElementById(`${pfx}-time`)?.value || '';
+  const time = rawTime === '其他' ? (document.getElementById(`${pfx}-time-other`)?.value || '').trim() : rawTime;
+  const c = casesData.find(x => x.id === _evrCaseId);
+  const records = ((c?.records) || [])
+    .filter(r => !r.deleted && r.isEventRecord)
+    .map(r => ({ id: r.id, date: r.date, time: r.time, counselorEmails: (r.counselors || []).map(x => x.email).filter(Boolean), createdAt: r.createdAt }));
+  const counselorEmails = (_evrCounselors[idx] || []).map(u => u.email).filter(Boolean);
+  const match = _dupFindSameSlot(records, { date, time, counselorEmails });
+  _dupRenderAlert(`${pfx}-dup-alert`, `evr-${idx}`, match);
 }
 
 function _evrToggleNextBk() {
@@ -21847,12 +22013,10 @@ async function saveEventRecords() {
     catch(e) { showToast('第' + (idx+1) + '筆附件上傳失敗：' + e.message, 'error'); return; }
   }
   const _evrNewIds = [];
+  const _evrMergedCount = { n: 0 }; // 供稽核日誌統計整合筆數用（forEach 內為區塊作用域，故用物件承接）
   const _evrFirstDate = _evrRecords[0]?.date || '';
   _evrRecords.forEach((r, idx) => {
-    const _evrNewId = `REC_${Date.now()}_E${idx}_${rand()}`;
-    _evrNewIds.push(_evrNewId);
-    casesData[cidx].records.push({
-      id: _evrNewId,
+    const _evrRecObj = {
       isEventRecord: true, recordKind: '晤談記錄',
       date: r.date, time: r.time, room: r.room,
       counselors: r.counselors,
@@ -21861,8 +22025,27 @@ async function saveEventRecords() {
       topics: r.topics, serviceItems: r.serviceItems,
       summary: r.summary, status: 'done',
       attachments: _evrAttachMap[idx] || [],
-      creatorEmail: currentUser?.email, createdAt: now, updatedAt: now,
+      updatedAt: now,
+    };
+    // ── 同時段重複紀錄檢核（#9）：儲存前最後把關 ──
+    const _evrDupList = (casesData[cidx].records || [])
+      .filter(x => !x.deleted && x.isEventRecord)
+      .map(x => ({ id: x.id, date: x.date, time: x.time, counselorEmails: (x.counselors || []).map(u => u.email).filter(Boolean), createdAt: x.createdAt }));
+    const _evrDupMatch = _dupFindSameSlot(_evrDupList, {
+      date: r.date, time: r.time, counselorEmails: (r.counselors || []).map(u => u.email).filter(Boolean),
     });
+    if (_evrDupMatch && _dupResolveAtSave(`evr-${idx}`, _evrDupMatch) === 'merge') {
+      const _tgtIdx = casesData[cidx].records.findIndex(x => x.id === _evrDupMatch.id);
+      if (_tgtIdx >= 0) {
+        Object.assign(casesData[cidx].records[_tgtIdx], _evrRecObj);
+        _evrNewIds.push(_evrDupMatch.id);
+        _evrMergedCount.n++;
+        return;
+      }
+    }
+    const _evrNewId = `REC_${Date.now()}_E${idx}_${rand()}`;
+    _evrNewIds.push(_evrNewId);
+    casesData[cidx].records.push({ id: _evrNewId, creatorEmail: currentUser?.email, createdAt: now, ..._evrRecObj });
   });
   if (_evrTodoId) {
     const todo = todosData.find(t => t.id === _evrTodoId);
@@ -21882,7 +22065,7 @@ async function saveEventRecords() {
   try {
     await saveCasesChunks(savedCaseId);
     bgJobDone(jobId, '已儲存');
-    auditLog('新增事件處理記錄', savedCaseId);
+    auditLog('新增事件處理記錄', savedCaseId, null, _evrMergedCount.n ? `整合取代 ${_evrMergedCount.n} 筆同時段紀錄` : '');
     if (savedTodoId) saveUserTodos().catch(() => {});
   } catch (e) {
     bgJobFail(jobId, e.message);
@@ -25244,6 +25427,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 119, title: '同時段重複紀錄即時檢核與整合（#9）', isProd: false, items: [
+      item('新功能', '晤談紀錄、初次晤談紀錄表、精神科醫師評估、事件處理紀錄四種表單：變更「會談（評估）日期＋時間」後即時檢查同一個案＋同一晤談（評估）人員＋同一日期時間＋同一紀錄類型是否已有既存紀錄，命中時在時間欄位下方顯示警示，可選「整合（取代既有紀錄）」或「保留兩筆」；未選擇就直接儲存時再跳一次確認'),
+      item('技術', '新增共用函式 _dupFindSameSlot／_dupRenderAlert／_dupChoose／_dupResolveAtSave，四種表單各自傳入自己的既有紀錄與比對條件；選擇整合時改走「更新既存那筆」路徑，auditLog 註明「整合取代同時段紀錄」'),
+    ]},
     { date: '2026-07-07', v: 118, title: '初次晤談紀錄表學期歸屬改以初談日期推導（#18）', isProd: false, items: [
       item('修復', '初次晤談紀錄表：多學期個案儲存時，歸入哪個學期改以表單所填「初談日期」推導，不再固定用開表單當下的分頁／個案開案日期判斷；日期落在其他學期分頁時，會自動存入對應學期的初談表（找不到對應學期分頁則以日期推得的學期為準），儲存後也會自動切到該學期分頁'),
       item('技術', '盤點晤談紀錄／精神科醫師評估／事件處理紀錄／轉銜評估：皆已是依日期動態推算學期或直接以評估日期存 semester 欄位，不受影響；僅初次晤談紀錄表的儲存分頁判斷是用表單開啟當下的情境，本次一併修正'),
@@ -39177,6 +39364,8 @@ async function _psychNavOpenCase(id) {
 function openPsychiatristModal(caseId, recordId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
+  // 重置同時段重複紀錄檢核（#9）的殘留狀態
+  delete _dupStates.pr;
   const existing = recordId ? (c.psychiatristRecords||[]).find(r => r.id === recordId) : null;
   const pr = existing || {
     date: new Date().toISOString().slice(0,10), timeStart:'', timeEnd:'',
@@ -39206,10 +39395,10 @@ function openPsychiatristModal(caseId, recordId) {
           </select></div>
           <div><label class="field-label">系級</label><input type="text" class="field-input" id="pr-dept" value="${escHtml(pr.department)}"></div>
           <div><label class="field-label">學號</label><input type="text" class="field-input" id="pr-sid" value="${escHtml(pr.studentId)}"></div>
-          <div><label class="field-label">會談日期</label><input type="date" class="field-input" id="pr-date" value="${pr.date}"></div>
+          <div><label class="field-label">會談日期</label><input type="date" class="field-input" id="pr-date" value="${pr.date}" onchange="_checkPRDuplicate('${escHtml(caseId)}','${existing?escHtml(recordId):'__new__'}')"></div>
           <div>
             <label class="field-label">節次</label>
-            <select class="field-input" id="pr-period" onchange="prFillPeriod()">
+            <select class="field-input" id="pr-period" onchange="prFillPeriod();_checkPRDuplicate('${escHtml(caseId)}','${existing?escHtml(recordId):'__new__'}')">
               <option value="">— 自填時間 —</option>
               ${BK_PERIODS.map(p => `<option value="${escHtml(p.label)}" ${pr.sessionPeriod===p.label?'selected':''}>${escHtml(p.label)}</option>`).join('')}
               <option value="其他" ${pr.sessionPeriod==='其他'?'selected':''}>其他（自填時間）</option>
@@ -39217,9 +39406,10 @@ function openPsychiatristModal(caseId, recordId) {
           </div>
         </div>
         <div id="pr-time-row" style="display:${(pr.sessionPeriod && pr.sessionPeriod !== '其他') ? 'none' : 'flex'};gap:12px;margin-bottom:16px;">
-          <div style="flex:1;"><label class="field-label">開始時間</label><input type="text" class="field-input" id="pr-start" maxlength="5" placeholder="HH:MM" value="${escHtml(pr.timeStart)}" onblur="_bkTimeBlur(this)"></div>
-          <div style="flex:1;"><label class="field-label">結束時間</label><input type="text" class="field-input" id="pr-end" maxlength="5" placeholder="HH:MM" value="${escHtml(pr.timeEnd)}" onblur="_bkTimeBlur(this)"></div>
+          <div style="flex:1;"><label class="field-label">開始時間</label><input type="text" class="field-input" id="pr-start" maxlength="5" placeholder="HH:MM" value="${escHtml(pr.timeStart)}" onblur="_bkTimeBlur(this);_checkPRDuplicate('${escHtml(caseId)}','${existing?escHtml(recordId):'__new__'}')"></div>
+          <div style="flex:1;"><label class="field-label">結束時間</label><input type="text" class="field-input" id="pr-end" maxlength="5" placeholder="HH:MM" value="${escHtml(pr.timeEnd)}" onblur="_bkTimeBlur(this);_checkPRDuplicate('${escHtml(caseId)}','${existing?escHtml(recordId):'__new__'}')"></div>
         </div>
+        <div id="pr-dup-alert" style="display:none;margin-bottom:12px;"></div>
         <div style="margin-bottom:12px;"><label class="field-label">主述與會談資料<span class="req">*</span></label>${_prRt}<div class="field-input rt-editor" id="pr-main" contenteditable="true" style="min-height:120px;overflow:auto;line-height:1.6;"></div><div style="margin-top:5px;"><button type="button" class="geno-open-btn" data-case="${escHtml(caseId)}" data-store="pr_main_${escHtml(pr.id||caseId)}" onclick="openGenogramEditor('pr-main',this.dataset.case,this.dataset.store)">＋ 家族圖</button></div></div>
         <div style="margin-bottom:12px;"><label class="field-label">核心問題之評估與判斷<span class="req">*</span></label>${_prRt}<div class="field-input rt-editor" id="pr-core" contenteditable="true" style="min-height:120px;overflow:auto;line-height:1.6;"></div></div>
         <div style="margin-bottom:12px;"><label class="field-label">介入處遇<span class="req">*</span></label>${_prRt}<div class="field-input rt-editor" id="pr-interv" contenteditable="true" style="min-height:90px;overflow:auto;line-height:1.6;"></div></div>
@@ -39275,6 +39465,32 @@ function openPsychiatristModal(caseId, recordId) {
   }
 }
 
+// 精神科醫師評估的「時段」正規化：有節次就用節次標籤，否則用自填的開始-結束時間
+function _prTimeOf(r) {
+  return (r?.sessionPeriod && r.sessionPeriod !== '其他') ? r.sessionPeriod : `${r?.timeStart || ''}-${r?.timeEnd || ''}`;
+}
+
+// 即時檢查同個案＋同填寫人＋同時段是否已有既存的精神科評估紀錄
+// 註：表單無獨立的「評估醫師」選擇欄位，以目前登入者（填表人）作為比對用的人員身分
+function _checkPRDuplicate(caseId, recordId) {
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  const date = document.getElementById('pr-date')?.value || '';
+  const time = _prTimeOf({
+    sessionPeriod: document.getElementById('pr-period')?.value || '',
+    timeStart: document.getElementById('pr-start')?.value || '',
+    timeEnd: document.getElementById('pr-end')?.value || '',
+  });
+  const records = (c.psychiatristRecords || [])
+    .filter(r => !r.deleted)
+    .map(r => ({ id: r.id, date: r.date, time: _prTimeOf(r), counselorEmails: [r.createdBy].filter(Boolean), createdAt: r.createdAt }));
+  const match = _dupFindSameSlot(records, {
+    date, time, counselorEmails: [currentUser?.email].filter(Boolean),
+    excludeId: recordId && recordId !== '__new__' ? recordId : null,
+  });
+  _dupRenderAlert('pr-dup-alert', 'pr', match);
+}
+
 async function savePsychiatristRecord(caseId, recordId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
@@ -39312,6 +39528,24 @@ async function savePsychiatristRecord(caseId, recordId) {
   delete data.status; delete data.draftSavedAt;
   if (!c.psychiatristRecords) c.psychiatristRecords = [];
   const now = new Date().toISOString();
+
+  // ── 同時段重複紀錄檢核（#9）：儲存前最後把關 ──
+  // 選「整合」時把 recordId 改指向既存那筆，讓下面既有的「編輯」分支覆寫進去
+  let _psyDidMerge = false;
+  {
+    const _psyDupList = (c.psychiatristRecords || [])
+      .filter(r => !r.deleted)
+      .map(r => ({ id: r.id, date: r.date, time: _prTimeOf(r), counselorEmails: [r.createdBy].filter(Boolean), createdAt: r.createdAt }));
+    const _psyDupMatch = _dupFindSameSlot(_psyDupList, {
+      date: data.date, time: _prTimeOf(data), counselorEmails: [currentUser?.email].filter(Boolean),
+      excludeId: recordId !== '__new__' ? recordId : null,
+    });
+    if (_psyDupMatch && _dupResolveAtSave('pr', _psyDupMatch) === 'merge') {
+      recordId = _psyDupMatch.id;
+      _psyDidMerge = true;
+    }
+  }
+
   if (recordId === '__new__') {
     // check if this started as a draft (opening form from a draft record)
     data.id = 'psy_'+Date.now()+'_'+Math.random().toString(36).slice(2);
@@ -39347,7 +39581,7 @@ async function savePsychiatristRecord(caseId, recordId) {
       bgJobProgress(jobId, 40);
       await saveCasesChunks(caseId);
       bgJobProgress(jobId, 90);
-      auditLog('儲存精神科評估', `${c.name} ${data.date}`);
+      auditLog('儲存精神科評估', `${c.name} ${data.date}` + (_psyDidMerge ? '；整合取代同時段紀錄' : ''));
       bgJobDone(jobId);
     } catch(e) {
       if (recordId === '__new__') {
