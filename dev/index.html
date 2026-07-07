@@ -115,6 +115,12 @@
     .bk-opt-chip-del { margin-left:5px;opacity:.45;font-size:.72rem; }
     .bk-opt-chip-del:hover { opacity:1;color:#c53030; }
     .bk-room-chip-match { border-color:#f6ad55 !important;background:#fffbeb !important; }
+    /* ── 空間預約：檢視切換（勾選式 chips，#5-4） ── */
+    .bk-view-chip { display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border:1.5px solid #cbd5e0;border-radius:20px;cursor:pointer;font-size:.82rem;background:#fff;transition:border-color .12s,background .12s;white-space:nowrap;user-select:none; }
+    .bk-view-chip:hover { border-color:#90cdf4;background:#ebf8ff; }
+    .bk-view-chip-sel { border-color:#2471a3;background:#dbeafe;color:#1a4971;font-weight:600; }
+    .bk-view-chip-box { display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;flex-shrink:0;border:1.5px solid #a0aec0;border-radius:3px;font-size:.68rem;line-height:1;color:#fff;background:#fff; }
+    .bk-view-chip-sel .bk-view-chip-box { border-color:#2471a3;background:#2471a3; }
     /* ── 初次晤談 chip ── */
     .ii-chip-row { display:flex; flex-wrap:wrap; gap:4px; padding:4px 0; }
     .ii-chip-row.ii-disabled { opacity:.4; pointer-events:none; }
@@ -1812,13 +1818,7 @@
               <button class="btn btn-secondary btn-sm" onclick="shiftBookingDate(1)" style="font-size:1.1rem;padding:3px 10px;">›</button>
               <button class="btn btn-secondary btn-sm" onclick="setBookingDateToday()">今天</button>
             </span>
-            <select id="bk-view-select" onchange="setBkViewSelect(this.value)" style="padding:4px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;cursor:pointer;">
-              <option value="1">1天</option>
-              <option value="3">3天</option>
-              <option value="5">5天</option>
-              <option value="week">週</option>
-              <option value="list">列表檢視</option>
-            </select>
+            <div id="bk-view-chips" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
             <button class="btn btn-secondary btn-sm" onclick="_bgRefreshClick('空間預約重新整理', () => refreshBookings())" data-tip="從 Drive 重新讀取最新預約資料，若其他人剛更新可點此同步。">重新整理</button>
@@ -3782,6 +3782,12 @@ function applyDrivePrefs() {
   if (rps != null) { _recPageSize = parseInt(rps) || 5; try { localStorage.setItem('scc_rec_pagesize', String(rps)); } catch(_) {} }
   const bds = _userPref_('bkDaySpan');
   if (bds != null) { _bkDaySpan = parseInt(bds) || 1; try { localStorage.setItem('scc_bk_span', String(bds)); } catch(_) {} }
+  // #5-4：檢視偏好記憶（1/3/5天、週、列表）；只設狀態旗標，不動 DOM／不 render——
+  // 空間預約頁本身尚未顯示，實際還原（含日期欄位預設值）交給 renderBookingsPage() 首次執行時處理。
+  const bvm = _userPref_('bkViewMode');
+  if (bvm === 'list') { _bkListView = true; _bkWeekMode = false; }
+  else if (bvm === 'week') { _bkListView = false; _bkWeekMode = true; _bkDaySpan = 5; }
+  else if (bvm != null) { _bkListView = false; _bkWeekMode = false; _bkDaySpan = parseInt(bvm) || _bkDaySpan; }
   const usd = _userPref_('unassignedScanDate');
   if (usd) { try { localStorage.setItem('scc_unassigned_scan', usd); } catch(_) {} }
 }
@@ -24921,6 +24927,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 105, title: '空間預約檢視：記住上次選的檢視、切換改為勾選式 chips', isProd: false, items: [
+      item('新功能', '空間預約頁的「1天／3天／5天／週／列表」檢視，改為記住您上次選擇，下次進入此頁自動還原（與「我的顏色」等偏好相同的儲存機制，跨裝置同步）'),
+      item('改善', '檢視切換的下拉選單改為勾選式 chips：目前所在的檢視會以打勾的方塊呈現，一目了然，點選其他 chip 即切換（單選，語意不變）'),
+    ]},
     { date: '2026-07-07', v: 104, title: '空間預約：格子雙擊新增、卡片單擊編輯、填寫紀錄直接可見', isProd: false, items: [
       item('新功能', '單日／3天／5天／週檢視：在空白時段格子（空間×日期）雙擊，直接開啟新增預約 Modal 並帶入該空間與日期；在既有預約卡片上單擊，直接開啟編輯 Modal（拖曳調整預約結束後補發的點擊會被忽略，不會誤開編輯視窗）'),
       item('改善', '單日／3天／5天／週檢視的預約卡片，「填寫記錄」按鈕改為直接可見（多日／週檢視空間較小改用 📝 圖示按鈕＋滑鼠移入提示），不必再點「⋯」更多選單才找得到；權限與可填寫條件維持原邏輯不變'),
@@ -29928,6 +29938,7 @@ function setBkListView() {
   _bkListPage = 1;
   const fromEl = document.getElementById('bk-list-from');
   if (fromEl && !fromEl.value) fromEl.value = new Date().toISOString().slice(0, 10);
+  syncUserPref_({ bkViewMode: 'list' });
   renderBookingsPage();
 }
 
@@ -29940,6 +29951,7 @@ function setBkWeekView() {
     const base = el.value || _bkFmtDate(new Date());
     el.value = _bkGetMondayOf(base);
   }
+  syncUserPref_({ bkViewMode: 'week' });
   renderBookingsPage();
 }
 
@@ -29962,12 +29974,28 @@ function setBkViewSelect(val) {
   else { setBkDaySpan(parseInt(val)); }
 }
 
+// #5-4：檢視切換改為勾選式 chips（單選語意不變）。統一存成 bkViewMode 這組使用者偏好
+// （'1'|'3'|'5'|'week'|'list'），與「我的顏色」等既有偏好相同機制（config.users[email]，見 syncUserPref_／
+// applyDrivePrefs），下次進空間預約頁自動還原目前檢視。
+function _bkRenderViewChips() {
+  const box = document.getElementById('bk-view-chips');
+  if (!box) return;
+  const cur = _bkListView ? 'list' : _bkWeekMode ? 'week' : String(_bkDaySpan);
+  const opts = [['1', '1天'], ['3', '3天'], ['5', '5天'], ['week', '週'], ['list', '列表']];
+  box.innerHTML = opts.map(([val, label]) => {
+    const sel = cur === val;
+    return `<label class="bk-view-chip${sel ? ' bk-view-chip-sel' : ''}" onclick="setBkViewSelect('${val}')">
+      <span class="bk-view-chip-box">${sel ? '✓' : ''}</span>${label}
+    </label>`;
+  }).join('');
+}
+
 function setBkDaySpan(n) {
   _bkListView = false;
   _bkWeekMode = false;
   _bkDaySpan = n;
   localStorage.setItem('scc_bk_span', n);
-  syncUserPref_({ bkDaySpan: n });
+  syncUserPref_({ bkDaySpan: n, bkViewMode: String(n) });
   renderBookingsPage();
 }
 
@@ -30092,20 +30120,28 @@ function _resetBkOverrideUi(color) {
 function renderBookingsPage() {
   const dateEl = document.getElementById('booking-date');
   if (!dateEl) return;
-  if (!dateEl.value) dateEl.value = new Date().toISOString().slice(0, 10);
+  // 週檢視：空值時預設「包含今天的那一週」週一，而非直接塞今天（避免非週一時打亂週一～週五版面）；
+  // 此分支也涵蓋登入時從使用者偏好還原檢視（見 applyDrivePrefs）後首次進頁的情境。
+  if (!dateEl.value) dateEl.value = _bkWeekMode ? _bkGetMondayOf(new Date().toISOString().slice(0, 10)) : new Date().toISOString().slice(0, 10);
   const startDate = dateEl.value;
   const body = document.getElementById('bookings-body');
   if (!body) return;
 
-  // 更新下拉選單與控制項顯示
-  const viewSel = document.getElementById('bk-view-select');
-  if (viewSel) viewSel.value = _bkListView ? 'list' : _bkWeekMode ? 'week' : String(_bkDaySpan);
+  // 檢視切換 chips（勾選式，#5-4）與控制項顯示
+  _bkRenderViewChips();
   const dateCtrl = document.getElementById('bk-date-controls');
   if (dateCtrl) dateCtrl.style.display = _bkListView ? 'none' : '';
   const filterBar = document.getElementById('bk-list-filter-bar');
   if (filterBar) filterBar.style.display = _bkListView ? 'flex' : 'none';
 
-  if (_bkListView) { renderBkListView(body); renderBookingsAuditLog(); return; }
+  if (_bkListView) {
+    // 從使用者偏好還原列表檢視時（見 applyDrivePrefs），起始日欄位尚未預填，補與手動點列表檢視相同的預設值
+    const fromEl = document.getElementById('bk-list-from');
+    if (fromEl && !fromEl.value) fromEl.value = new Date().toISOString().slice(0, 10);
+    renderBkListView(body);
+    renderBookingsAuditLog();
+    return;
+  }
 
   const WD = ['日','一','二','三','四','五','六'];
   const addDays = (dateStr, n) => _bkAddDays(dateStr, n);
