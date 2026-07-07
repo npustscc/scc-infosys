@@ -25461,6 +25461,9 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 124, title: '錯誤回報/許願池頁新增回報人員篩選（#32）', isProd: false, items: [
+      item('新功能', '錯誤回報/許願池頁篩選列新增「回報人員」下拉選單，列出所有出現過的回報者姓名，可單獨篩選出特定人員的回報；預設「全部」，與既有狀態、日期篩選並列，「清除篩選」一併重置'),
+    ]},
     { date: '2026-07-07', v: 123, title: 'UI 改善：已停用/無 Gmail 主責顯示修正、課程明細可收合（#15 #16）', isProd: false, items: [
       item('修復', '已停用或無 Gmail 帳號的主責/輔導人員，原本部分畫面會退回顯示原始 email 或系統內部識別碼（如 nomail_ 開頭字串）；盤點個案列表（含危機閱讀個案查詢）、個案詳細頁、結案/學期評估、轉銜管理、事件處理記錄、空間預約卡片（日/週/列表檢視）共 10 餘處顯示，統一優先以使用者管理中的姓名呈現，姓名旁加上小徽章標示「已停用」（灰）或「無 Gmail」（黃）；篩選用下拉選單一併加註「無 Gmail」（#15）'),
       item('改善', '身心調適假管理頁與個案詳細頁「身心調適假紀錄」卡片中的課程明細表格，統一改為可收合的 banner（點標題列即可 ▶/▼ 展開收合），個案詳細頁預設維持展開以符合原本一律顯示的習慣（#16）'),
@@ -41782,7 +41785,7 @@ function renderIssuesPage() {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   const el = document.getElementById('issues-body');
   if (!el) return;
-  if (!window._issueFilters) window._issueFilters = { statuses: {}, dateFrom: '', dateTo: '' };
+  if (!window._issueFilters) window._issueFilters = { statuses: {}, dateFrom: '', dateTo: '', reporter: '' };
   const F = window._issueFilters;
 
   const statusBadge = s => {
@@ -41796,12 +41799,17 @@ function renderIssuesPage() {
     : { pending_verification: 0, open: 1, in_progress: 2, resolved: 3 };
   const statusLabel = { open: '待處理', in_progress: '處理中', pending_verification: '待驗證', resolved: '已解決' };
 
+  // 回報人員清單（供篩選下拉選單用）：以顯示名稱為準，去重＋依中文排序
+  const reporterNames = [...new Set(issuesData.map(x => x.submittedByName || x.submittedBy).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'zh'));
+
   // 篩選
   let filtered = [...issuesData];
   const _anyChecked = Object.values(F.statuses || {}).some(v => v);
   if (_anyChecked) filtered = filtered.filter(x => (F.statuses[x.status]));
   if (F.dateFrom) filtered = filtered.filter(x => (x.submittedAt || '') >= F.dateFrom);
   if (F.dateTo)   filtered = filtered.filter(x => (x.submittedAt || '') <= F.dateTo + 'T23:59:59');
+  if (F.reporter) filtered = filtered.filter(x => (x.submittedByName || x.submittedBy) === F.reporter);
   // 排序：依 statusOrder 排序，同狀態內由新到舊
   const sorted = filtered.sort((a, b) => {
     const sd = (statusOrder[a.status] ?? 0) - (statusOrder[b.status] ?? 0);
@@ -41827,8 +41835,15 @@ function renderIssuesPage() {
         ～
         <input type="date" value="${escHtml(F.dateTo)}" style="padding:3px 6px;border:1px solid #e2e8f0;border-radius:5px;font-size:.82rem;" onchange="window._issueFilters.dateTo=this.value;renderIssuesPage()">
       </label>
+      <label style="font-size:.82rem;color:#718096;display:flex;gap:4px;align-items:center;">
+        回報人員
+        <select style="padding:3px 6px;border:1px solid #e2e8f0;border-radius:5px;font-size:.82rem;" onchange="window._issueFilters.reporter=this.value;renderIssuesPage()">
+          <option value=""${F.reporter ? '' : ' selected'}>全部</option>
+          ${reporterNames.map(n => `<option value="${escHtml(n)}"${F.reporter===n?' selected':''}>${escHtml(n)}</option>`).join('')}
+        </select>
+      </label>
       <span style="font-size:.8rem;color:#a0aec0;">共 ${sorted.length} 筆</span>
-      ${(_anyChecked || F.dateFrom || F.dateTo) ? `<button class="btn btn-secondary btn-sm" style="padding:2px 8px;" onclick="window._issueFilters={statuses:{},dateFrom:'',dateTo:''};renderIssuesPage()">清除篩選</button>` : ''}
+      ${(_anyChecked || F.dateFrom || F.dateTo || F.reporter) ? `<button class="btn btn-secondary btn-sm" style="padding:2px 8px;" onclick="window._issueFilters={statuses:{},dateFrom:'',dateTo:'',reporter:''};renderIssuesPage()">清除篩選</button>` : ''}
     </div>`;
 
   if (!sorted.length) {
