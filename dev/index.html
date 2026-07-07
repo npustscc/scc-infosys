@@ -24167,6 +24167,66 @@ function _isInternActive(info, today) {
   return true;
 }
 
+// ══════════════════════════════════════════════
+//  本週差勤總覽（共用元件：差勤管理／我的差勤 皆呼叫此函式，僅傳入的 emails 不同）
+// ══════════════════════════════════════════════
+// 某日期（YYYY-MM-DD）所在那一週的週一日期
+function _weekMondayOf(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  const dow = d.getDay(); // 0=週日...6=週六
+  const diff = dow === 0 ? -6 : 1 - dow; // 週一為一週起點
+  d.setDate(d.getDate() + diff);
+  return _fmtDate(d);
+}
+// 將本週（週一~週日）每人的打卡概況＋今日打卡情形＋本週請假中，渲染進 containerId
+function renderWeekAttendanceOverview(containerId, emails) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  const today = _fmtDate(new Date());
+  const monday = _weekMondayOf(today);
+  const weekdayLbl = ['一', '二', '三', '四', '五', '六', '日'];
+  const weekDates = weekdayLbl.map((_, i) => { const d = new Date(monday + 'T00:00:00'); d.setDate(d.getDate() + i); return _fmtDate(d); });
+  const users = configData?.users || {};
+  const records = attendanceData?.records || [];
+  const apps = leavesData?.applications || [];
+
+  const cards = emails.map(email => {
+    const name = users[email]?.name || email;
+    const todayRecs = records.filter(r => r.email === email && r.date === today).sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+    let statusHtml;
+    if (todayRecs.length === 0) statusHtml = '<span style="color:#a0aec0;font-weight:600;">未打卡</span>';
+    else if (todayRecs.length === 1) statusHtml = `<span style="color:#276749;font-weight:600;">已簽到</span> <span style="color:#718096;">${_fmtTime(todayRecs[0].timestamp)}</span>`;
+    else statusHtml = `<span style="color:#2b6cb0;font-weight:600;">已簽退</span> <span style="color:#718096;">${_fmtTime(todayRecs[todayRecs.length - 1].timestamp)}</span>`;
+
+    const dots = weekDates.map((d, i) => {
+      const has = records.some(r => r.email === email && r.date === d);
+      const isToday = d === today;
+      const isFuture = d > today;
+      const bg = has ? '#48bb78' : isFuture ? '#e2e8f0' : '#feb2b2';
+      const tip = `${d}（週${weekdayLbl[i]}）${has ? '：已打卡' : isFuture ? '' : '：未打卡'}`;
+      return `<span data-tip="${escHtml(tip)}" style="display:inline-block;width:15px;height:15px;border-radius:4px;background:${bg};${isToday ? 'outline:2px solid #2b6cb0;outline-offset:1px;' : ''}"></span>`;
+    }).join('');
+
+    // 本週請假中：已核准且非加班登記，日期範圍與本週有重疊
+    const leaveThisWeek = apps.filter(a => a.email === email && a.status === 'approved' && a.kind !== 'overtime' &&
+      (a.fromDate || '') <= weekDates[6] && (a.toDate || a.fromDate || '') >= weekDates[0]);
+    const leaveHtml = leaveThisWeek.length
+      ? `<div style="font-size:.72rem;color:#c05621;margin-top:6px;">🏖️ ${leaveThisWeek.map(a => `${escHtml(a.leaveTypeName)}（${escHtml(_leaveDateTimeStr(a))}）`).join('、')}</div>`
+      : '';
+
+    return `<div style="border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;min-width:170px;background:#fff;">
+      <div style="font-weight:600;color:#2d3748;font-size:.88rem;margin-bottom:4px;">${escHtml(name)}</div>
+      <div style="font-size:.8rem;margin-bottom:6px;">今日：${statusHtml}</div>
+      <div style="display:flex;gap:3px;">${dots}</div>
+      ${leaveHtml}
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="font-weight:600;color:#2d3748;margin-bottom:8px;">本週差勤（${weekDates[0].slice(5)} ~ ${weekDates[6].slice(5)}）</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">${cards || '<div style="color:#a0aec0;font-size:.85rem;">目前沒有可顯示的實習生資料</div>'}</div>`;
+}
+
 // ── 差勤管理後台 ──
 function renderAttendancePage() {
   const records = attendanceData?.records || [];
@@ -24200,6 +24260,8 @@ function renderAttendancePage() {
   ).sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
 
   document.getElementById('attendance-body').innerHTML = `
+
+    <div id="att-week-overview" style="margin-bottom:24px;"></div>
 
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:20px;">
       <div>
@@ -24241,6 +24303,7 @@ function renderAttendancePage() {
       <div id="att-map" style="height:340px;border-radius:10px;overflow:hidden;"></div>
     </div>
   `;
+  renderWeekAttendanceOverview('att-week-overview', activeInterns.map(i => i.email));
   _initGeoFenceCard();
 }
 
@@ -25671,6 +25734,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 129, title: '差勤管理「打卡紀錄」分頁上方新增「本週差勤」總覽（#26-4）', isProd: false, items: [
+      item('新功能', '差勤管理「打卡紀錄」分頁上方（原本放月報表篩選＋列印的位置）改為「本週差勤」總覽：緊湊卡片式呈現每位在任實習生今日打卡情形（已簽到／已簽退／未打卡）與本週（週一~週日）逐日打卡概況小方塊，一眼掌握全體出勤狀況'),
+      item('新功能', '卡片同時顯示本週請假中的人（假別＋日期），方便快速掌握誰請假、誰該來卻沒打卡'),
+      item('技術', '新增共用函式 renderWeekAttendanceOverview(containerId, emails)，供差勤管理與稍後「我的差勤」個人版共用同一套渲染邏輯，僅傳入的實習生名單不同'),
+    ]},
     { date: '2026-07-07', v: 128, title: '差勤管理新增「差勤匯總」分頁：可依日期／月份＋實習生篩選，並顯示定位／手動標記（#26-2 #26-3）', isProd: false, items: [
       item('新功能', '差勤管理後台新增「差勤匯總」分頁（原本掛在「打卡紀錄」分頁下方的「本月差勤彙總」改為獨立分頁並更名）：篩選列可切換「依日期」（單日）／「依月份」，並可再疊加「實習生」篩選（全部或指定某位）'),
       item('新功能', '原本在「打卡紀錄」分頁的「列印月報表」功能搬到「差勤匯總」分頁的篩選列旁，列印月份會依目前篩選（依日期時取該日所在月份，依月份時取所選月份）自動帶入'),
