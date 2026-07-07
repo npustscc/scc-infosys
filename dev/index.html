@@ -20732,11 +20732,16 @@ const MAJOR_EVENT_TYPE_LABELS = {
 };
 // #5-1／#30：「收到」＝使用者已知悉，點一下就直接不再顯示（不像單純「標記已讀」還會維持已讀
 // 7 天可回顧稽核）；未來若有其他重大事件也想要「收到即消失」，加進這個 Set 共用同一套機制即可。
-// #30：gmail_changed／off_hours_activity 原本只有「標記已讀」（讀後仍留 7 天供稽核），現補上「收到」
-// 即消失，統一四種重大事件通知的操作方式；注意這犧牲了原本讓主任/專任事後於待辦頁回顧 7 天的空窗期，
-// 若未來需要保留稽核可回顧性，仍可從 off_hours_log.json（feed 全量保留）／audit_log.json（major:true）追查。
-const MAJOR_EVENT_DISMISS_ON_READ = new Set(['gmail_changed', 'off_hours_activity', 'booking_created_self', 'booking_created_broadcast']);
-const MAJOR_EVENT_BTN_LABEL = { gmail_changed: '收到', off_hours_activity: '收到', booking_created_self: '收到', booking_created_broadcast: '收到' };
+// #30 定案（2026-07-08）：gmail_changed／off_hours_activity 預設維持「標記已讀後保留 7 天回顧」
+// （主任/專任可事後於待辦頁回顧稽核），另提供每位使用者可自行切換的「收到後立即封存」偏好
+// （localStorage，跟其他 scc_* 檢視偏好一樣屬個人裝置設定）；預約成功兩類則一律收到即封存。
+// 無論何種設定，off_hours_log.json（feed 全量保留）／audit_log.json（major:true）都可追查。
+const MAJOR_EVENT_DISMISS_ON_READ = new Set(['booking_created_self', 'booking_created_broadcast']);
+const MAJOR_EVENT_OPTIONAL_DISMISS = new Set(['gmail_changed', 'off_hours_activity']);
+function _majorEventDismissPref() { try { return localStorage.getItem('scc_major_dismiss_on_read') === '1'; } catch { return false; } }
+function _majorEventDismissOnRead(type) {
+  return MAJOR_EVENT_DISMISS_ON_READ.has(type) || (MAJOR_EVENT_OPTIONAL_DISMISS.has(type) && _majorEventDismissPref());
+}
 function _renderMajorEventNotifs() {
   const section = document.getElementById('todos-major-events-section');
   if (!section) return;
@@ -20745,7 +20750,7 @@ function _renderMajorEventNotifs() {
   if (!viewingOwn) { section.innerHTML = ''; return; }
   const me = configData?.users?.[currentUser?.email];
   const notifs = (me?.notifications || []).filter(n =>
-    MAJOR_EVENT_NOTIF_TYPES.has(n.type) && !(n.read && MAJOR_EVENT_DISMISS_ON_READ.has(n.type)));
+    MAJOR_EVENT_NOTIF_TYPES.has(n.type) && !(n.read && _majorEventDismissOnRead(n.type)));
   const pending = notifs.filter(n => !n.read);
   if (!notifs.length) { section.innerHTML = ''; return; }
   const isCollapsed = !!window._majorEventsCollapsed;
@@ -20762,7 +20767,7 @@ function _renderMajorEventNotifs() {
           ${_fmt(n.createdAt)}${n.actorName ? `　・操作者：${escHtml(n.actorName)}` : ''}${n.read && n.readAt ? `　・已讀 ${_fmt(n.readAt)}` : ''}
         </div>
       </div>
-      ${!n.read ? `<button onclick="_majorEventMarkRead('${escHtml(n.id)}')" style="padding:3px 10px;background:#553c9a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;flex-shrink:0;" data-tip="${MAJOR_EVENT_DISMISS_ON_READ.has(n.type) ? '收到後即不再顯示' : '標記為已讀；7 天後自動移除'}">${MAJOR_EVENT_BTN_LABEL[n.type] || '標記已讀'}</button>` : ''}
+      ${!n.read ? `<button onclick="_majorEventMarkRead('${escHtml(n.id)}')" style="padding:3px 10px;background:#553c9a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;flex-shrink:0;" data-tip="${_majorEventDismissOnRead(n.type) ? '收到後即不再顯示' : '標記為已讀；7 天後自動移除'}">${_majorEventDismissOnRead(n.type) ? '收到' : '標記已讀'}</button>` : ''}
     </div>`;
   const titleText = pending.length
     ? `⚠ 重大事件通知（${pending.length} 筆未讀 / 共 ${notifs.length}）`
@@ -20776,11 +20781,21 @@ function _renderMajorEventNotifs() {
           <button style="background:none;border:none;cursor:pointer;font-size:.88rem;color:#553c9a;padding:0 2px;">${isCollapsed?'▶':'▼'}</button>
         </div>
       </div>
-      ${!isCollapsed ? `<div>${notifs.map(_renderItem).join('')}</div>` : ''}
+      ${!isCollapsed ? `<div>${notifs.map(_renderItem).join('')}</div>
+      <div style="border-top:1px solid #e9d8fd;margin-top:6px;padding-top:8px;">
+        <label style="font-size:.76rem;color:#718096;cursor:pointer;user-select:none;display:inline-flex;align-items:center;gap:5px;" data-tip="僅影響 Gmail 變更／非上班時間活動兩類；預約成功通知一律收到即封存。此為個人偏好，只存在本裝置瀏覽器">
+          <input type="checkbox" ${_majorEventDismissPref() ? 'checked' : ''} onchange="_majorEventDismissPrefToggle(this.checked)" style="cursor:pointer;">
+          Gmail 變更／非上班時間活動：收到後立即封存（未勾選＝已讀後保留 7 天可回顧）
+        </label>
+      </div>` : ''}
     </div>`;
 }
 window._majorEventsToggle = function() {
   window._majorEventsCollapsed = !window._majorEventsCollapsed;
+  _renderMajorEventNotifs();
+};
+window._majorEventDismissPrefToggle = function(on) {
+  try { localStorage.setItem('scc_major_dismiss_on_read', on ? '1' : '0'); } catch {}
   _renderMajorEventNotifs();
 };
 window._majorEventMarkRead = async function(notifId) {
@@ -25821,6 +25836,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-08', v: 132, title: '重大事件通知改回預設保留 7 天＋新增「收到即封存」個人偏好；事件處理記錄表列印移除結尾灰線（#30 #20）', isProd: false, items: [
+      item('調整', 'Gmail 變更與非上班時間活動兩類重大事件通知，改回原本「標記已讀後保留 7 天可回顧」的預設行為（v126 曾統一為收到即消失，經確認回顧空窗期有稽核價值故還原）；空間預約成功／他人代為建立兩類維持收到即封存不變'),
+      item('新功能', '待辦頁「重大事件通知」卡片底部新增個人偏好勾選：「Gmail 變更／非上班時間活動：收到後立即封存」，勾選後這兩類也改為點「收到」即從畫面消失；此偏好只存在本裝置瀏覽器（同其他檢視偏好），且無論何種設定，非上班時間活動 feed 與稽核紀錄皆完整保留可追查'),
+      item('修正', '事件處理記錄表（批次列印）結尾列印資訊上方的灰色分隔線一併移除，與 v131 晤談紀錄列印的處理一致'),
+    ]},
     { date: '2026-07-07', v: 131, title: '晤談紀錄等列印功能修正：富文字清單不再凸出標題外＋移除多餘分隔線（#20）', isProd: false, items: [
       item('修正', '列印晤談紀錄／事件處理記錄表（批次列印）時，若主述、問題評估等富文字欄位含自動標號（1. 2. 3.）或項目符號清單，列印版面會「前移」凸出到標題欄位左側；原因是列印頁用整體 reset 樣式清空了 ol/ul 預設的 padding-left，導致標號吊掛在容器外。修正後統一補回清單縮排，並比照編輯器還原括號編號／短橫項目符號等自訂樣式的呈現'),
       item('修正', '列印晤談紀錄結尾區，移除晤談人員資訊與列印人資訊之間多餘的灰色分隔線（其餘分隔線不動）'),
@@ -27747,7 +27767,7 @@ body{font-family:'微軟正黑體','Microsoft JhengHei','Noto Sans TC',sans-seri
 .sig{display:flex;justify-content:flex-end;margin-top:10pt}
 .sig-f{display:flex;align-items:flex-end;gap:6pt;font-size:10.5pt}
 .sig-l{border-bottom:.8pt solid #000;min-width:120pt;padding-bottom:2pt;text-align:center;font-size:10pt}
-.foot{font-size:7.5pt;color:#888;text-align:right;margin-top:12pt;border-top:.5pt solid #ccc;padding-top:4pt}
+.foot{font-size:7.5pt;color:#888;text-align:right;margin-top:12pt;padding-top:4pt}
 ${PRINT_RICH_LIST_CSS}
 </style></head><body>
 <div id="dev-banner" style="display:none;position:fixed;top:0;left:0;right:0;z-index:99999;background:#c05621;color:#fff;text-align:center;padding:5px 12px;font-size:.85rem;font-weight:700;letter-spacing:.05em;">
