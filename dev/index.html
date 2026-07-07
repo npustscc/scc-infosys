@@ -24101,6 +24101,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 96, title: '系列預約編輯整修＋拖曳遷移套用範圍與衝突把關', isProd: false, items: [
+      item('修復', '系列預約編輯選擇「此筆及之後」或「全部系列」時，變更日期現在會確實生效：被編輯的這一筆套用表單填的日期，範圍內其餘筆依相同天數平移（先前系列分支寫死不改日期，改了也沒反應）'),
+      item('改善', '編輯系列預約時，Modal 標題下方即時顯示「套用範圍：僅此筆／此筆及之後（共 N 筆）／全部系列（共 N 筆）」，範圍非僅此筆時加註「變更日期將平移套用範圍內所有預約」；並顯示「此預約屬於系列預約（共 N 筆）」提示，避免誤以為系列已不存在'),
+      item('新功能', '拖曳調整系列預約時會先詢問套用範圍（僅此筆／此筆及之後／全部系列），日期平移語意與表單編輯一致；拖曳（不論系列與否）改走後端衝突檢查，偵測到撞房/撞人會自動還原拖曳前狀態並顯示警示，不再直接整檔覆寫略過檢查'),
+    ]},
     { date: '2026-07-07', v: 95, title: '系列預約全系列同步 Google 日曆＋下次預約驗證訊息精確化', isProd: false, items: [
       item('修正', '系列預約（重複 N 次）改為每一筆都建立 Google 日曆事件（先前僅第一筆）；系列編輯時已有事件者更新、尚無事件者自動補建，歷史系列缺漏的日曆事件會在下次系列編輯時一併回填'),
       item('改善', '個案紀錄「預約下次諮商空間」驗證訊息精確指出缺少的欄位（空間／日期／開始時間／結束時間），缺空間時同步標示空間選取區塊'),
@@ -26063,7 +26068,28 @@ function _bkConfirmSeriesScope(scope) {
   _bkEditScope = scope;
   document.getElementById('bk-series-scope-modal').style.display = 'none';
   document.getElementById('booking-modal').style.display = 'flex';
+  _bkUpdateScopeInfo();
   _checkBkConflict();
+}
+
+// 範圍透明化：於預約 Modal 標題下方顯示目前套用範圍（含筆數）與系列 badge；非系列編輯時隱藏。
+function _bkUpdateScopeInfo() {
+  const el = document.getElementById('bk-scope-info');
+  if (!el) return;
+  const b = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
+  if (!b?.seriesId) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const seriesTotal = bookingsData.filter(x => x.seriesId === b.seriesId).length;
+  const n = _bkSeriesTargets(bookingsData, b, _bkEditScope).length;
+  const scopeLabel = _bkEditScope === 'all' ? `全部系列（共 ${n} 筆）`
+    : _bkEditScope === 'future' ? `此筆及之後（共 ${n} 筆）`
+    : '僅此筆';
+  const shiftNote = _bkEditScope !== 'this'
+    ? '<br><span style="color:#c05621;">變更日期將平移套用範圍內所有預約</span>' : '';
+  el.style.display = '';
+  el.innerHTML = `<div style="font-size:.82rem;color:#4a5568;background:#f7fafc;border:1px solid #e2e8f0;border-radius:6px;padding:6px 10px;margin-bottom:10px;">
+    套用範圍：${scopeLabel}${shiftNote}
+    <div style="margin-top:2px;color:#718096;">此預約屬於系列預約（共 ${seriesTotal} 筆）</div>
+  </div>`;
 }
 
 // T1：⋯ 浮動選單
@@ -29135,6 +29161,20 @@ function _bkCellStyle(b) {
   return `background:${hex}22;border-left:4px solid ${hex};`;
 }
 
+// 從 booking 物件組出 GC 事件參數（含依有效顏色算出的 colorId）。
+// 供拖曳（bkDrop/_bkDragConfirmScope）與 saveBooking 系列編輯逐筆 GC 同步共用，避免重複組裝邏輯。
+function _bkGcParamsOf(b, isEdit) {
+  const clr = _bkEffColor(b);
+  return {
+    room: b.room, customRoom: b.customRoom, date: b.date, startTime: b.startTime, endTime: b.endTime,
+    counselorName: b.counselorName, notes: b.notes,
+    creatorName: configData?.users?.[b.creatorEmail]?.name || b.creatorName || '',
+    createdAt: b.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
+    isEdit: !!isEdit, bkSerial: b.bkSerial,
+    colorId: clr ? _nearestGcColorId(clr) : null,
+  };
+}
+
 // ── 單筆預約自訂顏色（僅影響該筆預約，複製/重複預約沿用）──
 let _bkPickedColor = '';
 function _toggleBkOverridePanel() {
@@ -29418,6 +29458,8 @@ function bkDragLeave(el) {
 }
 
 // GC 背景同步佇列（Map 確保同一筆快速拖曳只推送最終狀態）
+// 現況（bkDrop 改走 bkCommit 後）：僅剩「舊後端尚未部署（bkCommit 回傳 fallback）」時的相容路徑會用到，
+// 正常路徑的 GC 同步已交由後端 bookingsCommit 逐 op 處理。
 const _bkGcQueue = new Map();
 let _bkGcRunning = false;
 async function _bkGcFlush() {
@@ -29444,6 +29486,9 @@ async function _bkGcFlush() {
   _bkGcRunning = false;
 }
 
+// 拖曳調整：非系列預約直接套用＋衝突檢查；系列預約先詢問套用範圍（見 _bkDragConfirmScope）。
+let _bkDragPending = null; // { id, newRoom, newDate }（等待系列範圍確認時暫存，尚未套用到 bookingsData）
+
 async function bkDrop(event, newRoom, newDate) {
   event.preventDefault();
   const dropEl = event.currentTarget;
@@ -29453,26 +29498,122 @@ async function bkDrop(event, newRoom, newDate) {
   if (!b) return;
   const changed = (newRoom && b.room !== newRoom) || (newDate && b.date !== newDate);
   if (!changed) return;
+
+  if (b.seriesId) {
+    // 系列預約：先不套用，詢問範圍後由 _bkDragConfirmScope 處理
+    _bkDragPending = { id: bookingId, newRoom: newRoom || '', newDate: newDate || '' };
+    document.getElementById('bk-drag-scope-modal').style.display = 'flex';
+    return;
+  }
+
   const oldRoom = b.room, oldDate = b.date;
   if (newRoom) b.room = newRoom;
   if (newDate) b.date = newDate;
 
-  // 立即更新畫面（不顯示 loading）
+  // 立即更新畫面（樂觀更新，不顯示 loading）
   renderBookingsPage();
 
   const jobId = bgJobAdd('拖曳調整預約', `${b.room} ${b.date}`);
   try {
     bgJobProgress(jobId, 40);
-    await saveBookings();
+    const gcMode = b.calendarEventId ? 'update' : 'create';
+    const result = await bkCommit(
+      [{ op: 'upsert', booking: { ...b }, gc: { mode: gcMode, params: _bkGcParamsOf(b, true) } }],
+      { checkConflicts: true });
     bgJobProgress(jobId, 75);
-    auditLog(`空間預約調整：${oldRoom}${oldDate !== (newDate||oldDate) ? ' '+oldDate : ''} → ${b.room}${b.date !== oldDate ? ' '+b.date : ''}（${b.counselorName || '—'}）`);
-    if (b.calendarEventId) {
-      _bkGcQueue.set(bookingId, { ...b });
-      _bkGcFlush();
+
+    if (result.error === 'conflict') {
+      b.room = oldRoom; b.date = oldDate;
+      renderBookingsPage();
+      const w = result.with || {};
+      const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+      const kind = result.conflictType === 'person' ? '人員' : '空間';
+      setAlert('bookings-alert', 'warn',
+        `⚠ 拖曳未套用：與其他預約發生${kind}衝突（${escHtml(wRoom)} ${escHtml(w.date||'')} ${escHtml((w.startTime||'').slice(0,5))}–${escHtml((w.endTime||'').slice(0,5))}${w.counselorName ? '　'+escHtml(w.counselorName) : ''}），已還原原時段。`);
+      bgJobFail(jobId, `拖曳${kind}衝突`);
+      return;
     }
+
+    if (result.fallback) {
+      // 舊後端尚未部署：沿用原路徑（整檔覆寫＋既有 calendarEventId 才進 GC 佇列）
+      await saveBookings();
+      if (b.calendarEventId) { _bkGcQueue.set(bookingId, { ...b }); _bkGcFlush(); }
+    } else {
+      const fb = (result.bookings || []).find(x => x.id === b.id);
+      if (fb) Object.assign(b, fb);
+    }
+
+    auditLog(`空間預約調整：${oldRoom}${oldDate !== (newDate||oldDate) ? ' '+oldDate : ''} → ${b.room}${b.date !== oldDate ? ' '+b.date : ''}（${b.counselorName || '—'}）`);
     bgJobDone(jobId);
+    renderBookingsPage();
   } catch(e) {
     b.room = oldRoom; b.date = oldDate;
+    renderBookingsPage();
+    bgJobFail(jobId, e.message);
+  }
+}
+
+// 系列拖曳：使用者選定套用範圍後套用（房間變更套用所有 targets；日期依 delta 平移，語意與 saveBooking T3 相同）。
+async function _bkDragConfirmScope(scope) {
+  document.getElementById('bk-drag-scope-modal').style.display = 'none';
+  const pending = _bkDragPending; _bkDragPending = null;
+  if (!pending) return;
+  const b = bookingsData.find(x => x.id === pending.id);
+  if (!b) return;
+
+  const dateDelta = pending.newDate ? _bkDaysBetween(b.date, pending.newDate) : 0;
+  const targets = _bkSeriesTargets(bookingsData, b, scope);
+  if (!targets.length) return;
+  const snapshot = targets.map(t => ({ id: t.id, room: t.room, customRoom: t.customRoom, date: t.date }));
+
+  targets.forEach(t => {
+    if (pending.newRoom) t.room = pending.newRoom;
+    if (dateDelta) t.date = _bkAddDays(t.date, dateDelta);
+  });
+  renderBookingsPage();
+
+  const jobId = bgJobAdd('拖曳調整系列預約', `共 ${targets.length} 筆`);
+  try {
+    const ops = targets.map(t => ({
+      op: 'upsert', booking: { ...t },
+      gc: { mode: t.calendarEventId ? 'update' : 'create', params: _bkGcParamsOf(t, true) },
+    }));
+    const result = await bkCommit(ops, { checkConflicts: true });
+
+    if (result.error === 'conflict') {
+      snapshot.forEach(s => {
+        const t = bookingsData.find(x => x.id === s.id);
+        if (t) { t.room = s.room; t.customRoom = s.customRoom; t.date = s.date; }
+      });
+      renderBookingsPage();
+      const w = result.with || {};
+      const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+      const kind = result.conflictType === 'person' ? '人員' : '空間';
+      const skipHint = kind === '人員' ? '（拖曳不提供略過人員衝突，如需忽略請改用編輯表單處理）' : '';
+      setAlert('bookings-alert', 'warn',
+        `⚠ 拖曳未套用：系列預約中有一筆與其他預約發生${kind}衝突（${escHtml(wRoom)} ${escHtml(w.date||'')} ${escHtml((w.startTime||'').slice(0,5))}–${escHtml((w.endTime||'').slice(0,5))}${w.counselorName ? '　'+escHtml(w.counselorName) : ''}），整批已還原。${skipHint}`);
+      bgJobFail(jobId, `拖曳系列${kind}衝突`);
+      return;
+    }
+
+    if (result.fallback) {
+      await saveBookings();
+      targets.forEach(t => { if (t.calendarEventId) { _bkGcQueue.set(t.id, { ...t }); _bkGcFlush(); } });
+    } else {
+      (result.bookings || []).forEach(fb => {
+        const idx = bookingsData.findIndex(x => x.id === fb.id);
+        if (idx >= 0) bookingsData[idx] = fb;
+      });
+    }
+
+    auditLog(`空間預約調整（系列拖曳，共 ${targets.length} 筆）：${pending.newRoom ? '空間→'+pending.newRoom+'；' : ''}${dateDelta ? `日期平移 ${dateDelta} 天` : ''}`);
+    bgJobDone(jobId);
+    renderBookingsPage();
+  } catch (e) {
+    snapshot.forEach(s => {
+      const t = bookingsData.find(x => x.id === s.id);
+      if (t) { t.room = s.room; t.customRoom = s.customRoom; t.date = s.date; }
+    });
     renderBookingsPage();
     bgJobFail(jobId, e.message);
   }
@@ -30020,6 +30161,7 @@ function openBookingModal(prefillCaseId) {
   if (_rp) _rp.style.display = 'none';
   _resetBkOverrideUi('');
   document.getElementById('booking-modal').style.display = 'flex';
+  _bkUpdateScopeInfo();
 }
 
 function editBooking(id) {
@@ -30063,6 +30205,7 @@ function editBooking(id) {
     document.getElementById('bk-series-scope-modal').style.display = 'flex';
   } else {
     document.getElementById('booking-modal').style.display = 'flex';
+    _bkUpdateScopeInfo();
     _checkBkConflict();
   }
 }
@@ -30075,6 +30218,27 @@ function _bkFmtDate(d) {
 function _bkAddDays(dateStr, n) {
   const [y, m, d] = dateStr.split('-').map(Number);
   return _bkFmtDate(new Date(y, m - 1, d + n));
+}
+
+// 系列日期平移用：回傳 b 相對於 a 的天數差（可正可負，可跨月跨年）。a, b 為 'YYYY-MM-DD'。
+function _bkDaysBetween(a, b) {
+  const [ay, am, ad] = a.split('-').map(Number);
+  const [by, bm, bd] = b.split('-').map(Number);
+  const da = new Date(ay, am - 1, ad);
+  const db = new Date(by, bm - 1, bd);
+  return Math.round((db - da) / 86400000);
+}
+
+// 系列編輯／拖曳共用：依範圍從 bookings 篩出目標預約清單（回傳實際物件參照，非複本）。
+// editedBooking：被操作的那一筆（以其 seriesId/date 為基準）；scope：'this' | 'future' | 'all'。
+// scope 為 'this' 或 editedBooking 非系列成員時，只回傳 editedBooking 自己（在 bookings 內找得到才回傳）。
+function _bkSeriesTargets(bookings, editedBooking, scope) {
+  if (scope === 'this' || !editedBooking?.seriesId) {
+    const self = bookings.find(x => x.id === editedBooking?.id);
+    return self ? [self] : [];
+  }
+  return bookings.filter(x => x.seriesId === editedBooking.seriesId &&
+    (scope === 'all' || x.date >= editedBooking.date));
 }
 
 function copyBooking(id) {
@@ -30126,6 +30290,7 @@ function _bkCopyOpenModal() {
   _resetBkOverrideUi(b.bkOverrideColor || '');
   _bkEditScope = 'this';
   document.getElementById('booking-modal').style.display = 'flex';
+  _bkUpdateScopeInfo();
   _checkBkConflict();
 }
 
@@ -30300,20 +30465,20 @@ async function saveBooking() {
   if (_editingBookingId) {
     const _editedB = bookingsData.find(x => x.id === _editingBookingId);
     if (_editedB?.seriesId && _bkEditScope !== 'this') {
-      // T3：系列編輯 — 套用到選定範圍（不改日期，只改其他欄位）
+      // T3：系列編輯 — 套用到選定範圍；日期依「被編輯這筆」的日期差平移到範圍內其餘筆，
+      // 被編輯這筆本身會恰好拿到 modal 填的日期（delta = date - _editedB.date，套用回自己等於 date）。
       // GC 逐筆同步：已有事件者 update、尚無事件者 create（順便回填歷史系列缺漏的 GC 事件）
-      bookingsData
-        .filter(x => x.seriesId === _editedB.seriesId && (_bkEditScope === 'all' || x.date >= _editedB.date))
-        .forEach(sb => {
-          sb.room = room; sb.customRoom = customRoom;
-          sb.startTime = start; sb.endTime = end;
-          sb.counselors = counselors; sb.counselorEmail = counselorEmail; sb.counselorName = counselorName;
-          sb.caseId = caseId || ''; sb.caseName = caseObj?.name || '';
-          sb.notes = notes; sb.updatedAt = now;
-          if (_bkOverride) sb.bkOverrideColor = _bkOverride; else delete sb.bkOverrideColor;
-          _pushOp(sb, sb.calendarEventId ? 'update' : 'create',
-            { ...calParams, date: sb.date, bkSerial: sb.bkSerial, createdAt: sb.createdAt || calParams.createdAt, isEdit: !!sb.calendarEventId });
-        });
+      const _dateDelta = _bkDaysBetween(_editedB.date, date);
+      _bkSeriesTargets(bookingsData, _editedB, _bkEditScope).forEach(sb => {
+        sb.room = room; sb.customRoom = customRoom;
+        sb.startTime = start; sb.endTime = end;
+        sb.counselors = counselors; sb.counselorEmail = counselorEmail; sb.counselorName = counselorName;
+        sb.caseId = caseId || ''; sb.caseName = caseObj?.name || '';
+        sb.notes = notes; sb.updatedAt = now;
+        if (_dateDelta) sb.date = _bkAddDays(sb.date, _dateDelta);
+        if (_bkOverride) sb.bkOverrideColor = _bkOverride; else delete sb.bkOverrideColor;
+        _pushOp(sb, sb.calendarEventId ? 'update' : 'create', _bkGcParamsOf(sb, !!sb.calendarEventId));
+      });
     } else {
       const idx = bookingsData.findIndex(x => x.id === _editingBookingId);
       if (idx >= 0) {
@@ -37861,6 +38026,7 @@ function toggleNavPin(navId) {
       <h3 id="booking-modal-title" style="font-size:1.1rem;color:#1a202c;">新增預約</h3>
       <button onclick="closeBookingModal()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
     </div>
+    <div id="bk-scope-info" style="display:none;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
       <div style="grid-column:1/-1;">
         <label class="field-label">空間<span class="req">*</span></label>
@@ -38012,6 +38178,22 @@ function toggleNavPin(navId) {
     </div>
     <div style="margin-top:14px;text-align:right;">
       <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bk-series-scope-modal').style.display='none'">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 系列預約拖曳調整範圍 Modal -->
+<div id="bk-drag-scope-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10001;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:12px;max-width:360px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+    <h3 style="margin:0 0 8px;font-size:1rem;color:#2d3748;">拖曳調整系列預約</h3>
+    <p style="font-size:.875rem;color:#718096;margin-bottom:16px;">此預約屬於系列，請選擇套用範圍（房間變更套用所有選定範圍；日期變更將依此筆的日期差平移）：</p>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button class="btn btn-secondary" onclick="_bkDragConfirmScope('this')">僅此筆</button>
+      <button class="btn btn-secondary" onclick="_bkDragConfirmScope('future')">此筆及之後</button>
+      <button class="btn btn-secondary" onclick="_bkDragConfirmScope('all')">全部系列</button>
+    </div>
+    <div style="margin-top:14px;text-align:right;">
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bk-drag-scope-modal').style.display='none';_bkDragPending=null;">取消</button>
     </div>
   </div>
 </div>
