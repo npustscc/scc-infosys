@@ -24939,6 +24939,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 108, title: '重複預約新增「每三週」與「每月」頻率（#24）', isProd: false, items: [
+      item('新功能', '重複預約頻率新增「每三週」（固定間隔 21 天）與「每月」（同一天，如 7/8 → 8/8 → 9/8；當月無此日，如月底 31 號，則取該月最後一天）：新增系列、儲存前預覽、編輯系列時調整頻率／次數的重排、稽核紀錄的頻率文字皆一致支援'),
+      item('改善', '編輯系列預約時，會依系列既有日期自動反推當初的頻率（含每三週／每月），預先勾選對應選項；日期曾被個別調整而無法判斷固定頻率時維持不勾選'),
+    ]},
     { date: '2026-07-07', v: 107, title: '空間預約頁新增「預約」／「稽核紀錄」tab', isProd: false, items: [
       item('改善', '空間預約頁改為「預約」／「稽核紀錄」兩個 tab：既有的日/週/列表檢視與新增/篩選功能整個移到「預約」tab；原本一直顯示在下方的稽核記錄移到「稽核紀錄」tab，切換 tab 為純前端顯示切換，不重新載入預約資料；進入「稽核紀錄」tab 時才視需要讀取，減少平常瀏覽預約不需要的背景讀取'),
       item('新功能', '記住使用者上次所在的 tab，下次進入空間預約頁自動還原（與檢視偏好相同的儲存機制）'),
@@ -31453,8 +31457,8 @@ function _initBkPeriodSelect() {
 }
 
 // v100：編輯系列預約時，UI 帶入推導值後使用者是否改動了頻率／次數的比對基準；
-// { freq: 7|14|null（null＝非固定頻率，未勾選）, count: N }。由 _bkShowSeriesRepeatEditable 設定，
-// _bkResetRepeatUi／非系列編輯路徑設回 null（代表本次編輯與系列重排無關）。
+// { freq: 7|14|21|'monthly'|null（null＝非固定頻率，未勾選）, count: N }（#24 擴充每三週／每月）。
+// 由 _bkShowSeriesRepeatEditable 設定，_bkResetRepeatUi／非系列編輯路徑設回 null（代表本次編輯與系列重排無關）。
 let _bkSeriesRepeatBaseline = null;
 
 // 重複預約 UI 恢復為可互動預設值（新增／複製入口共用）：toggle 未勾選且可用、panel 隱藏、
@@ -31479,17 +31483,13 @@ function _bkResetRepeatUi() {
 
 // v100：編輯系列預約時，帶入系列建立當初的重複設定，並開放調整頻率／次數（先前為唯讀呈現，
 // 使用者驗證後拍板改為可調整：改頻率＝此筆之後的預約依新頻率重排，改次數＝從系列尾端增刪）。
-// 依系列成員日期差判斷頻率：全部相鄰日期差相同且為 7／14 → 對應勾選；否則（曾被個別調整）不勾任何頻率。
+// 依系列成員日期反推頻率（見 _bkDetectSeriesFreq：固定天數 7/14/21，或「每月同一天」，含月底邊界；
+// #24 擴充）→ 對應勾選；偵測不到（曾被個別調整）則不勾任何頻率。
 // 推導基準值存 _bkSeriesRepeatBaseline，供 saveBooking 判斷使用者這次是否改動了頻率／次數。
 function _bkShowSeriesRepeatEditable(b) {
   const seriesAll = bookingsData.filter(x => x.seriesId === b.seriesId).sort((x, y) => x.date < y.date ? -1 : (x.date > y.date ? 1 : 0));
   const n = seriesAll.length;
-  let freqDays = null;
-  for (let i = 1; i < seriesAll.length; i++) {
-    const d = _bkDaysBetween(seriesAll[i - 1].date, seriesAll[i].date);
-    if (freqDays === null) freqDays = d;
-    else if (d !== freqDays) { freqDays = NaN; break; }
-  }
+  const freq = _bkDetectSeriesFreq(seriesAll.map(x => x.date));
   const wrap = document.getElementById('bk-repeat-wrap');
   if (wrap) wrap.style.display = '';
   const toggle = document.getElementById('bk-repeat-toggle');
@@ -31498,7 +31498,7 @@ function _bkShowSeriesRepeatEditable(b) {
   if (panel) panel.style.display = '';
   document.querySelectorAll('input[name="bk-repeat-freq"]').forEach(r => {
     r.disabled = false;
-    r.checked = (freqDays === 7 && r.value === '7') || (freqDays === 14 && r.value === '14');
+    r.checked = freq !== null && String(freq) === r.value;
   });
   const countInp = document.getElementById('bk-repeat-count');
   if (countInp) {
@@ -31507,9 +31507,7 @@ function _bkShowSeriesRepeatEditable(b) {
     countInp.max = String(Math.max(16, n));
     countInp.value = String(n);
   }
-  // baseline.freq 只存 radio 能呈現的值（7/14）：日期差一致但非 7/14（如兩筆系列其中一筆被單獨改過日期）
-  // 時 radio 無法勾選，若 baseline 存原始天數會與 UI 讀值（null）恆不相等，導致一般編輯誤觸系列重排。
-  _bkSeriesRepeatBaseline = { freq: (freqDays === 7 || freqDays === 14) ? freqDays : null, count: n };
+  _bkSeriesRepeatBaseline = { freq, count: n };
   let note = document.getElementById('bk-repeat-readonly-note');
   if (!note && panel) {
     note = document.createElement('p');
@@ -31519,7 +31517,7 @@ function _bkShowSeriesRepeatEditable(b) {
   }
   if (note) {
     const baseNote = `系列重複設定（共 ${n} 筆）。調整頻率會把此筆之後的預約依新頻率重排（會覆蓋先前個別調整的日期）；調整次數會從系列尾端新增或刪除。`;
-    note.textContent = Number.isNaN(freqDays) ? `此系列的日期曾個別調整，頻率非固定。${baseNote}` : baseNote;
+    note.textContent = freq === null ? `此系列的日期曾個別調整，頻率非固定。${baseNote}` : baseNote;
   }
 }
 
@@ -31614,6 +31612,25 @@ function _bkAddDays(dateStr, n) {
   return _bkFmtDate(new Date(y, m - 1, d + n));
 }
 
+// #24：每月頻率用——從 dateStr 起算 k 個月後，保留原本的「日」；若目標月無此日
+// （如 1/31 加 1 個月 → 2 月無 31 日），取該月最後一天（不可用固定天數推算）。
+function _bkAddMonths(dateStr, k) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const total = (m - 1) + k;
+  const ny = y + Math.floor(total / 12);
+  const nm = ((total % 12) + 12) % 12;
+  const lastDay = new Date(ny, nm + 1, 0).getDate(); // 該月天數（下月第 0 天＝本月最後一天）
+  return _bkFmtDate(new Date(ny, nm, Math.min(d, lastDay)));
+}
+
+// #24：依「頻率週期數」從錨點日期往後推算單一目標日期。freq 為天數（7/14/21…）時
+// ＝anchor + periods*freq 天；freq==='monthly' 時＝anchor 往後 periods 個月（月底邊界見 _bkAddMonths）。
+// 一律以錨點直接算（不鏈式從前一期日期累加），避免月底裁切造成的日期漂移
+// （例：1/31 起算兩期應為 3/31；若從 1/31+1個月＝2/28 再加一個月會誤算成 3/28）。
+function _bkAddFreq(anchorDateStr, freq, periods) {
+  return freq === 'monthly' ? _bkAddMonths(anchorDateStr, periods) : _bkAddDays(anchorDateStr, periods * freq);
+}
+
 // 系列日期平移用：回傳 b 相對於 a 的天數差（可正可負，可跨月跨年）。a, b 為 'YYYY-MM-DD'。
 function _bkDaysBetween(a, b) {
   const [ay, am, ad] = a.split('-').map(Number);
@@ -31621,6 +31638,32 @@ function _bkDaysBetween(a, b) {
   const da = new Date(ay, am - 1, ad);
   const db = new Date(by, bm - 1, bd);
   return Math.round((db - da) / 86400000);
+}
+
+// #24：由系列既有日期陣列（依日期升冪排序）反推當初的重複頻率，供編輯系列時預先勾選對應的頻率
+// radio。固定天數（7/14/21）優先判斷；否則檢查是否為「每月同一天」模式（含月底邊界）；
+// 皆不符（例如系列中有某幾筆被個別調整過日期）回傳 null，UI 呈現為「頻率非固定」。
+function _bkDetectSeriesFreq(dates) {
+  if (!Array.isArray(dates) || dates.length < 2) return null;
+  let fixedDays = null, fixedOk = true;
+  for (let i = 1; i < dates.length; i++) {
+    const d = _bkDaysBetween(dates[i - 1], dates[i]);
+    if (fixedDays === null) fixedDays = d;
+    else if (d !== fixedDays) { fixedOk = false; break; }
+  }
+  if (fixedOk && [7, 14, 21].includes(fixedDays)) return fixedDays;
+  // 每月判斷需以「第一筆（錨點）的日」為準逐一比對 anchor+i個月，不可用前一筆逐次疊加
+  // （前一筆若剛好被月底裁切過，如 2/28，會誤把疊加基準的「日」也降成 28，導致 3 月誤判為 28 而非 31）。
+  const monthlyOk = dates.every((d, i) => i === 0 || _bkAddMonths(dates[0], i) === d);
+  if (monthlyOk) return 'monthly';
+  return null;
+}
+
+// #24：頻率的可讀文案（稽核紀錄等唯讀呈現處使用），與「重複預約」radio 的選項文字一致。
+function _bkFreqLabel(freq) {
+  if (freq === 'monthly') return '每月';
+  const map = { 7: '每週', 14: '每兩週', 21: '每三週' };
+  return map[freq] || `每 ${freq} 天`;
 }
 
 // 系列編輯／拖曳共用：依範圍從 bookings 篩出目標預約清單（回傳實際物件參照，非複本）。
@@ -31646,15 +31689,16 @@ function _bkNextInSeries(bookings, booking) {
 // v100：編輯系列預約時調整頻率／次數（純函式，供 saveBooking 呼叫與單元測試共用）。
 // seriesSorted：同系列全部筆依日期升冪排序的陣列（至少含 {id, date}，為套用此次編輯「之前」的原始狀態）。
 // editedId／editedNewDate：被編輯筆的 id 與其於 modal 填的新日期（重排錨點）。
-// freqDays：本次生效頻率（天）；newCount：目標系列總筆數。
+// freq：本次生效頻率——天數（7/14/21…）或 'monthly'（#24 擴充每三週／每月，見 _bkAddFreq）；
+// newCount：目標系列總筆數。
 // 語意（已與使用者確認）：被編輯筆本身視為錨點、不重排；同系列中「原日期晚於被編輯筆原日期」的筆
-// 依新頻率重排為 anchor+freqDays、anchor+2*freqDays……（依原日期排序決定順序，會覆蓋先前個別調整的日期）；
-// 更早的筆維持原日期不動。次數增加時從（重排後）系列最後一筆日期起依頻率往後新增；
+// 依新頻率重排為 anchor 起算第 1、2…期（依原日期排序決定順序，會覆蓋先前個別調整的日期）；
+// 更早的筆維持原日期不動。次數增加時從（重排後）系列最後一期繼續往後推算新增；
 // 次數減少時刪除（重排後）日期最晚者，被編輯筆本身一律不可刪。
 // 回傳 { redates:[{id,date}], creates:[date,...], deleteIds:[id,...] }：
 //   redates 只含日期實際變動、且不會被刪除的筆；creates 為新增筆日期（依序）；deleteIds 為待刪既有筆 id。
 // 注意：簽名不可用預設參數（`opts = {}` 會被 test/harness.js 的 indexOf('{') 抽取誤導）。
-function _bkSeriesReplan(seriesSorted, editedId, editedNewDate, freqDays, newCount) {
+function _bkSeriesReplan(seriesSorted, editedId, editedNewDate, freq, newCount) {
   const edited = seriesSorted.find(b => b.id === editedId);
   const editedOrigDate = edited ? edited.date : editedNewDate;
   const front = seriesSorted.filter(b => b.id !== editedId && b.date < editedOrigDate);
@@ -31662,7 +31706,7 @@ function _bkSeriesReplan(seriesSorted, editedId, editedNewDate, freqDays, newCou
 
   let redates = [];
   const backNewDates = back.map((b, idx) => {
-    const nd = _bkAddDays(editedNewDate, (idx + 1) * freqDays);
+    const nd = _bkAddFreq(editedNewDate, freq, idx + 1);
     if (nd !== b.date) redates.push({ id: b.id, date: nd });
     return nd;
   });
@@ -31672,11 +31716,10 @@ function _bkSeriesReplan(seriesSorted, editedId, editedNewDate, freqDays, newCou
   let deleteIds = [];
 
   if (newCount > currentTotal) {
-    const allDates = [...front.map(f => f.date), editedNewDate, ...backNewDates];
-    let lastDate = allDates.reduce((max, d) => (d > max ? d : max), allDates[0]);
-    for (let k = 0; k < newCount - currentTotal; k++) {
-      lastDate = _bkAddDays(lastDate, freqDays);
-      creates.push(lastDate);
+    // 新增筆一律從錨點往後接續第 back.length+1、+2…期（monthly 每期都直接以錨點的「日」推算，
+    // 不鏈式從前一筆日期累加，避免月底裁切造成日期漂移；固定天數時與鏈式累加結果等價）。
+    for (let k = 1; k <= newCount - currentTotal; k++) {
+      creates.push(_bkAddFreq(editedNewDate, freq, back.length + k));
     }
   } else if (newCount < currentTotal) {
     const removeCount = currentTotal - newCount;
@@ -31979,9 +32022,9 @@ async function saveBooking() {
   const now = new Date().toISOString();
   const creatorName = configData?.users?.[currentUser?.email]?.name || currentUser?.name || currentUser?.given_name || (currentUser?.email?.split('@')[0] ?? '') || '';
 
-  // T2：重複預約設定
-  const isRepeat = !_editingBookingId && !!(document.getElementById('bk-repeat-toggle')?.checked);
-  const repeatFreqDays = isRepeat ? parseInt(document.querySelector('input[name="bk-repeat-freq"]:checked')?.value || '7') : 0;
+  // T2：重複預約設定（#24：頻率除固定天數 7/14/21 外，新增 'monthly' 每月同一天，見 _bkAddFreq）
+  const _repeatFreqVal = document.querySelector('input[name="bk-repeat-freq"]:checked')?.value || '7';
+  const repeatFreq = isRepeat ? (_repeatFreqVal === 'monthly' ? 'monthly' : parseInt(_repeatFreqVal, 10)) : 0;
   const repeatCount = isRepeat ? Math.max(2, Math.min(16, parseInt(document.getElementById('bk-repeat-count')?.value || '4'))) : 1;
   const seriesId = isRepeat ? `series_${Date.now()}` : null;
 
@@ -32012,7 +32055,7 @@ async function saveBooking() {
   let _uiFreqSel = null, _uiCountVal = null, _seriesReplanTriggered = false;
   if (_editedBForReplan?.seriesId) {
     const _freqChecked = document.querySelector('input[name="bk-repeat-freq"]:checked');
-    _uiFreqSel = _freqChecked ? parseInt(_freqChecked.value, 10) : null;
+    _uiFreqSel = _freqChecked ? (_freqChecked.value === 'monthly' ? 'monthly' : parseInt(_freqChecked.value, 10)) : null;
     const _countInp = document.getElementById('bk-repeat-count');
     const _countMax = parseInt(_countInp?.max || '16', 10) || 16;
     _uiCountVal = Math.min(_countMax, Math.max(2, parseInt(_countInp?.value || '0', 10) || (_bkSeriesRepeatBaseline?.count || 2)));
@@ -32031,7 +32074,7 @@ async function saveBooking() {
   if (isRepeat && repeatCount >= 2) {
     const _pvRows = [];
     for (let _pi = 0; _pi < repeatCount; _pi++) {
-      const _pd = _pi === 0 ? date : _bkAddDays(date, _pi * repeatFreqDays);
+      const _pd = _pi === 0 ? date : _bkAddFreq(date, repeatFreq, _pi);
       _pvRows.push(`<div style="padding:5px 0;border-bottom:1px solid #f0f4f8;">${escHtml(_bkDateWithWeekday(_pd))} ${escHtml(start)}–${escHtml(end)} ${escHtml(room)}</div>`);
     }
     const _pvHtml = (counselorName ? `<div style="color:#4a5568;margin-bottom:8px;">主責：${escHtml(counselorName)}</div>` : '') + _pvRows.join('');
@@ -32241,7 +32284,7 @@ async function saveBooking() {
             });
           }
 
-          auditLog(`空間預約系列重排（頻率 ${effFreq} 天，共 ${_srOldTotal}→${_srNewTotal} 筆，新增 ${createdProposals.length} 筆，刪除 ${replan.deleteIds.length} 筆）`,
+          auditLog(`空間預約系列重排（頻率 ${_bkFreqLabel(effFreq)}，共 ${_srOldTotal}→${_srNewTotal} 筆，新增 ${createdProposals.length} 筆，刪除 ${replan.deleteIds.length} 筆）`,
             _editedB.caseId || null);
           bgJobDone(srJobId);
           renderBookingsPage();
@@ -32282,7 +32325,7 @@ async function saveBooking() {
   } else {
     // T2：單筆或系列建立 — 系列每一筆都建立 GC 事件（帶各自日期與流水號）
     for (let _si = 0; _si < repeatCount; _si++) {
-      const _sDate = _si === 0 ? date : _bkAddDays(date, _si * repeatFreqDays);
+      const _sDate = _si === 0 ? date : _bkAddFreq(date, repeatFreq, _si);
       const _sObj = {
         id: _si === 0 ? newId : `bk_${Date.now() + _si}`,
         bkSerial: newSerial + _si, room, customRoom,
@@ -39880,6 +39923,8 @@ function toggleNavPin(navId) {
           <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;">
             <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="radio" name="bk-repeat-freq" value="7" checked> 每週</label>
             <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="radio" name="bk-repeat-freq" value="14"> 每兩週</label>
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="radio" name="bk-repeat-freq" value="21"> 每三週</label>
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;" data-tip="每次同一天，例如 7/8 → 8/8 → 9/8；當月無此日（如月底 31 號）則取該月最後一天"><input type="radio" name="bk-repeat-freq" value="monthly"> 每月</label>
             <span>共</span>
             <input type="number" id="bk-repeat-count" min="2" max="16" value="4" style="width:56px;padding:4px 6px;border:1px solid #cbd5e0;border-radius:4px;font-size:.875rem;">
             <span>次（含今次）</span>
