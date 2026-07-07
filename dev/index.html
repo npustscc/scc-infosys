@@ -121,6 +121,9 @@
     .bk-view-chip-sel { border-color:#2471a3;background:#dbeafe;color:#1a4971;font-weight:600; }
     .bk-view-chip-box { display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;flex-shrink:0;border:1.5px solid #a0aec0;border-radius:3px;font-size:.68rem;line-height:1;color:#fff;background:#fff; }
     .bk-view-chip-sel .bk-view-chip-box { border-color:#2471a3;background:#2471a3; }
+    /* ── 空間預約頁：預約／稽核紀錄 tab（#5-6） ── */
+    .bk-page-tabbtn { padding:8px 20px;border:none;cursor:pointer;background:none;font-size:.92rem;font-weight:500;color:#718096;border-bottom:3px solid transparent;margin-bottom:-2px;transition:color .12s; }
+    .bk-page-tabbtn[data-active="1"] { font-weight:700;color:#2b6cb0;border-bottom-color:#2b6cb0; }
     /* ── 初次晤談 chip ── */
     .ii-chip-row { display:flex; flex-wrap:wrap; gap:4px; padding:4px 0; }
     .ii-chip-row.ii-disabled { opacity:.4; pointer-events:none; }
@@ -1809,6 +1812,12 @@
     <div id="page-bookings" class="page">
       <div class="page-title">空間預約</div>
       <div id="bookings-alert"></div>
+      <!-- #5-6：「預約」／「稽核紀錄」tab；純前端顯示切換，不重新載入資料 -->
+      <div style="display:flex;gap:2px;border-bottom:2px solid #e2e8f0;margin-bottom:16px;">
+        <button type="button" id="bk-tabbtn-booking" class="bk-page-tabbtn" onclick="_bkSwitchTab('booking')">預約</button>
+        <button type="button" id="bk-tabbtn-audit" class="bk-page-tabbtn" onclick="_bkSwitchTab('audit')">稽核紀錄</button>
+      </div>
+      <div id="bk-tab-booking">
       <div class="card" style="margin-bottom:20px;">
         <div class="card-header" style="flex-wrap:wrap;gap:8px;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
@@ -1846,6 +1855,8 @@
         </div>
         <div id="bookings-body" style="padding:0;min-height:60px;"></div>
       </div>
+      </div>
+      <div id="bk-tab-audit" style="display:none;">
       <div class="card">
         <div class="card-header">
           <h3>空間預約稽核記錄</h3>
@@ -1866,6 +1877,7 @@
           </div>
           <div id="bookings-audit-body" style="padding:0;min-height:40px;"></div>
         </div>
+      </div>
       </div>
     </div>
 
@@ -24927,6 +24939,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 107, title: '空間預約頁新增「預約」／「稽核紀錄」tab', isProd: false, items: [
+      item('改善', '空間預約頁改為「預約」／「稽核紀錄」兩個 tab：既有的日/週/列表檢視與新增/篩選功能整個移到「預約」tab；原本一直顯示在下方的稽核記錄移到「稽核紀錄」tab，切換 tab 為純前端顯示切換，不重新載入預約資料；進入「稽核紀錄」tab 時才視需要讀取，減少平常瀏覽預約不需要的背景讀取'),
+      item('新功能', '記住使用者上次所在的 tab，下次進入空間預約頁自動還原（與檢視偏好相同的儲存機制）'),
+    ]},
     { date: '2026-07-07', v: 106, title: '空間預約列表檢視套用有效顏色', isProd: false, items: [
       item('改善', '列表檢視每一筆預約套用其有效顏色（建立者／主責人員的偏好色，或該筆自訂顏色）：粗色左邊框＋極淡同色底呈現，文字顏色不變確保可讀性；無設定顏色者維持原本樣式'),
     ]},
@@ -27034,6 +27050,10 @@ const ML_DEFAULT_KEYWORDS = [
 ];
 let _bkDaySpan = parseInt(localStorage.getItem('scc_bk_span') || '1') || 1;
 let _bkListView = false;
+// #5-6：空間預約頁「預約」／「稽核紀錄」tab；bkPageTabRestored 確保只在首次 render 從 config 還原一次
+// （比照 _mlTabRestored／_mlTab 的既有模式）。
+let _bkPageTab = 'booking';
+let _bkPageTabRestored = false;
 let _bkListPage = 1;
 const _BK_LIST_PAGE_SIZE = 15;
 let _bkAuditPage = 0;
@@ -30120,7 +30140,32 @@ function _resetBkOverrideUi(color) {
   if (p) p.style.display = 'none';
   _updateBkOverrideCurrent();
 }
+// #5-6：「預約」／「稽核紀錄」tab 切換，純前端顯示切換（不重新載入預約資料；稽核紀錄僅在切入
+// 該 tab 時才視需要讀取，沿用 renderBookingsAuditLog 既有的快取優先＋背景更新機制）。
+function _bkApplyTabVisibility() {
+  const labels = { booking: '預約', audit: '稽核紀錄' };
+  Object.keys(labels).forEach(id => {
+    const btn = document.getElementById('bk-tabbtn-' + id);
+    if (btn) btn.dataset.active = (_bkPageTab === id) ? '1' : '0';
+    const panel = document.getElementById('bk-tab-' + id);
+    if (panel) panel.style.display = (_bkPageTab === id) ? '' : 'none';
+  });
+}
+function _bkSwitchTab(id) {
+  _bkPageTab = id;
+  syncUserPref_({ bkPageTab: id });
+  _bkApplyTabVisibility();
+  if (id === 'audit') renderBookingsAuditLog();
+}
+
 function renderBookingsPage() {
+  // 首次進頁時從使用者偏好還原上次所在的 tab（比照 _mlTabRestored／_mlTab 的模式）
+  if (!_bkPageTabRestored) {
+    _bkPageTabRestored = true;
+    const saved = configData?.users?.[currentUser?.email]?.bkPageTab;
+    if (saved === 'audit' || saved === 'booking') _bkPageTab = saved;
+  }
+  _bkApplyTabVisibility();
   const dateEl = document.getElementById('booking-date');
   if (!dateEl) return;
   // 週檢視：空值時預設「包含今天的那一週」週一，而非直接塞今天（避免非週一時打亂週一～週五版面）；
@@ -30142,7 +30187,7 @@ function renderBookingsPage() {
     const fromEl = document.getElementById('bk-list-from');
     if (fromEl && !fromEl.value) fromEl.value = new Date().toISOString().slice(0, 10);
     renderBkListView(body);
-    renderBookingsAuditLog();
+    if (_bkPageTab === 'audit') renderBookingsAuditLog();
     return;
   }
 
@@ -30240,7 +30285,7 @@ function renderBookingsPage() {
     html += `</table></div>`;
     body.innerHTML = html;
   }
-  renderBookingsAuditLog();
+  if (_bkPageTab === 'audit') renderBookingsAuditLog();
 }
 
 function renderBkListView(body) {
