@@ -24946,6 +24946,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 110, title: '新增系列預約撞期改開逐筆修正視窗（#14）', isProd: false, items: [
+      item('改善', '新增系列（重複）預約若撞房／撞人，不再只顯示警示整批放棄，改開與拖曳調整相同的衝突修正視窗：系列每一筆列成分頁，有衝突的標 ⚠，可逐筆調整日期／節次或時間／空間後「套用並儲存」重新送出；取消則整批放棄，維持現狀不寫入'),
+      item('技術', '重用既有 _bkOpenDragFixModal／_bkDragFixApply（v99 起支援節次下拉選時間）；衝突偵測時本機樂觀更新已先行回滾，開修正視窗前資料狀態正確'),
+    ]},
     { date: '2026-07-07', v: 109, title: '空間預約建立成功通知（#5-1）', isProd: false, items: [
       item('新功能', '空間預約建立成功後，建立者本人在待辦事項頁「重大事件」區塊收到「✅ 已預約成功」提示（含空間／日期／時段／主責摘要），可點「收到」即從畫面移除'),
       item('新功能', '若預約的主責／人員包含建立者以外的使用者，那些人也會收到「XXX 為你建立了一筆空間預約」通知，同樣可「收到」封存'),
@@ -32422,6 +32426,15 @@ async function saveBooking() {
         // 與其他使用者同時操作衝突：整批不寫入，回滾本機樂觀更新並重新載入
         bookingsData = _bkSnapshot;
         await refreshBookings();
+        // #14：新增系列（重複預約）撞期 → 開拖曳衝突修正視窗逐筆調整（同款 UI，見 _bkOpenDragFixModal，
+        // v99 起支援節次下拉選時間），把系列每一筆列成分頁讓使用者逐筆調整，全部無衝突才「套用並儲存」
+        // 重新送出；取消則整批放棄（本機已於上方回滾，維持現狀不寫入）。單筆新增／編輯維持原行為
+        // （訊息警示，使用者自行重新調整表單再送出）。
+        if (!_editingBookingId && _createdObjs.length >= 2) {
+          bgJobFail(jobId, '新增系列撞期，已開啟逐筆修正視窗');
+          _bkOpenDragFixModal(_createdObjs, _createdObjs, '新增系列預約衝突修正', []);
+          return;
+        }
         const w = result.with || {};
         const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
         const kind = result.conflictType === 'person' ? '人員' : '空間';
