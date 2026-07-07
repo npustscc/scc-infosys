@@ -24258,6 +24258,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 100, title: '編輯系列預約可調整重複頻率與次數', isProd: false, items: [
+      item('新功能', '編輯系列預約中的某一筆時，「重複預約」區塊改為可調整（先前為唯讀）：調整頻率會把「此筆之後」的預約依新頻率重排（依原日期排序決定順序，會覆蓋先前個別調整過的日期，更早的筆與被編輯這筆本身不受影響）；調整次數會從系列尾端新增或刪除（減少時優先刪除日期最晚者，被編輯這筆一律不會被刪）'),
+      item('改善', '調整頻率／次數是否觸發系列重排，與「套用範圍」（僅此筆／此筆及之後／全部系列）互相獨立：範圍只決定空間／時間／人員／案號／備註套用到哪些筆；新增筆的欄位一律取被編輯這筆在表單上的最新值'),
+      item('改善', '系列重排若會刪除的預約有晤談紀錄的「下次預約」掛接在上面，儲存前會先提示掛接筆數，確認後才繼續刪除'),
+      item('改善', '系列重排整批試算後若偵測到撞房／撞人衝突，不會直接套用，改開「拖曳衝突修正」視窗讓使用者逐筆調整（含新增與待刪除的筆），全部解決後才能套用並儲存'),
+    ]},
     { date: '2026-07-07', v: 99, title: '拖曳衝突修正視窗支援節次選時間', isProd: false, items: [
       item('改善', '拖曳衝突修正視窗的每個分頁新增「節次」下拉：選定節次即自動帶入該節的開始／結束時間，並立即重新偵測是否仍有衝突（分頁狀態 ⚠／✓ 與「套用並儲存」按鈕即時更新）；仍可改用下方時間欄位手動微調（此時節次顯示「自訂時間」）'),
     ]},
@@ -29845,11 +29851,13 @@ async function _bkDragConfirmScope(scope) {
 //   scopeLabel: string            供背景工作/稽核日誌描述用
 let _bkDragFix = null;
 
-function _bkOpenDragFixModal(originals, proposals, scopeLabel) {
+// preDeletedIds（v100，選填）：呼叫端已決定要刪除的既有筆 id（如系列重排減少次數要刪掉的筆）——
+// 預先加入 deletedIds，這些筆若沒有衝突就不會開 tab，但 _bkDragFixApply 迭代時仍會歸入 delete ops。
+function _bkOpenDragFixModal(originals, proposals, scopeLabel, preDeletedIds) {
   _bkDragFix = {
     proposals: new Map(proposals.map(p => [p.id, { ...p }])),
     originals: new Map(originals.map(o => [o.id, o])),
-    deletedIds: new Set(),
+    deletedIds: new Set(preDeletedIds || []),
     tabIds: [],
     activeTabId: null,
     conflicts: [],
@@ -30026,9 +30034,11 @@ async function _bkDragFixApply() {
   const _snapshot = bookingsData.map(b => ({ ...b }));
 
   // 樂觀更新：套用存活筆變更、移除刪除筆
+  // v100：survivors 可能含 bookingsData 尚不存在的新筆（如系列重排新增筆）——找不到既有筆就 push 而非略過。
   survivors.forEach(p => {
     const idx = bookingsData.findIndex(x => x.id === p.id);
     if (idx >= 0) bookingsData[idx] = { ...bookingsData[idx], ...p };
+    else bookingsData.push({ ...p });
   });
   const deletedIdSet = new Set(deleted.map(b => b.id));
   if (deletedIdSet.size) bookingsData = bookingsData.filter(b => !deletedIdSet.has(b.id));
@@ -30059,9 +30069,16 @@ async function _bkDragFixApply() {
     }
 
     if (result.fallback) {
-      // 舊後端尚未部署：整檔覆寫＋既有 calendarEventId 才進 GC 佇列；刪除筆嘗試呼叫 deleteCalendarEvent 清除日曆事件
+      // 舊後端尚未部署：整檔覆寫＋既有 calendarEventId 才進 GC 佇列（_bkGcFlush 只處理 update）；
+      // v100：survivors 可能含新增筆（無 calendarEventId），改直接呼叫 createCalendarEvent 補建。
       await saveBookings();
-      survivors.forEach(p => { if (p.calendarEventId) _bkGcQueue.set(p.id, { ...p }); });
+      for (const p of survivors) {
+        if (p.calendarEventId) { _bkGcQueue.set(p.id, { ...p }); continue; }
+        try {
+          const eid = await proxyCall('createCalendarEvent', _bkGcParamsOf(p, false));
+          if (eid) { const bk = bookingsData.find(x => x.id === p.id); if (bk) bk.calendarEventId = eid; }
+        } catch (_) {}
+      }
       _bkGcFlush();
       deleted.forEach(b => { if (b.calendarEventId) proxyCall('deleteCalendarEvent', { eventId: b.calendarEventId }).catch(() => {}); });
     } else {
@@ -30611,8 +30628,13 @@ function _initBkPeriodSelect() {
     + '<option value="其他">其他（自填時間）</option>';
 }
 
+// v100：編輯系列預約時，UI 帶入推導值後使用者是否改動了頻率／次數的比對基準；
+// { freq: 7|14|null（null＝非固定頻率，未勾選）, count: N }。由 _bkShowSeriesRepeatEditable 設定，
+// _bkResetRepeatUi／非系列編輯路徑設回 null（代表本次編輯與系列重排無關）。
+let _bkSeriesRepeatBaseline = null;
+
 // 重複預約 UI 恢復為可互動預設值（新增／複製入口共用）：toggle 未勾選且可用、panel 隱藏、
-// 頻率預設每週且可用、次數預設 4 且可用、移除系列唯讀附註（若有）。
+// 頻率預設每週且可用、次數預設 4 且可用、移除系列附註（若有）。
 function _bkResetRepeatUi() {
   const wrap = document.getElementById('bk-repeat-wrap');
   if (wrap) wrap.style.display = '';
@@ -30625,14 +30647,17 @@ function _bkResetRepeatUi() {
     r.checked = r.value === '7';
   });
   const countInp = document.getElementById('bk-repeat-count');
-  if (countInp) { countInp.disabled = false; countInp.value = '4'; }
+  if (countInp) { countInp.disabled = false; countInp.value = '4'; countInp.max = '16'; }
   const note = document.getElementById('bk-repeat-readonly-note');
   if (note) note.remove();
+  _bkSeriesRepeatBaseline = null;
 }
 
-// 編輯系列預約時，唯讀呈現系列建立當初的重複設定（不可互動；使用者回報：先前顯示未勾選且變預設值，會誤導）。
+// v100：編輯系列預約時，帶入系列建立當初的重複設定，並開放調整頻率／次數（先前為唯讀呈現，
+// 使用者驗證後拍板改為可調整：改頻率＝此筆之後的預約依新頻率重排，改次數＝從系列尾端增刪）。
 // 依系列成員日期差判斷頻率：全部相鄰日期差相同且為 7／14 → 對應勾選；否則（曾被個別調整）不勾任何頻率。
-function _bkShowSeriesRepeatReadonly(b) {
+// 推導基準值存 _bkSeriesRepeatBaseline，供 saveBooking 判斷使用者這次是否改動了頻率／次數。
+function _bkShowSeriesRepeatEditable(b) {
   const seriesAll = bookingsData.filter(x => x.seriesId === b.seriesId).sort((x, y) => x.date < y.date ? -1 : (x.date > y.date ? 1 : 0));
   const n = seriesAll.length;
   let freqDays = null;
@@ -30644,15 +30669,23 @@ function _bkShowSeriesRepeatReadonly(b) {
   const wrap = document.getElementById('bk-repeat-wrap');
   if (wrap) wrap.style.display = '';
   const toggle = document.getElementById('bk-repeat-toggle');
-  if (toggle) { toggle.checked = true; toggle.disabled = true; }
+  if (toggle) { toggle.checked = true; toggle.disabled = true; } // 系列身分本身不可退出，僅頻率／次數可調
   const panel = document.getElementById('bk-repeat-panel');
   if (panel) panel.style.display = '';
   document.querySelectorAll('input[name="bk-repeat-freq"]').forEach(r => {
-    r.disabled = true;
+    r.disabled = false;
     r.checked = (freqDays === 7 && r.value === '7') || (freqDays === 14 && r.value === '14');
   });
   const countInp = document.getElementById('bk-repeat-count');
-  if (countInp) { countInp.disabled = true; countInp.value = String(n); }
+  if (countInp) {
+    countInp.disabled = false;
+    countInp.min = '2';
+    countInp.max = String(Math.max(16, n));
+    countInp.value = String(n);
+  }
+  // baseline.freq 只存 radio 能呈現的值（7/14）：日期差一致但非 7/14（如兩筆系列其中一筆被單獨改過日期）
+  // 時 radio 無法勾選，若 baseline 存原始天數會與 UI 讀值（null）恆不相等，導致一般編輯誤觸系列重排。
+  _bkSeriesRepeatBaseline = { freq: (freqDays === 7 || freqDays === 14) ? freqDays : null, count: n };
   let note = document.getElementById('bk-repeat-readonly-note');
   if (!note && panel) {
     note = document.createElement('p');
@@ -30661,9 +30694,8 @@ function _bkShowSeriesRepeatReadonly(b) {
     panel.appendChild(note);
   }
   if (note) {
-    note.textContent = Number.isNaN(freqDays)
-      ? `此系列的日期曾經個別調整，頻率非固定（共 ${n} 筆）。`
-      : `此為系列建立時的重複設定（唯讀，共 ${n} 筆）；如需增減系列筆數請另行新增或刪除預約。`;
+    const baseNote = `系列重複設定（共 ${n} 筆）。調整頻率會把此筆之後的預約依新頻率重排（會覆蓋先前個別調整的日期）；調整次數會從系列尾端新增或刪除。`;
+    note.textContent = Number.isNaN(freqDays) ? `此系列的日期曾個別調整，頻率非固定。${baseNote}` : baseNote;
   }
 }
 
@@ -30726,8 +30758,9 @@ function editBooking(id) {
   const sb2 = document.getElementById('btn-save-booking'); if (sb2) sb2.disabled = false;
   // 重複預約區塊：系列預約唯讀呈現當初的重複設定；非系列直接隱藏（現況顯示但存檔會被忽略，是誤導）
   if (b.seriesId) {
-    _bkShowSeriesRepeatReadonly(b);
+    _bkShowSeriesRepeatEditable(b);
   } else {
+    _bkSeriesRepeatBaseline = null;
     const _erw = document.getElementById('bk-repeat-wrap');
     if (_erw) _erw.style.display = 'none';
   }
@@ -30780,6 +30813,56 @@ function _bkNextInSeries(bookings, booking) {
   const later = bookings.filter(x => x.seriesId === booking.seriesId && x.date > booking.date);
   if (!later.length) return null;
   return later.reduce((earliest, x) => (x.date < earliest.date ? x : earliest));
+}
+
+// v100：編輯系列預約時調整頻率／次數（純函式，供 saveBooking 呼叫與單元測試共用）。
+// seriesSorted：同系列全部筆依日期升冪排序的陣列（至少含 {id, date}，為套用此次編輯「之前」的原始狀態）。
+// editedId／editedNewDate：被編輯筆的 id 與其於 modal 填的新日期（重排錨點）。
+// freqDays：本次生效頻率（天）；newCount：目標系列總筆數。
+// 語意（已與使用者確認）：被編輯筆本身視為錨點、不重排；同系列中「原日期晚於被編輯筆原日期」的筆
+// 依新頻率重排為 anchor+freqDays、anchor+2*freqDays……（依原日期排序決定順序，會覆蓋先前個別調整的日期）；
+// 更早的筆維持原日期不動。次數增加時從（重排後）系列最後一筆日期起依頻率往後新增；
+// 次數減少時刪除（重排後）日期最晚者，被編輯筆本身一律不可刪。
+// 回傳 { redates:[{id,date}], creates:[date,...], deleteIds:[id,...] }：
+//   redates 只含日期實際變動、且不會被刪除的筆；creates 為新增筆日期（依序）；deleteIds 為待刪既有筆 id。
+// 注意：簽名不可用預設參數（`opts = {}` 會被 test/harness.js 的 indexOf('{') 抽取誤導）。
+function _bkSeriesReplan(seriesSorted, editedId, editedNewDate, freqDays, newCount) {
+  const edited = seriesSorted.find(b => b.id === editedId);
+  const editedOrigDate = edited ? edited.date : editedNewDate;
+  const front = seriesSorted.filter(b => b.id !== editedId && b.date < editedOrigDate);
+  const back  = seriesSorted.filter(b => b.id !== editedId && b.date > editedOrigDate);
+
+  let redates = [];
+  const backNewDates = back.map((b, idx) => {
+    const nd = _bkAddDays(editedNewDate, (idx + 1) * freqDays);
+    if (nd !== b.date) redates.push({ id: b.id, date: nd });
+    return nd;
+  });
+
+  const currentTotal = front.length + 1 + back.length;
+  const creates = [];
+  let deleteIds = [];
+
+  if (newCount > currentTotal) {
+    const allDates = [...front.map(f => f.date), editedNewDate, ...backNewDates];
+    let lastDate = allDates.reduce((max, d) => (d > max ? d : max), allDates[0]);
+    for (let k = 0; k < newCount - currentTotal; k++) {
+      lastDate = _bkAddDays(lastDate, freqDays);
+      creates.push(lastDate);
+    }
+  } else if (newCount < currentTotal) {
+    const removeCount = currentTotal - newCount;
+    const others = [
+      ...front.map(b => ({ id: b.id, date: b.date })),
+      ...back.map((b, idx) => ({ id: b.id, date: backNewDates[idx] })),
+    ];
+    others.sort((a, b) => (a.date < b.date ? 1 : (a.date > b.date ? -1 : 0))); // 日期新→舊
+    deleteIds = others.slice(0, removeCount).map(o => o.id);
+    const delSet = new Set(deleteIds);
+    redates = redates.filter(r => !delSet.has(r.id));
+  }
+
+  return { redates, creates, deleteIds };
 }
 
 function copyBooking(id) {
@@ -30997,10 +31080,190 @@ async function saveBooking() {
     ops.push({ op: 'upsert', booking: { ...bk }, gc: { mode: gcMode, params: gcParams || null } });
   };
 
+  // v100：系列編輯時讀取「重複預約」UI 目前的頻率／次數，與開啟編輯時的推導基準值比對，
+  // 判斷使用者這次是否改動了頻率或次數——與 _bkEditScope（僅此筆／此筆及之後／全部系列）無關，
+  // scope 只決定 room/時間/人員/案號/備註 這些欄位套用到哪些筆。
+  const _editedBForReplan = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
+  let _uiFreqSel = null, _uiCountVal = null, _seriesReplanTriggered = false;
+  if (_editedBForReplan?.seriesId) {
+    const _freqChecked = document.querySelector('input[name="bk-repeat-freq"]:checked');
+    _uiFreqSel = _freqChecked ? parseInt(_freqChecked.value, 10) : null;
+    const _countInp = document.getElementById('bk-repeat-count');
+    const _countMax = parseInt(_countInp?.max || '16', 10) || 16;
+    _uiCountVal = Math.min(_countMax, Math.max(2, parseInt(_countInp?.value || '0', 10) || (_bkSeriesRepeatBaseline?.count || 2)));
+    if (_bkSeriesRepeatBaseline) {
+      _seriesReplanTriggered = (_uiFreqSel !== _bkSeriesRepeatBaseline.freq) || (_uiCountVal !== _bkSeriesRepeatBaseline.count);
+    }
+  }
+
   // 立即更新本機資料（樂觀更新）
   if (_editingBookingId) {
     const _editedB = bookingsData.find(x => x.id === _editingBookingId);
-    if (_editedB?.seriesId && _bkEditScope !== 'this') {
+    if (_editedB?.seriesId && _seriesReplanTriggered) {
+      // v100：頻率或次數被改動 — 系列重排／增刪；自成一個流程，處理完直接 return（不落入下方共用的
+      // bgJob／bkCommit 收尾，因為 ops 形狀與衝突處理路線都不同：可能需要改開拖曳衝突修正視窗）。
+      const originalSeries = bookingsData.filter(x => x.seriesId === _editedB.seriesId)
+        .map(x => ({ ...x }))
+        .sort((a, b) => (a.date < b.date ? -1 : (a.date > b.date ? 1 : 0)));
+      const scopeTargetIds = new Set(_bkSeriesTargets(bookingsData, _editedB, _bkEditScope).map(t => t.id));
+
+      // 生效頻率：UI 勾選 > 開啟編輯時的基準頻率 > 系列最後兩筆日期差 > 預設 7 天
+      let effFreq = _uiFreqSel;
+      if (effFreq == null) effFreq = _bkSeriesRepeatBaseline?.freq ?? null;
+      if (effFreq == null) {
+        if (originalSeries.length >= 2) {
+          const _a = originalSeries[originalSeries.length - 2], _c = originalSeries[originalSeries.length - 1];
+          effFreq = _bkDaysBetween(_a.date, _c.date) || 7;
+        } else effFreq = 7;
+      }
+
+      const replan = _bkSeriesReplan(
+        originalSeries.map(b => ({ id: b.id, date: b.date })),
+        _editingBookingId, date, effFreq, _uiCountVal);
+
+      // 刪除前檢查：是否有晤談紀錄的「下次預約」掛接到將被刪除的筆
+      if (replan.deleteIds.length) {
+        const _delSet0 = new Set(replan.deleteIds);
+        let _hooked = 0;
+        casesData.forEach(c => (c.records || []).forEach(r => { if (r.nextBkId && _delSet0.has(r.nextBkId)) _hooked++; }));
+        if (_hooked > 0 && !confirm(`有 ${_hooked} 筆晤談紀錄的「下次預約」掛接到將被刪除的預約，刪除後該顯示會消失。確定繼續？`)) {
+          if (saveBtn) saveBtn.disabled = false;
+          return;
+        }
+      }
+
+      const deleteIdSet = new Set(replan.deleteIds);
+      const redateMap = new Map(replan.redates.map(r => [r.id, r.date]));
+      const editedFields = {
+        room, customRoom, startTime: start, endTime: end,
+        counselors, counselorEmail, counselorName,
+        caseId: caseId || '', caseName: caseObj?.name || '', notes, updatedAt: now,
+      };
+      // 系列全部既有筆的擬議狀態：scope 選定的筆套欄位變更；日期只由「被編輯筆＝modal 新日期」與
+      // replan.redates（重排的後段筆）決定，前段筆維持原日期不動（獨立於 scope）。
+      const seriesProposalsAll = originalSeries.map(b => {
+        const p = { ...b };
+        if (scopeTargetIds.has(b.id)) {
+          Object.assign(p, editedFields);
+          if (_bkOverride) p.bkOverrideColor = _bkOverride; else delete p.bkOverrideColor;
+        }
+        if (b.id === _editingBookingId) p.date = date;
+        else if (redateMap.has(b.id)) p.date = redateMap.get(b.id);
+        return p;
+      });
+      // 新增筆：欄位取被編輯筆在 modal 上的最新值；seriesId 沿用；bkSerial 用 _bkNextSerial() 起始遞增
+      const _newSerialBase = _bkNextSerial();
+      const createdProposals = replan.creates.map((cDate, ci) => {
+        const obj = {
+          id: `bk_${Date.now()}_${ci}`, bkSerial: _newSerialBase + ci,
+          room, customRoom, date: cDate, startTime: start, endTime: end,
+          counselors, counselorEmail, counselorName,
+          caseId: caseId || '', caseName: caseObj?.name || '',
+          notes, createdAt: now, updatedAt: now, creatorName,
+          seriesId: _editedB.seriesId,
+        };
+        if (_bkOverride) obj.bkOverrideColor = _bkOverride;
+        return obj;
+      });
+
+      const survivors = seriesProposalsAll.filter(p => !deleteIdSet.has(p.id));
+      // 衝突預檢排除預定刪除的筆（比照 _bkDragFixRecompute 的 live 過濾），避免對即將消失的筆誤報衝突
+      const liveProposals = [...survivors, ...createdProposals];
+      const excludeIds = new Set(originalSeries.map(b => b.id));
+      const localConflicts = _bkLocalConflicts(liveProposals, excludeIds);
+
+      if (localConflicts.length) {
+        // 有衝突：不套用任何變更，關閉預約 modal，改開拖曳衝突修正視窗逐筆調整
+        // （含將被刪除的筆，預先加入 deletedIds；_bkDragFixApply 迭代 proposals 時會自然歸入 delete ops）
+        closeBookingModal();
+        if (saveBtn) saveBtn.disabled = false;
+        _bkOpenDragFixModal(originalSeries, [...seriesProposalsAll, ...createdProposals],
+          '空間預約系列重排衝突修正', replan.deleteIds);
+        return;
+      }
+
+      // 無衝突：關閉 modal、樂觀更新、背景 bkCommit（比照既有系列編輯/拖曳衝突修正的收尾模式）
+      closeBookingModal();
+      const _bkSnapshotSR = bookingsData.map(b => ({ ...b }));
+      replan.deleteIds.forEach(id => {
+        const idx = bookingsData.findIndex(x => x.id === id);
+        if (idx >= 0) bookingsData.splice(idx, 1);
+      });
+      survivors.forEach(p => {
+        const idx = bookingsData.findIndex(x => x.id === p.id);
+        if (idx >= 0) bookingsData[idx] = p;
+      });
+      createdProposals.forEach(p => bookingsData.push(p));
+      renderBookingsPage();
+
+      const _srOldTotal = originalSeries.length;
+      const _srNewTotal = survivors.length + createdProposals.length;
+      const srJobId = bgJobAdd('編輯空間預約（系列重排）', `共 ${_srOldTotal}→${_srNewTotal} 筆`);
+      const srOps = [
+        ...survivors.map(p => ({
+          op: 'upsert', booking: { ...p },
+          gc: { mode: p.calendarEventId ? 'update' : 'create', params: _bkGcParamsOf(p, !!p.calendarEventId) },
+        })),
+        ...createdProposals.map(p => ({
+          op: 'upsert', booking: { ...p },
+          gc: { mode: 'create', params: _bkGcParamsOf(p, false) },
+        })),
+        ...replan.deleteIds.map(id => {
+          const orig = originalSeries.find(b => b.id === id);
+          return { op: 'delete', id, gcEventId: orig?.calendarEventId || null };
+        }),
+      ];
+      (async () => {
+        try {
+          const result = await bkCommit(srOps, { checkConflicts: true });
+
+          if (result.error === 'conflict') {
+            bookingsData = _bkSnapshotSR;
+            renderBookingsPage();
+            const w = result.with || {};
+            const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+            const kind = result.conflictType === 'person' ? '人員' : '空間';
+            setAlert('bookings-alert', 'warn',
+              `⚠ 儲存失敗：與其他使用者同時操作發生${kind}衝突（${escHtml(wRoom)} ${escHtml(w.date||'')} ${escHtml((w.startTime||'').slice(0,5))}–${escHtml((w.endTime||'').slice(0,5))}${w.counselorName ? '　'+escHtml(w.counselorName) : ''}），系列重排已還原，請重新確認後再操作一次。`);
+            bgJobFail(srJobId, `與其他使用者${kind}衝突`);
+            return;
+          }
+
+          if (result.fallback) {
+            // 舊後端尚未部署：逐 op 自行呼叫 GC action（含新增筆 create、既有筆 update、刪除筆 delete）
+            for (const o of srOps) {
+              try {
+                if (o.op === 'delete') {
+                  if (o.gcEventId) await proxyCall('deleteCalendarEvent', { eventId: o.gcEventId });
+                } else if (o.gc.mode === 'update' && o.booking.calendarEventId) {
+                  await proxyCall('updateCalendarEvent', { eventId: o.booking.calendarEventId, ...o.gc.params });
+                } else if (o.gc.mode === 'create') {
+                  const eid = await proxyCall('createCalendarEvent', o.gc.params);
+                  if (eid) { const bk = bookingsData.find(x => x.id === o.booking.id); if (bk) bk.calendarEventId = eid; }
+                }
+              } catch (_) {}
+            }
+            await saveBookings();
+          } else {
+            (result.bookings || []).forEach(fb => {
+              const idx = bookingsData.findIndex(x => x.id === fb.id);
+              if (idx >= 0) bookingsData[idx] = fb;
+            });
+          }
+
+          auditLog(`空間預約系列重排（頻率 ${effFreq} 天，共 ${_srOldTotal}→${_srNewTotal} 筆，新增 ${createdProposals.length} 筆，刪除 ${replan.deleteIds.length} 筆）`,
+            _editedB.caseId || null);
+          bgJobDone(srJobId);
+          renderBookingsPage();
+        } catch (e) {
+          bookingsData = _bkSnapshotSR;
+          renderBookingsPage();
+          setAlert('bookings-alert', 'warn', '儲存失敗：' + e.message);
+          bgJobFail(srJobId, e.message);
+        }
+      })();
+      return;
+    } else if (_editedB?.seriesId && _bkEditScope !== 'this') {
       // T3：系列編輯 — 套用到選定範圍；日期依「被編輯這筆」的日期差平移到範圍內其餘筆，
       // 被編輯這筆本身會恰好拿到 modal 填的日期（delta = date - _editedB.date，套用回自己等於 date）。
       // GC 逐筆同步：已有事件者 update、尚無事件者 create（順便回填歷史系列缺漏的 GC 事件）
