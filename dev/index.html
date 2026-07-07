@@ -11776,7 +11776,14 @@ async function saveRecord() {
     nextBkStart = document.getElementById('rec-next-bk-start')?.value || '';
     nextBkEnd   = document.getElementById('rec-next-bk-end')?.value   || '';
     if (!nextBkRoom || !nextBkDate || !nextBkStart || !nextBkEnd) {
-      _recAlert('已勾選「預約下次諮商空間」，請填寫空間、日期、開始與結束時間。'); return;
+      const _nbMissing = [
+        !nextBkRoom  && '空間（請點選一個空間名稱）',
+        !nextBkDate  && '日期',
+        !nextBkStart && '開始時間',
+        !nextBkEnd   && '結束時間',
+      ].filter(Boolean).join('、');
+      if (!nextBkRoom) _markSec('#rec-next-bk-room-wrap');
+      _recAlert(`已勾選「預約下次諮商空間」，尚缺：${_nbMissing}。`); return;
     }
     const _nbTRx = /^\d{2}:\d{2}$/;
     if (!_nbTRx.test(nextBkStart) || !_nbTRx.test(nextBkEnd)) {
@@ -24094,6 +24101,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 95, title: '系列預約全系列同步 Google 日曆＋下次預約驗證訊息精確化', isProd: false, items: [
+      item('修正', '系列預約（重複 N 次）改為每一筆都建立 Google 日曆事件（先前僅第一筆）；系列編輯時已有事件者更新、尚無事件者自動補建，歷史系列缺漏的日曆事件會在下次系列編輯時一併回填'),
+      item('改善', '個案紀錄「預約下次諮商空間」驗證訊息精確指出缺少的欄位（空間／日期／開始時間／結束時間），缺空間時同步標示空間選取區塊'),
+    ]},
     { date: '2026-07-07', v: 94, title: '預約表重構 Slice A：後端 bookingsCommit 寫入閘＋寫入當下衝突檢查', isProd: false, items: [
       item('改善', '空間預約新增後端 bookingsCommit 動作（LockService 併發鎖）：所有預約新增/編輯/刪除/複製/GC 匯入/GC 同步一律改經此動作寫入 bookings.json，取代前端整檔覆寫，杜絕多人同時操作互相覆蓋彼此的異動'),
       item('改善', '撞房／撞人衝突改為在後端寫入當下即時檢查（前端本機檢查僅作即時提示），杜絕兩人同時搶訂同房同時段或同一人同時段被排進兩個空間；偵測到衝突時整批不寫入，並提示為「與其他使用者同時操作發生衝突」'),
@@ -30290,7 +30301,7 @@ async function saveBooking() {
     const _editedB = bookingsData.find(x => x.id === _editingBookingId);
     if (_editedB?.seriesId && _bkEditScope !== 'this') {
       // T3：系列編輯 — 套用到選定範圍（不改日期，只改其他欄位）
-      // 沿用既有行為：GC 事件僅同步當初被點選編輯的那一筆，其餘系列筆數不觸碰 GC
+      // GC 逐筆同步：已有事件者 update、尚無事件者 create（順便回填歷史系列缺漏的 GC 事件）
       bookingsData
         .filter(x => x.seriesId === _editedB.seriesId && (_bkEditScope === 'all' || x.date >= _editedB.date))
         .forEach(sb => {
@@ -30300,8 +30311,8 @@ async function saveBooking() {
           sb.caseId = caseId || ''; sb.caseName = caseObj?.name || '';
           sb.notes = notes; sb.updatedAt = now;
           if (_bkOverride) sb.bkOverrideColor = _bkOverride; else delete sb.bkOverrideColor;
-          const isPrimary = sb.id === _editingBookingId;
-          _pushOp(sb, isPrimary ? (existingCalEventId ? 'update' : 'create') : 'none', isPrimary ? calParams : null);
+          _pushOp(sb, sb.calendarEventId ? 'update' : 'create',
+            { ...calParams, date: sb.date, bkSerial: sb.bkSerial, createdAt: sb.createdAt || calParams.createdAt, isEdit: !!sb.calendarEventId });
         });
     } else {
       const idx = bookingsData.findIndex(x => x.id === _editingBookingId);
@@ -30315,7 +30326,7 @@ async function saveBooking() {
       }
     }
   } else {
-    // T2：單筆或系列建立 — 沿用既有行為：僅第一筆（si===0）建立 GC 事件，其餘系列筆數待手動同步
+    // T2：單筆或系列建立 — 系列每一筆都建立 GC 事件（帶各自日期與流水號）
     for (let _si = 0; _si < repeatCount; _si++) {
       const _sDate = _si === 0 ? date : _bkAddDays(date, _si * repeatFreqDays);
       const _sObj = {
@@ -30328,7 +30339,7 @@ async function saveBooking() {
       if (seriesId) _sObj.seriesId = seriesId;
       if (_bkOverride) _sObj.bkOverrideColor = _bkOverride;
       bookingsData.push(_sObj);
-      _pushOp(_sObj, _si === 0 ? 'create' : 'none', _si === 0 ? calParams : null);
+      _pushOp(_sObj, 'create', { ...calParams, date: _sDate, bkSerial: _sObj.bkSerial });
     }
   }
 
