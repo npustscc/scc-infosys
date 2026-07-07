@@ -9379,17 +9379,25 @@ async function showCaseDetail(caseId) {
       ? `<span class="badge" style="background:#e9d8fd;color:#553c9a;border:1px solid #d6bcfa;${_cs}">伴侶：${escHtml(r.couplePartnerName)}</span>`
       : '';
 
+    // 下次預約（即時查 bookingsData；預約已被刪除則不顯示）
+    const _recNextBk = r.nextBkId ? bookingsData.find(b => b.id === r.nextBkId) : null;
+    const _recNextBkRoomD = _recNextBk ? (_recNextBk.room === '其他' ? (_recNextBk.customRoom || '其他') : (_recNextBk.room || '')) : '';
+    const _recNextBkFoldLine = _recNextBk
+      ? `<div style="margin-top:2px;font-size:.78rem;color:#a0aec0;">📅 ${escHtml((_recNextBk.date||'').slice(5).replace('-','/'))} ${escHtml((_recNextBk.startTime||'').slice(0,5))}</div>` : '';
+    const _recNextBkFullLine = _recNextBk
+      ? `<div style="margin-top:4px;font-size:.85rem;color:#4a5568;">下次預約：${escHtml(_recNextBk.date||'')} ${escHtml((_recNextBk.startTime||'').slice(0,5))}–${escHtml((_recNextBk.endTime||'').slice(0,5))} ${escHtml(_recNextBkRoomD)}</div>` : '';
+
     const foldView = `<div class="rec-fold-view">
       ${r.summary ? `<div class="record-summary rec-summary-clamp">${renderMaybeHtml(r.summary)}</div>
       <div class="rec-fold-more"><span class="rec-dots">……</span><button class="rec-more-btn" onclick="toggleRecordExpand('${escHtml(r.id)}')">更多</button></div>` : ''}
-      ${r.nextPlan ? `<div style="margin-top:6px;font-size:.82rem;color:#718096;" class="rec-nextplan-clamp">📌 ${renderMaybeHtml(r.nextPlan)}</div>` : ''}
+      ${r.nextPlan ? `<div style="margin-top:6px;font-size:.82rem;color:#718096;" class="rec-nextplan-clamp">📌 ${renderMaybeHtml(r.nextPlan)}</div>${_recNextBkFoldLine}` : ''}
       ${r.notes ? `<div style="margin-top:4px;font-size:.82rem;color:#a0aec0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;">備註：${renderMaybeHtml(r.notes)}</div>` : ''}
     </div>`;
 
     const fullView = `<div class="rec-full-view">
       ${r.summary ? `<div class="rec-section-label">主述與會談資料</div><div class="record-summary">${renderMaybeHtml(r.summary)}</div>` : ''}
       ${r.assessment ? `<div class="rec-section-label">問題評估</div><div class="record-summary">${renderMaybeHtml(r.assessment)}</div>` : ''}
-      ${r.nextPlan ? `<div class="rec-section-label">後續處遇計畫</div><div class="record-summary">${renderMaybeHtml(r.nextPlan)}</div>` : ''}
+      ${r.nextPlan ? `<div class="rec-section-label">後續處遇計畫</div><div class="record-summary">${renderMaybeHtml(r.nextPlan)}</div>${_recNextBkFullLine}` : ''}
       ${r.notes ? `<div class="rec-section-label">備註</div><div class="record-summary">${renderMaybeHtml(r.notes)}</div>` : ''}
       ${(r.summaryImages?.length || r.image) ? `<div id="rec-img-view-${r.id}" style="margin-top:8px;display:none;gap:8px;flex-wrap:wrap;align-items:flex-start;"></div>` : ''}
       ${renderAttachChips(r.attachments)}
@@ -10519,6 +10527,36 @@ async function restoreRecord(caseId, recordId) {
   }
 }
 
+// 從系列預約自動帶入下次會談時：使用者是否已改動 UI 供後續 saveRecord 判斷（見 _recNextBkPrefill）。
+let _recNextBkPrefill = null; // { bkId, room, date, start, end } | null
+
+// 把一筆 booking 的空間/日期/時間套用到「預約下次諮商空間」UI 區塊（含節次比對）。
+// 供編輯既有紀錄還原 nextBkId、以及從系列預約寫紀錄自動帶入下次會談共用。
+function _recFillNextBkUi(_linkedBk) {
+  if (!_linkedBk) return;
+  const _nbTgl = document.getElementById('rec-next-bk-toggle');
+  if (_nbTgl) { _nbTgl.checked = true; toggleNextBookingFields(); }
+  const _nbDt = document.getElementById('rec-next-bk-date');
+  if (_nbDt) _nbDt.value = _linkedBk.date || '';
+  _recNextBkRoom = _linkedBk.room === '其他' ? (_linkedBk.customRoom || '其他') : (_linkedBk.room || '');
+  _populateRecNextBkRoomChips(_recNextBkRoom);
+  const _pSel = document.getElementById('rec-next-bk-period');
+  const _tRow = document.getElementById('rec-next-bk-time-row');
+  const _sH = (_linkedBk.startTime || '').slice(0, 5);
+  const _eH = (_linkedBk.endTime   || '').slice(0, 5);
+  let _matched = false;
+  if (_pSel) {
+    for (const opt of _pSel.options) {
+      const m = opt.value.match(/(\d{2}:\d{2})[-–](\d{2}:\d{2})/);
+      if (m && m[1] === _sH && m[2] === _eH) { _pSel.value = opt.value; _matched = true; break; }
+    }
+  }
+  document.getElementById('rec-next-bk-start').value = _sH;
+  document.getElementById('rec-next-bk-end').value   = _eH;
+  if (_tRow) _tRow.style.display = _matched ? 'none' : (_sH && _eH ? 'block' : 'none');
+  if (!_matched && _pSel && _sH && _eH) _pSel.value = '其他';
+}
+
 function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄', prefill = null) {
   _recordCaseId    = caseId;
   _editingRecordId = recordId || null;
@@ -10609,6 +10647,8 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
   document.getElementById('btn-save-record').disabled = false;
   _recFromBkRoom = '';
   _recFromBkId   = '';
+  _recNextBkPrefill = null;
+  let _seriesNextBk = null; // 若從系列預約「寫紀錄」進入，這裡存下次會談那一筆（供下方自動帶入使用）
 
   if (existingRec) {
     // ── 編輯模式：填入現有資料 ──
@@ -10676,6 +10716,11 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
     }
     _recFromBkRoom = prefill.room || '';
     _recFromBkId   = prefill.bookingId || '';
+    // 從系列預約的某一筆「寫紀錄」：找同系列下次會談（日期較晚的最早一筆），供下方自動帶入
+    if (prefill.bookingId) {
+      const _srcBk = bookingsData.find(b => b.id === prefill.bookingId);
+      if (_srcBk) _seriesNextBk = _bkNextInSeries(bookingsData, _srcBk);
+    }
   }
   // 重置預約下次欄位
   const nbToggle = document.getElementById('rec-next-bk-toggle');
@@ -10690,29 +10735,14 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
   // 編輯模式：若記錄有 nextBkId，還原「預約下次諮商空間」區塊
   if (existingRec?.nextBkId) {
     const _linkedBk = bookingsData.find(b => b.id === existingRec.nextBkId);
-    if (_linkedBk) {
-      const _nbTgl = document.getElementById('rec-next-bk-toggle');
-      if (_nbTgl) { _nbTgl.checked = true; toggleNextBookingFields(); }
-      const _nbDt = document.getElementById('rec-next-bk-date');
-      if (_nbDt) _nbDt.value = _linkedBk.date || '';
-      _recNextBkRoom = _linkedBk.room === '其他' ? (_linkedBk.customRoom || '其他') : (_linkedBk.room || '');
-      _populateRecNextBkRoomChips(_recNextBkRoom);
-      const _pSel = document.getElementById('rec-next-bk-period');
-      const _tRow = document.getElementById('rec-next-bk-time-row');
-      const _sH = (_linkedBk.startTime || '').slice(0, 5);
-      const _eH = (_linkedBk.endTime   || '').slice(0, 5);
-      let _matched = false;
-      if (_pSel) {
-        for (const opt of _pSel.options) {
-          const m = opt.value.match(/(\d{2}:\d{2})[-–](\d{2}:\d{2})/);
-          if (m && m[1] === _sH && m[2] === _eH) { _pSel.value = opt.value; _matched = true; break; }
-        }
-      }
-      document.getElementById('rec-next-bk-start').value = _sH;
-      document.getElementById('rec-next-bk-end').value   = _eH;
-      if (_tRow) _tRow.style.display = _matched ? 'none' : (_sH && _eH ? 'block' : 'none');
-      if (!_matched && _pSel && _sH && _eH) _pSel.value = '其他';
-    }
+    if (_linkedBk) _recFillNextBkUi(_linkedBk);
+  } else if (_seriesNextBk) {
+    // 從系列預約「寫紀錄」：自動帶入下次會談時段，記錄 prefill 供 saveRecord 判斷使用者是否已更動內容
+    _recFillNextBkUi(_seriesNextBk);
+    _recNextBkPrefill = {
+      bkId: _seriesNextBk.id, room: _recNextBkRoom, date: _seriesNextBk.date,
+      start: (_seriesNextBk.startTime || '').slice(0, 5), end: (_seriesNextBk.endTime || '').slice(0, 5),
+    };
   }
 
   showPage('page-new-record', null);
@@ -11661,6 +11691,109 @@ function _collectServiceItems() {
   return items;
 }
 
+// ── 系列預約自動帶入下次會談，使用者更動後的三選一詢問 ────────────────
+let _recNextBkChoiceResolver = null;
+function _recNextBkChoiceResolve(choice) {
+  document.getElementById('rec-next-bk-choice-modal').style.display = 'none';
+  const resolve = _recNextBkChoiceResolver; _recNextBkChoiceResolver = null;
+  if (resolve) resolve(choice);
+}
+function _recAskNextBkChoice() {
+  document.getElementById('rec-next-bk-choice-modal').style.display = 'flex';
+  return new Promise(resolve => { _recNextBkChoiceResolver = resolve; });
+}
+
+// 從系列預約自動帶入的下次會談值（_recNextBkPrefill）若被使用者更動，決定如何處理：
+// 回傳 { proceed:false } → 使用者取消，saveRecord 應中止整個儲存；
+// 回傳 { proceed:true, skipDefaultBk:false } → 沿用現行「（有需要就）另外新建一筆獨立預約」邏輯
+//   （本來就無 prefill，或使用者選擇「額外新增」）；
+// 回傳 { proceed:true, skipDefaultBk:true, nextBkId } → 已就地處理完畢（沿用不變/單筆修正/此筆之後修正），
+//   saveRecord 後續不應再另外建立或更新預約，直接把 nextBkId（可能是空字串＝該部分處理失敗）寫入紀錄。
+async function _recResolveNextBkPrefill(wantNextBooking, nextBkRoom, nextBkDate, nextBkStart, nextBkEnd) {
+  if (!_recNextBkPrefill || !wantNextBooking) return { proceed: true, skipDefaultBk: false };
+  const pf = _recNextBkPrefill;
+  const unchanged = nextBkRoom === pf.room && nextBkDate === pf.date &&
+    nextBkStart === pf.start && nextBkEnd === pf.end;
+  if (unchanged) return { proceed: true, skipDefaultBk: true, nextBkId: pf.bkId };
+
+  const choice = await _recAskNextBkChoice();
+  if (choice === 'cancel') return { proceed: false };
+  if (choice === 'extra') return { proceed: true, skipDefaultBk: false };
+
+  const srcBk = bookingsData.find(b => b.id === pf.bkId);
+  if (!srcBk) return { proceed: true, skipDefaultBk: false }; // 系列那筆已不存在（例如剛好被刪），退回額外新增
+
+  const myName = configData?.users?.[currentUser.email]?.name || currentUser.email || '';
+  const nbNow = new Date().toISOString();
+
+  if (choice === 'single') {
+    const snap = { ...srcBk };
+    srcBk.room = nextBkRoom; srcBk.customRoom = ''; srcBk.date = nextBkDate;
+    srcBk.startTime = nextBkStart; srcBk.endTime = nextBkEnd; srcBk.updatedAt = nbNow;
+    if (!srcBk.counselorEmail) { srcBk.counselorEmail = currentUser.email; srcBk.counselorName = myName; }
+    const gcMode = srcBk.calendarEventId ? 'update' : 'create';
+    const label = `修正下次預約（單筆）：${myName} ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
+    const committed = await _bkCommitOne(srcBk, gcMode, _bkGcParamsOf(srcBk, !!srcBk.calendarEventId), label);
+    if (!committed) {
+      Object.assign(srcBk, snap);
+      setAlert('new-record-alert', 'warn', '下次預約單筆修正未套用（與其他預約衝突或儲存失敗）；紀錄本身仍會照常儲存，請之後自行調整下次預約。');
+      return { proceed: true, skipDefaultBk: true, nextBkId: '' };
+    }
+    return { proceed: true, skipDefaultBk: true, nextBkId: srcBk.id };
+  }
+
+  if (choice === 'afterthis') {
+    const dateDelta = _bkDaysBetween(srcBk.date, nextBkDate);
+    const targets = _bkSeriesTargets(bookingsData, srcBk, 'future');
+    const snapshot = targets.map(t => ({ ...t }));
+    targets.forEach(t => {
+      t.room = nextBkRoom; t.customRoom = '';
+      t.startTime = nextBkStart; t.endTime = nextBkEnd;
+      if (dateDelta) t.date = _bkAddDays(t.date, dateDelta);
+      t.updatedAt = nbNow;
+      if (!t.counselorEmail) { t.counselorEmail = currentUser.email; t.counselorName = myName; }
+    });
+    const jobId = bgJobAdd('修正下次預約（此筆之後）', `共 ${targets.length} 筆`);
+    try {
+      const ops = targets.map(t => ({
+        op: 'upsert', booking: { ...t },
+        gc: { mode: t.calendarEventId ? 'update' : 'create', params: _bkGcParamsOf(t, true) },
+      }));
+      const result = await bkCommit(ops, { checkConflicts: true });
+      if (result.error === 'conflict') {
+        snapshot.forEach(s => {
+          const t = bookingsData.find(x => x.id === s.id);
+          if (t) Object.assign(t, s);
+        });
+        const kind = result.conflictType === 'person' ? '人員' : '空間';
+        bgJobFail(jobId, `修正下次預約${kind}衝突`);
+        setAlert('new-record-alert', 'warn', `下次預約修正未套用：系列中有一筆與其他預約發生${kind}衝突，已還原；紀錄本身仍會照常儲存，請之後自行調整下次預約。`);
+        return { proceed: true, skipDefaultBk: true, nextBkId: '' };
+      }
+      if (result.fallback) {
+        await saveBookings();
+        targets.forEach(t => { if (t.calendarEventId) { _bkGcQueue.set(t.id, { ...t }); _bkGcFlush(); } });
+      } else {
+        (result.bookings || []).forEach(fb => {
+          const idx = bookingsData.findIndex(x => x.id === fb.id);
+          if (idx >= 0) bookingsData[idx] = fb;
+        });
+      }
+      bgJobDone(jobId);
+      return { proceed: true, skipDefaultBk: true, nextBkId: srcBk.id };
+    } catch (e) {
+      snapshot.forEach(s => {
+        const t = bookingsData.find(x => x.id === s.id);
+        if (t) Object.assign(t, s);
+      });
+      bgJobFail(jobId, e.message);
+      setAlert('new-record-alert', 'warn', '下次預約修正失敗：' + e.message + '；紀錄本身仍會照常儲存。');
+      return { proceed: true, skipDefaultBk: true, nextBkId: '' };
+    }
+  }
+  return { proceed: true, skipDefaultBk: false };
+}
+
 async function saveRecord() {
   const date    = document.getElementById('rec-date').value;
   const rawTime = document.getElementById('rec-time').value;
@@ -11795,10 +11928,12 @@ async function saveRecord() {
     const _editOldBkId = _editingRecordId
       ? (casesData[cidx]?.records?.find(r => r.id === _editingRecordId)?.nextBkId || '')
       : '';
+    // 從系列預約自動帶入時，該筆本尊也要排除在衝突比對之外（使用者可能只是微調同一筆，而非新增另一筆）
+    const _pfIgnoreId = _recNextBkPrefill?.bkId || '';
     const _nbConflict = _bkFindConflict(bookingsData,
       { id: _editOldBkId || null, date: nextBkDate, room: nextBkRoom, customRoom: '',
         startTime: nextBkStart, endTime: nextBkEnd, counselors: [{ value: currentUser.email }] },
-      { ignoreIds: _editOldBkId ? [_editOldBkId] : [] });
+      { ignoreIds: [_editOldBkId, _pfIgnoreId].filter(Boolean) });
     if (_nbConflict) {
       const w = _nbConflict.with;
       const wRoom = w.room === '其他' ? (w.customRoom || '其他') : w.room;
@@ -11812,6 +11947,11 @@ async function saveRecord() {
       }
     }
   }
+
+  // 從系列預約自動帶入下次會談時，若使用者已更動時段/空間：詢問額外新增／單筆修正／此筆之後修正（取消則中止儲存）
+  const _pfRes = await _recResolveNextBkPrefill(wantNextBooking, nextBkRoom, nextBkDate, nextBkStart, nextBkEnd);
+  if (!_pfRes.proceed) return;
+
   const counselorList = [..._recCounselors];
   const counselorName = counselorList.map(c => c.label).join('、');
   if (!casesData[cidx].records) casesData[cidx].records = [];
@@ -11837,9 +11977,12 @@ async function saveRecord() {
     const prev = { ...casesData[cidx].records[ridx] };
     const editedId = _editingRecordId;
     // 決定 nextBkId：有填預約則沿用舊 ID 或新建；未勾選則清空
+    // （從系列預約帶入且已被 _recResolveNextBkPrefill 就地處理完畢時，直接沿用其結果，不再另外新建/更新）
     let _editNextBkId = '';
     let _editBkAction = 'none'; // 'create' | 'update' | 'none'
-    if (wantNextBooking && nextBkRoom && nextBkDate && nextBkStart && nextBkEnd) {
+    if (_pfRes.skipDefaultBk) {
+      _editNextBkId = _pfRes.nextBkId || '';
+    } else if (wantNextBooking && nextBkRoom && nextBkDate && nextBkStart && nextBkEnd) {
       const oldBkId = prev.nextBkId || '';
       const oldBkStillExists = oldBkId && bookingsData.find(b => b.id === oldBkId);
       if (oldBkStillExists) {
@@ -11950,8 +12093,10 @@ async function saveRecord() {
     })();
   } else {
     // ── 新增紀錄 ──
-    const _newBkId = (wantNextBooking && nextBkRoom && nextBkDate && nextBkStart && nextBkEnd)
-      ? `bk_${Date.now()}` : '';
+    // 從系列預約帶入且已被 _recResolveNextBkPrefill 就地處理完畢時，直接沿用其結果，不再另外新建預約
+    const _newBkId = _pfRes.skipDefaultBk
+      ? (_pfRes.nextBkId || '')
+      : ((wantNextBooking && nextBkRoom && nextBkDate && nextBkStart && nextBkEnd) ? `bk_${Date.now()}` : '');
     const newRecord = {
       id: `REC-${Date.now()}`,
       date, time, creatorEmail: currentUser.email, counselorEmail: currentUser.email,
@@ -11995,7 +12140,7 @@ async function saveRecord() {
 
     // 立刻把預約推入記憶體（讓同 session 的衝突檢查可立即偵測）
     let _newBkObj = null;
-    if (_newBkId) {
+    if (_newBkId && !_pfRes.skipDefaultBk) {
       const myName = configData?.users?.[currentUser.email]?.name || currentUser.email || '';
       const _nbNow = new Date().toISOString();
       _newBkObj = { id: _newBkId, bkSerial: _bkNextSerial(), room: nextBkRoom,
@@ -24101,6 +24246,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 97, title: '紀錄呈現下次預約＋系列寫紀錄自動帶入與改期三選', isProd: false, items: [
+      item('新功能', '晤談紀錄「後續處遇計畫」下方即時顯示連結的下次預約：展開狀態顯示完整日期時間空間，收束狀態顯示精簡版（📅 月/日 時間）；預約已被刪除則不顯示'),
+      item('新功能', '從系列預約的某一筆點「寫紀錄」時，若同系列有更晚一筆會談，開啟紀錄表單會自動勾選「預約下次諮商空間」並帶入該筆的空間／日期／時間'),
+      item('新功能', '上述自動帶入的下次會談時段若被更動後儲存，會詢問「額外新增（保留原筆另增一筆）／單筆修正（只改這一筆）／此筆之後修正（該筆及之後同系列一併調整，日期依差值平移）」；未更動則直接沿用原筆，不重複建立預約或觸發 Google 日曆同步'),
+    ]},
     { date: '2026-07-07', v: 96, title: '系列預約編輯整修＋拖曳遷移套用範圍與衝突把關', isProd: false, items: [
       item('修復', '系列預約編輯選擇「此筆及之後」或「全部系列」時，變更日期現在會確實生效：被編輯的這一筆套用表單填的日期，範圍內其餘筆依相同天數平移（先前系列分支寫死不改日期，改了也沒反應）'),
       item('改善', '編輯系列預約時，Modal 標題下方即時顯示「套用範圍：僅此筆／此筆及之後（共 N 筆）／全部系列（共 N 筆）」，範圍非僅此筆時加註「變更日期將平移套用範圍內所有預約」；並顯示「此預約屬於系列預約（共 N 筆）」提示，避免誤以為系列已不存在'),
@@ -30239,6 +30389,14 @@ function _bkSeriesTargets(bookings, editedBooking, scope) {
   }
   return bookings.filter(x => x.seriesId === editedBooking.seriesId &&
     (scope === 'all' || x.date >= editedBooking.date));
+}
+
+// 系列預約中「下次會談」：同 seriesId、日期晚於 booking 的最早一筆；找不到（無系列或已是最後一筆）回 null。
+function _bkNextInSeries(bookings, booking) {
+  if (!booking?.seriesId) return null;
+  const later = bookings.filter(x => x.seriesId === booking.seriesId && x.date > booking.date);
+  if (!later.length) return null;
+  return later.reduce((earliest, x) => (x.date < earliest.date ? x : earliest));
 }
 
 function copyBooking(id) {
@@ -38194,6 +38352,22 @@ function toggleNavPin(navId) {
     </div>
     <div style="margin-top:14px;text-align:right;">
       <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bk-drag-scope-modal').style.display='none';_bkDragPending=null;">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 系列預約寫紀錄：自動帶入的下次會談被更動後的三選一 Modal -->
+<div id="rec-next-bk-choice-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10001;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:12px;max-width:400px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+    <h3 style="margin:0 0 8px;font-size:1rem;color:#2d3748;">下次預約時段已變更</h3>
+    <p style="font-size:.875rem;color:#718096;margin-bottom:16px;">此紀錄自動帶入了系列預約中的下次會談，您已更動空間／日期／時間。請選擇如何處理：</p>
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <button class="btn btn-secondary" onclick="_recNextBkChoiceResolve('extra')">額外新增<br><span style="font-weight:400;font-size:.78rem;color:#a0aec0;">保留系列原本那筆不變，另外新增一筆獨立預約</span></button>
+      <button class="btn btn-secondary" onclick="_recNextBkChoiceResolve('single')">單筆修正<br><span style="font-weight:400;font-size:.78rem;color:#a0aec0;">只修改系列中的這一筆</span></button>
+      <button class="btn btn-secondary" onclick="_recNextBkChoiceResolve('afterthis')">此筆之後修正<br><span style="font-weight:400;font-size:.78rem;color:#a0aec0;">這一筆及同系列之後所有預約一併調整（日期依差值平移）</span></button>
+    </div>
+    <div style="margin-top:14px;text-align:right;">
+      <button class="btn btn-secondary btn-sm" onclick="_recNextBkChoiceResolve('cancel')">取消（不儲存本次紀錄）</button>
     </div>
   </div>
 </div>
