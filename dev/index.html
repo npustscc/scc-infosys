@@ -24258,6 +24258,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 101, title: '系列預約儲存前確認預覽', isProd: false, items: [
+      item('新功能', '新增預約勾選「重複預約」時，按儲存會先跳出預覽視窗，逐筆列出即將建立的每一筆（日期含週幾、時間、空間，主責列於頂部），確認後才實際建立'),
+      item('新功能', '編輯系列預約且會影響多筆時（套用範圍為「此筆及之後」／「全部系列」，或調整了頻率／次數觸發系列重排），儲存前先顯示「修正前 → 修正後」對照表：每筆標示不變／修改／新增／刪除，有變動的日期時間空間以粗體強調、未變的以灰色呈現，人員／備註等內容變更加註「內容更新」；純單筆修改（僅此筆且未動頻率次數）不跳預覽'),
+      item('改善', '預覽視窗按「返回修改」只關閉預覽，預約表單保持開啟且所有欄位維持剛填的值，可直接調整後再儲存；按「確認執行」才進入原本的衝突檢查與儲存流程。預覽顯示的重排結果與實際套用共用同一份計算，保證所見即所得'),
+    ]},
     { date: '2026-07-07', v: 100, title: '編輯系列預約可調整重複頻率與次數', isProd: false, items: [
       item('新功能', '編輯系列預約中的某一筆時，「重複預約」區塊改為可調整（先前為唯讀）：調整頻率會把「此筆之後」的預約依新頻率重排（依原日期排序決定順序，會覆蓋先前個別調整過的日期，更早的筆與被編輯這筆本身不受影響）；調整次數會從系列尾端新增或刪除（減少時優先刪除日期最晚者，被編輯這筆一律不會被刪）'),
       item('改善', '調整頻率／次數是否觸發系列重排，與「套用範圍」（僅此筆／此筆及之後／全部系列）互相獨立：範圍只決定空間／時間／人員／案號／備註套用到哪些筆；新增筆的欄位一律取被編輯這筆在表單上的最新值'),
@@ -30865,6 +30870,92 @@ function _bkSeriesReplan(seriesSorted, editedId, editedNewDate, freqDays, newCou
   return { redates, creates, deleteIds };
 }
 
+// v101：系列重排「生效頻率推導＋重排試算」共用入口。儲存前預覽與 saveBooking 實際套用
+// 都呼叫這一個函式取結果（同輸入同輸出），保證預覽顯示的內容＝實際套用的內容，不會算兩次不一致。
+// 生效頻率：UI 勾選 > 開啟編輯時的基準頻率（_bkSeriesRepeatBaseline.freq）> 系列最後兩筆日期差 > 預設 7 天。
+function _bkSeriesReplanCompute(originalSeries, editedId, editedNewDate, uiFreqSel, uiCountVal) {
+  let effFreq = uiFreqSel;
+  if (effFreq == null) effFreq = _bkSeriesRepeatBaseline?.freq ?? null;
+  if (effFreq == null) {
+    if (originalSeries.length >= 2) {
+      const _a = originalSeries[originalSeries.length - 2], _c = originalSeries[originalSeries.length - 1];
+      effFreq = _bkDaysBetween(_a.date, _c.date) || 7;
+    } else effFreq = 7;
+  }
+  const replan = _bkSeriesReplan(
+    originalSeries.map(b => ({ id: b.id, date: b.date })),
+    editedId, editedNewDate, effFreq, uiCountVal);
+  return { effFreq, replan };
+}
+
+// ── v101：系列預約儲存前確認預覽 modal（Promise resolve 寫法，比照 rec-next-bk-choice-modal）──
+let _bkSeriesPreviewResolver = null;
+function _bkSeriesPreviewResolve(ok) {
+  document.getElementById('bk-series-preview-modal').style.display = 'none';
+  const resolve = _bkSeriesPreviewResolver; _bkSeriesPreviewResolver = null;
+  if (resolve) resolve(!!ok);
+}
+// 回傳 Promise<boolean>：true＝確認執行、false＝返回修改（呼叫端應保持預約 modal 開啟、不套用任何變更）。
+function _bkSeriesPreviewConfirm(previewHtml, title) {
+  document.getElementById('bk-series-preview-title').textContent = title || '系列預約確認';
+  document.getElementById('bk-series-preview-content').innerHTML = previewHtml;
+  document.getElementById('bk-series-preview-modal').style.display = 'flex';
+  return new Promise(resolve => { _bkSeriesPreviewResolver = resolve; });
+}
+
+function _bkDateWithWeekday(dateStr) {
+  const [y, m, d] = (dateStr || '').split('-').map(Number);
+  if (!y || !m || !d) return dateStr || '';
+  const WD = ['日','一','二','三','四','五','六'];
+  return `${dateStr}（週${WD[new Date(y, m - 1, d).getDay()]}）`;
+}
+
+// v101：編輯系列預約的「修正前 → 修正後」對照表 HTML。
+// beforeArr：同系列全部筆依日期排序（原始狀態）；afterMap：Map<id, {date,startTime,endTime,room,customRoom}>
+//（模擬套用後的狀態，不含將被刪除的筆）；creates：新增筆陣列（同形狀）；deleteIds：Set<id>；
+// contentChangedIds：Set<id>（人員/案號/備註/顏色等非日期時間空間的內容有變的筆，列尾附註「內容更新」）。
+function _bkBuildSeriesEditPreview(beforeArr, afterMap, creates, deleteIds, contentChangedIds) {
+  const roomOf = (b) => b.room === '其他' ? (b.customRoom || '其他') : (b.room || '');
+  const fmt = (b) => ({
+    d: _bkDateWithWeekday(b.date),
+    t: `${(b.startTime || '').slice(0, 5)}–${(b.endTime || '').slice(0, 5)}`,
+    r: roomOf(b),
+  });
+  const seg = (val, changed) => changed
+    ? `<span style="color:#1a202c;font-weight:700;">${escHtml(val)}</span>`
+    : `<span style="color:#a0aec0;">${escHtml(val)}</span>`;
+  const badge = (label, color, bg) =>
+    `<span style="display:inline-block;min-width:36px;text-align:center;font-size:.72rem;border-radius:6px;padding:1px 6px;margin-right:8px;color:${color};background:${bg};flex-shrink:0;">${label}</span>`;
+  const row = (inner) => `<div style="display:flex;align-items:baseline;padding:5px 0;border-bottom:1px solid #f0f4f8;line-height:1.5;"><div style="flex:1;min-width:0;">${inner}</div></div>`;
+  const rows = [];
+  beforeArr.forEach(b => {
+    const bf = fmt(b);
+    const bfStr = `${bf.d} ${bf.t} ${bf.r}`;
+    if (deleteIds.has(b.id)) {
+      rows.push(row(`${badge('刪除', '#742a2a', '#fed7d7')}<span style="text-decoration:line-through;color:#742a2a;">${escHtml(bfStr)}</span>`));
+      return;
+    }
+    const a = afterMap.get(b.id);
+    if (!a) return; // 防禦：afterMap 缺漏時不顯示（不應發生）
+    const af = fmt(a);
+    const dCh = af.d !== bf.d, tCh = af.t !== bf.t, rCh = af.r !== bf.r;
+    const contentCh = contentChangedIds.has(b.id);
+    if (!dCh && !tCh && !rCh && !contentCh) {
+      rows.push(row(`${badge('不變', '#4a5568', '#edf2f7')}<span style="color:#a0aec0;">${escHtml(bfStr)}</span>`));
+      return;
+    }
+    const note = contentCh ? `<span style="font-size:.75rem;color:#2b6cb0;margin-left:6px;">（內容更新）</span>` : '';
+    rows.push(row(
+      `${badge('修改', '#2a4365', '#bee3f8')}<span style="color:#718096;">${escHtml(bfStr)}</span>` +
+      `<span style="color:#a0aec0;margin:0 6px;">→</span>${seg(af.d, dCh)} ${seg(af.t, tCh)} ${seg(af.r, rCh)}${note}`));
+  });
+  (creates || []).forEach(c => {
+    const cf = fmt(c);
+    rows.push(row(`${badge('新增', '#22543d', '#c6f6d5')}<span style="font-weight:700;color:#22543d;">${escHtml(`${cf.d} ${cf.t} ${cf.r}`)}</span>`));
+  });
+  return rows.join('');
+}
+
 function copyBooking(id) {
   _copyingBkId = id;
   const b = bookingsData.find(x => x.id === id);
@@ -31096,30 +31187,95 @@ async function saveBooking() {
     }
   }
 
+  // v101：系列預約儲存前確認預覽 — 任何樂觀更新／衝突預檢之前，先讓使用者看到套用後的樣子。
+  // 觸發：新增且勾重複預約（≥2 筆）；或編輯系列且影響多筆（scope 非僅此筆，或觸發 v100 重排）。
+  // scope='this' 且未觸發重排＝純單筆修改，不跳預覽（與非系列編輯一致，避免煩人）。
+  // 「返回修改」→ 只關預覽，預約 modal 保持開啟、欄位維持使用者剛填的值，不套用任何變更。
+  // _srPlan：重排觸發時預覽階段先算好的結果（effFreq＋replan），下方 v100 重排分支直接沿用
+  // 同一份，保證預覽顯示＝實際套用（不會算兩次不一致）。
+  let _srPlan = null;
+  if (isRepeat && repeatCount >= 2) {
+    const _pvRows = [];
+    for (let _pi = 0; _pi < repeatCount; _pi++) {
+      const _pd = _pi === 0 ? date : _bkAddDays(date, _pi * repeatFreqDays);
+      _pvRows.push(`<div style="padding:5px 0;border-bottom:1px solid #f0f4f8;">${escHtml(_bkDateWithWeekday(_pd))} ${escHtml(start)}–${escHtml(end)} ${escHtml(room)}</div>`);
+    }
+    const _pvHtml = (counselorName ? `<div style="color:#4a5568;margin-bottom:8px;">主責：${escHtml(counselorName)}</div>` : '') + _pvRows.join('');
+    const _pvOk = await _bkSeriesPreviewConfirm(_pvHtml, `即將建立系列預約（共 ${repeatCount} 筆）`);
+    if (!_pvOk) { if (saveBtn) saveBtn.disabled = false; return; }
+  } else if (_editedBForReplan?.seriesId && (_bkEditScope !== 'this' || _seriesReplanTriggered)) {
+    const _pvSeries = bookingsData.filter(x => x.seriesId === _editedBForReplan.seriesId)
+      .map(x => ({ ...x }))
+      .sort((a, b) => (a.date < b.date ? -1 : (a.date > b.date ? 1 : 0)));
+    const _pvScopeIds = new Set(_bkSeriesTargets(bookingsData, _editedBForReplan, _bkEditScope).map(t => t.id));
+    const _pvAfter = new Map();
+    let _pvCreates = [], _pvDeleteIds = new Set();
+    if (_seriesReplanTriggered) {
+      _srPlan = _bkSeriesReplanCompute(_pvSeries, _editingBookingId, date, _uiFreqSel, _uiCountVal);
+      _srPlan.originalSeries = _pvSeries;
+      _srPlan.scopeTargetIds = _pvScopeIds;
+      const _pvRedates = new Map(_srPlan.replan.redates.map(r => [r.id, r.date]));
+      _pvDeleteIds = new Set(_srPlan.replan.deleteIds);
+      _pvSeries.forEach(b => {
+        if (_pvDeleteIds.has(b.id)) return;
+        const _inScope = _pvScopeIds.has(b.id);
+        _pvAfter.set(b.id, {
+          date: b.id === _editingBookingId ? date : (_pvRedates.get(b.id) || b.date),
+          startTime: _inScope ? start : b.startTime,
+          endTime:   _inScope ? end   : b.endTime,
+          room:       _inScope ? room       : b.room,
+          customRoom: _inScope ? customRoom : b.customRoom,
+        });
+      });
+      _pvCreates = _srPlan.replan.creates.map(cd => ({ date: cd, startTime: start, endTime: end, room, customRoom }));
+    } else {
+      // 未觸發重排：沿用既有平移語意（delta = 表單日期 − 被編輯筆原日期，套用到 scope 目標筆）
+      const _pvDelta = _bkDaysBetween(_editedBForReplan.date, date);
+      _pvSeries.forEach(b => {
+        const _inScope = _pvScopeIds.has(b.id);
+        _pvAfter.set(b.id, {
+          date: (_inScope && _pvDelta) ? _bkAddDays(b.date, _pvDelta) : b.date,
+          startTime: _inScope ? start : b.startTime,
+          endTime:   _inScope ? end   : b.endTime,
+          room:       _inScope ? room       : b.room,
+          customRoom: _inScope ? customRoom : b.customRoom,
+        });
+      });
+    }
+    // 人員/案號/備註/顏色等內容變更（scope 目標筆才會被套用；日期時間空間另行比對強調）
+    const _pvContentIds = new Set();
+    _pvSeries.forEach(b => {
+      if (!_pvScopeIds.has(b.id) || _pvDeleteIds.has(b.id)) return;
+      if ((b.counselorName || '') !== (counselorName || '') ||
+          (b.caseId || '') !== (caseId || '') ||
+          (b.notes || '') !== (notes || '') ||
+          ((b.bkOverrideColor || '') !== (_bkOverride || ''))) _pvContentIds.add(b.id);
+    });
+    const _pvHtml = _bkBuildSeriesEditPreview(_pvSeries, _pvAfter, _pvCreates, _pvDeleteIds, _pvContentIds);
+    const _pvOk = await _bkSeriesPreviewConfirm(_pvHtml, '系列預約變更確認');
+    if (!_pvOk) { if (saveBtn) saveBtn.disabled = false; return; }
+  }
+
   // 立即更新本機資料（樂觀更新）
   if (_editingBookingId) {
     const _editedB = bookingsData.find(x => x.id === _editingBookingId);
     if (_editedB?.seriesId && _seriesReplanTriggered) {
       // v100：頻率或次數被改動 — 系列重排／增刪；自成一個流程，處理完直接 return（不落入下方共用的
       // bgJob／bkCommit 收尾，因為 ops 形狀與衝突處理路線都不同：可能需要改開拖曳衝突修正視窗）。
-      const originalSeries = bookingsData.filter(x => x.seriesId === _editedB.seriesId)
-        .map(x => ({ ...x }))
-        .sort((a, b) => (a.date < b.date ? -1 : (a.date > b.date ? 1 : 0)));
-      const scopeTargetIds = new Set(_bkSeriesTargets(bookingsData, _editedB, _bkEditScope).map(t => t.id));
-
-      // 生效頻率：UI 勾選 > 開啟編輯時的基準頻率 > 系列最後兩筆日期差 > 預設 7 天
-      let effFreq = _uiFreqSel;
-      if (effFreq == null) effFreq = _bkSeriesRepeatBaseline?.freq ?? null;
-      if (effFreq == null) {
-        if (originalSeries.length >= 2) {
-          const _a = originalSeries[originalSeries.length - 2], _c = originalSeries[originalSeries.length - 1];
-          effFreq = _bkDaysBetween(_a.date, _c.date) || 7;
-        } else effFreq = 7;
+      // v101：originalSeries/scope/effFreq/replan 沿用預覽階段（_srPlan）算好的同一份結果，
+      // 保證使用者在預覽視窗看到並確認的內容＝實際套用的內容；防禦性 fallback（不應發生）才重算。
+      if (!_srPlan) {
+        const _os = bookingsData.filter(x => x.seriesId === _editedB.seriesId)
+          .map(x => ({ ...x }))
+          .sort((a, b) => (a.date < b.date ? -1 : (a.date > b.date ? 1 : 0)));
+        _srPlan = _bkSeriesReplanCompute(_os, _editingBookingId, date, _uiFreqSel, _uiCountVal);
+        _srPlan.originalSeries = _os;
+        _srPlan.scopeTargetIds = new Set(_bkSeriesTargets(bookingsData, _editedB, _bkEditScope).map(t => t.id));
       }
-
-      const replan = _bkSeriesReplan(
-        originalSeries.map(b => ({ id: b.id, date: b.date })),
-        _editingBookingId, date, effFreq, _uiCountVal);
+      const originalSeries = _srPlan.originalSeries;
+      const scopeTargetIds = _srPlan.scopeTargetIds;
+      const effFreq = _srPlan.effFreq;
+      const replan = _srPlan.replan;
 
       // 刪除前檢查：是否有晤談紀錄的「下次預約」掛接到將被刪除的筆
       if (replan.deleteIds.length) {
@@ -39007,6 +39163,19 @@ function toggleNavPin(navId) {
     <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
       <button class="btn btn-secondary" onclick="_bkDragFixCancel()">取消</button>
       <button class="btn btn-primary" id="bk-drag-fix-apply-btn" onclick="_bkDragFixApply()">套用並儲存</button>
+    </div>
+  </div>
+</div>
+
+<!-- v101：系列預約儲存前確認預覽 Modal（新增系列＝逐筆清單；編輯系列＝修正前→修正後對照） -->
+<div id="bk-series-preview-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10001;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:12px;max-width:560px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+    <h3 id="bk-series-preview-title" style="margin:0 0 8px;font-size:1rem;color:#2d3748;"></h3>
+    <p style="font-size:.82rem;color:#718096;margin-bottom:12px;">請確認以下內容是否符合預期；「返回修改」不會套用任何變更，可回到表單重新設定。</p>
+    <div id="bk-series-preview-content" style="max-height:50vh;overflow-y:auto;font-size:.875rem;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
+      <button class="btn btn-secondary" onclick="_bkSeriesPreviewResolve(false)">↩ 返回修改</button>
+      <button class="btn btn-primary" onclick="_bkSeriesPreviewResolve(true)">✓ 確認執行</button>
     </div>
   </div>
 </div>
