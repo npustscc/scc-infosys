@@ -19,7 +19,7 @@ const BASIC_INFO_SNAPSHOT_FIELDS = [
 
 function loadMergeFns(extra = {}) {
   return load(
-    ['_buildMergePlan', '_mergeCaseGroup', '_swapFormerId', '_caseSems', '_semKeyBase', '_recomputeCaseStatus', 'openDateToSemPrefix'],
+    ['_buildMergePlan', '_mergeCaseGroup', '_swapFormerId', '_migApplyCustomId', '_caseSems', '_semKeyBase', '_recomputeCaseStatus', 'openDateToSemPrefix'],
     { BASIC_INFO_SNAPSHOT_FIELDS, ...extra }
   );
 }
@@ -203,4 +203,62 @@ test('_swapFormerId：找不到指定的曾用案號時丟出錯誤', () => {
   const S = loadMergeFns();
   const target = { id: '1131005', semesters: ['1131'], formerIds: [{ id: '1142010', semesters: ['1142'] }] };
   assert.throws(() => S._swapFormerId(target, '9999999'), /找不到曾用案號/);
+});
+
+// ── _mergeCaseGroup：使用者改選非最早筆當主號（target 覆寫） ─────────────────
+
+test('_mergeCaseGroup：以較晚開案的 record 當 target 也正確 — formerIds 收最早那筆', () => {
+  const S = loadMergeFns();
+  const early = { id: '1131005', name: '甲生', openDate: '2024-09-01', semesters: ['1131'],
+    semesterStatus: { '1131': 'closed' }, phone: '0900000000' };
+  const late  = { id: '1142010', name: '甲生', openDate: '2025-03-01', semesters: ['1142'],
+    semesterStatus: { '1142': 'active' } };
+  S._mergeCaseGroup(late, [early]); // 使用者改選 1142010 當主號
+  assert.deepEqual([...late.semesters].sort(), ['1131', '1142']);
+  assert.equal(late.semesterStatus['1131'], 'closed');
+  assert.deepEqual(late.formerIds, [{ id: '1131005', semesters: ['1131'] }]);
+  assert.deepEqual(late.mainIdSems, ['1142']);
+  assert.equal(late.phone, '0900000000'); // root 補缺一樣生效
+});
+
+// ── _migApplyCustomId：合併後主號改採自訂全新案號 ───────────────────────────
+
+test('_migApplyCustomId：原主號入 formerIds（帶原生學期）、mainIdSems 清空、id 換自訂號', () => {
+  const S = loadMergeFns();
+  const target = { id: '1131005', semesters: ['1131', '1142'],
+    formerIds: [{ id: '1142010', semesters: ['1142'] }], mainIdSems: ['1131'] };
+  const oldId = S._migApplyCustomId(target, '1149001');
+  assert.equal(oldId, '1131005');
+  assert.equal(target.id, '1149001');
+  assert.deepEqual(target.mainIdSems, []); // 自訂號從未被使用過
+  assert.deepEqual(target.formerIds, [
+    { id: '1142010', semesters: ['1142'] },
+    { id: '1131005', semesters: ['1131'] },
+  ]);
+});
+
+test('_migApplyCustomId：套用自訂號後可 swap 回原主號，原生學期資訊不遺失', () => {
+  const S = loadMergeFns();
+  const target = { id: '1131005', semesters: ['1131', '1142'],
+    formerIds: [{ id: '1142010', semesters: ['1142'] }], mainIdSems: ['1131'] };
+  S._migApplyCustomId(target, '1149001');
+  const r = S._swapFormerId(target, '1131005');
+  assert.equal(r.newId, '1131005');
+  assert.equal(target.id, '1131005');
+  assert.deepEqual(target.mainIdSems, ['1131']); // 原主號的原生學期還原
+  // 自訂號退回曾用號（使用學期為空），另一曾用號不受影響
+  assert.deepEqual(target.formerIds, [
+    { id: '1142010', semesters: ['1142'] },
+    { id: '1149001', semesters: [] },
+  ]);
+});
+
+test('_migApplyCustomId：customId 與原 id 相同或為空 → 不動作', () => {
+  const S = loadMergeFns();
+  const target = { id: '1131005', semesters: ['1131'], mainIdSems: ['1131'] };
+  S._migApplyCustomId(target, '1131005');
+  S._migApplyCustomId(target, '');
+  assert.equal(target.id, '1131005');
+  assert.deepEqual(target.mainIdSems, ['1131']);
+  assert.equal(target.formerIds, undefined);
 });

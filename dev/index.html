@@ -8946,6 +8946,22 @@ function _mergeCaseGroup(target, sources, rootFallbackFields) {
   return { sourceRemaps };
 }
 
+// 合併後主號改採「自訂全新案號」的純記帳邏輯（不碰 Drive／DOM）：
+// 把 target 原 id 連同其原生學期 push 進 formerIds、mainIdSems 清空（自訂號從未被使用過）、id 換成 customId。
+// 回傳原 id。需在 migrateToChunks() 全量重建之前呼叫（重建按當下 id 放 chunk，無需 _renameCaseId）。
+function _migApplyCustomId(target, customId) {
+  if (!target || !target.id) throw new Error('_migApplyCustomId: target 不可為空');
+  if (!customId || customId === target.id) return target.id;
+  const oldId = target.id;
+  const oldSems = (Array.isArray(target.mainIdSems) && target.mainIdSems.length)
+    ? [...target.mainIdSems] : _caseSems(target);
+  if (!target.formerIds) target.formerIds = [];
+  target.formerIds.push({ id: oldId, semesters: oldSems });
+  target.mainIdSems = []; // 自訂號從未被任何學期使用過
+  target.id = customId;
+  return oldId;
+}
+
 // 主號↔曾用號互換的純記帳邏輯（不碰 Drive／DOM）：抽出以利單元測試往返一致性。
 // 就地修改 c：交換 c.id 與被選定的曾用號，並互換 mainIdSems（供對調後再對調回去仍能還原原始狀態）。
 function _swapFormerId(c, formerId) {
@@ -14226,7 +14242,7 @@ async function _migRunDryRun() {
     if (reportEl) reportEl.innerHTML = _migRenderReport(plan);
     if (statusEl) {
       statusEl.textContent = plan.groups.length
-        ? `分析完成：發現 ${plan.groups.length} 組待合併，已備份於 cases/${_migBackupPrefix}-*.json。確認無誤後再按「② 執行合併」。`
+        ? `分析完成：發現 ${plan.groups.length} 組待合併，已備份於 cases/${_migBackupPrefix}-*.json。可逐組取消勾選、改選主號或自訂全新案號，確認後再按「② 執行合併」。`
         : `分析完成：無需遷移（找不到同一學生多案號的紀錄）。已備份於 cases/${_migBackupPrefix}-*.json（可略過）。`;
     }
     if (btnExec) btnExec.disabled = !plan.groups.length;
@@ -14246,22 +14262,131 @@ function _migRenderReport(plan) {
     const nameHtml = g.nameMismatch
       ? `<div style="color:#c53030;font-size:.82rem;margin-top:4px;">⚠ 姓名不一致：${escHtml(g.names.join('、'))}</div>`
       : '';
-    const sourceList = g.sourceIds.map(id => {
-      const s = casesData.find(x => x.id === id);
-      const sems = s ? _caseSems(s).map(semesterLabel).join('、') : '';
-      return `${escHtml(id)}${sems ? `（${escHtml(sems)}）` : ''}`;
-    }).join('、');
-    return `<div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:8px;">
-      <div style="font-weight:600;">第 ${i + 1} 組　暫定主案號：<span style="color:#1a5276;">${escHtml(g.targetId)}</span>${target ? `（${escHtml(target.name || '')}）` : ''}</div>
-      <div style="font-size:.85rem;color:#4a5568;margin-top:4px;">將合併：${sourceList}</div>
-      ${conflictHtml}${nameHtml}
+    const semsOf = id => {
+      const c = casesData.find(x => x.id === id);
+      return c ? _caseSems(c).map(semesterLabel).join('、') : '';
+    };
+    // 主案號 radio 候選：本組所有案號（演算法暫定主號預設選中）＋最後一個「自訂案號」選項
+    const candidates = [g.targetId, ...g.sourceIds];
+    const radioRows = candidates.map(id => {
+      const isDefault = id === g.targetId;
+      const sems = semsOf(id);
+      return `<label style="display:flex;align-items:center;gap:6px;font-size:.85rem;color:#2d3748;cursor:pointer;flex-wrap:wrap;">
+        <input type="radio" name="mig-g${i}-main" value="${escHtml(id)}" ${isDefault ? 'checked' : ''} onchange="_migMainRadioChanged(${i})">
+        <strong style="color:#1a5276;">${escHtml(id)}</strong>${sems ? `<span style="color:#718096;">（${escHtml(sems)}）</span>` : ''}
+        ${isDefault ? '<span style="font-size:.72rem;color:#2b6cb0;background:#ebf8ff;border:1px solid #bee3f8;border-radius:4px;padding:0 5px;">暫定主號（開案最早）</span>' : ''}
+      </label>`;
+    }).join('');
+    const customRow = `<label style="display:flex;align-items:center;gap:6px;font-size:.85rem;color:#2d3748;cursor:pointer;flex-wrap:wrap;">
+        <input type="radio" name="mig-g${i}-main" value="__custom__" onchange="_migMainRadioChanged(${i})">
+        自訂案號（處理匯入異常等，合併後主號改用全新案號）
+        <input type="text" id="mig-g${i}-custom" class="field-input" maxlength="7" placeholder="7 位數字" disabled
+          style="width:110px;padding:2px 8px;font-size:.85rem;" oninput="_migCustomInputChanged(${i})">
+        <span id="mig-g${i}-custom-err" style="font-size:.78rem;color:#c53030;"></span>
+      </label>`;
+    return `<div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;margin-bottom:8px;" id="mig-group-${i}">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <label style="display:flex;align-items:center;gap:5px;font-size:.85rem;cursor:pointer;white-space:nowrap;font-weight:600;">
+          <input type="checkbox" id="mig-g${i}-include" checked onchange="_migGroupIncludeChanged(${i})"> 納入本次合併
+        </label>
+        <span style="font-weight:600;">第 ${i + 1} 組${target?.name ? `　${escHtml(target.name)}` : ''}</span>
+      </div>
+      <div id="mig-g${i}-body" style="margin-top:6px;">
+        <div style="font-size:.82rem;color:#718096;margin-bottom:4px;">合併後主案號（可改選其他案號，或自訂全新案號）：</div>
+        <div style="display:flex;flex-direction:column;gap:3px;">${radioRows}${customRow}</div>
+        ${conflictHtml}${nameHtml}
+      </div>
     </div>`;
   }).join('');
 }
 
+// 讀取第 i 組目前的 UI 選擇：{ include, choice（案號或 '__custom__'）, customId }；報告未渲染時回 null
+function _migReadGroupSelection(i) {
+  const includeEl = document.getElementById(`mig-g${i}-include`);
+  if (!includeEl) return null;
+  const choice = document.querySelector(`input[name="mig-g${i}-main"]:checked`)?.value || '';
+  const customId = (document.getElementById(`mig-g${i}-custom`)?.value || '').trim();
+  return { include: includeEl.checked, choice, customId };
+}
+
+// 自訂案號檢核：回傳錯誤訊息字串（'' = 通過）。等於本組成員視為改選該號（通過，執行時自動轉為 radio 選擇）。
+function _migValidateCustomId(customId, group, groupIdx) {
+  if (!customId) return '請輸入自訂案號';
+  if (!/^\d{7}$/.test(customId)) return '案號須為 7 位數字';
+  const members = group ? [group.targetId, ...group.sourceIds] : [];
+  if (members.includes(customId)) return ''; // 等同直接選該案號
+  if (casesData.some(c => c.id === customId)) return `案號 ${customId} 已被其他個案使用`;
+  if (casesData.some(c => (c.formerIds || []).some(f => f.id === customId))) return `案號 ${customId} 是其他個案的曾用案號`;
+  if ((casesManifest?.deletedIds || []).includes(customId)) return `案號 ${customId} 曾被永久刪除，不可再使用`;
+  for (let j = 0; j < (_migPlan?.groups?.length || 0); j++) {
+    if (j === groupIdx) continue;
+    const other = _migReadGroupSelection(j);
+    if (other && other.include && other.choice === '__custom__' && other.customId === customId) {
+      return `與第 ${j + 1} 組的自訂案號重複`;
+    }
+  }
+  return '';
+}
+
+function _migMainRadioChanged(i) {
+  const isCustom = document.querySelector(`input[name="mig-g${i}-main"]:checked`)?.value === '__custom__';
+  const inp = document.getElementById(`mig-g${i}-custom`);
+  if (inp) {
+    inp.disabled = !isCustom;
+    if (isCustom) inp.focus();
+  }
+  _migCustomInputChanged(i);
+}
+
+function _migCustomInputChanged(i) {
+  const errEl = document.getElementById(`mig-g${i}-custom-err`);
+  if (!errEl) return;
+  const sel = _migReadGroupSelection(i);
+  if (!sel || !sel.include || sel.choice !== '__custom__') { errEl.textContent = ''; return; }
+  errEl.textContent = _migValidateCustomId(sel.customId, _migPlan?.groups?.[i], i);
+}
+
+function _migGroupIncludeChanged(i) {
+  const body = document.getElementById(`mig-g${i}-body`);
+  const inc = document.getElementById(`mig-g${i}-include`)?.checked;
+  if (body) body.style.opacity = inc ? '' : '.45';
+  _migCustomInputChanged(i);
+}
+
 async function _migExecute() {
   if (!_migPlan || !_migPlan.groups.length) { showToast('請先執行①備份＋Dry-run 分析', 'warn'); return; }
-  if (!confirm(`即將合併 ${_migPlan.groups.length} 組同學生案號，此操作不可逆（已備份於 cases/${_migBackupPrefix}-*.json）。確定繼續？`)) return;
+  // 讀取每組 UI 選擇：是否納入、主號 radio（組內案號或自訂）
+  const selections = _migPlan.groups.map((g, i) => {
+    const sel = _migReadGroupSelection(i) || { include: true, choice: g.targetId, customId: '' };
+    const members = [g.targetId, ...g.sourceIds];
+    let mainId = members.includes(sel.choice) ? sel.choice : g.targetId;
+    let customId = '';
+    if (sel.choice === '__custom__') {
+      if (members.includes(sel.customId)) mainId = sel.customId; // 自訂號等於組內成員 → 視為直接改選該號
+      else customId = sel.customId;
+    }
+    return { group: g, index: i, include: !!sel.include, isCustomRaw: sel.choice === '__custom__', rawCustom: sel.customId, mainId, customId };
+  });
+  const included = selections.filter(s => s.include);
+  if (!included.length) { showToast('所有組皆未勾選「納入本次合併」，未執行任何合併', 'warn'); return; }
+  // 自訂案號逐組檢核，任一失敗即中止並指出哪一組（留空也要擋，不可靜默改用暫定主號）
+  for (const s of included) {
+    if (!s.isCustomRaw) continue;
+    if ([s.group.targetId, ...s.group.sourceIds].includes(s.rawCustom)) continue; // 等同改選組內該號，無需檢核
+    const err = _migValidateCustomId(s.rawCustom, s.group, s.index);
+    if (err) {
+      alert(`第 ${s.index + 1} 組的自訂案號有誤：${err}\n請修正後再執行合併。`);
+      _migCustomInputChanged(s.index);
+      return;
+    }
+  }
+  const skipped = selections.length - included.length;
+  const customList = included.filter(s => s.customId).map(s => `${s.mainId}→${s.customId}`);
+  if (!confirm(
+    `即將合併 ${included.length} 組同學生案號${skipped ? `（略過 ${skipped} 組）` : ''}，此操作不可逆（已備份於 cases/${_migBackupPrefix}-*.json）。` +
+    (customList.length ? `\n採自訂新主號：${customList.join('、')}` : '') +
+    `\n確定繼續？`
+  )) return;
   if (!confirm('請再次確認：合併後被併掉的案號將改列為「曾用案號」，仍可查閱與對調回主號。確定執行合併？')) return;
   const statusEl = document.getElementById('mig-status');
   const btnExec  = document.getElementById('mig-btn-exec');
@@ -14272,11 +14397,33 @@ async function _migExecute() {
   const summaries = [];
   try {
     let done = 0;
-    for (const g of _migPlan.groups) {
-      const target  = casesData.find(x => x.id === g.targetId);
-      const sources = g.sourceIds.map(id => casesData.find(x => x.id === id)).filter(Boolean);
+    for (const s of included) {
+      const g = s.group;
+      const members = [g.targetId, ...g.sourceIds];
+      // 主號可由使用者改選為組內任一案號；_mergeCaseGroup 與哪筆當 target 無關（root 欄位補缺不受影響）
+      const target  = casesData.find(x => x.id === s.mainId);
+      const sources = members.filter(id => id !== s.mainId).map(id => casesData.find(x => x.id === id)).filter(Boolean);
       if (!target || !sources.length) continue;
+      const sourceIds = sources.map(x => x.id);
       const { sourceRemaps } = _mergeCaseGroup(target, sources);
+      // 自訂新主號：須在 migrateToChunks() 全量重建之前改 id（重建按當下 id 放 chunk）
+      let origMainId = null;
+      if (s.customId) {
+        origMainId = _migApplyCustomId(target, s.customId);
+        // target 原 id 也要 remap 到最終自訂號（allowedCases／allowedCasesSems／transferData）
+        Object.values(configData?.users || {}).forEach(info => {
+          if (!info) return;
+          if (Array.isArray(info.allowedCases) && info.allowedCases.includes(origMainId)) {
+            info.allowedCases = [...new Set(info.allowedCases.map(x => x === origMainId ? target.id : x))];
+          }
+          if (info.allowedCasesSems?.[origMainId]) {
+            const sems = info.allowedCasesSems[origMainId];
+            delete info.allowedCasesSems[origMainId];
+            info.allowedCasesSems[target.id] = [...new Set([...(info.allowedCasesSems[target.id] || []), ...sems])];
+          }
+        });
+        (transferData || []).forEach(t => { if (t.caseId === origMainId) t.caseId = target.id; });
+      }
       sourceRemaps.forEach(({ id: srcId, semKeyMap }) => {
         Object.values(configData?.users || {}).forEach(info => {
           if (!info) return;
@@ -14296,11 +14443,12 @@ async function _migExecute() {
         if (idx !== -1) casesData.splice(idx, 1);
       });
       const detail = `合併 ${sources.length} 筆：` +
-        sourceRemaps.map(r => `${r.id}（${(sources.find(s => s.id === r.id)?.semesters || []).map(semesterLabel).join('、')}）`).join('、');
+        sourceRemaps.map(r => `${r.id}（${(sources.find(x => x.id === r.id)?.semesters || []).map(semesterLabel).join('、')}）`).join('、') +
+        (origMainId ? `；主號採自訂新號 ${target.id}（原 ${origMainId}）` : '');
       auditLog('個案合併遷移', target.id, null, detail);
-      summaries.push({ targetId: target.id, mergedIds: g.sourceIds });
+      summaries.push({ targetId: target.id, mergedIds: origMainId ? [...sourceIds, origMainId] : sourceIds });
       done++;
-      if (statusEl) statusEl.textContent = `合併中…（${done}/${_migPlan.groups.length}）`;
+      if (statusEl) statusEl.textContent = `合併中…（${done}/${included.length}）`;
     }
     // 全量重建 index/hot/chunks（🔴 僅在 _loadedFullDataset 為 true 時才可執行，已於 dry-run 階段確認過）
     await migrateToChunks();
@@ -24774,6 +24922,7 @@ function renderChangelogPage() {
       item('新功能', '案號查詢與管理頁新增「一學生一案號遷移」卡片（僅系統管理者可見）：① 全量備份＋Dry-run 分析，掃描同一學生名下的多筆歷史案號，列出暫定主案號（開案日期最早者）、同學期衝突與姓名不一致警示；② 執行合併（二次確認）將同學生多筆案號收斂為單一主案號，被併掉的案號改列為「曾用案號」（formerIds），資料完整保留並重建個案索引'),
       item('新功能', '曾用案號可查詢／可對調：案號查詢列表、個案列表搜尋、案號查重與建號皆感知曾用案號；個案詳情頁顯示「曾用案號：案號（學期）」，現任主責／系統管理者可將任一曾用案號「設為主號」（僅代表號互換，資料不動，可來回對調）'),
       item('新功能', '合併完成後自動發送「確認主案號」待辦給現任主責與所有系統管理者，提醒確認主案號是否合適'),
+      item('新功能', 'Dry-run 報告可逐組調整後再執行：每組可勾選是否納入本次合併（預設納入）、以單選改選組內任一案號為主號（預設為開案最早的暫定主號），或選「自訂案號」手動輸入 7 位數全新案號（處理匯入異常等狀況，即時檢核格式與是否已被現存案號／曾用案號／已刪除案號占用），執行前的確認視窗會反映實際選擇'),
       item('修復', '「修改案號」改案號後，若新舊案號分屬不同資料分塊（chunk），舊案號紀錄未從舊分塊移除，導致跨學年改案號後舊紀錄復活；改用共用的安全改名 helper，明確移除舊分塊中的殘留紀錄，並一併同步個案管理員（allowedCases／allowedCasesSems）與轉銜紀錄的案號歸屬'),
     ]},
     { date: '2026-07-07', v: 101, title: '系列預約儲存前確認預覽', isProd: true, items: [
