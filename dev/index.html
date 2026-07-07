@@ -24191,10 +24191,11 @@ function renderAttendancePage() {
     ...(disabledInterns.length ? [`<optgroup label="已停用">`,       ...disabledInterns.map(_opt), `</optgroup>`] : []),
   ].join('');
 
+  // 預設排序：日期／時間降冪（最新在最上）
   const filtered = records.filter(r =>
     (!filterEmail || r.email === filterEmail) &&
     (!filterDate  || r.date  === filterDate)
-  );
+  ).sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
 
   // 日期區間彙總（本月）
   const thisMonth = today.slice(0, 7);
@@ -24336,7 +24337,14 @@ function printAttendanceMonthlyReport(email, yyyymm) {
     apps.forEach(a => {
       const from = a.fromDate || '', to = a.toDate || a.fromDate || '';
       if (dateStr < from || dateStr > to) return;
-      notes.push(a.kind === 'overtime' ? `加班認證 ${a.hours} 小時` : `${a.leaveTypeName} ${a.hours} 小時`);
+      if (a.kind === 'overtime') { notes.push(`加班認證 ${a.hours} 小時`); return; }
+      // 請假：補上核准資訊「幾月幾日由誰核准」；舊資料若無 reviewedAt/reviewedByName 則維持原樣
+      let note = `${a.leaveTypeName} ${a.hours} 小時`;
+      if (a.reviewedAt && a.reviewedByName) {
+        const rd = new Date(a.reviewedAt);
+        if (!isNaN(rd.getTime())) note += `（${rd.getMonth() + 1}/${rd.getDate()} ${a.reviewedByName}核准）`;
+      }
+      notes.push(note);
     });
 
     // 週六日預設不列印整列；但當天若有打卡（含手動補登）、核准請假或加班認證，仍照常呈現該列（含灰底標示週末）
@@ -25597,7 +25605,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
-    { date: '2026-07-07', v: 126, title: '重大事件通知全面支援「收到」即封存（#30）', isProd: false, items: [
+    { date: '2026-07-07', v: 127, title: '差勤管理：打卡紀錄預設最新在上＋月報表請假註記補上核准資訊（#26-1 #4）', isProd: false, items: [
+      item('改善', '差勤管理「打卡紀錄」分頁的清單改為依日期／時間降冪排序，最新一筆固定顯示在最上方，不必往下捲'),
+      item('改善', '出勤月報表列印：備註欄的請假項目補上「幾月幾日由誰核准」（如「事假 8 小時（7/3 王主任核准）」），舊資料若無核准時間/核准人則維持原樣不受影響'),
+    ]},
       item('新功能', '待辦頁「重大事件通知」區塊中，原本只有「標記已讀」的 Gmail 變更（gmail_changed）與非上班時間活動（off_hours_activity）兩類，比照空間預約成功/他人代為建立兩類，改為顯示「收到」按鈕，點擊即從畫面封存（該使用者不再看到），四種重大事件通知的操作方式全數統一'),
       item('技術', '沿用 v58/v109 既有 MAJOR_EVENT_DISMISS_ON_READ／MAJOR_EVENT_BTN_LABEL 共用機制，僅擴充 Set／Label 對照表；通知本體仍保留於 configData（7 天後自動清除），僅畫面上「收到」後立即不再顯示；若需事後稽核，off_hours_log.json（活動全量 feed）與 audit_log.json（major:true）不受影響，仍可追查'),
     ]},
