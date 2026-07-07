@@ -24694,6 +24694,9 @@ document.addEventListener('DOMContentLoaded', () => {
       panel.style.display = 'none';
     }
   });
+  // v103：自訂時間輸入即時遮罩（空間預約自填時間、晤談紀錄「預約下次諮商空間」自填時間）
+  ['bk-start', 'bk-end', 'rec-next-bk-start', 'rec-next-bk-end'].forEach(id => _attachTimeMask(document.getElementById(id)));
+
   checkForUpdate();
   setInterval(checkForUpdate, 5 * 60 * 1000);
   setInterval(pollNotifications, 15 * 60 * 1000);
@@ -24918,6 +24921,13 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 103, title: '空間預約頁改善（新增日期預設、時間自動補冒號、編輯內刪除、連結個案排序）', isProd: false, items: [
+      item('改善', '點「＋新增預約」（非從格子點入）時，日期欄一律預設為今天，不再沿用目前檢視瀏覽到的日期'),
+      item('改善', '自填時間（節次選「其他」）的開始／結束時間欄位，輸入數字滿 2 位即時自動補上「:」，不必等離開欄位才看得到；晤談紀錄「預約下次諮商空間」的自填時間欄一併套用'),
+      item('改善', '週檢視按「今天」改為跳到「包含今天的那一週」且維持週一開頭呈現，不再把今天塞進第一欄打亂週一～週五版面'),
+      item('改善', '預約 Modal 的「連結個案」搜尋結果，目前選定主責人員為主責的個案排在最前面，其餘維持原順序'),
+      item('新功能', '編輯預約 Modal 新增「刪除」按鈕（紅色，左下角，與儲存分開），不必再關閉 Modal 回列表才能刪除；非系列直接確認刪除，系列預約沿用原有「僅此筆／此筆之後／全部系列」範圍選擇，皆含 Google 日曆事件刪除與稽核紀錄'),
+    ]},
     { date: '2026-07-07', v: 102, title: '個案架構重構 Slice 2：一學生一案號遷移引擎＋曾用案號', isProd: false, items: [
       item('新功能', '案號查詢與管理頁新增「一學生一案號遷移」卡片（僅系統管理者可見）：① 全量備份＋Dry-run 分析，掃描同一學生名下的多筆歷史案號，列出暫定主案號（開案日期最早者）、同學期衝突與姓名不一致警示；② 執行合併（二次確認）將同學生多筆案號收斂為單一主案號，被併掉的案號改列為「曾用案號」（formerIds），資料完整保留並重建個案索引'),
       item('新功能', '曾用案號可查詢／可對調：案號查詢列表、個案列表搜尋、案號查重與建號皆感知曾用案號；個案詳情頁顯示「曾用案號：案號（學期）」，現任主責／系統管理者可將任一曾用案號「設為主號」（僅代表號互換，資料不動，可來回對調）'),
@@ -30784,7 +30794,10 @@ function shiftBookingDate(delta) {
 
 function setBookingDateToday() {
   const el = document.getElementById('booking-date');
-  if (el) el.value = new Date().toISOString().slice(0, 10);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  // 週檢視：跳到「包含今天的那一週」且維持週一開頭（週一～週五），不可直接把今天塞進第一欄，
+  // 否則今天若非週一會把整週版面打亂（例如今天是週三，會變成「週三～下週二」）。
+  if (el) el.value = _bkWeekMode ? _bkGetMondayOf(todayStr) : todayStr;
   renderBookingsPage();
 }
 
@@ -31000,6 +31013,18 @@ function _bkTimeBlur(inp) {
   if (digits.length === 3) inp.value = '0' + digits[0] + ':' + digits.slice(1);
   else if (digits.length === 4) inp.value = digits.slice(0,2) + ':' + digits.slice(2);
   _checkBkConflict();
+}
+
+// 自訂時間輸入即時遮罩：輸入數字滿 2 位自動補「:」，退格可自然刪除（重算後長度變回 ≤2 位即不含冒號）；
+// 送出值仍維持 HH:MM。供空間預約自填時間（bk-start/bk-end）與晤談紀錄「預約下次諮商空間」自填時間
+// （rec-next-bk-start/rec-next-bk-end）共用，避免使用者要離開欄位（blur）才看得到冒號。
+function _attachTimeMask(el) {
+  if (!el || el._bkTimeMaskBound) return;
+  el._bkTimeMaskBound = true;
+  el.addEventListener('input', () => {
+    const digits = el.value.replace(/\D/g, '').slice(0, 4);
+    el.value = digits.length > 2 ? `${digits.slice(0, 2)}:${digits.slice(2)}` : digits;
+  });
 }
 
 function prFillPeriod() {
@@ -31254,6 +31279,14 @@ function _populateBookingCaseDatalist() {
       }).join('');
 }
 
+// 目前於預約 Modal 選定的主責人員 email（_bkSelectedOpts[0] 為主責，見 _populateBookingCounselorSelect
+// 的「主責」標示）；自訂選項／中心會議或尚無系統使用者對應時回傳空字串（不參與排序加權）。
+function _bkPrimaryCounselorEmail() {
+  const o = _bkSelectedOpts?.[0];
+  if (!o || o.isCustom) return '';
+  return configData?.users?.[o.value] ? o.value : '';
+}
+
 function onBkCaseIdInput() {
   const raw = document.getElementById('bk-case-id').value.trim();
   const hint = document.getElementById('bk-case-hint');
@@ -31265,6 +31298,13 @@ function onBkCaseIdInput() {
   if (!matches.length && raw.length >= 2) matches = active.filter(c => (c.name || '').includes(raw));
 
   if (!matches.length) { hint.style.display = 'none'; return; }
+
+  // 目前選定主責人員為主責的個案排最前面，其餘維持原順序（sort 為穩定排序，同分不改變相對順序）
+  const _selCounselor = _bkPrimaryCounselorEmail();
+  if (_selCounselor) {
+    matches = matches.slice().sort((a, b) =>
+      (a.counselorEmail === _selCounselor ? 0 : 1) - (b.counselorEmail === _selCounselor ? 0 : 1));
+  }
 
   hint.style.display = '';
   hint.style.color = '';
@@ -31371,19 +31411,21 @@ function _bkShowSeriesRepeatEditable(b) {
   }
 }
 
-function openBookingModal(prefillCaseId) {
+// prefill：由格子雙擊帶入（見 _bkCellDblClick）時提供 { room, date }，指定該空間／日期；
+// 未提供時（如點頁面上方「＋新增預約」按鈕）日期一律預設為今天（本地時區），不沿用目前檢視中瀏覽到的日期。
+function openBookingModal(prefillCaseId, prefill) {
   _editingBookingId = null;
   _bkSkipPersonConflict = false;
   _bkSelectedOpts = [];
   document.getElementById('booking-modal-title').textContent = '新增預約';
   _bkSelectedRoom = '';
-  _populateBookingRoomChips('');
+  _populateBookingRoomChips(prefill?.room || '');
   _populateBookingCounselorSelect();
   _populateBookingCaseDatalist();
   _initBkPeriodSelect();
   document.getElementById('bk-period').value = '';
   document.getElementById('bk-custom-times').style.display = 'none';
-  document.getElementById('bk-date').value = document.getElementById('booking-date')?.value || new Date().toISOString().slice(0,10);
+  document.getElementById('bk-date').value = prefill?.date || new Date().toISOString().slice(0,10);
   document.getElementById('bk-start').value = '';
   document.getElementById('bk-end').value = '';
   document.getElementById('bk-notes').value = '';
@@ -31393,6 +31435,7 @@ function openBookingModal(prefillCaseId) {
   document.getElementById('bk-room-conflict-warn').style.display = 'none';
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
+  const dbBtn = document.getElementById('btn-delete-booking'); if (dbBtn) dbBtn.style.display = 'none'; // 新增時尚無此筆可刪
   _bkEditScope = 'this';
   // 新增時顯示「重複預約」區塊（可互動預設值）
   _bkResetRepeatUi();
@@ -31428,6 +31471,7 @@ function editBooking(id) {
   document.getElementById('bk-room-conflict-warn').style.display = 'none';
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb2 = document.getElementById('btn-save-booking'); if (sb2) sb2.disabled = false;
+  const dbBtn2 = document.getElementById('btn-delete-booking'); if (dbBtn2) dbBtn2.style.display = ''; // 編輯既有預約才可刪除
   // 重複預約區塊：系列預約唯讀呈現當初的重複設定；非系列直接隱藏（現況顯示但存檔會被忽略，是誤導）
   if (b.seriesId) {
     _bkShowSeriesRepeatEditable(b);
@@ -31663,6 +31707,7 @@ function _bkCopyOpenModal() {
   document.getElementById('bk-room-conflict-warn').style.display = 'none';
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
+  const dbBtn3 = document.getElementById('btn-delete-booking'); if (dbBtn3) dbBtn3.style.display = 'none'; // 複製為新增，尚無此筆可刪
   _bkResetRepeatUi();
   _resetBkOverrideUi(b.bkOverrideColor || '');
   _bkEditScope = 'this';
@@ -31729,6 +31774,16 @@ async function _bkCopyToNextWeekConfirm() {
 
 function closeBookingModal() {
   document.getElementById('booking-modal').style.display = 'none';
+}
+
+// v103：編輯預約 Modal 內的「刪除」按鈕——先關閉編輯 Modal 再走既有 deleteBooking 流程
+// （非系列直接 confirm；系列跳「僅此筆／此筆之後／全部系列」範圍選擇，皆沿用原本的確認文案與
+// bkCommit 刪除＋GC 事件刪除＋auditLog，不重造輪子）。
+function _bkDeleteFromModal() {
+  const id = _editingBookingId;
+  if (!id) return;
+  closeBookingModal();
+  deleteBooking(id);
 }
 
 let _bkSkipPersonConflict = false;
@@ -39721,9 +39776,12 @@ function toggleNavPin(navId) {
       </div>
     </div>
     <div id="booking-conflict-warn" style="display:none;margin-top:10px;" class="alert alert-warn"></div>
-    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:16px;">
-      <button class="btn btn-secondary" onclick="closeBookingModal()">取消</button>
-      <button class="btn btn-primary" id="btn-save-booking" onclick="saveBooking()">儲存</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:16px;">
+      <button class="btn btn-danger" id="btn-delete-booking" style="display:none;" onclick="_bkDeleteFromModal()">🗑 刪除</button>
+      <div style="display:flex;gap:10px;margin-left:auto;">
+        <button class="btn btn-secondary" onclick="closeBookingModal()">取消</button>
+        <button class="btn btn-primary" id="btn-save-booking" onclick="saveBooking()">儲存</button>
+      </div>
     </div>
   </div>
 </div>
