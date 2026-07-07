@@ -2494,6 +2494,14 @@
             <div class="bsrs-btn-group" data-id="nc-bsrs6"><button type="button" class="bsrs-opt active" data-val="">未填</button><button type="button" class="bsrs-opt" data-val="0">0</button><button type="button" class="bsrs-opt" data-val="1">1</button><button type="button" class="bsrs-opt" data-val="2">2</button><button type="button" class="bsrs-opt" data-val="3">3</button><button type="button" class="bsrs-opt" data-val="4">4</button><input type="hidden" id="nc-bsrs6" value=""></div>
             <div id="nc-bsrs6-alert" style="display:none;margin-top:6px;"></div>
           </div>
+          <!-- #34：6 題皆未填時才顯示，需勾選才能儲存；只要任一題有填值即隱藏且不再要求 -->
+          <div class="full" id="nc-bsrs-unfilled-wrap" style="display:none;margin-top:6px;padding:9px 12px;border:1.5px solid #f6ad55;background:#fffaf0;border-radius:6px;">
+            <label style="display:flex;align-items:center;gap:8px;font-weight:600;color:#7b341e;cursor:pointer;font-size:.9rem;">
+              <input type="checkbox" id="nc-bsrs-unfilled" onchange="document.getElementById('nc-bsrs-unfilled-wrap').classList.remove('form-section-error')" style="width:18px;height:18px;" />
+              個案未填寫 BSRS
+            </label>
+            <div style="font-size:.78rem;color:#975a16;margin-top:3px;margin-left:26px;">6 題皆未填寫時，請勾選確認為個案未填寫（而非系統漏填），才能儲存個案。</div>
+          </div>
         </div>
       </div>
 
@@ -14845,6 +14853,8 @@ function openEditCasePage(caseId) {
     setBsrsBtn(id, val);
   });
   setBsrsBtn('nc-bsrs6', (c.bsrs6 !== null && c.bsrs6 !== undefined) ? String(c.bsrs6) : '');
+  const _ncBsrsUnfilledCb = document.getElementById('nc-bsrs-unfilled');
+  if (_ncBsrsUnfilledCb) _ncBsrsUnfilledCb.checked = !!c.bsrsUnfilled;
   calcBsrsTotal();
   updateOpenDateRoc();
   updateBirthRoc();
@@ -14965,6 +14975,8 @@ function openNewCasePage() {
   const _ncClearHint = document.getElementById('nc-topic-other-hint'); if (_ncClearHint) _ncClearHint.style.display = 'none';
   const _ncClearOtherEl = document.getElementById('nc-topic-other'); if (_ncClearOtherEl) { _ncClearOtherEl.style.borderColor = ''; }
   ['nc-bsrs1','nc-bsrs2','nc-bsrs3','nc-bsrs4','nc-bsrs5','nc-bsrs6'].forEach(id => setBsrsBtn(id, ''));
+  const _ncBsrsUnfilledReset = document.getElementById('nc-bsrs-unfilled');
+  if (_ncBsrsUnfilledReset) _ncBsrsUnfilledReset.checked = false;
   calcBsrsTotal();
   _ncEthSel = '';
   setAlert('new-case-alert', '', '');
@@ -15311,11 +15323,22 @@ function calcBsrsTotal() {
   }
 
   const q6v = document.getElementById('nc-bsrs6')?.value;
+  const q6score = q6v !== '' && q6v !== undefined ? parseInt(q6v) : null;
   const q6AlertEl = document.getElementById('nc-bsrs6-alert');
   if (q6AlertEl) {
-    const q6score = q6v !== '' && q6v !== undefined ? parseInt(q6v) : null;
     if (q6score !== null && q6score > 0) { q6AlertEl.innerHTML = _bsrsAlertHtml(bsrs6AlertInfo(q6score)); q6AlertEl.style.display = ''; }
     else { q6AlertEl.style.display = 'none'; }
+  }
+
+  // #34：6 題（含第6題）皆未填時才顯示「個案未填寫 BSRS」勾選框；只要任一題有填值即隱藏並清除勾選狀態
+  const _bsrsAllUnfilled = !hasSome && q6score === null;
+  const _unfilledWrap = document.getElementById('nc-bsrs-unfilled-wrap');
+  if (_unfilledWrap) {
+    _unfilledWrap.style.display = _bsrsAllUnfilled ? '' : 'none';
+    if (!_bsrsAllUnfilled) {
+      const _cb = document.getElementById('nc-bsrs-unfilled');
+      if (_cb) _cb.checked = false;
+    }
   }
 }
 
@@ -18319,6 +18342,9 @@ async function saveCase() {
   const bsrs6v = document.getElementById('nc-bsrs6')?.value;
   const bsrs6 = bsrs6v !== '' ? parseInt(bsrs6v) : null;
   const bsrsTotal = bsrs.some(v => v !== null) ? bsrs.filter(v=>v!==null).reduce((a,b)=>a+b,0) : null;
+  // #34：6 題皆未填時，須勾選「個案未填寫 BSRS」才能儲存；只要任一題有填值就不需要這個勾選
+  const _bsrsAllUnfilled = bsrs.every(v => v === null) && bsrs6 === null;
+  const bsrsUnfilled = _bsrsAllUnfilled && !!document.getElementById('nc-bsrs-unfilled')?.checked;
   const isTransferCase = !!(document.getElementById('nc-is-transfer-case')?.checked);
 
   const pastRecords = [];
@@ -18357,7 +18383,8 @@ async function saveCase() {
     _validateTopicOther('nc');
     missing.push('主訴問題分類「其他」說明');
   }
-  if (bsrs.some(v => v === null) || bsrs6 === null) missing.push('BSRS-5 量表（6題皆須填寫）');
+  const BSRS_UNFILLED_LABEL = 'BSRS-5 量表（6 題皆未填時，請勾選「個案未填寫 BSRS」）';
+  if (_bsrsAllUnfilled && !bsrsUnfilled) missing.push(BSRS_UNFILLED_LABEL);
   const _caseAlert = (msg) => {
     setAlert('new-case-alert', 'error', msg);
     document.getElementById('new-case-alert').scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -18366,12 +18393,16 @@ async function saveCase() {
   if (missing.length) {
     _caseAlert('請填寫必填欄位：' + missing.join('、'));
     document.querySelectorAll('.form-section-error').forEach(el => el.classList.remove('form-section-error'));
-    const _fmap = {'案號':'nc-id','姓名':'nc-name','學號':'nc-student-id','身分證字號':'nc-id-number','法定性別':'nc-gender','開案日期':'nc-open-date','對象類別':'nc-type','國籍':'nc-nationality','學制':'nc-program','系所':'nc-dept','聯絡電話':'nc-phone','住所類型':'nc-residence','緊急聯絡人姓名':'nc-emg-name','緊急聯絡人電話':'nc-emg-phone','緊急聯絡人關係':'nc-emg-relation','案別（A案／B案）':'nc-ab-type','來源':'nc-source','主訴問題分類':'nc-topic','主訴問題分類「其他」說明':'nc-topic-other','BSRS-5 量表（6題皆須填寫）':'nc-bsrs1'};
+    const _fmap = {'案號':'nc-id','姓名':'nc-name','學號':'nc-student-id','身分證字號':'nc-id-number','法定性別':'nc-gender','開案日期':'nc-open-date','對象類別':'nc-type','國籍':'nc-nationality','學制':'nc-program','系所':'nc-dept','聯絡電話':'nc-phone','住所類型':'nc-residence','緊急聯絡人姓名':'nc-emg-name','緊急聯絡人電話':'nc-emg-phone','緊急聯絡人關係':'nc-emg-relation','案別（A案／B案）':'nc-ab-type','來源':'nc-source','主訴問題分類':'nc-topic','主訴問題分類「其他」說明':'nc-topic-other',[BSRS_UNFILLED_LABEL]:'nc-bsrs-unfilled'};
     missing.forEach(label => {
       const fid = _fmap[label]; if (!fid) return;
       const el = document.getElementById(fid) || document.querySelector(`input[name="${fid}"]`);
       if (el) el.closest('.form-section')?.classList.add('form-section-error');
     });
+    // BSRS 未填勾選框：額外醒目標示該勾選列本身（紅框＋閃爍），而不只是整個 BSRS 區塊
+    if (missing.includes(BSRS_UNFILLED_LABEL)) {
+      document.getElementById('nc-bsrs-unfilled-wrap')?.classList.add('form-section-error');
+    }
     const _firstErr = document.querySelector('.form-section-error');
     if (_firstErr) _firstErr.scrollIntoView({ behavior: 'smooth', block: 'center' });
     return;
@@ -18505,7 +18536,7 @@ async function saveCase() {
     emergencyName: emgName, emergencyPhone: emgPhone, emergencyRelation: emgRelation,
     source, pastRecords, topics,
     counselorEmail, counselorName, counselorText: '',
-    bsrs, bsrs6, bsrsTotal,
+    bsrs, bsrs6, bsrsTotal, bsrsUnfilled,
     abType, bCaseReasons, status, isTransferCase, createdAt: now, updatedAt: now,
   };
 
@@ -18554,7 +18585,7 @@ async function saveCase() {
        'emergencyName','emergencyPhone','emergencyRelation','source','pastRecords','topics',
        'abType','bCaseReasons','isTransferCase'].forEach(f => { if (newCase[f] !== undefined) target[f] = newCase[f]; });
       target.openDate = target.openDate || openDate; // 保留最早開案日期，不覆寫
-      target.bsrs = bsrs; target.bsrs6 = bsrs6; target.bsrsTotal = bsrsTotal;
+      target.bsrs = bsrs; target.bsrs6 = bsrs6; target.bsrsTotal = bsrsTotal; target.bsrsUnfilled = bsrsUnfilled;
       const oldCounselorEmail = _getLatestCounselorEmail(target);
       // 未選主責時不覆寫既有主責（否則空值會蓋掉原主責的全案層級與最新學期快照）；
       // 僅定格既有快照，新學期快照留空 → 顯示 fallback 到全案層級（原主責不變）
@@ -25104,6 +25135,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 115, title: '新增個案 BSRS 皆未填時需勾選確認（#34）', isProd: false, items: [
+      item('改善', '新增／編輯個案的 BSRS-5 量表：6 題全數未填時，才會顯示「個案未填寫 BSRS」勾選框，須勾選才能儲存，避免與系統漏填混淆；未勾選就按儲存會擋下並捲動回勾選列，紅框＋閃爍提示'),
+      item('改善', '只要 6 題中有任 1 題已填值，勾選框自動隱藏、不再要求勾選，直接視為個案填答不完整（漏填／拒填部分題項）可正常儲存'),
+      item('技術', '個案新增 bsrsUnfilled 欄位記錄此次是否為「確認未填」；編輯個案時會還原此欄位的勾選狀態，驗證路徑新增／編輯共用同一段程式'),
+    ]},
     { date: '2026-07-07', v: 114, title: '紀錄儲存後自動定位並醒目提示（#22）', isProd: false, items: [
       item('改善', '晤談紀錄、初次晤談表、精神科醫師評估、事件處理記錄，儲存後返回個案詳細頁會自動捲動到該筆紀錄卡片，並背景閃爍 2 秒方便確認'),
       item('改善', '若個案為跨學期案號、該筆紀錄所屬學期不是目前顯示的分頁，會先自動切到該學期再捲動，避免捲動落空'),
