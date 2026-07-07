@@ -3721,7 +3721,8 @@ function buildCounselorFilterOpts(selectedValue, includeDisabled = true, allLabe
     html += `<optgroup label="${escHtml(group.label)}">`;
     entries.forEach(e => {
       const v = val(e);
-      html += `<option value="${escHtml(v)}"${selectedValue === v ? ' selected' : ''}>${escHtml(formatCounselorLabel(e[0]))}</option>`;
+      const _noMailSuf = e[0].startsWith('nomail_') ? '（無 Gmail）' : '';
+      html += `<option value="${escHtml(v)}"${selectedValue === v ? ' selected' : ''}>${escHtml(formatCounselorLabel(e[0]) + _noMailSuf)}</option>`;
     });
     html += '</optgroup>';
   });
@@ -3738,7 +3739,8 @@ function buildCounselorFilterOpts(selectedValue, includeDisabled = true, allLabe
       html += `<optgroup label="${escHtml(group.label + '（已停用）')}">`;
       entries.forEach(e => {
         const v = val(e);
-        html += `<option value="${escHtml(v)}"${selectedValue === v ? ' selected' : ''} style="color:gray">${escHtml(formatCounselorLabel(e[0]))}（已停用）</option>`;
+        const _noMailSuf = e[0].startsWith('nomail_') ? '、無 Gmail' : '';
+        html += `<option value="${escHtml(v)}"${selectedValue === v ? ' selected' : ''} style="color:gray">${escHtml(formatCounselorLabel(e[0]))}（已停用${_noMailSuf}）</option>`;
       });
       html += '</optgroup>';
     });
@@ -3897,6 +3899,37 @@ function formatCounselorLabel(key) {
   if (!name) return key;
   if (!role || role === '系統管理者') return name;
   return name + role;
+}
+
+// #15：主責/輔導人員狀態徽章——已停用（灰）或無 Gmail 帳號（黃），一般使用者回傳空字串。
+// 供 innerHTML 情境使用（含 HTML 標籤）；textContent 情境請改用 _counselorStatusSuffix。
+function _counselorStatusBadge(email) {
+  if (!email) return '';
+  const u = configData?.users?.[email];
+  if (u?.disabled) return ' <span class="badge badge-gray" style="font-size:.68rem;padding:0 6px;">已停用</span>';
+  if (email.startsWith('nomail_')) return ' <span class="badge" style="font-size:.68rem;padding:0 6px;background:#fefcbf;color:#744210;border:1px solid #f6e05e;">無 Gmail</span>';
+  return '';
+}
+// 純文字版（供 textContent 賦值處，不能塞 HTML 標籤）
+function _counselorStatusSuffix(email) {
+  if (!email) return '';
+  const u = configData?.users?.[email];
+  if (u?.disabled) return '（已停用）';
+  if (email.startsWith('nomail_')) return '（無 Gmail）';
+  return '';
+}
+// 空間預約卡片：綜合該筆預約所有輔導人員（可複選）的狀態徽章，去重後串接
+function _bkCounselorBadges(b) {
+  const list = (Array.isArray(b?.counselors) && b.counselors.length) ? b.counselors : (b?.counselorEmail ? [{ value: b.counselorEmail }] : []);
+  const seen = new Set();
+  let html = '';
+  list.forEach(p => {
+    const email = p?.value;
+    if (!email || seen.has(email)) return;
+    seen.add(email);
+    html += _counselorStatusBadge(email);
+  });
+  return html;
 }
 
 // 個案列表「管／初」徽章顏色（依類型區分，醒目好辨識）
@@ -6685,7 +6718,7 @@ function _crisisRenderResults() {
         : (_hasCrisisGrant(c.id)
             ? `<button class="btn btn-secondary btn-sm" style="font-size:.76rem;" onclick="_crisisEnsureCaseStub('${cid}');showCaseDetail('${cid}')">開啟（今日已授權）</button>`
             : `<button class="btn btn-danger btn-sm" style="font-size:.76rem;" onclick="_crisisPickTarget('${cid}')">申請閱讀</button>`);
-      return `<tr><td>${escHtml(c.name || '—')}</td><td>${escHtml(c.studentId || '—')}</td><td style="font-family:monospace;">${cid}</td><td>${escHtml(c.counselorName || c.counselorEmail || '—')}</td><td style="text-align:right;">${btn}</td></tr>`;
+      return `<tr><td>${escHtml(c.name || '—')}</td><td>${escHtml(c.studentId || '—')}</td><td style="font-family:monospace;">${cid}</td><td>${escHtml(c.counselorName || configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '—')}${_counselorStatusBadge(c.counselorEmail)}</td><td style="text-align:right;">${btn}</td></tr>`;
     }).join('')}</tbody></table></div>`;
 }
 
@@ -7063,10 +7096,10 @@ function renderCases() {
       <td>${escHtml(c.id || '—')}${abBadge ? `<br>${abBadge}` : ''}</td>
       <td>${escHtml(c.name  || '—')}</td>
       <td>${escHtml(c.studentId || '—')}</td>
-      <td>${escHtml(c.counselorName || '—')}${
+      <td>${escHtml(c.counselorName || configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '—')}${_counselorStatusBadge(c.counselorEmail)}${
         caseManagerMap[c.id] && caseManagerMap[c.id].size
           ? `<div style="font-size:.72rem;margin-top:2px;display:flex;flex-wrap:wrap;">
-               ${[...caseManagerMap[c.id].entries()].map(([email, tags]) => _caseBadgeChip([...tags], formatCounselorLabel(email))).join('')}
+               ${[...caseManagerMap[c.id].entries()].map(([email, tags]) => _caseBadgeChip([...tags], formatCounselorLabel(email) + (email.startsWith('nomail_') ? '（無 Gmail）' : (configData?.users?.[email]?.disabled ? '（已停用）' : '')))).join('')}
              </div>`
           : ''
       }${
@@ -9456,7 +9489,8 @@ async function showCaseDetail(caseId) {
   document.getElementById('detail-meta').innerHTML =
     `案號：<strong>${escHtml(c.id)}</strong> &nbsp;|&nbsp; ` +
     `開案日期：${adToRocDisplay(_cd('openDate'))} &nbsp;|&nbsp; ` +
-    `主責：${escHtml(_cd('counselorText') || _cd('counselorName') || _cd('counselorEmail') || '—')}` +
+    `主責：${escHtml(_cd('counselorText') || _cd('counselorName') || configData?.users?.[_cd('counselorEmail')]?.name || _cd('counselorEmail') || '—')}` +
+    _counselorStatusBadge(_cd('counselorEmail')) +
     (!_cd('counselorEmail') && (_cd('counselorText') || _cd('counselorName')) ? ' <span style="font-size:.72rem;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:1px 7px;color:#a0aec0;">未連結帳號</span>' : '') +
     _buildCounselorHistoryBtn(c, _activeSem) +
     `&nbsp;&nbsp;${statusBadge(c.status)}` +
@@ -9499,7 +9533,7 @@ async function showCaseDetail(caseId) {
         `<div style="font-size:.9rem;font-weight:700;color:#c53030;margin-bottom:6px;">🚨 本學期同一個案另有開案紀錄</div>` +
         _semDups.map(d =>
           `<div style="font-size:.85rem;color:#742a2a;margin-bottom:3px;">
-            案號：<strong>${escHtml(d.id)}</strong>　主責：${escHtml(d.counselorName || d.counselorEmail || '—')}　開案日期：${escHtml(d.openDate || '—')}
+            案號：<strong>${escHtml(d.id)}</strong>　主責：${escHtml(d.counselorName || configData?.users?.[d.counselorEmail]?.name || d.counselorEmail || '—')}${_counselorStatusBadge(d.counselorEmail)}　開案日期：${escHtml(d.openDate || '—')}
             <span onclick="showCaseDetail('${escHtml(d.id)}')" style="color:#2b6cb0;cursor:pointer;text-decoration:underline;margin-left:8px;">查看</span>
           </div>`
         ).join('') +
@@ -12831,7 +12865,7 @@ function openClosureEvalPage(caseId, evalType, editingEvalId) {
   document.getElementById('cl-qualitative-semester').style.display = isClosure ? 'none' : '';
 
   document.getElementById('closure-case-info').textContent =
-    `個案：${c.name}（${c.id}）　學期：${semesterLabel(_closureEvalSem)}　主責：${c.counselorName || c.counselorEmail}`;
+    `個案：${c.name}（${c.id}）　學期：${semesterLabel(_closureEvalSem)}　主責：${c.counselorName || configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '—'}${_counselorStatusSuffix(c.counselorEmail)}`;
 
   const evalSem = _closureEvalSem;
 
@@ -13337,7 +13371,7 @@ function _buildEvalPrintHtml(c, ev, formTitle) {
   <button onclick="toggleSyslog()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.5);color:#fff;font-size:.72rem;font-weight:700;cursor:pointer;padding:2px 10px;border-radius:3px;letter-spacing:.06em;">LOG</button>
 </div>
   <h2>國立屏東科技大學學生諮商中心 ${esc(formTitle)}</h2>
-  <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)} &ensp;|&ensp; 主責：${esc(c.counselorName||c.counselorEmail||'—')}${ev.closureDate?` &ensp;|&ensp; ${(ev.type||'closure')==='closure'?'結案日期':'評估日期'}：${rocDate(ev.closureDate)}`:''} &ensp;|&ensp; 填表日期：${rocDate(ev.evaluatedAt)}</div>
+  <div class="meta">個案姓名：${esc(c.name)} &ensp;|&ensp; 案號：${esc(c.id)} &ensp;|&ensp; 主責：${esc(c.counselorName||configData?.users?.[c.counselorEmail]?.name||c.counselorEmail||'—')}${ev.closureDate?` &ensp;|&ensp; ${(ev.type||'closure')==='closure'?'結案日期':'評估日期'}：${rocDate(ev.closureDate)}`:''} &ensp;|&ensp; 填表日期：${rocDate(ev.evaluatedAt)}</div>
   <div class="section">
     <table>
       <thead><tr><th style="width:80%;">向度</th><th style="width:20%;text-align:center;">風險等級</th></tr></thead>
@@ -25427,6 +25461,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 123, title: 'UI 改善：已停用/無 Gmail 主責顯示修正、課程明細可收合（#15 #16）', isProd: false, items: [
+      item('修復', '已停用或無 Gmail 帳號的主責/輔導人員，原本部分畫面會退回顯示原始 email 或系統內部識別碼（如 nomail_ 開頭字串）；盤點個案列表（含危機閱讀個案查詢）、個案詳細頁、結案/學期評估、轉銜管理、事件處理記錄、空間預約卡片（日/週/列表檢視）共 10 餘處顯示，統一優先以使用者管理中的姓名呈現，姓名旁加上小徽章標示「已停用」（灰）或「無 Gmail」（黃）；篩選用下拉選單一併加註「無 Gmail」（#15）'),
+      item('改善', '身心調適假管理頁與個案詳細頁「身心調適假紀錄」卡片中的課程明細表格，統一改為可收合的 banner（點標題列即可 ▶/▼ 展開收合），個案詳細頁預設維持展開以符合原本一律顯示的習慣（#16）'),
+    ]},
     { date: '2026-07-07', v: 122, title: 'UI 改善：稽核紀錄改名、評估表說明強化、精神科評估填寫人顯示（#6 #2 #3）', isProd: false, items: [
       item('改善', '全站「稽核日誌」使用者可見文字統一改名為「稽核紀錄」（頁面標題、nav 選單、按鈕、提示訊息與確認視窗文案）；程式內部函式名、資料檔名與既有稽核 action 字串、歷史版本紀錄文字維持不變（#6）'),
       item('改善', '個案詳細頁「身心調適假紀錄」卡片的「身心狀態評估表」摘要列，以及身心調適假管理頁「填寫評估表／評估表 ✓」按鈕，皆加上滑鼠提示說明：此評估表為身心調適假窗口於進案前對學生進行的評估與介入紀錄，並非諮商晤談紀錄（#2）'),
@@ -28396,6 +28434,16 @@ function _buildMentalLeaveDetailCard(c) {
     ).join('');
     const { from: _bFrom, to: _bTo } = _mlParseDateRange(l);
     const _bDateStr = _bFrom ? (_bFrom !== _bTo ? `${_bFrom.slice(5).replace('-','/')} – ${_bTo.slice(5).replace('-','/')}` : _bFrom.slice(5).replace('-','/')) : (l.leaveDate || '—');
+    // #16：課程明細改為可收合的 banner（點標題列 toggle），預設展開以維持原本一律顯示的現況
+    const _cCount = _mlCourseCount(l);
+    const _cdCourseId = `ml-cd-course-${escHtml(l.id)}`;
+    const courseSection = _cCount ? `<div style="margin-top:6px;border:1px solid #c6f6d5;border-radius:6px;overflow:hidden;">
+        <div style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:4px 10px;background:#f0fff4;" onclick="window._toggleDisplay('${_cdCourseId}','${_cdCourseId}-icon')">
+          <span style="font-size:.76rem;font-weight:600;color:#276749;">📚 課程明細（${_cCount} 堂）</span>
+          <span id="${_cdCourseId}-icon" style="font-size:.72rem;color:#276749;">▼</span>
+        </div>
+        <div id="${_cdCourseId}" style="padding:6px 10px;">${_mlCourseDetailHtml(l)}</div>
+      </div>` : '';
     return `<div style="border:1px solid #e2e8f0;border-radius:6px;padding:8px 12px;margin-bottom:8px;background:${maxLevel>=3?'#fff5f5':maxLevel>=2?'#fffbeb':'#fff'};">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;">
         <span style="font-weight:600;font-size:.88rem;">${escHtml(_bDateStr)}</span>
@@ -28403,7 +28451,7 @@ function _buildMentalLeaveDetailCard(c) {
       </div>
       ${l.reason ? `<div style="font-size:.84rem;color:#4a5568;margin-bottom:4px;">緣由：${escHtml(l.reason)}</div>` : ''}
       ${kwChips ? `<div style="margin-top:4px;">命中關鍵字：${kwChips}</div>` : ''}
-      ${_mlCourseCount(l) ? `<div style="margin-top:6px;">${_mlCourseDetailHtml(l)}</div>` : ''}
+      ${courseSection}
     </div>`;
   }).join('');
   const cardId = `ml-case-card-${escHtml(c.id)}`;
@@ -30684,7 +30732,7 @@ function _bkRenderDayColumn(date) {
         </span>`;
         html += `<div style="padding:4px 6px;${_bkCellStyle(b)}border-radius:5px;margin-bottom:4px;">
           <div style="font-size:.82rem;font-weight:600;color:#2d3748;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</div>
-          <div style="font-size:.82rem;color:#4a5568;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(b.counselorName || '')}">${escHtml(b.counselorName || '—')}</div>
+          <div style="font-size:.82rem;color:#4a5568;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(b.counselorName || '')}">${escHtml(b.counselorName || '—')}${_bkCounselorBadges(b)}</div>
           ${caseTag}${noteTag}${actBtns}
         </div>`;
       });
@@ -30861,7 +30909,7 @@ function renderBookingsPage() {
             : `<button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:.75rem;" data-sync-id="${escHtml(b.id)}" onclick="event.stopPropagation();syncBookingToCalendar('${escHtml(b.id)}')">📅 同步</button>`;
           html += `<div data-bk-card="1" draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" onclick="_bkCardClick(event,'${escHtml(b.id)}')" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 8px;${_bkCellStyle(b)}border-radius:6px;margin-bottom:4px;cursor:grab;">
             <span style="font-size:.85rem;font-weight:600;color:#2d3748;min-width:105px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</span>
-            <span style="font-size:.875rem;color:#4a5568;" title="${escHtml(b.counselorName || '')}">${escHtml(b.counselorName || '—')}</span>
+            <span style="font-size:.875rem;color:#4a5568;" title="${escHtml(b.counselorName || '')}">${escHtml(b.counselorName || '—')}${_bkCounselorBadges(b)}</span>
             ${_bkSeriesBadge(b, _seriesCountMap, false)}
             ${caseTag}${noteTag}${calTag}
             <span style="margin-left:auto;display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
@@ -31015,7 +31063,7 @@ function renderBkListView(body) {
       </div>
       <div style="min-width:90px;max-width:160px;">
         <div style="font-size:.75rem;color:#718096;">主責</div>
-        <div style="font-size:.88rem;color:#2d3748;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(b.counselorName || '')}">${escHtml(b.counselorName || '—')}</div>
+        <div style="font-size:.88rem;color:#2d3748;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(b.counselorName || '')}">${escHtml(b.counselorName || '—')}${_bkCounselorBadges(b)}</div>
       </div>
       ${caseTag ? `<div style="min-width:90px;"><div style="font-size:.75rem;color:#718096;">個案</div><div style="font-size:.88rem;color:#2471a3;">${caseTag}</div></div>` : ''}
       ${b.notes ? `<div style="flex:1;min-width:100px;"><div style="font-size:.75rem;color:#718096;">備註</div><div style="font-size:.85rem;color:#4a5568;">${escHtml(b.notes.slice(0,60))}${b.notes.length>60?'…':''}</div></div>` : ''}
@@ -36087,7 +36135,7 @@ function openTransferEvalForm(caseId, teId) {
   if (titleEl) titleEl.textContent = `${isNew?'新增':'編輯'}轉銜評估 — ${c.name}`;
 
   const caseInfoEl = document.getElementById('te-form-case-info');
-  if (caseInfoEl) caseInfoEl.textContent = `個案：${c.name}（${c.id}）　主責：${c.counselorName || c.counselorEmail || '—'}`;
+  if (caseInfoEl) caseInfoEl.textContent = `個案：${c.name}（${c.id}）　主責：${c.counselorName || configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '—'}${_counselorStatusSuffix(c.counselorEmail)}`;
 
   const filledDateInfoEl = document.getElementById('te-form-filled-date-info');
   if (filledDateInfoEl) filledDateInfoEl.innerHTML = `填表日期：<strong>${new Date().toISOString().slice(0,10)}</strong>（自動帶入當日）`;
@@ -36855,7 +36903,7 @@ function _renderGradTransferTab() {
           ${gradBadge}${resolvedBadge}${teBadge}
           <span style="${decStyle}">${decLabelMap[decStatus]||'—'}</span>
           ${reasonDisplay}${drChip}
-          <span style="font-size:.78rem;color:#718096;">主責：${escHtml(c.counselorName||c.counselorEmail||'—')}</span>
+          <span style="font-size:.78rem;color:#718096;">主責：${escHtml(c.counselorName||configData?.users?.[c.counselorEmail]?.name||c.counselorEmail||'—')}${_counselorStatusBadge(c.counselorEmail)}</span>
           ${schoolDateDisplay}
           ${sourceChip}
         </div>
@@ -38064,7 +38112,7 @@ function _renderWithdrawTab(allWithdraw) {
     const decStyle = `font-size:.73rem;padding:2px 8px;border-radius:10px;background:${_TRANSFER_DEC_BG[decStatus]||'#f0f4f8'};color:${_TRANSFER_DEC_COLOR[decStatus]||'#718096'};border:1px solid ${_TRANSFER_DEC_COLOR[decStatus]||'#cbd5e0'};`;
     const schoolDateDisplay = meetingDate ? `<span style="font-size:.75rem;color:#718096;">校級會議：${escHtml(meetingDate)}</span>` : '';
     const reasonDisplay = decStatus === 'noTransfer_self_reason' && noTransferReason ? `<span style="font-size:.72rem;color:#276749;background:#f0fff4;border:1px solid #9ae6b4;border-radius:6px;padding:1px 6px;">原因：${escHtml(noTransferReason)}</span>` : '';
-    const counselorInfo = lc && (lc.counselorName || lc.counselorEmail) ? `<span style="font-size:.78rem;color:#718096;">主責：${escHtml(lc.counselorName || lc.counselorEmail)}</span>` : '';
+    const counselorInfo = lc && (lc.counselorName || lc.counselorEmail) ? `<span style="font-size:.78rem;color:#718096;">主責：${escHtml(lc.counselorName || configData?.users?.[lc.counselorEmail]?.name || lc.counselorEmail)}${_counselorStatusBadge(lc.counselorEmail)}</span>` : '';
 
     const drChip = r.departureReason ? `<span style="font-size:.76rem;padding:2px 8px;border-radius:10px;background:#fef3c7;color:#92400e;border:1px solid #fbbf24;">${escHtml(r.departureReason)}</span>` : '';
     const isExpanded = window._withdrawCardExpanded?.has(r.id) || false;
@@ -38794,7 +38842,7 @@ function _renderTransferRow(r) {
     const _lc = casesData.find(c => c.id === r.caseId);
     if (_lc) {
       if (_lc.counselorName || _lc.counselorEmail) {
-        counselorInfo = `<span style="font-size:.8rem;color:#4a5568;">主責：${escHtml(_lc.counselorName || _lc.counselorEmail)}</span>`;
+        counselorInfo = `<span style="font-size:.8rem;color:#4a5568;">主責：${escHtml(_lc.counselorName || configData?.users?.[_lc.counselorEmail]?.name || _lc.counselorEmail)}${_counselorStatusBadge(_lc.counselorEmail)}</span>`;
       }
       const _lcSems = Array.isArray(_lc.semesters) && _lc.semesters.length
         ? [..._lc.semesters].sort()
