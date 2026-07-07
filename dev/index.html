@@ -939,6 +939,9 @@
     ._nc-id-flash { animation: _ncIdFlash 1.5s ease-out; border-radius:4px; }
     @keyframes _formSectionPulse { 0%,100%{background:#fff5f5;} 50%{background:#fed7d7;} }
     .form-section-error { border:2px solid #fc8181 !important;background:#fff5f5 !important;animation:_formSectionPulse 1s ease; }
+    /* 紀錄儲存後返回個案詳細頁：捲動至該筆並背景閃爍 2 秒（#22） */
+    @keyframes _recSavedFlash { 0%,100%{background:#fff9db;} 50%{background:#ffe066;} }
+    .rec-just-saved { animation:_recSavedFlash .5s ease-in-out 4; border-radius:8px; }
 
     /* ── Hover 說明 tooltip（由 JS #_tip_el 實作，position:fixed 確保不被 stacking context 遮蔽） ── */
     /* ── 轉銜評估 ── */
@@ -10635,6 +10638,27 @@ function isEditable(createdAt) {
   return true;
 }
 
+// ── 紀錄儲存後返回個案詳細頁：定位＋醒目提示（#22） ──────────
+// 跨學期個案：若剛儲存的紀錄所屬學期不是目前分頁，先切過去，避免捲動時找不到該卡片
+function _switchDetailSemTo(c, sem) {
+  if (!c || !sem) return;
+  if (Array.isArray(c.semesters) && c.semesters.length > 1 && c.semesters.includes(sem)) {
+    _caseDetailActiveSem = sem;
+    _detailSemFilter = 'current';
+  }
+}
+// 捲動至指定紀錄卡片並背景閃爍 2 秒；於 showCaseDetail 完成渲染後呼叫
+function _flashRecordCard(domId, scroll = true) {
+  if (!domId) return;
+  requestAnimationFrame(() => {
+    const el = document.getElementById(domId);
+    if (!el) return;
+    if (scroll) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('rec-just-saved');
+    setTimeout(() => el.classList.remove('rec-just-saved'), 2000);
+  });
+}
+
 function editRecord(caseId, recordId) {
   const c = casesData.find(x => x.id === caseId);
   const rec = (c?.records || []).find(r => r.id === recordId);
@@ -12305,7 +12329,9 @@ async function saveRecord() {
     if (_draftTodo) { _draftTodo.done = true; _draftTodo.doneAt = new Date().toISOString(); saveUserTodos().catch(()=>{}); _syncTodoBadge(); }
     casesData[cidx].updatedAt = new Date().toISOString();
     clearRecordDraft();
+    _switchDetailSemTo(casesData[cidx], openDateToSemPrefix(date));
     showCaseDetail(_recordCaseId);
+    _flashRecordCard('rec-card-' + editedId);
     const jobId = bgJobAdd('更新晤談紀錄', _caseLabel);
     (async () => {
       try {
@@ -12438,7 +12464,9 @@ async function saveRecord() {
     }
 
     clearRecordDraft();
+    _switchDetailSemTo(casesData[cidx], openDateToSemPrefix(date));
     showCaseDetail(_recordCaseId);
+    _flashRecordCard('rec-card-' + newRecord.id);
     const jobId = bgJobAdd('新增晤談紀錄', _caseLabel);
     (async () => {
       try {
@@ -17496,7 +17524,9 @@ async function saveInitialInterview() {
     auditLog('儲存初次晤談表', `案號 ${_initialInterviewCaseId}（${_iiSemLabel} 學期）`);
     bgJobDone(jobId, '初次晤談表已儲存');
     clearIIDraft();
+    _switchDetailSemTo(casesData[cidx], _initialInterviewSem);
     showCaseDetail(_initialInterviewCaseId);
+    _flashRecordCard('ii-card-' + _initialInterviewCaseId);
   } catch (err) {
     casesData[cidx].initialInterview = prev;
     bgJobFail(jobId, '儲存失敗：' + err.message);
@@ -21676,9 +21706,13 @@ async function saveEventRecords() {
     try { _evrAttachMap[idx] = await attachFlush('evr_' + idx); }
     catch(e) { showToast('第' + (idx+1) + '筆附件上傳失敗：' + e.message, 'error'); return; }
   }
+  const _evrNewIds = [];
+  const _evrFirstDate = _evrRecords[0]?.date || '';
   _evrRecords.forEach((r, idx) => {
+    const _evrNewId = `REC_${Date.now()}_E${idx}_${rand()}`;
+    _evrNewIds.push(_evrNewId);
     casesData[cidx].records.push({
-      id: `REC_${Date.now()}_E${idx}_${rand()}`,
+      id: _evrNewId,
       isEventRecord: true, recordKind: '晤談記錄',
       date: r.date, time: r.time, room: r.room,
       counselors: r.counselors,
@@ -21700,7 +21734,9 @@ async function saveEventRecords() {
   const savedTodoId = _evrTodoId;
   _evrCaseId = null; _evrRecords = []; _evrCounselors = [];
   _evrDraftKey = null; _evrTodoId = null;
+  _switchDetailSemTo(casesData[cidx], openDateToSemPrefix(_evrFirstDate));
   showCaseDetail(savedCaseId);
+  _evrNewIds.forEach((id, i) => _flashRecordCard('rec-card-' + id, i === 0));
   showToast('事件處理記錄已儲存', 'success');
   const jobId = bgJobAdd('儲存事件處理記錄…');
   try {
@@ -25068,6 +25104,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 114, title: '紀錄儲存後自動定位並醒目提示（#22）', isProd: false, items: [
+      item('改善', '晤談紀錄、初次晤談表、精神科醫師評估、事件處理記錄，儲存後返回個案詳細頁會自動捲動到該筆紀錄卡片，並背景閃爍 2 秒方便確認'),
+      item('改善', '若個案為跨學期案號、該筆紀錄所屬學期不是目前顯示的分頁，會先自動切到該學期再捲動，避免捲動落空'),
+    ]},
     { date: '2026-07-07', v: 113, title: '編輯晤談紀錄可新增伴侶諮商（#19）', isProd: false, items: [
       item('修復', '編輯既有晤談紀錄時，先前完全沒有「＋ 增加晤談對象」按鈕（僅新增紀錄時才看得到），導致已建立的紀錄無法事後補設伴侶諮商；現在編輯尚未設定伴侶諮商的紀錄時同樣可加選晤談對象'),
       item('修復', '編輯時新掛上伴侶諮商，儲存後會比照新增模式建立夥伴方個案的對應紀錄（含伴侶關係鎖定、共用內容同步），並正確寫回稽核紀錄；上傳失敗會回滾新建的夥伴方紀錄'),
@@ -39140,6 +39180,7 @@ async function savePsychiatristRecord(caseId, recordId) {
     if (c.semesters.includes(_prSem)) { _caseDetailActiveSem = _prSem; _detailSemFilter = 'current'; }
   }
   showCaseDetail(caseId);
+  _flashRecordCard('rec-card-' + _savedRecId);
   const _psyJobLabel = recordId === '__new__' ? '新增精神科評估' : '更新精神科評估';
   const jobId = bgJobAdd(_psyJobLabel, `${c.name} ${data.date}`);
   (async () => {
