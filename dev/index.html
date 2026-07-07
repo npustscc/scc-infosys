@@ -6607,14 +6607,23 @@ function _crisisBlockLabel(k) {
 
 // ── 危機個案閱讀申請頁 ──
 let _crisisApplyTarget = null;
+// 已可檢視全部個案者（與 _caseNormallyAccessible 的特權判定一致）：主任／管理者
+function _crisisIsPriv() {
+  return currentRole === '主任' || extraRole === '管理者';
+}
 function renderCrisisAccessPage() {
   const body = document.getElementById('crisis-access-body');
   if (!body) return;
   if (!_canApplyCrisisAccess()) { body.innerHTML = '<div class="alert alert-info">此頁供專任／實習人員於危機案件時申請閱讀他人個案。</div>'; return; }
+  // #13：主任/管理者本就可檢視全部個案，此頁對他們只是留下正式閱讀申請紀錄（供監督區留痕），並非授權管道
+  const _privNotice = _crisisIsPriv()
+    ? `<div class="alert alert-info" style="margin-bottom:16px;background:#ebf8ff;border:1px solid #90cdf4;color:#2c5282;border-radius:8px;padding:10px 16px;font-size:.86rem;">ℹ️ 您已可檢視全部個案，此頁僅供留下正式閱讀申請紀錄，不影響您原有的檢視權限。</div>`
+    : '';
   body.innerHTML = `
     <div class="alert alert-warn" style="margin-bottom:16px;background:#fffbeb;border:1px solid #f6ad55;color:#744210;border-radius:8px;padding:12px 16px;">
       ⚠ <strong>危機案件專用</strong>：申請後<strong>立即取得該案「當日唯讀」權限</strong>（隔日失效，需重新申請）。你的<strong>申請目的</strong>與<strong>閱讀的資料區塊</strong>會公開於全體監督區（主任／管理者／專任皆可見），請審慎使用。
     </div>
+    ${_privNotice}
     <div class="card" style="margin-bottom:16px;">
       <div style="padding:16px 20px;">
         <label style="font-size:.85rem;color:#718096;display:block;margin-bottom:4px;">搜尋個案（姓名／學號／案號）</label>
@@ -6632,26 +6641,49 @@ function renderCrisisAccessPage() {
   _crisisRenderToday();
 }
 
+// 搜尋結果可能只來自 cases-index（cold/封存個案尚未進 casesData）；開啟前先補一個 index-only stub，
+// 讓 showCaseDetail() 既有的 on-demand chunk 載入邏輯能夠運作（#13）
+function _crisisEnsureCaseStub(caseId) {
+  if (casesData.some(c => c.id === caseId)) return;
+  const idxEntry = _casesIndexCache?.cases?.find(c => c.id === caseId);
+  if (idxEntry) casesData.push({ ...idxEntry, _indexOnly: true });
+}
+
 function _crisisRenderResults() {
   const el = document.getElementById('crisis-results');
   if (!el) return;
+  const _priv = _crisisIsPriv();
   const q = (document.getElementById('crisis-search')?.value || '').trim().toLowerCase();
-  if (!q) { el.innerHTML = '<div style="color:#a0aec0;font-size:.88rem;">請輸入關鍵字搜尋。只會列出你目前無權檢視的個案。</div>'; return; }
-  const rows = (casesData || []).filter(c => {
+  if (!q) {
+    el.innerHTML = _priv
+      ? '<div style="color:#a0aec0;font-size:.88rem;">請輸入關鍵字搜尋（你已可檢視全部個案，此處僅供留下正式閱讀申請紀錄）。</div>'
+      : '<div style="color:#a0aec0;font-size:.88rem;">請輸入關鍵字搜尋。只會列出你目前無權檢視的個案。</div>';
+    return;
+  }
+  // #13：改以 cases-index 全量索引為搜尋資料源，涵蓋封存/結案等 cold 個案（hot/cold 分層後未必在 casesData 記憶體中）；
+  // 索引尚未載入完成時 fallback 回 casesData
+  const _source = (_casesIndexCache?.cases?.length ? _casesIndexCache.cases : (casesData || []));
+  const rows = _source.filter(c => {
     if (!c?.id || c.deleted) return false;
-    if (_caseNormallyAccessible(c)) return false; // 本就看得到的不列
+    if (!_priv && _caseNormallyAccessible(c)) return false; // 一般身份：只列出目前無權檢視的
     const hay = `${c.name || ''} ${c.studentId || ''} ${c.id || ''}`.toLowerCase();
     return hay.includes(q);
   }).slice(0, 50);
-  if (!rows.length) { el.innerHTML = '<div style="color:#a0aec0;font-size:.88rem;">無符合的個案（或都已可檢視）。</div>'; return; }
+  if (!rows.length) {
+    el.innerHTML = `<div style="color:#a0aec0;font-size:.88rem;">${_priv ? '無符合的個案。' : '無符合的個案（或都已可檢視）。'}</div>`;
+    return;
+  }
   el.innerHTML = `<div style="overflow-x:auto;"><table class="data-table" style="min-width:520px;">
     <thead><tr><th>姓名</th><th>學號</th><th>案號</th><th>主責</th><th></th></tr></thead>
     <tbody>${rows.map(c => {
-      const granted = _hasCrisisGrant(c.id);
-      const btn = granted
-        ? `<button class="btn btn-secondary btn-sm" style="font-size:.76rem;" onclick="showCaseDetail('${escHtml(c.id)}')">開啟（今日已授權）</button>`
-        : `<button class="btn btn-danger btn-sm" style="font-size:.76rem;" onclick="_crisisPickTarget('${escHtml(c.id)}')">申請閱讀</button>`;
-      return `<tr><td>${escHtml(c.name || '—')}</td><td>${escHtml(c.studentId || '—')}</td><td style="font-family:monospace;">${escHtml(c.id)}</td><td>${escHtml(c.counselorName || c.counselorEmail || '—')}</td><td style="text-align:right;">${btn}</td></tr>`;
+      const cid = escHtml(c.id);
+      const btn = _priv
+        ? `<button class="btn btn-secondary btn-sm" style="font-size:.76rem;" onclick="_crisisEnsureCaseStub('${cid}');showCaseDetail('${cid}')">開啟</button>
+           <button class="btn btn-danger btn-sm" style="font-size:.76rem;margin-left:4px;" onclick="_crisisPickTarget('${cid}')">申請閱讀（留紀錄）</button>`
+        : (_hasCrisisGrant(c.id)
+            ? `<button class="btn btn-secondary btn-sm" style="font-size:.76rem;" onclick="_crisisEnsureCaseStub('${cid}');showCaseDetail('${cid}')">開啟（今日已授權）</button>`
+            : `<button class="btn btn-danger btn-sm" style="font-size:.76rem;" onclick="_crisisPickTarget('${cid}')">申請閱讀</button>`);
+      return `<tr><td>${escHtml(c.name || '—')}</td><td>${escHtml(c.studentId || '—')}</td><td style="font-family:monospace;">${cid}</td><td>${escHtml(c.counselorName || c.counselorEmail || '—')}</td><td style="text-align:right;">${btn}</td></tr>`;
     }).join('')}</tbody></table></div>`;
 }
 
@@ -6665,7 +6697,9 @@ function _crisisRenderApplyForm() {
   const el = document.getElementById('crisis-apply-form');
   if (!el) return;
   if (!_crisisApplyTarget) { el.innerHTML = ''; return; }
-  const c = (casesData || []).find(x => x.id === _crisisApplyTarget);
+  // #13：目標個案可能只在 cases-index（cold/封存），casesData 尚未持有，fallback 讀索引取姓名/學號顯示
+  const c = (casesData || []).find(x => x.id === _crisisApplyTarget)
+    || _casesIndexCache?.cases?.find(x => x.id === _crisisApplyTarget);
   if (!c) { el.innerHTML = ''; _crisisApplyTarget = null; return; }
   el.innerHTML = `
     <div style="border:2px solid #fc8181;background:#fff5f5;border-radius:8px;padding:14px 16px;">
@@ -6700,7 +6734,9 @@ let _crisisSubmitting = false;
 async function submitCrisisAccess() {
   if (_crisisSubmitting) return;
   const caseId = _crisisApplyTarget;
-  const c = (casesData || []).find(x => x.id === caseId);
+  // #13：目標個案可能只在 cases-index（cold/封存），casesData 尚未持有，fallback 讀索引
+  const c = (casesData || []).find(x => x.id === caseId)
+    || _casesIndexCache?.cases?.find(x => x.id === caseId);
   if (!c) { alert('找不到個案'); return; }
   const reason = (document.getElementById('crisis-reason')?.value || '').trim();
   if (!reason) { alert('請填寫申請目的'); return; }
@@ -6718,6 +6754,7 @@ async function submitCrisisAccess() {
     _crisisSubmitting = false;
     _crisisApplyTarget = null;
     showToast('✅ 已取得當日閱讀權限，開啟中…', 'success');
+    _crisisEnsureCaseStub(caseId); // #13：cold/封存個案可能尚未在 casesData，先補 stub 讓 on-demand 載入生效
     renderCases(); // 讓此案進入可見清單
     showCaseDetail(caseId);
   } catch (e) {
@@ -25135,6 +25172,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 116, title: '危機個案閱讀搜尋修正（#13）', isProd: false, items: [
+      item('修復', '危機個案閱讀申請頁搜尋改以 cases-index 全量索引為資料源，涵蓋封存/結案等 cold 個案；索引未載入時 fallback 回 casesData，一般身份搜尋結果仍只列出目前無權檢視的個案'),
+      item('修復', '主任／管理者進入此頁先前因本就可檢視全部個案，搜尋恆為「無符合」，容易誤以為功能故障；現在對他們改列出符合關鍵字的個案（含「開啟」與「申請閱讀（留紀錄）」按鈕），並於搜尋框上方提示「您已可檢視全部個案，此頁僅供留下正式閱讀申請紀錄」'),
+      item('技術', '搜尋命中的個案若尚未進入 casesData（僅存在於索引，如封存個案），開啟前先補一個 index-only stub，沿用 showCaseDetail() 既有的 on-demand chunk 載入邏輯'),
+    ]},
     { date: '2026-07-07', v: 115, title: '新增個案 BSRS 皆未填時需勾選確認（#34）', isProd: false, items: [
       item('改善', '新增／編輯個案的 BSRS-5 量表：6 題全數未填時，才會顯示「個案未填寫 BSRS」勾選框，須勾選才能儲存，避免與系統漏填混淆；未勾選就按儲存會擋下並捲動回勾選列，紅框＋閃爍提示'),
       item('改善', '只要 6 題中有任 1 題已填值，勾選框自動隱藏、不再要求勾選，直接視為個案填答不完整（漏填／拒填部分題項）可正常儲存'),
