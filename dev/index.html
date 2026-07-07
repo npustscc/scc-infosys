@@ -17567,6 +17567,18 @@ async function saveInitialInterview() {
 
   const cidx = casesData.findIndex(c => c.id === _initialInterviewCaseId);
   if (cidx === -1) return;
+
+  // #18：初談紀錄要歸入哪個學期，一律由「初談日期」推導，而不是開表單當下的分頁情境
+  // （_initialInterviewSem 是開表單那一刻的分頁/接案日期，使用者填的日期可能落在別的學期）。
+  // 找得到既有分頁對應的完整 key（含 #N 分身後綴）就沿用，找不到就退回日期推得的純學期前綴。
+  const _iiDateSemBase = snap.interviewDate ? openDateToSemPrefix(snap.interviewDate) : '';
+  let _iiSemKey = _initialInterviewSem;
+  if (_iiDateSemBase && _semKeyBase(_initialInterviewSem) !== _iiDateSemBase) {
+    const _iiMatchKey = (Array.isArray(casesData[cidx].semesters) ? casesData[cidx].semesters : [])
+      .find(k => _semKeyBase(k) === _iiDateSemBase);
+    _iiSemKey = _iiMatchKey || _iiDateSemBase;
+  }
+
   let _iiAttachments;
   try { _iiAttachments = await attachFlush('ii'); }
   catch(e) { setAlert('initial-interview-alert','error','附件上傳失敗：' + e.message); return; }
@@ -17574,8 +17586,8 @@ async function saveInitialInterview() {
   snap.updatedAt = new Date().toISOString();
   snap.updatedBy = currentUser?.email;
   const _isMultiSem = Array.isArray(casesData[cidx].semesters) && casesData[cidx].semesters.length > 1;
-  const prev = _isMultiSem && _initialInterviewSem
-    ? (casesData[cidx].initialInterviews?.[_initialInterviewSem] || casesData[cidx].initialInterview)
+  const prev = _isMultiSem && _iiSemKey
+    ? (casesData[cidx].initialInterviews?.[_iiSemKey] || casesData[cidx].initialInterview)
     : casesData[cidx].initialInterview;
   snap.createdAt = prev?.createdAt || snap.updatedAt;
   snap.createdBy = prev?.createdBy || currentUser?.email;
@@ -17583,9 +17595,9 @@ async function saveInitialInterview() {
   snap.filledBy     = prev?.filledBy     || currentUser?.email;
   snap.filledByName = prev?.filledByName || configData?.users?.[currentUser?.email]?.name || currentUser?.name || '';
   delete snap.status; delete snap.draftSavedAt;
-  if (_isMultiSem && _initialInterviewSem) {
+  if (_isMultiSem && _iiSemKey) {
     if (!casesData[cidx].initialInterviews) casesData[cidx].initialInterviews = {};
-    casesData[cidx].initialInterviews[_initialInterviewSem] = snap;
+    casesData[cidx].initialInterviews[_iiSemKey] = snap;
     casesData[cidx].initialInterview = snap; // backward compat
   } else {
     casesData[cidx].initialInterview = snap;
@@ -17605,7 +17617,7 @@ async function saveInitialInterview() {
   const _iiTodo = todosData.find(t => t.caseId === _initialInterviewCaseId && t.type === 'initial_interview' && !t.done);
   if (_iiTodo) { _iiTodo.done = true; _iiTodo.doneAt = new Date().toISOString(); saveUserTodos().catch(()=>{}); _syncTodoBadge(); }
   // 建立/更新待派案 todo（若本學期已有主責輔導人員則跳過）
-  const _semSnapII = casesData[cidx].basicInfoSnapshots?.[_initialInterviewSem];
+  const _semSnapII = casesData[cidx].basicInfoSnapshots?.[_iiSemKey];
   const _existingCounselor = _semSnapII?.counselorEmail || casesData[cidx].counselorEmail;
   if (!_existingCounselor) {
     const _existAssign = todosData.find(t => t.type === 'case_assignment' && t.caseId === _initialInterviewCaseId && !t.done);
@@ -17619,7 +17631,7 @@ async function saveInitialInterview() {
       assignedCounselor: snap.resultCounselor || '',
       filledBy: snap.filledBy,
       filledByName: snap.filledByName,
-      semester: _initialInterviewSem,
+      semester: _iiSemKey,
       createdAt: _existAssign?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       done: false, notifRead: false,
@@ -17631,11 +17643,13 @@ async function saveInitialInterview() {
   const jobId = bgJobAdd('儲存初次晤談表…');
   try {
     await saveCasesChunks(_initialInterviewCaseId);
-    const _iiSemLabel = semesterLabel(openDateToSemPrefix(casesData[cidx]?.openDate));
+    // #18：稽核日誌的學期標籤改以「初談日期推得的實際歸屬學期」為準（原本固定顯示個案開案學期，
+    // 多學期個案在較晚學期補填初談表時會誤標成最早那個學期）
+    const _iiSemLabel = semesterLabel(_iiSemKey || openDateToSemPrefix(casesData[cidx]?.openDate));
     auditLog('儲存初次晤談表', `案號 ${_initialInterviewCaseId}（${_iiSemLabel} 學期）`);
     bgJobDone(jobId, '初次晤談表已儲存');
     clearIIDraft();
-    _switchDetailSemTo(casesData[cidx], _initialInterviewSem);
+    _switchDetailSemTo(casesData[cidx], _iiSemKey);
     showCaseDetail(_initialInterviewCaseId);
     _flashRecordCard('ii-card-' + _initialInterviewCaseId);
   } catch (err) {
@@ -25230,6 +25244,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 118, title: '初次晤談紀錄表學期歸屬改以初談日期推導（#18）', isProd: false, items: [
+      item('修復', '初次晤談紀錄表：多學期個案儲存時，歸入哪個學期改以表單所填「初談日期」推導，不再固定用開表單當下的分頁／個案開案日期判斷；日期落在其他學期分頁時，會自動存入對應學期的初談表（找不到對應學期分頁則以日期推得的學期為準），儲存後也會自動切到該學期分頁'),
+      item('技術', '盤點晤談紀錄／精神科醫師評估／事件處理紀錄／轉銜評估：皆已是依日期動態推算學期或直接以評估日期存 semester 欄位，不受影響；僅初次晤談紀錄表的儲存分頁判斷是用表單開啟當下的情境，本次一併修正'),
+      item('技術', '為 openDateToSemPrefix 補上跨學期邊界單元測試：1/31↔2/1（同民國學年上下學期）、12/31↔1/1（跨曆年仍同一上學期）、7/31↔8/1（跨民國學年）'),
+    ]},
     { date: '2026-07-07', v: 117, title: '同學期再次開案序號對稱重編（#35）', isProd: false, items: [
       item('改善', '同學期重複開案的分身序號（顯示為「114-2_2」等）改為對稱重編：一有第 2 筆分身，原本無後綴的那筆同步補上「_1」；刪到只剩 1 筆時該筆自動恢復無後綴；3 筆以上刪除中間那筆時，後面的依序遞補，不留號碼空缺'),
       item('技術', '新增 _renumberSemKeys／_applySemKeyRenumber 純函式：重編時同步更新個案物件內所有以 sem key 為鍵的引用處（basicInfoSnapshots、semesterStatus、initialInterviews、semesterEvaluations[].semester），案號本身與預約的 caseId 引用不受影響'),

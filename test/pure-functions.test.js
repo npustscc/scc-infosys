@@ -18,6 +18,27 @@ test('openDateToSemPrefix：依開案日期換算學期前綴', () => {
   assert.equal(S.openDateToSemPrefix('not-a-date'), '');
 });
 
+// ── openDateToSemPrefix：跨學期邊界（#18 全面盤點時擴充）──────────────────────
+// 民國學年制的三個邊界都要各自鎖住：8/1（上學期起點）、1/31→2/1（上學期→下學期，
+// 同一民國學年內）、7/31→8/1（下學期→次一民國學年上學期，年度也會 +1）。
+test('openDateToSemPrefix：1 月末與 2 月初跨越上/下學期邊界（同一民國學年）', () => {
+  const S = load(['openDateToSemPrefix']);
+  assert.equal(S.openDateToSemPrefix('2026-01-31'), '1141'); // 仍是上學期最後一天
+  assert.equal(S.openDateToSemPrefix('2026-02-01'), '1142'); // 下學期第一天
+});
+
+test('openDateToSemPrefix：12 月末與跨年 1 月初仍同屬一個上學期', () => {
+  const S = load(['openDateToSemPrefix']);
+  assert.equal(S.openDateToSemPrefix('2025-12-31'), '1141');
+  assert.equal(S.openDateToSemPrefix('2026-01-01'), '1141'); // 跨曆年但仍是 114-1
+});
+
+test('openDateToSemPrefix：7 月末與 8 月初跨民國學年（下學期→次學年上學期）', () => {
+  const S = load(['openDateToSemPrefix']);
+  assert.equal(S.openDateToSemPrefix('2026-07-31'), '1142'); // 114-2 最後一天
+  assert.equal(S.openDateToSemPrefix('2026-08-01'), '1151'); // 115-1 第一天
+});
+
 test('semesterLabel：前綴轉可讀標籤', () => {
   const S = load(['semesterLabel']);
   assert.equal(S.semesterLabel('1142'), '114-2');
