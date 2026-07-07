@@ -10831,12 +10831,11 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
       `個案：${escHtml(c?.name || '—')}（${escHtml(caseId)}）` +
       ` ｜ 共用對象：<strong>${escHtml(existingRec.couplePartnerName || existingRec.coupleCaseId || '—')}</strong>`;
     if (_optCouple) _optCouple.style.display = '';
-  } else if (!recordId) {
+  } else {
+    // 新增紀錄、或編輯尚未設定伴侶諮商的既有紀錄，皆可加選晤談對象（#19：編輯模式先前漏了這顆按鈕，導致無法補設伴侶諮商）
     _caseInfoEl.innerHTML =
       `個案：${escHtml(c?.name || '—')}（${escHtml(caseId)}）` +
       ` <button class="btn btn-secondary btn-sm" type="button" onclick="openCoupleCaseSearch()" style="margin-left:10px;">＋ 增加晤談對象</button>`;
-  } else {
-    _caseInfoEl.textContent = `個案：${c?.name || '—'}（${caseId}）`;
   }
 
   // ── 先全部清空 ──
@@ -12263,10 +12262,35 @@ async function saveRecord() {
     });
     delete casesData[cidx].records[ridx].status;
     delete casesData[cidx].records[ridx].draftSavedAt;
-    // 伴侶記錄同步
+    // 伴侶記錄同步／編輯既有（非伴侶）紀錄時新增伴侶諮商（#19：編輯模式先前完全無法掛上伴侶諮商）
     const _editedRec = casesData[cidx].records[ridx];
     let _prevPartnerRec = null, _partnerCaseIdx = -1, _partnerRecIdx = -1;
-    if (_editedRec.coupleId && _editedRec.coupleCaseId) {
+    let _newPartnerRecOnEdit = null; // 編輯時才新掛上伴侶諮商，需新建夥伴方紀錄
+    if (!_editedRec.coupleId && _coupleTargetCaseId) {
+      _partnerCaseIdx = casesData.findIndex(c => c.id === _coupleTargetCaseId);
+      if (_partnerCaseIdx >= 0) {
+        const _editCoupleId = _coupleId();
+        _editedRec.coupleId = _editCoupleId;
+        _editedRec.coupleCaseId = _coupleTargetCaseId;
+        _editedRec.couplePartnerName = casesData[_partnerCaseIdx].name || _coupleTargetCaseId;
+        _newPartnerRecOnEdit = {
+          ..._editedRec,
+          id: 'REC-' + (Date.now() + 1),
+          creatorEmail: currentUser.email,
+          counselorEmail: currentUser.email,
+          coupleCaseId: _recordCaseId,
+          couplePartnerName: casesData[cidx]?.name || _recordCaseId,
+          coupleId: _editCoupleId,
+          nextBkId: '',
+          createdAt: new Date().toISOString(),
+        };
+        delete _newPartnerRecOnEdit.updatedAt;
+        delete _newPartnerRecOnEdit.updatedBy;
+        if (!casesData[_partnerCaseIdx].records) casesData[_partnerCaseIdx].records = [];
+        casesData[_partnerCaseIdx].records.push(_newPartnerRecOnEdit);
+        casesData[_partnerCaseIdx].updatedAt = new Date().toISOString();
+      }
+    } else if (_editedRec.coupleId && _editedRec.coupleCaseId) {
       _partnerCaseIdx = casesData.findIndex(c => c.id === _editedRec.coupleCaseId);
       if (_partnerCaseIdx >= 0) {
         _partnerRecIdx = (casesData[_partnerCaseIdx].records || []).findIndex(r => r.coupleId === _editedRec.coupleId);
@@ -12337,13 +12361,18 @@ async function saveRecord() {
         } else if (_editBkAction === 'create') {
           _auditBkNote = `；新增預約 ${nextBkDate} ${nextBkStart}–${nextBkEnd} ${nextBkRoom}`;
         }
+        const _coupleEditNote = _newPartnerRecOnEdit ? `；新增共用對象：${_editedRec.couplePartnerName || ''}` : '';
         auditLog('編輯晤談紀錄', _recordCaseId, editedId,
-          (date ? `${date}（${semesterLabel(openDateToSemPrefix(date))}）` : '') + _auditBkNote);
+          (date ? `${date}（${semesterLabel(openDateToSemPrefix(date))}）` : '') + _auditBkNote + _coupleEditNote);
         bgJobDone(jobId);
       } catch(err) {
         casesData[cidx].records[ridx] = prev;
         if (_prevPartnerRec && _partnerCaseIdx >= 0 && _partnerRecIdx >= 0) {
           casesData[_partnerCaseIdx].records[_partnerRecIdx] = _prevPartnerRec;
+        }
+        if (_newPartnerRecOnEdit && _partnerCaseIdx >= 0) {
+          const _npIdx = casesData[_partnerCaseIdx].records.findIndex(r => r.id === _newPartnerRecOnEdit.id);
+          if (_npIdx >= 0) casesData[_partnerCaseIdx].records.splice(_npIdx, 1);
         }
         bgJobFail(jobId, err.message);
       }
@@ -25039,6 +25068,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 113, title: '編輯晤談紀錄可新增伴侶諮商（#19）', isProd: false, items: [
+      item('修復', '編輯既有晤談紀錄時，先前完全沒有「＋ 增加晤談對象」按鈕（僅新增紀錄時才看得到），導致已建立的紀錄無法事後補設伴侶諮商；現在編輯尚未設定伴侶諮商的紀錄時同樣可加選晤談對象'),
+      item('修復', '編輯時新掛上伴侶諮商，儲存後會比照新增模式建立夥伴方個案的對應紀錄（含伴侶關係鎖定、共用內容同步），並正確寫回稽核紀錄；上傳失敗會回滾新建的夥伴方紀錄'),
+    ]},
     { date: '2026-07-07', v: 112, title: 'GC「無對應學諮資訊系統預約」孤兒事件疑似對應連結（#5-7）', isProd: false, items: [
       item('新功能', '待辦頁「Google 日曆事件待確認」的 UNMATCHED（無對應學諮資訊系統預約）項目，若能依「同日期＋時間重疊＋標題人名與主責相符其一」找到疑似對應的既有預約，會在該筆下方顯示「疑似對應：空間/日期/時段/主責」與「連結到此預約」按鈕'),
       item('新功能', '點擊「連結到此預約」即把該預約的 calendarEventId 改指向此日曆事件（不動 GC 事件本身），並從待確認清單移除；若該預約原本已連結另一個日曆事件，會先提醒原連結將變成未綁定，若為重複事件請至 Google 日曆刪除'),
