@@ -1621,13 +1621,27 @@
           <button class="btn btn-secondary btn-sm" onclick="prefResetBkFreqs()">清除排序記憶</button>
         </div>
         <div style="padding:0 20px 16px;">
-          <div class="field-label" style="margin-bottom:6px;">空間預約顯示顏色</div>
-          <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">選一個屬於自己的顏色（32 色）。此顏色會用於：(1) 空間預約列表中你的預約 cell 底色與左邊條紋；(2) 推送到 Google 日曆時對應到最接近的 Google 日曆事件顏色（Google 日曆只支援 11 種）。</p>
+          <div class="field-label" style="margin-bottom:6px;">INFOSYS 預設色</div>
+          <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">選一個屬於自己的顏色，用於系統內空間預約列表中你的預約 cell 底色與左邊條紋。下排是 Google 日曆的 11 色，選這排可以讓兩邊顏色一致，但不是必要——這裡選的顏色只影響系統內顯示，跟下方「GC 預設色」是各自獨立的兩個設定。</p>
           <div id="pref-bkcolor-grid" style="display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;max-width:340px;"></div>
+          <div id="pref-bkcolor-grid-gc-extra" style="display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;max-width:340px;margin-top:6px;padding-top:6px;border-top:1px dashed #e2e8f0;"></div>
           <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <button class="btn btn-secondary btn-sm" onclick="clearMyBkColor()">還原預設（無色）</button>
             <span id="pref-bkcolor-current" style="font-size:.82rem;color:#4a5568;"></span>
           </div>
+        </div>
+        <div style="padding:0 20px 16px;">
+          <div class="field-label" style="margin-bottom:6px;">GC 預設色</div>
+          <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">你建立的預約同步到 Google 日曆時套用此色（Google 日曆事件色只有 11 種，這裡直接挑，不做近似轉換）。未設定則沿用 INFOSYS 預設色的近似轉換（既有行為）。</p>
+          <div id="pref-bkcolor-gc-grid" style="display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;max-width:340px;"></div>
+          <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" onclick="clearMyBkGcColor()">還原預設（沿用近似轉換）</button>
+            <span id="pref-bkcolor-gc-current" style="font-size:.82rem;color:#4a5568;"></span>
+          </div>
+        </div>
+        <div style="padding:0 20px 16px;">
+          <div class="field-label" style="margin-bottom:6px;">其他使用者的預設色一覽</div>
+          <div id="pref-bkcolor-roster"></div>
         </div>
       </div>
       <div class="card">
@@ -3588,6 +3602,10 @@ const GC_EVENT_COLORS = {
   1:'#a4bdfc',2:'#7ae7bf',3:'#dbadff',4:'#ff887c',5:'#fbd75b',
   6:'#ffb878',7:'#46d6db',8:'#e1e1e1',9:'#5484ed',10:'#51b749',11:'#dc2127'
 };
+// #5-3：INFOSYS 選色盤（BK_USER_COLORS）額外納入 GC 11 色供選擇，讓使用者可以選「跟 GC 一致」的顏色；
+// 但這只是選色盤多一排選項，INFOSYS 預設色（bkColor）與 GC 預設色（bkColorGc）兩個設定各自獨立、不綁死。
+const BK_USER_COLORS_EXTRA_GC = Object.values(GC_EVENT_COLORS)
+  .filter(h => !BK_USER_COLORS.some(b => b.toUpperCase() === h.toUpperCase()));
 function _hex2rgb(hex) {
   if (!hex || hex[0] !== '#' || hex.length !== 7) return null;
   return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)];
@@ -20014,14 +20032,13 @@ async function _gcImportAsBooking(entryId) {
     }
     bgJobProgress(jobId, 70);
     try {
-      const _bkClr = _bkEffColor(bk);
       await proxyCall('updateCalendarEvent', {
         eventId: ev.id, room: bk.room, customRoom: bk.customRoom || '',
         date: bk.date, startTime: bk.startTime, endTime: bk.endTime,
         counselorName: bk.counselorName || '', notes: bk.notes || '',
         creatorName: bk.creatorName || bk.counselorName || '',
         createdAt: bk.createdAt, updatedAt: bk.updatedAt, isEdit: false, bkSerial: bk.bkSerial,
-        colorId: _bkClr ? _nearestGcColorId(_bkClr) : null });
+        colorId: _bkGcColorId(bk) });
     } catch (_) {}
     // 匯入＋回寫後，該事件的所有錯誤 kind 都應消失
     _gcErrorsCache.entries = (_gcErrorsCache.entries || []).filter(e => e.eventId !== ev.id);
@@ -24946,6 +24963,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 111, title: '我的顏色分「INFOSYS 預設色」與「GC 預設色」（#5-3）', isProd: false, items: [
+      item('新功能', '偏好設定頁與空間預約「我的顏色」彈窗新增「GC 預設色」：你建立的預約同步到 Google 日曆時套用此色，直接從 GC 支援的 11 色挑選（不做近似轉換），與既有「INFOSYS 預設色」（系統內卡片/列表顯示用）各自獨立設定，互不綁死'),
+      item('改善', 'INFOSYS 預設色選色盤新增下排 GC 11 色選項，方便想讓兩邊一致的使用者直接挑同一色'),
+      item('新功能', '偏好設定頁與「我的顏色」彈窗新增「其他使用者的預設色一覽」（唯讀），列出每位同仁的 INFOSYS／GC 預設色色塊，方便知道彼此的顏色'),
+      item('技術', '建立/更新 GC 事件時，色彩決定改走 _bkGcColorId()：逐筆自訂色優先，其次主責人員的 GC 預設色（直接對應 colorId），都沒設定才退回既有 INFOSYS 顯示色的近似轉換'),
+    ]},
     { date: '2026-07-07', v: 110, title: '新增系列預約撞期改開逐筆修正視窗（#14）', isProd: false, items: [
       item('改善', '新增系列（重複）預約若撞房／撞人，不再只顯示警示整批放棄，改開與拖曳調整相同的衝突修正視窗：系列每一筆列成分頁，有衝突的標 ⚠，可逐筆調整日期／節次或時間／空間後「套用並儲存」重新送出；取消則整批放棄，維持現狀不寫入'),
       item('技術', '重用既有 _bkOpenDragFixModal／_bkDragFixApply（v99 起支援節次下拉選時間）；衝突偵測時本機樂觀更新已先行回滾，開修正視窗前資料狀態正確'),
@@ -25690,8 +25713,10 @@ function renderPrefsPage() {
     }
   }
 
-  // 空間預約顯示顏色 grid
+  // 空間預約顯示顏色 grid（INFOSYS 預設色／GC 預設色／其他使用者一覽）
   _renderBkColorGrid();
+  _renderBkGcDefaultGrid();
+  _renderBkColorRoster();
 }
 
 function saveLeaveConfirmPref() {
@@ -25713,7 +25738,9 @@ function toggleCustomTimeout(sel) {
   document.getElementById('pref-timeout-custom').style.display = sel.value === 'custom' ? '' : 'none';
 }
 // gridId/currentId 預設對應偏好設定頁；booking 頁彈窗會傳入另一組 id 重用同一份渲染邏輯
-function _renderBkColorGrid(gridId, currentId) {
+// gridId/currentId 預設對應偏好設定頁；booking 頁彈窗會傳入另一組 id 重用同一份渲染邏輯。
+// extraGridId（若該 id 存在於畫面上）渲染「GC 11 色」附加選項，讓 INFOSYS 預設色也能選跟 GC 一致的顏色。
+function _renderBkColorGrid(gridId, currentId, extraGridId) {
   const grid = document.getElementById(gridId || 'pref-bkcolor-grid');
   const cur  = document.getElementById(currentId || 'pref-bkcolor-current');
   if (!grid) return;
@@ -25726,7 +25753,7 @@ function _renderBkColorGrid(gridId, currentId) {
     const key = u.bkColor.toUpperCase();
     (usersByColor[key] = usersByColor[key] || []).push(u.name || email);
   });
-  grid.innerHTML = BK_USER_COLORS.map(hex => {
+  const _swatch = hex => {
     const key = hex.toUpperCase();
     const sel = key === (my || '').toUpperCase();
     const others = usersByColor[key] || [];
@@ -25741,7 +25768,10 @@ function _renderBkColorGrid(gridId, currentId) {
       style="width:32px;height:32px;border-radius:6px;background:${hex};cursor:pointer;
       box-shadow:${box};transition:transform .1s;"
       onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform=''"></div>`;
-  }).join('');
+  };
+  grid.innerHTML = BK_USER_COLORS.map(_swatch).join('');
+  const extraGrid = document.getElementById(extraGridId || (gridId ? gridId + '-gc-extra' : 'pref-bkcolor-grid-gc-extra'));
+  if (extraGrid) extraGrid.innerHTML = BK_USER_COLORS_EXTRA_GC.map(_swatch).join('');
   if (cur) cur.textContent = my ? `目前：${my}` : '目前：未設定（沿用預設灰底）';
 }
 async function pickMyBkColor(hex, gridId, currentId) {
@@ -25751,11 +25781,14 @@ async function pickMyBkColor(hex, gridId, currentId) {
   _renderBkColorGrid(gridId, currentId);
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
   if (document.getElementById('page-bookings')?.classList.contains('active')) renderBookingsPage();
+  _renderBkColorRoster();
   showToast?.(`已設定顏色 ${hex}`, 'success');
 }
 function openBkColorModal() {
   document.getElementById('bk-color-modal').style.display = 'flex';
   _renderBkColorGrid('bk-color-modal-grid', 'bk-color-modal-current');
+  _renderBkGcDefaultGrid('bk-color-modal-gc-grid', 'bk-color-modal-gc-current');
+  _renderBkColorRoster('bk-color-modal-roster');
 }
 function closeBkColorModal() {
   document.getElementById('bk-color-modal').style.display = 'none';
@@ -25763,12 +25796,77 @@ function closeBkColorModal() {
 async function clearMyBkColor(gridId, currentId) {
   const me = currentUser?.email;
   if (!me || !configData?.users?.[me]) return;
-  if (!confirm('要清除您的預約顯示顏色，改回預設灰底嗎？')) return;
+  if (!confirm('要清除您的 INFOSYS 預設色，改回預設灰底嗎？')) return;
   delete configData.users[me].bkColor;
   _renderBkColorGrid(gridId, currentId);
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
   if (document.getElementById('page-bookings')?.classList.contains('active')) renderBookingsPage();
+  _renderBkColorRoster();
   showToast?.('已清除自訂顏色', 'info');
+}
+
+// #5-3：GC 預設色——建立者在此設定的預約同步到 Google 日曆時套用此色。GC 事件色僅 11 色，
+// 直接讓使用者從這 11 色挑選（不做近似轉換的模糊感），與 INFOSYS 預設色各自獨立、不綁死。
+function _renderBkGcDefaultGrid(gridId, currentId) {
+  const grid = document.getElementById(gridId || 'pref-bkcolor-gc-grid');
+  const cur  = document.getElementById(currentId || 'pref-bkcolor-gc-current');
+  if (!grid) return;
+  const me = currentUser?.email;
+  const my = String(configData?.users?.[me]?.bkColorGc || '');
+  grid.innerHTML = Object.entries(GC_EVENT_COLORS).map(([id, hex]) => {
+    const sel = id === my;
+    const box = sel ? 'inset 0 0 0 3px #fff, 0 0 0 2px #2b6cb0' : 'inset 0 0 0 1px rgba(0,0,0,.08)';
+    return `<div onclick="pickMyBkGcColor('${id}','${escHtml(gridId||'pref-bkcolor-gc-grid')}','${escHtml(currentId||'pref-bkcolor-gc-current')}')"
+      title="${escHtml(hex)}"
+      style="width:32px;height:32px;border-radius:6px;background:${hex};cursor:pointer;
+      box-shadow:${box};transition:transform .1s;"
+      onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform=''"></div>`;
+  }).join('');
+  if (cur) cur.textContent = my ? `目前：GC 色 #${my}` : '目前：未設定（沿用 INFOSYS 預設色的近似轉換）';
+}
+async function pickMyBkGcColor(id, gridId, currentId) {
+  const me = currentUser?.email;
+  if (!me || !configData?.users?.[me]) return;
+  configData.users[me].bkColorGc = id;
+  _renderBkGcDefaultGrid(gridId, currentId);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
+  _renderBkColorRoster();
+  showToast?.(`已設定 GC 預設色 #${id}`, 'success');
+}
+async function clearMyBkGcColor(gridId, currentId) {
+  const me = currentUser?.email;
+  if (!me || !configData?.users?.[me]) return;
+  if (!confirm('要清除您的 GC 預設色嗎？清除後同步到 Google 日曆時將沿用 INFOSYS 預設色的近似轉換。')) return;
+  delete configData.users[me].bkColorGc;
+  _renderBkGcDefaultGrid(gridId, currentId);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
+  _renderBkColorRoster();
+  showToast?.('已清除 GC 預設色', 'info');
+}
+
+// #5-3：其他使用者的預設色一覽（唯讀）——名字＋INFOSYS 色塊＋GC 色塊，讓大家知道彼此的顏色。
+function _renderBkColorRoster(containerId) {
+  const el = document.getElementById(containerId || 'pref-bkcolor-roster');
+  if (!el) return;
+  const me = currentUser?.email;
+  const rows = Object.entries(configData?.users || {})
+    .filter(([email, u]) => u && !u.disabled && email !== me)
+    .sort(([, a], [, b]) => (a.name || '').localeCompare(b.name || '', 'zh'))
+    .map(([email, u]) => {
+      const infosysSwatch = u.bkColor
+        ? `<span title="${escHtml(u.bkColor)}" style="width:16px;height:16px;border-radius:4px;background:${escHtml(u.bkColor)};display:inline-block;border:1px solid rgba(0,0,0,.15);"></span>`
+        : `<span style="width:16px;height:16px;border-radius:4px;background:#edf2f7;display:inline-block;border:1px dashed #cbd5e0;"></span>`;
+      const gcHex = u.bkColorGc && GC_EVENT_COLORS[u.bkColorGc] ? GC_EVENT_COLORS[u.bkColorGc] : '';
+      const gcSwatch = gcHex
+        ? `<span title="GC 色 #${escHtml(String(u.bkColorGc))}" style="width:16px;height:16px;border-radius:4px;background:${gcHex};display:inline-block;border:1px solid rgba(0,0,0,.15);"></span>`
+        : `<span style="width:16px;height:16px;border-radius:4px;background:#edf2f7;display:inline-block;border:1px dashed #cbd5e0;"></span>`;
+      return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:.82rem;color:#4a5568;">
+        <span style="min-width:70px;">${escHtml(u.name || email)}</span>
+        <span style="display:flex;align-items:center;gap:4px;" data-tip="INFOSYS 預設色">${infosysSwatch}</span>
+        <span style="display:flex;align-items:center;gap:4px;" data-tip="GC 預設色">${gcSwatch}</span>
+      </div>`;
+    });
+  el.innerHTML = rows.length ? rows.join('') : '<div style="font-size:.8rem;color:#a0aec0;">（尚無其他使用者）</div>';
 }
 function prefResetBkFreqs() {
   if (!confirm('確定清除空間預約使用頻率記憶？選項排序將回到預設。')) return;
@@ -27296,7 +27394,6 @@ async function syncFromCalendar(silent = false) {
         if (!bk?.calendarEventId) continue;
         try {
           const _isEdit = !!(bk.updatedAt && bk.updatedAt !== bk.createdAt);
-          const _bkClr = _bkEffColor(bk);
           await proxyCall('updateCalendarEvent', {
             eventId: bk.calendarEventId, room: bk.room, customRoom: bk.customRoom || '',
             date: bk.date, startTime: bk.startTime, endTime: bk.endTime,
@@ -27304,7 +27401,7 @@ async function syncFromCalendar(silent = false) {
             creatorName: bk.creatorName || bk.counselorName || '',
             createdAt: bk.createdAt, updatedAt: bk.updatedAt || bk.createdAt,
             isEdit: _isEdit, bkSerial: bk.bkSerial,
-            colorId: _bkClr ? _nearestGcColorId(_bkClr) : null });
+            colorId: _bkGcColorId(bk) });
         } catch (_) {}
       }
     }
@@ -30089,6 +30186,18 @@ function _bkEffColor(b) {
   return b?.bkOverrideColor || configData?.users?.[b?.counselorEmail]?.bkColor || '';
 }
 
+// #5-3：推送到 GC 事件的顏色。優先序：
+// 1. 逐筆自訂色（bkOverrideColor）——使用者這筆明確想要這個顏色，直接找最接近的 GC 色；
+// 2. 主責人員設定的「GC 預設色」（bkColorGc，11 色其一，直接對應 colorId，不做近似轉換）；
+// 3. 都沒設定 → 退回既有 INFOSYS 顯示色（bkColor）的近似轉換（_nearestGcColorId）。
+function _bkGcColorId(b) {
+  if (b?.bkOverrideColor) return _nearestGcColorId(b.bkOverrideColor);
+  const gcId = configData?.users?.[b?.counselorEmail]?.bkColorGc;
+  if (gcId && GC_EVENT_COLORS[gcId]) return String(gcId);
+  const hex = _bkEffColor(b);
+  return hex ? _nearestGcColorId(hex) : null;
+}
+
 // 依有效顏色產生 cell 樣式：淡背景（13% 透明）+ 左邊 4px 條紋；未設沿用現行灰底
 function _bkCellStyle(b) {
   const hex = _bkEffColor(b);
@@ -30114,14 +30223,13 @@ function _bkSeriesBadge(b, seriesCountMap, compact) {
 // 從 booking 物件組出 GC 事件參數（含依有效顏色算出的 colorId）。
 // 供拖曳（bkDrop/_bkDragConfirmScope）與 saveBooking 系列編輯逐筆 GC 同步共用，避免重複組裝邏輯。
 function _bkGcParamsOf(b, isEdit) {
-  const clr = _bkEffColor(b);
   return {
     room: b.room, customRoom: b.customRoom, date: b.date, startTime: b.startTime, endTime: b.endTime,
     counselorName: b.counselorName, notes: b.notes,
     creatorName: configData?.users?.[b.creatorEmail]?.name || b.creatorName || '',
     createdAt: b.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
     isEdit: !!isEdit, bkSerial: b.bkSerial,
-    colorId: clr ? _nearestGcColorId(clr) : null,
+    colorId: _bkGcColorId(b),
   };
 }
 
@@ -30481,7 +30589,6 @@ async function _bkGcFlush() {
     if (!snap.calendarEventId) continue;
     const creatorName = configData?.users?.[snap.creatorEmail]?.name || snap.creatorName || '';
     try {
-      const _snClr = _bkEffColor(snap);
       await proxyCall('updateCalendarEvent', {
         eventId: snap.calendarEventId,
         room: snap.room, customRoom: snap.customRoom,
@@ -30489,7 +30596,7 @@ async function _bkGcFlush() {
         counselorName: snap.counselorName, notes: snap.notes,
         creatorName, createdAt: snap.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(), isEdit: true, bkSerial: snap.bkSerial,
-        colorId: _snClr ? _nearestGcColorId(_snClr) : null,
+        colorId: _bkGcColorId(snap),
       });
     } catch(_) { /* 靜默失敗，不影響本機資料 */ }
   }
@@ -31372,10 +31479,9 @@ async function syncBookingToCalendar(id) {
   modalEl.style.display = 'flex';
 
   try {
-    const _bColorRef = _bkEffColor(b);
     const calParams = { room: b.room, date: b.date, startTime: b.startTime, endTime: b.endTime,
       counselorName: b.counselorName, caseId: b.caseId || '', caseName: b.caseName || '', notes: b.notes || '',
-      colorId: _bColorRef ? _nearestGcColorId(_bColorRef) : null };
+      colorId: _bkGcColorId(b) };
     const calendarEventId = await proxyCall('createCalendarEvent', calParams);
     if (calendarEventId) {
       const idx = bookingsData.findIndex(x => x.id === id);
@@ -32097,12 +32203,11 @@ async function saveBooking() {
   const _oldBkSnap = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
   const newSerial = _editingBookingId ? (_oldBkSnap?.bkSerial) : _bkNextSerial();
   const _bkOverride = _bkPickedColor || '';
-  const _bkCounselorColor = _bkOverride || configData?.users?.[counselorEmail]?.bkColor || '';
   const calParams = { room, customRoom, date, startTime: start, endTime: end, counselorName, notes, creatorName,
     createdAt: _editingBookingId ? (_oldBkSnap?.createdAt || now) : now,
     updatedAt: now, isEdit: !!_editingBookingId,
     bkSerial: newSerial,
-    colorId: _bkCounselorColor ? _nearestGcColorId(_bkCounselorColor) : null };
+    colorId: _bkGcColorId({ bkOverrideColor: _bkOverride, counselorEmail }) };
   const existingCalEventId = _oldBkSnap?.calendarEventId;
   const newId = _editingBookingId || `bk_${Date.now()}`;
 
@@ -40023,18 +40128,29 @@ function toggleNavPin(navId) {
 </div>
 
 <!-- 空間預約：我的顯示顏色 Modal -->
-<div id="bk-color-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:600;align-items:center;justify-content:center;">
-  <div style="background:#fff;border-radius:12px;padding:24px 24px 18px;width:90%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,.2);">
+<div id="bk-color-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:600;align-items:center;justify-content:center;overflow:auto;">
+  <div style="background:#fff;border-radius:12px;padding:24px 24px 18px;width:90%;max-width:440px;max-height:88vh;overflow:auto;box-shadow:0 8px 32px rgba(0,0,0,.2);">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
       <h3 style="font-size:1.05rem;color:#1a202c;">我的空間預約顏色</h3>
       <button onclick="closeBkColorModal()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
     </div>
-    <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">選一個屬於自己的顏色，其他人也會看到你的預約以此顏色顯示。粗框色塊代表已被其他人選用（移過去看是誰）。</p>
+    <div class="field-label" style="margin-bottom:6px;">INFOSYS 預設色</div>
+    <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">選一個屬於自己的顏色，其他人也會看到你的預約以此顏色顯示。粗框色塊代表已被其他人選用（移過去看是誰）。下排是 GC 11 色，可選來跟 GC 一致，但不是必要。</p>
     <div id="bk-color-modal-grid" style="display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;"></div>
+    <div id="bk-color-modal-grid-gc-extra" style="display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;margin-top:6px;padding-top:6px;border-top:1px dashed #e2e8f0;"></div>
     <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
       <button class="btn btn-secondary btn-sm" onclick="clearMyBkColor('bk-color-modal-grid','bk-color-modal-current')">還原預設（無色）</button>
       <span id="bk-color-modal-current" style="font-size:.82rem;color:#4a5568;"></span>
     </div>
+    <div class="field-label" style="margin:16px 0 6px;">GC 預設色</div>
+    <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">你建立的預約同步到 Google 日曆時套用此色（僅 11 色，直接挑）。未設定則沿用 INFOSYS 預設色的近似轉換。</p>
+    <div id="bk-color-modal-gc-grid" style="display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:6px;"></div>
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <button class="btn btn-secondary btn-sm" onclick="clearMyBkGcColor('bk-color-modal-gc-grid','bk-color-modal-gc-current')">還原預設（沿用近似轉換）</button>
+      <span id="bk-color-modal-gc-current" style="font-size:.82rem;color:#4a5568;"></span>
+    </div>
+    <div class="field-label" style="margin:16px 0 6px;">其他使用者的預設色一覽</div>
+    <div id="bk-color-modal-roster"></div>
     <div style="display:flex;justify-content:flex-end;margin-top:16px;">
       <button class="btn btn-secondary" onclick="closeBkColorModal()">關閉</button>
     </div>
