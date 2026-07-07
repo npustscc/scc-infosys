@@ -24258,6 +24258,9 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 99, title: '拖曳衝突修正視窗支援節次選時間', isProd: false, items: [
+      item('改善', '拖曳衝突修正視窗的每個分頁新增「節次」下拉：選定節次即自動帶入該節的開始／結束時間，並立即重新偵測是否仍有衝突（分頁狀態 ⚠／✓ 與「套用並儲存」按鈕即時更新）；仍可改用下方時間欄位手動微調（此時節次顯示「自訂時間」）'),
+    ]},
     { date: '2026-07-07', v: 98, title: '系列預約顯示與拖曳衝突修正視窗（驗證回饋）', isProd: false, items: [
       item('改善', '空間預約單日檢視、多日表格檢視、列表檢視三處的預約卡片，屬於系列預約者一律加註「🔁 系列」徽章（多日表格空間較小僅顯示 🔁），滑鼠移入顯示「系列預約（共 N 筆）」，避免看不出這筆屬於系列'),
       item('修復', '編輯系列預約中的某一筆時，「重複預約」區塊改為唯讀呈現系列建立當初的設定（頻率／次數皆鎖定不可互動，並附註「共 N 筆」），先前會誤呈現為未勾選、頻率與次數皆變回預設值；非系列預約的編輯則直接隱藏此區塊，避免誤以為勾選/調整會生效'),
@@ -29901,6 +29904,19 @@ function _bkDragFixRoomLabel(p) {
   return p.room === '其他' ? (p.customRoom || '其他') : (p.room || '');
 }
 
+// 節次下拉：選定節次即帶入該節開始/結束時間並整批重算衝突；選「自訂時間」則保留手動輸入值
+function _bkDragFixPeriodChange(id, label) {
+  const st = _bkDragFix;
+  if (!st) return;
+  const p = st.proposals.get(id);
+  if (!p) return;
+  const period = BK_PERIODS.find(x => x.label === label);
+  if (!period) return; // 「— 自訂時間 —」：不動現值，維持手動輸入
+  p.startTime = period.start;
+  p.endTime = period.end;
+  _bkDragFixRecompute();
+}
+
 function _bkDragFixRenderTabContent(id) {
   const st = _bkDragFix;
   if (!st || !id) return '';
@@ -29924,6 +29940,10 @@ function _bkDragFixRenderTabContent(id) {
     statusHtml = `<div class="alert alert-info" style="margin-top:10px;">✓ 已解決衝突。</div>`;
   }
 
+  const curPeriod = BK_PERIODS.find(x => x.start === (p.startTime || '').slice(0,5) && x.end === (p.endTime || '').slice(0,5));
+  const periodOpts = `<option value="">— 自訂時間 —</option>` + BK_PERIODS.map(x =>
+    `<option value="${escHtml(x.label)}" ${curPeriod && curPeriod.label === x.label ? 'selected' : ''}>${escHtml(x.label)}</option>`).join('');
+
   return `
     <div style="opacity:${isDeleted ? '.55' : '1'};">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
@@ -29936,6 +29956,11 @@ function _bkDragFixRenderTabContent(id) {
           <label style="font-size:.8rem;color:#718096;">空間</label>
           <select class="field-input" ${isDeleted ? 'disabled' : ''}
             onchange="_bkDragFixFieldChange('${escHtml(id)}','room',this.value)">${roomOpts}</select>
+        </div>
+        <div style="grid-column:1/-1;">
+          <label style="font-size:.8rem;color:#718096;">節次（選定即帶入該節時間）</label>
+          <select class="field-input" ${isDeleted ? 'disabled' : ''}
+            onchange="_bkDragFixPeriodChange('${escHtml(id)}',this.value)">${periodOpts}</select>
         </div>
         <div>
           <label style="font-size:.8rem;color:#718096;">開始時間</label>
