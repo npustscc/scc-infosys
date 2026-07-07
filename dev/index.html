@@ -25427,6 +25427,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 120, title: '空間預約連結個案：精準輸入可納入封存／結案個案（#7）', isProd: false, items: [
+      item('新功能', '空間預約 Modal 的「連結個案」欄位，輸入字串完全等於某個案的全名或完整學號時，會把該個案（即使已封存或已結案）一併納入建議清單，並標示「已結案」「已封存」徽章；選取後連結行為與一般個案相同'),
+      item('維持設計', '模糊輸入（只打部分姓名）不會觸發封存／結案個案曝光——刻意的個資保護設計，避免隨手打幾個字就能得知某人是否曾有結案/封存的諮商紀錄；此規則只在「完全等於」全名或學號時才放行'),
+      item('修復', '連結封存／結案個案（尚未載入到 casesData 的 cold 個案）時，預約的 caseName 先前會存成空字串，現在 fallback 讀取 cases-index 全量索引補上正確姓名'),
+    ]},
     { date: '2026-07-07', v: 119, title: '同時段重複紀錄即時檢核與整合（#9）', isProd: false, items: [
       item('新功能', '晤談紀錄、初次晤談紀錄表、精神科醫師評估、事件處理紀錄四種表單：變更「會談（評估）日期＋時間」後即時檢查同一個案＋同一晤談（評估）人員＋同一日期時間＋同一紀錄類型是否已有既存紀錄，命中時在時間欄位下方顯示警示，可選「整合（取代既有紀錄）」或「保留兩筆」；未選擇就直接儲存時再跳一次確認'),
       item('技術', '新增共用函式 _dupFindSameSlot／_dupRenderAlert／_dupChoose／_dupResolveAtSave，四種表單各自傳入自己的既有紀錄與比對條件；選擇整合時改走「更新既存那筆」路徑，auditLog 註明「整合取代同時段紀錄」'),
@@ -32034,6 +32039,19 @@ function onBkCaseIdInput() {
   if (!matches.length) matches = active.filter(c => c.studentId && c.studentId === raw);
   if (!matches.length && raw.length >= 2) matches = active.filter(c => (c.name || '').includes(raw));
 
+  // #7：封存／已結案個案原則上不在此曝光——避免只是隨手打幾個字模糊比對，就能得知某人是否曾有
+  // 已結案／封存的諮商紀錄（個資保護，刻意設計）。唯一例外：輸入字串「完全等於」全名或完整學號，
+  // 視為使用者本就已經知道這個人的完整身分（而非用來試探），才把封存／已結案個案一併納入建議，
+  // 並加上狀態徽章。資料源用 _casesIndexCache 全量索引（涵蓋 hot/cold 分層後未必在 casesData 的個案）。
+  const _matchedIds = new Set(matches.map(c => c.id));
+  const archivedExact = raw ? (_casesIndexCache?.cases || []).filter(c =>
+    c?.id && !c.deleted && !_matchedIds.has(c.id) &&
+    (c.archived || c.status === 'closed') &&
+    (c.name === raw || (c.studentId && c.studentId === raw))
+  ) : [];
+  // 精準命中的封存／結案個案排最前面，模糊比對的一般個案在後
+  matches = [...archivedExact, ...matches];
+
   if (!matches.length) { hint.style.display = 'none'; return; }
 
   // 目前選定主責人員為主責的個案排最前面，其餘維持原順序（sort 為穩定排序，同分不改變相對順序）
@@ -32043,18 +32061,23 @@ function onBkCaseIdInput() {
       (a.counselorEmail === _selCounselor ? 0 : 1) - (b.counselorEmail === _selCounselor ? 0 : 1));
   }
 
+  // 封存／已結案狀態徽章（配色沿用事件處理記錄個案搜尋 _evrSearch 既有樣式，維持全站一致）
+  const _statusBadge = m =>
+    (m.status === 'closed' ? '<span style="font-size:.7rem;background:#f0f4f8;color:#718096;border-radius:4px;padding:1px 5px;margin-left:4px;">已結案</span>' : '') +
+    (m.archived ? '<span style="font-size:.7rem;background:#fefcbf;color:#744210;border-radius:4px;padding:1px 5px;margin-left:4px;">已封存</span>' : '');
+
   hint.style.display = '';
   hint.style.color = '';
   if (matches.length === 1) {
     const m = matches[0];
     hint.innerHTML =
-      `是否是 <b>${escHtml(m.name || m.id)}</b>（學號：${escHtml(m.studentId || '—')}，案號：${escHtml(m.id)}）？` +
+      `是否是 <b>${escHtml(m.name || m.id)}</b>（學號：${escHtml(m.studentId || '—')}，案號：${escHtml(m.id)}）？${_statusBadge(m)}` +
       `<button type="button" class="btn btn-sm btn-primary" style="margin-left:8px;padding:2px 10px;" onclick="confirmBkCase('${escHtml(m.id)}','${escHtml(m.name||'')}')">✓ 是</button>` +
       `<button type="button" class="btn btn-sm btn-secondary" style="padding:2px 8px;margin-left:4px;" onclick="document.getElementById('bk-case-hint').style.display='none'">✗ 否</button>`;
   } else {
     const rows = matches.slice(0, 5).map(m =>
       `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;">` +
-      `<span style="font-size:.88rem;">${escHtml(m.name || m.id)}（${escHtml(m.id)}${m.studentId ? '，學號 ' + escHtml(m.studentId) : ''}）</span>` +
+      `<span style="font-size:.88rem;">${escHtml(m.name || m.id)}（${escHtml(m.id)}${m.studentId ? '，學號 ' + escHtml(m.studentId) : ''}）${_statusBadge(m)}</span>` +
       `<button type="button" class="btn btn-sm btn-primary" style="padding:2px 8px;" onclick="confirmBkCase('${escHtml(m.id)}','${escHtml(m.name||'')}')">選</button>` +
       `</div>`).join('');
     hint.innerHTML = `<div style="font-size:.82rem;color:#718096;margin-bottom:3px;">找到 ${matches.length} 筆符合個案：</div>${rows}`;
@@ -32688,7 +32711,11 @@ async function saveBooking() {
 
   // counselorName：所有選中人員姓名以半形逗號串接，同時作為畫面顯示與 GC 標題來源
   const counselorName = counselors.map(c => c.name).join(',');
-  const caseObj = caseId ? casesData.find(c => c.id === caseId) : null;
+  // #7：連結的個案可能是封存／結案案號（cold，尚未載入到 casesData），caseName 改用索引 fallback，
+  // 避免這類個案連結後 caseName 存成空字串
+  const caseObj = caseId
+    ? (casesData.find(c => c.id === caseId) || _casesIndexCache?.cases?.find(c => c.id === caseId))
+    : null;
   const now = new Date().toISOString();
   const creatorName = configData?.users?.[currentUser?.email]?.name || currentUser?.name || currentUser?.given_name || (currentUser?.email?.split('@')[0] ?? '') || '';
 
