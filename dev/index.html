@@ -20107,11 +20107,17 @@ window._mlToggleSection = function() {
 
 // 待辦頁「重大事件」區塊：拉 configData notifications 中的重大類型顯示（如 Gmail 變更、非上班時間活動）
 // 資料來源與鈴鐺同一份（configData.users[me].notifications），無需額外 Drive 寫入
-const MAJOR_EVENT_NOTIF_TYPES = new Set(['gmail_changed', 'off_hours_activity']);
+const MAJOR_EVENT_NOTIF_TYPES = new Set(['gmail_changed', 'off_hours_activity', 'booking_created_self', 'booking_created_broadcast']);
 const MAJOR_EVENT_TYPE_LABELS = {
   gmail_changed:        '重大事件・Gmail 變更',
   off_hours_activity:   '重大事件・非上班時間活動',
+  booking_created_self:      '空間預約・預約成功',
+  booking_created_broadcast: '空間預約・他人為你建立',
 };
+// #5-1：這兩類「收到」即代表使用者已知悉，點一下就直接不再顯示（不像其他重大事件類型維持已讀
+// 7 天可回顧稽核）；未來若有其他重大事件也想要「收到即消失」，加進這個 Set 共用同一套機制即可。
+const MAJOR_EVENT_DISMISS_ON_READ = new Set(['booking_created_self', 'booking_created_broadcast']);
+const MAJOR_EVENT_BTN_LABEL = { booking_created_self: '收到', booking_created_broadcast: '收到' };
 function _renderMajorEventNotifs() {
   const section = document.getElementById('todos-major-events-section');
   if (!section) return;
@@ -20119,7 +20125,8 @@ function _renderMajorEventNotifs() {
   const viewingOwn = !_todosViewUser || _todosViewUser === currentUser?.email;
   if (!viewingOwn) { section.innerHTML = ''; return; }
   const me = configData?.users?.[currentUser?.email];
-  const notifs = (me?.notifications || []).filter(n => MAJOR_EVENT_NOTIF_TYPES.has(n.type));
+  const notifs = (me?.notifications || []).filter(n =>
+    MAJOR_EVENT_NOTIF_TYPES.has(n.type) && !(n.read && MAJOR_EVENT_DISMISS_ON_READ.has(n.type)));
   const pending = notifs.filter(n => !n.read);
   if (!notifs.length) { section.innerHTML = ''; return; }
   const isCollapsed = !!window._majorEventsCollapsed;
@@ -20136,7 +20143,7 @@ function _renderMajorEventNotifs() {
           ${_fmt(n.createdAt)}${n.actorName ? `　・操作者：${escHtml(n.actorName)}` : ''}${n.read && n.readAt ? `　・已讀 ${_fmt(n.readAt)}` : ''}
         </div>
       </div>
-      ${!n.read ? `<button onclick="_majorEventMarkRead('${escHtml(n.id)}')" style="padding:3px 10px;background:#553c9a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;flex-shrink:0;" data-tip="標記為已讀；7 天後自動移除">標記已讀</button>` : ''}
+      ${!n.read ? `<button onclick="_majorEventMarkRead('${escHtml(n.id)}')" style="padding:3px 10px;background:#553c9a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;flex-shrink:0;" data-tip="${MAJOR_EVENT_DISMISS_ON_READ.has(n.type) ? '收到後即不再顯示' : '標記為已讀；7 天後自動移除'}">${MAJOR_EVENT_BTN_LABEL[n.type] || '標記已讀'}</button>` : ''}
     </div>`;
   const titleText = pending.length
     ? `⚠ 重大事件通知（${pending.length} 筆未讀 / 共 ${notifs.length}）`
@@ -24939,6 +24946,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 109, title: '空間預約建立成功通知（#5-1）', isProd: false, items: [
+      item('新功能', '空間預約建立成功後，建立者本人在待辦事項頁「重大事件」區塊收到「✅ 已預約成功」提示（含空間／日期／時段／主責摘要），可點「收到」即從畫面移除'),
+      item('新功能', '若預約的主責／人員包含建立者以外的使用者，那些人也會收到「XXX 為你建立了一筆空間預約」通知，同樣可「收到」封存'),
+      item('技術', '「收到」機制擴充既有 MAJOR_EVENT_NOTIF_TYPES 重大事件通知共用架構（MAJOR_EVENT_DISMISS_ON_READ／MAJOR_EVENT_BTN_LABEL），未來其他重大事件通知若也要「收到即消失」可直接加入同一套機制；僅於建立預約當下寫一次設定檔，不在每次畫面重繪時寫入'),
+    ]},
     { date: '2026-07-07', v: 108, title: '重複預約新增「每三週」與「每月」頻率（#24）', isProd: false, items: [
       item('新功能', '重複預約頻率新增「每三週」（固定間隔 21 天）與「每月」（同一天，如 7/8 → 8/8 → 9/8；當月無此日，如月底 31 號，則取該月最後一天）：新增系列、儲存前預覽、編輯系列時調整頻率／次數的重排、稽核紀錄的頻率文字皆一致支援'),
       item('改善', '編輯系列預約時，會依系列既有日期自動反推當初的頻率（含每三週／每月），預先勾選對應選項；日期曾被個別調整而無法判斷固定頻率時維持不勾選'),
@@ -31951,6 +31963,55 @@ function _bkAckPersonConflict() {
   }
 }
 
+// #5-1：預約建立成功通知——(a) 建立者本人在待辦頁「重大事件」收到「已預約成功」提示；
+// (b) 若主責／人員含建立者以外的使用者，廣播「XXX 為你建立了一筆空間預約」給那些人。
+// 走既有 MAJOR_EVENT_NOTIF_TYPES 機制（configData.users[email].notifications），
+// 「收到」＝點一下即從畫面消失（見 MAJOR_EVENT_DISMISS_ON_READ），只在此次使用者操作時寫檔一次，
+// 不在每次 render 時重複寫入。
+function _bkNotifyCreated(createdObjs, counselors) {
+  if (!configData?.users || !currentUser?.email || !createdObjs?.length) return;
+  const me = configData.users[currentUser.email];
+  if (!me) return;
+  const first = createdObjs[0];
+  const roomD = first.room === '其他' ? (first.customRoom || '其他') : (first.room || '');
+  const timeStr = `${first.date} ${(first.startTime||'').slice(0,5)}–${(first.endTime||'').slice(0,5)}`;
+  const countSuffix = createdObjs.length > 1 ? `等共 ${createdObjs.length} 筆` : '';
+  const brief = `${roomD}　${timeStr}${countSuffix}${first.counselorName ? '　主責：' + first.counselorName : ''}`;
+  const nowIso = new Date().toISOString();
+
+  if (!Array.isArray(me.notifications)) me.notifications = [];
+  me.notifications.unshift({
+    id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+    type: 'booking_created_self',
+    message: `✅ 已預約成功：${brief}`,
+    createdAt: nowIso, read: false,
+  });
+  _pruneOldReadNotifications(me);
+  if (me.notifications.length > 100) me.notifications = me.notifications.slice(0, 100);
+
+  const myName = me.name || currentUser.name || currentUser.given_name || (currentUser.email?.split('@')[0] ?? '') || '';
+  const notified = new Set();
+  (counselors || []).forEach(c => {
+    if (!c?.email || c.email === currentUser.email || notified.has(c.email)) return;
+    const u = configData.users[c.email];
+    if (!u || u.disabled) return;
+    notified.add(c.email);
+    if (!Array.isArray(u.notifications)) u.notifications = [];
+    u.notifications.unshift({
+      id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+      type: 'booking_created_broadcast',
+      message: `${myName || '同仁'} 為你建立了一筆空間預約：${brief}`,
+      createdAt: nowIso, read: false,
+    });
+    _pruneOldReadNotifications(u);
+    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
+  });
+
+  renderNotifBell?.();
+  if (document.getElementById('page-todos')?.classList.contains('active')) renderTodosPage();
+  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+}
+
 async function saveBooking() {
   const saveBtn = document.getElementById('btn-save-booking');
   if (saveBtn?.disabled) return;
@@ -32132,6 +32193,9 @@ async function saveBooking() {
     const _pvOk = await _bkSeriesPreviewConfirm(_pvHtml, '系列預約變更確認');
     if (!_pvOk) { if (saveBtn) saveBtn.disabled = false; return; }
   }
+
+  // #5-1：本次若為新建（非編輯），收集新建立的筆供成功後推播「已預約成功」通知（見 _bkNotifyCreated）
+  const _createdObjs = [];
 
   // 立即更新本機資料（樂觀更新）
   if (_editingBookingId) {
@@ -32337,6 +32401,7 @@ async function saveBooking() {
       if (_bkOverride) _sObj.bkOverrideColor = _bkOverride;
       bookingsData.push(_sObj);
       _pushOp(_sObj, 'create', { ...calParams, date: _sDate, bkSerial: _sObj.bkSerial });
+      _createdObjs.push(_sObj);
     }
   }
 
@@ -32406,6 +32471,7 @@ async function saveBooking() {
         _bkDetail = `${room}　${date}　${(start||'').slice(0,5)}–${(end||'').slice(0,5)}${counselorName ? '　' + counselorName : ''}`;
       }
       auditLog(_editingBookingId ? '編輯空間預約' : '新增空間預約', caseId || null, null, _bkDetail);
+      if (!_editingBookingId) _bkNotifyCreated(_createdObjs, counselors);
       bgJobDone(jobId);
       renderBookingsPage();
     } catch (e) {
