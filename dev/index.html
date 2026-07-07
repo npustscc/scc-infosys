@@ -8878,6 +8878,51 @@ function _nextSemOpenKey(c, sem) {
   return `${sem}#${maxSeq + 1}`;
 }
 
+// ── 同學期再次開案的 sem key 對稱重編（#35）────────────────────────────────
+// 設計：同一 base 學期下，只要存在 2 筆以上（分身），「全部」都帶明確序號
+// ('sem#1'、'sem#2'…)；只剩 1 筆時一律恢復無後綴。這樣「產生分身時原本那筆同步變 _1」、
+// 「刪到剩 1 筆時自動恢復無後綴」、「刪中間那筆時後面依序遞補」三種情境都用同一套規則處理，
+// 不需要分開寫三段邏輯。後綴只影響這個 sem key 字串本身；引用處一律以「重編後的新 key」為準
+// （見 _applySemKeyRenumber），caseId／formerIds／預約的 caseId 不受影響（案號本身不含後綴）。
+//
+// existingKeys：某 base 學期目前『仍存在』的 sem key 陣列（可能含 #N 後綴，也可能是重編前的舊值）。
+// 回傳：{ 舊key: 新key } 對照表，僅包含實際有變動的項目（未變動者不出現在表中）。
+function _renumberSemKeys(base, existingKeys) {
+  const seqOf = k => {
+    const i = k.indexOf('#');
+    return i === -1 ? 1 : (parseInt(k.slice(i + 1), 10) || 1);
+  };
+  const sorted = [...(existingKeys || [])].sort((a, b) => seqOf(a) - seqOf(b));
+  const map = {};
+  sorted.forEach((oldKey, i) => {
+    const newKey = sorted.length === 1 ? base : `${base}#${i + 1}`;
+    if (newKey !== oldKey) map[oldKey] = newKey;
+  });
+  return map;
+}
+
+// 將 _renumberSemKeys 產生的對照表套用到個案物件的所有引用處：
+// semesters 陣列本身、以 sem key 為屬性名稱的物件（basicInfoSnapshots／semesterStatus／
+// initialInterviews），以及 semesterEvaluations[].semester 欄位。
+// 縮小範圍說明：transferEvaluations[].semester、records 的學期一律由日期動態推算（不存 sem key），
+// 兩者皆不受後綴影響，故不在此處理；預約（bookingsData）只引用 caseId（不含後綴），同樣不受影響。
+function _applySemKeyRenumber(c, keyMap) {
+  if (!c || !keyMap || !Object.keys(keyMap).length) return;
+  if (Array.isArray(c.semesters)) {
+    c.semesters = c.semesters.map(k => keyMap[k] || k);
+  }
+  ['basicInfoSnapshots', 'semesterStatus', 'initialInterviews'].forEach(field => {
+    if (c[field] && typeof c[field] === 'object') {
+      const next = {};
+      Object.keys(c[field]).forEach(k => { next[keyMap[k] || k] = c[field][k]; });
+      c[field] = next;
+    }
+  });
+  if (Array.isArray(c.semesterEvaluations)) {
+    c.semesterEvaluations.forEach(e => { if (e && keyMap[e.semester]) e.semester = keyMap[e.semester]; });
+  }
+}
+
 // ══════════════════════════════════════════════
 // ── 個案架構重構 Slice 2：一學生一案號遷移引擎（純函式，供單元測試） ──
 // ══════════════════════════════════════════════
@@ -13571,6 +13616,12 @@ function deleteCaseSemData(caseId, sem) {
   }
   if (c.semesterEvaluations) c.semesterEvaluations = c.semesterEvaluations.filter(e => e.semester !== sem);
   if (c.semesterStatus) delete c.semesterStatus[sem];
+  // 同學期再次開案對稱重編（#35）：刪除其中一筆後，同 base 學期剩下的 key 要遞補／恢復無後綴
+  // （只剩 1 筆時一律無後綴；3 筆以上刪中間那筆時後面依序遞補，不留號碼空缺）
+  {
+    const _semBase35 = _semKeyBase(sem);
+    _applySemKeyRenumber(c, _renumberSemKeys(_semBase35, (c.semesters || []).filter(k => _semKeyBase(k) === _semBase35)));
+  }
   c.status = _recomputeCaseStatus(c);
   c.updatedAt = new Date().toISOString();
   // Switch active sem to remaining latest before navigating
@@ -18616,6 +18667,13 @@ async function saveCase() {
       target.basicInfoSnapshots[semKey] = _snap;
       if (!target.semesterStatus) target.semesterStatus = {};
       target.semesterStatus[semKey] = 'active';
+      // 同學期再次開案對稱重編（#35）：一有分身，同 base 學期的既有 key 也要同步補上序號
+      // （如 '1142' → '1142#1'），並同步更新 basicInfoSnapshots／semesterStatus／
+      // initialInterviews／semesterEvaluations 等所有以 sem key 為鍵的引用處
+      {
+        const _semBase35 = _semKeyBase(semKey);
+        _applySemKeyRenumber(target, _renumberSemKeys(_semBase35, target.semesters.filter(k => _semKeyBase(k) === _semBase35)));
+      }
       // root 個資欄位更新為表單現值（識別欄位學號/姓名/身分證僅在使用者確認後才更新，見 _reopenFieldUpdates）
       ['birthday','legalGender','genderIdentity','caseType','nationality','ethnicity','ethnicityNote','foreignCountry',
        'program','disability','department','college','grade','classNo','phone','email','residence','address',
@@ -25172,6 +25230,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 117, title: '同學期再次開案序號對稱重編（#35）', isProd: false, items: [
+      item('改善', '同學期重複開案的分身序號（顯示為「114-2_2」等）改為對稱重編：一有第 2 筆分身，原本無後綴的那筆同步補上「_1」；刪到只剩 1 筆時該筆自動恢復無後綴；3 筆以上刪除中間那筆時，後面的依序遞補，不留號碼空缺'),
+      item('技術', '新增 _renumberSemKeys／_applySemKeyRenumber 純函式：重編時同步更新個案物件內所有以 sem key 為鍵的引用處（basicInfoSnapshots、semesterStatus、initialInterviews、semesterEvaluations[].semester），案號本身與預約的 caseId 引用不受影響'),
+    ]},
     { date: '2026-07-07', v: 116, title: '危機個案閱讀搜尋修正（#13）', isProd: false, items: [
       item('修復', '危機個案閱讀申請頁搜尋改以 cases-index 全量索引為資料源，涵蓋封存/結案等 cold 個案；索引未載入時 fallback 回 casesData，一般身份搜尋結果仍只列出目前無權檢視的個案'),
       item('修復', '主任／管理者進入此頁先前因本就可檢視全部個案，搜尋恆為「無符合」，容易誤以為功能故障；現在對他們改列出符合關鍵字的個案（含「開啟」與「申請閱讀（留紀錄）」按鈕），並於搜尋框上方提示「您已可檢視全部個案，此頁僅供留下正式閱讀申請紀錄」'),
