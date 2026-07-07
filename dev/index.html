@@ -25427,6 +25427,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 121, title: '空間預約連結個案該學期未開案時提示快速開案（#17）', isProd: false, items: [
+      item('新功能', '空間預約儲存成功後，若「連結個案」欄位所選的個案在該筆預約日期所屬學期尚未開過案，會跳出提示視窗詢問是否前往快速開案；按「前往開案」會導向新增個案頁並自動帶入該生歷史資料與案號（沿用既有「再次開案帶入」機制），補齊開案日期／主責即可照常儲存；按「稍後再說」則不再糾纏（同一案號＋同一學期本次瀏覽只詢問一次）'),
+      item('技術', '新增共用函式 _maybePromptQuickOpenCase／_showQuickOpenCasePrompt／_goQuickOpenCase，供其他「連結個案」表單日後低成本接入同一詢問機制；個案若只在 cases-index 索引中（封存個案尚未載入完整資料）會先比照既有 stub 載入作法補齊資料再帶入，避免歷史資料帶入時缺欄位'),
+    ]},
     { date: '2026-07-07', v: 120, title: '空間預約連結個案：精準輸入可納入封存／結案個案（#7）', isProd: false, items: [
       item('新功能', '空間預約 Modal 的「連結個案」欄位，輸入字串完全等於某個案的全名或完整學號時，會把該個案（即使已封存或已結案）一併納入建議清單，並標示「已結案」「已封存」徽章；選取後連結行為與一般個案相同'),
       item('維持設計', '模糊輸入（只打部分姓名）不會觸發封存／結案個案曝光——刻意的個資保護設計，避免隨手打幾個字就能得知某人是否曾有結案/封存的諮商紀錄；此規則只在「完全等於」全名或學號時才放行'),
@@ -32927,6 +32931,7 @@ async function saveBooking() {
       });
       createdProposals.forEach(p => bookingsData.push(p));
       renderBookingsPage();
+      _maybePromptQuickOpenCase(caseId, date); // #17：連結個案該學期尚未開案時詢問是否快速開案
 
       const _srOldTotal = originalSeries.length;
       const _srNewTotal = survivors.length + createdProposals.length;
@@ -33044,6 +33049,7 @@ async function saveBooking() {
   closeBookingModal();
   _recordBkFreq(_bkSelectedOpts[0]?.value);
   renderBookingsPage();
+  _maybePromptQuickOpenCase(caseId, date); // #17：連結個案該學期尚未開案時詢問是否快速開案
 
   // 背景：bookingsCommit（併發安全寫入＋衝突檢查）+ GC 同步（不阻擋 UI）
   const _bkJobLabel = _editingBookingId ? '編輯空間預約' : '新增空間預約';
@@ -35658,6 +35664,67 @@ function _hasCaseInSem(studentId, sem) {
     return sems.includes(sem);
   });
 }
+
+// #17：本次 session 已詢問過「快速開案」的案號＋學期組合（同一案同一學期只問一次，
+// 使用者按「稍後再說」後不再糾纏；重新整理頁面會重置，可接受）。
+const _quickOpenCaseAsked = new Set();
+
+// 連結個案在「指定日期所屬學期」尚未開案時，詢問使用者是否前往新增個案頁快速開案。
+// 供各表單「連結個案」成功儲存後呼叫；只要傳入的是樂觀更新後的資料即可，不需等待背景 commit 完成。
+// caseId 若對應到封存/結案的 cold 個案（不在 casesData），改從 _casesIndexCache 取 studentId 判斷。
+function _maybePromptQuickOpenCase(caseId, dateStr) {
+  if (!caseId || !dateStr) return;
+  const c = casesData.find(x => x.id === caseId && !x.deleted)
+    || _casesIndexCache?.cases?.find(x => x.id === caseId && !x.deleted);
+  if (!c || !c.studentId) return;
+  const sem = openDateToSemPrefix(dateStr);
+  if (!sem || _hasCaseInSem(c.studentId, sem)) return;
+  const askKey = `${caseId}|${sem}`;
+  if (_quickOpenCaseAsked.has(askKey)) return;
+  _quickOpenCaseAsked.add(askKey);
+  _showQuickOpenCasePrompt(c, sem);
+}
+
+function _showQuickOpenCasePrompt(c, sem) {
+  document.getElementById('quick-open-case-modal')?.remove(); // 避免重複疊加
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'quick-open-case-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:420px;">
+      <div class="modal-header"><h3>該學期尚未開案</h3></div>
+      <div class="modal-body" style="padding:12px 0 16px;">
+        <p style="font-size:.9rem;color:#4a5568;">個案（案號 <strong>${escHtml(c.id)}</strong>）在 <strong>${escHtml(semesterLabel(sem))}</strong> 尚未開案，是否前往快速開案？</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="document.getElementById('quick-open-case-modal').remove()">稍後再說</button>
+        <button class="btn btn-primary" onclick="document.getElementById('quick-open-case-modal').remove();_goQuickOpenCase('${escHtml(c.id)}')">前往開案</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+// 前往新增個案頁並自動觸發「再次開案帶入」該生（沿用既有 searchRefillCases／fillFromCase 機制，
+// 直接以案號精準選中，不需使用者再手動搜尋一次）。個案若只在索引中（cold/封存尚未載入完整資料）
+// 先比照 _evrPick／_crisisEnsureCaseStub 的既有作法補一個 stub 再載入完整資料，帶入才不會缺欄位。
+async function _goQuickOpenCase(caseId) {
+  _crisisEnsureCaseStub(caseId);
+  const stub = casesData.find(x => x.id === caseId);
+  if (stub?._indexOnly && !stub._fullLoaded) {
+    showLoading('載入個案資料…');
+    try { await _ensureFullCases([caseId]); }
+    catch (e) { hideLoading(); alert('載入個案資料失敗：' + e.message); return; }
+    hideLoading();
+  }
+  const c = casesData.find(x => x.id === caseId);
+  if (!c) return;
+  openNewCasePage();
+  const qEl = document.getElementById('nc-refill-q');
+  if (qEl) qEl.value = c.studentId || c.name || '';
+  searchRefillCases();
+  fillFromCase(caseId);
+}
+
 function _checkMlCumulativeTodos() {
   const myStudentIds = _getMyCaseStudentIds();
   if (!myStudentIds.size || !mentalLeavesData.length) return;
