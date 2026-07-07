@@ -42,7 +42,8 @@ test('currentSemesterPrefix：以（固定）今天換算', () => {
 
 // ── 案號產生與分塊 ─────────────────────────────────────────────────────────────
 test('generateCaseId：取同學期最大序號 +1、補三位', () => {
-  const S = load(['generateCaseId', 'currentSemesterPrefix'], {
+  // 一學生一案號 Slice 2：generateCaseId 依賴 _usedFormerIdSeqs（曾用案號感知，避免撞號）
+  const S = load(['generateCaseId', 'currentSemesterPrefix', '_usedFormerIdSeqs'], {
     Date: makeFixedDate('2026-06-15T00:00:00'), // 學期前綴 1142
     casesData: [{ id: '1142001' }, { id: '1142003' }, { id: '1141009' }],
   });
@@ -50,11 +51,19 @@ test('generateCaseId：取同學期最大序號 +1、補三位', () => {
 });
 
 test('generateCaseId：本學期尚無案號時從 001 起', () => {
-  const S = load(['generateCaseId', 'currentSemesterPrefix'], {
+  const S = load(['generateCaseId', 'currentSemesterPrefix', '_usedFormerIdSeqs'], {
     Date: makeFixedDate('2026-06-15T00:00:00'),
     casesData: [{ id: '1141009' }],
   });
   assert.equal(S.generateCaseId(), '1142001');
+});
+
+test('generateCaseId：曾用案號視為已占用，跳過該序號', () => {
+  const S = load(['generateCaseId', 'currentSemesterPrefix', '_usedFormerIdSeqs'], {
+    Date: makeFixedDate('2026-06-15T00:00:00'),
+    casesData: [{ id: '1142001' }, { id: '1131099', formerIds: [{ id: '1142002', semesters: ['1142'] }] }],
+  });
+  assert.equal(S.generateCaseId(), '1142003'); // 跳過已被當作曾用案號的 1142002
 });
 
 test('getCaseChunkName：每 20 號一塊、跨塊邊界正確', () => {
