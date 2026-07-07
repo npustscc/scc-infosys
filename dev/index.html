@@ -9383,7 +9383,7 @@ async function showCaseDetail(caseId) {
     const _recNextBk = r.nextBkId ? bookingsData.find(b => b.id === r.nextBkId) : null;
     const _recNextBkRoomD = _recNextBk ? (_recNextBk.room === '其他' ? (_recNextBk.customRoom || '其他') : (_recNextBk.room || '')) : '';
     const _recNextBkFoldLine = _recNextBk
-      ? `<div style="margin-top:2px;font-size:.78rem;color:#a0aec0;">📅 ${escHtml((_recNextBk.date||'').slice(5).replace('-','/'))} ${escHtml((_recNextBk.startTime||'').slice(0,5))}</div>` : '';
+      ? `<div style="margin-top:2px;font-size:.78rem;color:#a0aec0;">📅 ${escHtml((_recNextBk.date||'').slice(5).replace('-','/'))} ${escHtml((_recNextBk.startTime||'').slice(0,5))} ${escHtml(_recNextBkRoomD)}</div>` : '';
     const _recNextBkFullLine = _recNextBk
       ? `<div style="margin-top:4px;font-size:.85rem;color:#4a5568;">下次預約：${escHtml(_recNextBk.date||'')} ${escHtml((_recNextBk.startTime||'').slice(0,5))}–${escHtml((_recNextBk.endTime||'').slice(0,5))} ${escHtml(_recNextBkRoomD)}</div>` : '';
 
@@ -11083,22 +11083,34 @@ function _checkRecNextBkRealtime() {
   const oldBkId = _editingRecordId
     ? (casesData.find(c => c.id === _recordCaseId)?.records?.find(r => r.id === _editingRecordId)?.nextBkId || '')
     : '';
+  const _pfBkId = _recNextBkPrefill?.bkId || '';
   const conflict = bookingsData.find(b =>
-    b.id !== oldBkId && b.room === room && b.date === date &&
+    b.id !== oldBkId && b.id !== _pfBkId && b.room === room && b.date === date &&
     b.startTime < end && b.endTime > start
   );
   if (conflict) {
+    cEl.className = 'alert alert-warn';
     cEl.style.display = '';
     cEl.textContent = `衝突：${room} 在 ${(conflict.startTime||'').slice(0,5)}–${(conflict.endTime||'').slice(0,5)} 已有預約（${conflict.counselorName || '—'}）。`;
     return;
   }
   const ccConflict = bookingsData.find(b =>
-    b.id !== oldBkId && b.date === date && _bkHasCounselor(b, currentUser?.email) &&
+    b.id !== oldBkId && b.id !== _pfBkId && b.date === date && _bkHasCounselor(b, currentUser?.email) &&
     b.startTime < end && b.endTime > start
   );
   if (ccConflict) {
+    cEl.className = 'alert alert-warn';
     cEl.style.display = '';
     cEl.textContent = `您在 ${(ccConflict.startTime||'').slice(0,5)}–${(ccConflict.endTime||'').slice(0,5)} 已有另一預約（${ccConflict.room || '—'}${ccConflict.caseName ? '，' + ccConflict.caseName : ''}）。`;
+    return;
+  }
+  // 無衝突：若目前值與系列自動帶入的 prefill 完全一致，顯示「已自動帶入」提示（非警示樣式）；
+  // 使用者已更動（與 prefill 不一致）或本來就無 prefill → 隱藏
+  if (_recNextBkPrefill && room === _recNextBkPrefill.room && date === _recNextBkPrefill.date &&
+      start === _recNextBkPrefill.start && end === _recNextBkPrefill.end) {
+    cEl.className = 'alert alert-info';
+    cEl.style.display = '';
+    cEl.textContent = '✓ 已自動帶入系列預約的下次會談（儲存時直接沿用該筆，不會重複建立預約）。';
     return;
   }
   cEl.style.display = 'none';
@@ -11939,10 +11951,10 @@ async function saveRecord() {
       const wRoom = w.room === '其他' ? (w.customRoom || '其他') : w.room;
       const cEl = document.getElementById('rec-next-bk-conflict');
       if (_nbConflict.type === 'room') {
-        if (cEl) { cEl.style.display = ''; cEl.textContent = `衝突：${wRoom} 在 ${(w.startTime||'').slice(0,5)}–${(w.endTime||'').slice(0,5)} 已有預約（${w.counselorName || '—'}）。`; }
+        if (cEl) { cEl.className = 'alert alert-warn'; cEl.style.display = ''; cEl.textContent = `衝突：${wRoom} 在 ${(w.startTime||'').slice(0,5)}–${(w.endTime||'').slice(0,5)} 已有預約（${w.counselorName || '—'}）。`; }
         _recAlert('預約下次的時間與既有預約衝突，請修改。'); return;
       } else {
-        if (cEl) { cEl.style.display = ''; cEl.textContent = `您在 ${(w.startTime||'').slice(0,5)}–${(w.endTime||'').slice(0,5)} 已有另一預約（${wRoom || '—'}${w.caseName ? '，' + w.caseName : ''}）。`; }
+        if (cEl) { cEl.className = 'alert alert-warn'; cEl.style.display = ''; cEl.textContent = `您在 ${(w.startTime||'').slice(0,5)}–${(w.endTime||'').slice(0,5)} 已有另一預約（${wRoom || '—'}${w.caseName ? '，' + w.caseName : ''}）。`; }
         _recAlert('您在此時段已有其他預約，請修改下次預約時間。'); return;
       }
     }
@@ -24246,6 +24258,13 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-07', v: 98, title: '系列預約顯示與拖曳衝突修正視窗（驗證回饋）', isProd: false, items: [
+      item('改善', '空間預約單日檢視、多日表格檢視、列表檢視三處的預約卡片，屬於系列預約者一律加註「🔁 系列」徽章（多日表格空間較小僅顯示 🔁），滑鼠移入顯示「系列預約（共 N 筆）」，避免看不出這筆屬於系列'),
+      item('修復', '編輯系列預約中的某一筆時，「重複預約」區塊改為唯讀呈現系列建立當初的設定（頻率／次數皆鎖定不可互動，並附註「共 N 筆」），先前會誤呈現為未勾選、頻率與次數皆變回預設值；非系列預約的編輯則直接隱藏此區塊，避免誤以為勾選/調整會生效'),
+      item('新功能', '拖曳調整預約（含系列選定範圍後）改為前端本機立即判斷是否撞房／撞人，不必再等後端來回；有衝突時不再整批還原了事，改開「拖曳衝突修正」視窗：每筆衝突各一個分頁，可個別調整日期／時間／空間或直接刪除該筆，全部解決（或刪除）後才能套用並儲存'),
+      item('改善', '晤談紀錄時間軸收束狀態顯示的下次預約，補上空間名稱（原僅顯示日期時間）'),
+      item('修復', '系列預約寫紀錄自動帶入下次會談時段時，即時衝突檢查與儲存前的驗證都會排除該筆本身，不再對自動帶入的同一筆誤報衝突；未更動自動帶入內容時另顯示「已自動帶入」提示（非警示樣式），避免誤以為需要另外處理'),
+    ]},
     { date: '2026-07-07', v: 97, title: '紀錄呈現下次預約＋系列寫紀錄自動帶入與改期三選', isProd: false, items: [
       item('新功能', '晤談紀錄「後續處遇計畫」下方即時顯示連結的下次預約：展開狀態顯示完整日期時間空間，收束狀態顯示精簡版（📅 月/日 時間）；預約已被刪除則不顯示'),
       item('新功能', '從系列預約的某一筆點「寫紀錄」時，若同系列有更晚一筆會談，開啟紀錄表單會自動勾選「預約下次諮商空間」並帶入該筆的空間／日期／時間'),
@@ -29311,6 +29330,21 @@ function _bkCellStyle(b) {
   return `background:${hex}22;border-left:4px solid ${hex};`;
 }
 
+// 系列預約 badge：同 seriesId 筆數建一次 Map（呼叫端於 render 開頭建立一次並傳入，避免每筆重新掃描 bookingsData）。
+function _bkBuildSeriesCountMap(bookings) {
+  const m = new Map();
+  (bookings || []).forEach(b => { if (b.seriesId) m.set(b.seriesId, (m.get(b.seriesId) || 0) + 1); });
+  return m;
+}
+// compact=true 時只顯示 🔁（多日表格空間較小）；否則顯示「🔁 系列」徽章。
+function _bkSeriesBadge(b, seriesCountMap, compact) {
+  if (!b?.seriesId) return '';
+  const n = seriesCountMap?.get(b.seriesId) || 1;
+  const title = escHtml(`系列預約（共 ${n} 筆）`);
+  if (compact) return `<span title="${title}" style="font-size:.7rem;">🔁</span>`;
+  return `<span title="${title}" style="font-size:.7rem;background:#e9d8fd;color:#553c9a;border:1px solid #d6bcfa;border-radius:8px;padding:0 5px;white-space:nowrap;">🔁 系列</span>`;
+}
+
 // 從 booking 物件組出 GC 事件參數（含依有效顏色算出的 colorId）。
 // 供拖曳（bkDrop/_bkDragConfirmScope）與 saveBooking 系列編輯逐筆 GC 同步共用，避免重複組裝邏輯。
 function _bkGcParamsOf(b, isEdit) {
@@ -29385,6 +29419,7 @@ function renderBookingsPage() {
     return `${d.getMonth()+1}/${d.getDate()} (${WD[d.getDay()]})`;
   };
   const isToday = (dateStr) => dateStr === new Date().toISOString().slice(0,10);
+  const _seriesCountMap = _bkBuildSeriesCountMap(bookingsData);
 
   if (_bkDaySpan === 1) {
     // 單日模式：原始垂直列表（較寬鬆）
@@ -29407,6 +29442,7 @@ function renderBookingsPage() {
           html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:5px 8px;${_bkCellStyle(b)}border-radius:6px;margin-bottom:4px;cursor:grab;">
             <span style="font-size:.85rem;font-weight:600;color:#2d3748;min-width:105px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</span>
             <span style="font-size:.875rem;color:#4a5568;" title="${escHtml(b.counselorName || '')}">${escHtml(b.counselorName || '—')}</span>
+            ${_bkSeriesBadge(b, _seriesCountMap, false)}
             ${caseTag}${noteTag}${calTag}
             <span style="margin-left:auto;display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
               <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:.78rem;" onclick="editBooking('${escHtml(b.id)}')">編輯</button>
@@ -29450,7 +29486,7 @@ function renderBookingsPage() {
               ? `<span title="已同步" style="font-size:.75rem;">📅</span>`
               : `<button class="btn btn-secondary btn-sm" style="padding:0 3px;font-size:.65rem;" data-sync-id="${escHtml(b.id)}" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅</button>`;
             html += `<div draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" style="padding:3px 5px;${_bkCellStyle(b)}border-radius:4px;margin-bottom:3px;font-size:.78rem;cursor:grab;">` +
-              `<div style="font-weight:600;color:#2d3748;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</div>` +
+              `<div style="display:flex;align-items:center;justify-content:space-between;gap:4px;font-weight:600;color:#2d3748;">${fmtT(b.startTime)}–${fmtT(b.endTime)}${_bkSeriesBadge(b, _seriesCountMap, true)}</div>` +
               `<div style="color:#4a5568;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escHtml(b.counselorName||'')}">${escHtml(b.counselorName||'—')}</div>` +
               (b.caseId ? `<div style="color:#2471a3;font-size:.72rem;">${escHtml(b.caseId)}</div>` : '') +
               (b.notes ? `<div style="color:#718096;font-size:.72rem;">${escHtml(b.notes.slice(0,20))}${b.notes.length>20?'…':''}</div>` : '') +
@@ -29533,6 +29569,7 @@ function renderBkListView(body) {
     const d = new Date(ds + 'T00:00:00');
     return `${d.getFullYear()-1911}/${d.getMonth()+1}/${d.getDate()} (${WD[d.getDay()]})`;
   };
+  const _seriesCountMap = _bkBuildSeriesCountMap(bookingsData);
 
   body.innerHTML = pageRows.map(b => {
     const isPast   = b.date < today;
@@ -29545,7 +29582,7 @@ function renderBkListView(body) {
       : `<button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:.75rem;" onclick="syncBookingToCalendar('${escHtml(b.id)}')">📅 同步</button>`;
     return `<div style="display:flex;align-items:flex-start;gap:12px;padding:12px 16px;border-bottom:1px solid #e2e8f0;background:${rowBg};flex-wrap:wrap;">
       <div style="min-width:140px;">
-        <div style="font-weight:700;font-size:.88rem;color:${dateClr};">${fmtDate(b.date)}</div>
+        <div style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:.88rem;color:${dateClr};">${fmtDate(b.date)}${_bkSeriesBadge(b, _seriesCountMap, false)}</div>
         <div style="font-size:.85rem;color:#4a5568;margin-top:2px;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</div>
       </div>
       <div style="min-width:90px;">
@@ -29656,6 +29693,15 @@ async function bkDrop(event, newRoom, newDate) {
     return;
   }
 
+  // 前端本機衝突檢查（放開拖曳當下先算，不必等後端來回）：有衝突就不套用任何變更，改開衝突修正 modal
+  const proposal = { ...b };
+  if (newRoom) proposal.room = newRoom;
+  if (newDate) proposal.date = newDate;
+  if (_bkLocalConflicts([proposal], new Set([b.id])).length) {
+    _bkOpenDragFixModal([b], [proposal], '拖曳調整預約');
+    return;
+  }
+
   const oldRoom = b.room, oldDate = b.date;
   if (newRoom) b.room = newRoom;
   if (newDate) b.date = newDate;
@@ -29714,6 +29760,20 @@ async function _bkDragConfirmScope(scope) {
   const dateDelta = pending.newDate ? _bkDaysBetween(b.date, pending.newDate) : 0;
   const targets = _bkSeriesTargets(bookingsData, b, scope);
   if (!targets.length) return;
+
+  // 前端本機衝突檢查（放開拖曳當下先算）：有衝突就整批先不套用，改開衝突修正 modal（逐筆調整或刪除）
+  const proposals = targets.map(t => {
+    const p = { ...t };
+    if (pending.newRoom) p.room = pending.newRoom;
+    if (dateDelta) p.date = _bkAddDays(t.date, dateDelta);
+    return p;
+  });
+  const excludeIds = new Set(targets.map(t => t.id));
+  if (_bkLocalConflicts(proposals, excludeIds).length) {
+    _bkOpenDragFixModal(targets, proposals, '拖曳調整系列預約');
+    return;
+  }
+
   const snapshot = targets.map(t => ({ id: t.id, room: t.room, customRoom: t.customRoom, date: t.date }));
 
   targets.forEach(t => {
@@ -29767,6 +29827,235 @@ async function _bkDragConfirmScope(scope) {
     renderBookingsPage();
     bgJobFail(jobId, e.message);
   }
+}
+
+// ── 拖曳衝突修正 modal ──────────────────────────────────────────────
+// 拖曳前端本機偵測到衝突時，不整批還原了事，改開這個 modal：每個衝突的預約一個 tab，
+// 可逐筆調整時間/空間或直接刪除，全部解決（或刪除）前不能套用。
+// _bkDragFix 形狀：
+//   proposals: Map<id, proposal>  擬議狀態（可編輯）
+//   originals: Map<id, booking>   原始筆（未套用任何拖曳變更，供還原/GC 對照）
+//   deletedIds: Set<id>           使用者標記要刪除的筆
+//   tabIds: string[]              曾經衝突過而開出 tab 的 id（保留順序，解決後仍顯示 ✓）
+//   activeTabId: string|null
+//   conflicts: [{id,type,with}]   最近一次重算的衝突清單（排除已標記刪除者）
+//   scopeLabel: string            供背景工作/稽核日誌描述用
+let _bkDragFix = null;
+
+function _bkOpenDragFixModal(originals, proposals, scopeLabel) {
+  _bkDragFix = {
+    proposals: new Map(proposals.map(p => [p.id, { ...p }])),
+    originals: new Map(originals.map(o => [o.id, o])),
+    deletedIds: new Set(),
+    tabIds: [],
+    activeTabId: null,
+    conflicts: [],
+    scopeLabel: scopeLabel || '拖曳調整預約',
+  };
+  _bkDragFixRecompute();
+  document.getElementById('bk-drag-fix-modal').style.display = 'flex';
+}
+
+// 任何欄位變更／標記刪除後呼叫：排除已標記刪除者整批重算 _bkLocalConflicts，
+// 新出現衝突的筆自動開 tab（保留已開過的 tab，即使該筆衝突已解決也繼續顯示 ✓）。
+function _bkDragFixRecompute() {
+  const st = _bkDragFix;
+  if (!st) return;
+  const allIds = new Set(st.proposals.keys());
+  const live = [...st.proposals.values()].filter(p => !st.deletedIds.has(p.id));
+  st.conflicts = _bkLocalConflicts(live, allIds);
+  st.conflicts.forEach(c => { if (!st.tabIds.includes(c.id)) st.tabIds.push(c.id); });
+  if (!st.activeTabId || !st.tabIds.includes(st.activeTabId)) st.activeTabId = st.tabIds[0] || null;
+  _bkDragFixRender();
+}
+
+function _bkDragFixSwitchTab(id) {
+  if (!_bkDragFix) return;
+  _bkDragFix.activeTabId = id;
+  _bkDragFixRender();
+}
+
+function _bkDragFixFieldChange(id, field, value) {
+  const st = _bkDragFix;
+  if (!st) return;
+  const p = st.proposals.get(id);
+  if (!p) return;
+  if (field === 'room') { p.room = value; if (value !== '其他') p.customRoom = ''; }
+  else p[field] = value;
+  _bkDragFixRecompute();
+}
+
+function _bkDragFixToggleDelete(id) {
+  const st = _bkDragFix;
+  if (!st) return;
+  if (st.deletedIds.has(id)) st.deletedIds.delete(id); else st.deletedIds.add(id);
+  _bkDragFixRecompute();
+}
+
+function _bkDragFixCancel() {
+  document.getElementById('bk-drag-fix-modal').style.display = 'none';
+  _bkDragFix = null;
+}
+
+function _bkDragFixRoomLabel(p) {
+  return p.room === '其他' ? (p.customRoom || '其他') : (p.room || '');
+}
+
+function _bkDragFixRenderTabContent(id) {
+  const st = _bkDragFix;
+  if (!st || !id) return '';
+  const p = st.proposals.get(id);
+  if (!p) return '';
+  const isDeleted = st.deletedIds.has(id);
+  const conflict = st.conflicts.find(c => c.id === id);
+  const roomVal = p.room === '其他' ? '其他' : p.room;
+  const roomOpts = _getBkDisplayRooms().map(r =>
+    `<option value="${escHtml(r)}" ${r === roomVal ? 'selected' : ''}>${escHtml(r)}</option>`).join('');
+
+  let statusHtml;
+  if (isDeleted) {
+    statusHtml = `<div class="alert alert-warn" style="margin-top:10px;">此筆將被刪除，不會套用任何變更。</div>`;
+  } else if (conflict) {
+    const w = conflict.with || {};
+    const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+    const kind = conflict.type === 'person' ? '人員' : '空間';
+    statusHtml = `<div class="alert alert-warn" style="margin-top:10px;">⚠ ${kind}衝突：與 ${escHtml(wRoom)} ${escHtml(w.date || '')} ${escHtml((w.startTime || '').slice(0,5))}–${escHtml((w.endTime || '').slice(0,5))}${w.counselorName ? '　' + escHtml(w.counselorName) : ''} 衝突，請調整時間／空間或刪除此筆。</div>`;
+  } else {
+    statusHtml = `<div class="alert alert-info" style="margin-top:10px;">✓ 已解決衝突。</div>`;
+  }
+
+  return `
+    <div style="opacity:${isDeleted ? '.55' : '1'};">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div>
+          <label style="font-size:.8rem;color:#718096;">日期</label>
+          <input type="date" class="field-input" value="${escHtml(p.date || '')}" ${isDeleted ? 'disabled' : ''}
+            onchange="_bkDragFixFieldChange('${escHtml(id)}','date',this.value)">
+        </div>
+        <div>
+          <label style="font-size:.8rem;color:#718096;">空間</label>
+          <select class="field-input" ${isDeleted ? 'disabled' : ''}
+            onchange="_bkDragFixFieldChange('${escHtml(id)}','room',this.value)">${roomOpts}</select>
+        </div>
+        <div>
+          <label style="font-size:.8rem;color:#718096;">開始時間</label>
+          <input type="time" class="field-input" value="${escHtml((p.startTime || '').slice(0,5))}" ${isDeleted ? 'disabled' : ''}
+            onchange="_bkDragFixFieldChange('${escHtml(id)}','startTime',this.value)">
+        </div>
+        <div>
+          <label style="font-size:.8rem;color:#718096;">結束時間</label>
+          <input type="time" class="field-input" value="${escHtml((p.endTime || '').slice(0,5))}" ${isDeleted ? 'disabled' : ''}
+            onchange="_bkDragFixFieldChange('${escHtml(id)}','endTime',this.value)">
+        </div>
+      </div>
+      <div style="margin-top:8px;font-size:.82rem;color:#4a5568;">${escHtml(p.counselorName || '—')}${p.caseId ? '　個案 ' + escHtml(p.caseId) : ''}</div>
+      ${statusHtml}
+      <div style="margin-top:10px;">
+        <button type="button" class="btn ${isDeleted ? 'btn-secondary' : 'btn-danger'} btn-sm" onclick="_bkDragFixToggleDelete('${escHtml(id)}')">${isDeleted ? '↩ 復原刪除' : '🗑 刪除此筆'}</button>
+      </div>
+    </div>`;
+}
+
+function _bkDragFixRender() {
+  const st = _bkDragFix;
+  if (!st) return;
+  const countEl = document.getElementById('bk-drag-fix-count');
+  if (countEl) countEl.textContent = String(st.tabIds.length);
+
+  const tabsEl = document.getElementById('bk-drag-fix-tabs');
+  if (tabsEl) {
+    tabsEl.innerHTML = st.tabIds.map(id => {
+      const p = st.proposals.get(id);
+      if (!p) return '';
+      const isDeleted = st.deletedIds.has(id);
+      const isConflict = st.conflicts.some(c => c.id === id);
+      const icon = isDeleted ? '🗑' : isConflict ? '⚠' : '✓';
+      const label = `${(p.date || '').slice(5).replace('-', '/')} ${_bkDragFixRoomLabel(p)}`;
+      const active = id === st.activeTabId;
+      return `<button type="button" class="btn btn-sm ${active ? 'btn-primary' : 'btn-secondary'}" style="white-space:nowrap;" onclick="_bkDragFixSwitchTab('${escHtml(id)}')">${icon} ${escHtml(label)}</button>`;
+    }).join('');
+  }
+
+  const contentEl = document.getElementById('bk-drag-fix-content');
+  if (contentEl) contentEl.innerHTML = _bkDragFixRenderTabContent(st.activeTabId);
+
+  const applyBtn = document.getElementById('bk-drag-fix-apply-btn');
+  if (applyBtn) {
+    const unresolved = st.tabIds.some(id => !st.deletedIds.has(id) && st.conflicts.some(c => c.id === id));
+    applyBtn.disabled = unresolved;
+  }
+}
+
+async function _bkDragFixApply() {
+  const st = _bkDragFix;
+  if (!st) return;
+  const unresolved = st.tabIds.some(id => !st.deletedIds.has(id) && st.conflicts.some(c => c.id === id));
+  if (unresolved) return;
+
+  document.getElementById('bk-drag-fix-modal').style.display = 'none';
+
+  const survivors = [];
+  const deleted = [];
+  st.proposals.forEach((p, id) => { if (st.deletedIds.has(id)) deleted.push(p); else survivors.push(p); });
+
+  const _snapshot = bookingsData.map(b => ({ ...b }));
+
+  // 樂觀更新：套用存活筆變更、移除刪除筆
+  survivors.forEach(p => {
+    const idx = bookingsData.findIndex(x => x.id === p.id);
+    if (idx >= 0) bookingsData[idx] = { ...bookingsData[idx], ...p };
+  });
+  const deletedIdSet = new Set(deleted.map(b => b.id));
+  if (deletedIdSet.size) bookingsData = bookingsData.filter(b => !deletedIdSet.has(b.id));
+  renderBookingsPage();
+
+  const jobId = bgJobAdd(st.scopeLabel, `共 ${survivors.length} 筆，刪除 ${deleted.length} 筆`);
+  try {
+    const ops = [
+      ...survivors.map(p => ({
+        op: 'upsert', booking: { ...p },
+        gc: { mode: p.calendarEventId ? 'update' : 'create', params: _bkGcParamsOf(p, true) },
+      })),
+      ...deleted.map(b => ({ op: 'delete', id: b.id, gcEventId: b.calendarEventId || null })),
+    ];
+    const result = await bkCommit(ops, { checkConflicts: true });
+
+    if (result.error === 'conflict') {
+      bookingsData = _snapshot;
+      renderBookingsPage();
+      const w = result.with || {};
+      const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
+      const kind = result.conflictType === 'person' ? '人員' : '空間';
+      setAlert('bookings-alert', 'warn',
+        `⚠ 拖曳未套用：與其他使用者同時操作發生${kind}衝突（${escHtml(wRoom)} ${escHtml(w.date || '')} ${escHtml((w.startTime || '').slice(0,5))}–${escHtml((w.endTime || '').slice(0,5))}${w.counselorName ? '　' + escHtml(w.counselorName) : ''}），整批已還原，請重新確認後再操作一次。`);
+      bgJobFail(jobId, `拖曳${kind}衝突`);
+      _bkDragFix = null;
+      return;
+    }
+
+    if (result.fallback) {
+      // 舊後端尚未部署：整檔覆寫＋既有 calendarEventId 才進 GC 佇列；刪除筆嘗試呼叫 deleteCalendarEvent 清除日曆事件
+      await saveBookings();
+      survivors.forEach(p => { if (p.calendarEventId) _bkGcQueue.set(p.id, { ...p }); });
+      _bkGcFlush();
+      deleted.forEach(b => { if (b.calendarEventId) proxyCall('deleteCalendarEvent', { eventId: b.calendarEventId }).catch(() => {}); });
+    } else {
+      (result.bookings || []).forEach(fb => {
+        const idx = bookingsData.findIndex(x => x.id === fb.id);
+        if (idx >= 0) bookingsData[idx] = fb;
+      });
+    }
+
+    const _fixFirst = survivors[0] ? `${_bkDragFixRoomLabel(survivors[0])} ${survivors[0].date} ${(survivors[0].startTime||'').slice(0,5)}–${(survivors[0].endTime||'').slice(0,5)}${survivors[0].counselorName ? '　'+survivors[0].counselorName : ''}` : '';
+    auditLog(`空間預約調整（拖曳＋衝突修正，共 ${survivors.length} 筆，刪除 ${deleted.length} 筆）：${_fixFirst}${survivors.length > 1 ? ' 等' : ''}`);
+    bgJobDone(jobId);
+    renderBookingsPage();
+  } catch (e) {
+    bookingsData = _snapshot;
+    renderBookingsPage();
+    bgJobFail(jobId, e.message);
+  }
+  _bkDragFix = null;
 }
 
 function shiftBookingDate(delta) {
@@ -29896,6 +30185,24 @@ function _bkFindConflict(existing, candidate, opts) {
     }
   }
   return null;
+}
+
+// 拖曳前端本機衝突檢查（放開拖曳當下先算，不必等後端 bkCommit 來回才知道有沒有衝突）。
+// proposals：擬議狀態陣列（{id,room,customRoom,date,startTime,endTime,counselors,...}，id 與原始筆相同）。
+// excludeIds：這批要移動的原始 id 集合（Set 或陣列）——比對現況 bookingsData 時排除，避免拿同批其他筆尚未套用變更的舊狀態誤判。
+// 回傳 [{id, type:'room'|'person', with}]（每筆最多回報一個衝突：先比對既有 bookingsData，再比對批內彼此是否互撞）。
+function _bkLocalConflicts(proposals, excludeIds) {
+  const exclude = excludeIds instanceof Set ? excludeIds : new Set(excludeIds || []);
+  const results = [];
+  (proposals || []).forEach(p => {
+    let hit = _bkFindConflict(bookingsData, p, { ignoreIds: exclude });
+    if (!hit) {
+      const others = proposals.filter(o => o.id !== p.id);
+      hit = _bkFindConflict(others, p, {});
+    }
+    if (hit) results.push({ id: p.id, type: hit.type, with: hit.with });
+  });
+  return results;
 }
 
 function _populateBookingCounselorSelect(restoreOpts) {
@@ -30279,6 +30586,62 @@ function _initBkPeriodSelect() {
     + '<option value="其他">其他（自填時間）</option>';
 }
 
+// 重複預約 UI 恢復為可互動預設值（新增／複製入口共用）：toggle 未勾選且可用、panel 隱藏、
+// 頻率預設每週且可用、次數預設 4 且可用、移除系列唯讀附註（若有）。
+function _bkResetRepeatUi() {
+  const wrap = document.getElementById('bk-repeat-wrap');
+  if (wrap) wrap.style.display = '';
+  const toggle = document.getElementById('bk-repeat-toggle');
+  if (toggle) { toggle.checked = false; toggle.disabled = false; }
+  const panel = document.getElementById('bk-repeat-panel');
+  if (panel) panel.style.display = 'none';
+  document.querySelectorAll('input[name="bk-repeat-freq"]').forEach(r => {
+    r.disabled = false;
+    r.checked = r.value === '7';
+  });
+  const countInp = document.getElementById('bk-repeat-count');
+  if (countInp) { countInp.disabled = false; countInp.value = '4'; }
+  const note = document.getElementById('bk-repeat-readonly-note');
+  if (note) note.remove();
+}
+
+// 編輯系列預約時，唯讀呈現系列建立當初的重複設定（不可互動；使用者回報：先前顯示未勾選且變預設值，會誤導）。
+// 依系列成員日期差判斷頻率：全部相鄰日期差相同且為 7／14 → 對應勾選；否則（曾被個別調整）不勾任何頻率。
+function _bkShowSeriesRepeatReadonly(b) {
+  const seriesAll = bookingsData.filter(x => x.seriesId === b.seriesId).sort((x, y) => x.date < y.date ? -1 : (x.date > y.date ? 1 : 0));
+  const n = seriesAll.length;
+  let freqDays = null;
+  for (let i = 1; i < seriesAll.length; i++) {
+    const d = _bkDaysBetween(seriesAll[i - 1].date, seriesAll[i].date);
+    if (freqDays === null) freqDays = d;
+    else if (d !== freqDays) { freqDays = NaN; break; }
+  }
+  const wrap = document.getElementById('bk-repeat-wrap');
+  if (wrap) wrap.style.display = '';
+  const toggle = document.getElementById('bk-repeat-toggle');
+  if (toggle) { toggle.checked = true; toggle.disabled = true; }
+  const panel = document.getElementById('bk-repeat-panel');
+  if (panel) panel.style.display = '';
+  document.querySelectorAll('input[name="bk-repeat-freq"]').forEach(r => {
+    r.disabled = true;
+    r.checked = (freqDays === 7 && r.value === '7') || (freqDays === 14 && r.value === '14');
+  });
+  const countInp = document.getElementById('bk-repeat-count');
+  if (countInp) { countInp.disabled = true; countInp.value = String(n); }
+  let note = document.getElementById('bk-repeat-readonly-note');
+  if (!note && panel) {
+    note = document.createElement('p');
+    note.id = 'bk-repeat-readonly-note';
+    note.style.cssText = 'font-size:.78rem;color:#8a6d3b;background:#fff8e6;border:1px solid #f0d490;border-radius:6px;padding:6px 10px;margin:8px 0 0;';
+    panel.appendChild(note);
+  }
+  if (note) {
+    note.textContent = Number.isNaN(freqDays)
+      ? `此系列的日期曾經個別調整，頻率非固定（共 ${n} 筆）。`
+      : `此為系列建立時的重複設定（唯讀，共 ${n} 筆）；如需增減系列筆數請另行新增或刪除預約。`;
+  }
+}
+
 function openBookingModal(prefillCaseId) {
   _editingBookingId = null;
   _bkSkipPersonConflict = false;
@@ -30302,13 +30665,8 @@ function openBookingModal(prefillCaseId) {
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
   _bkEditScope = 'this';
-  // 新增時顯示「重複預約」區塊
-  const _rw = document.getElementById('bk-repeat-wrap');
-  if (_rw) _rw.style.display = '';
-  const _rt = document.getElementById('bk-repeat-toggle');
-  if (_rt) { _rt.checked = false; }
-  const _rp = document.getElementById('bk-repeat-panel');
-  if (_rp) _rp.style.display = 'none';
+  // 新增時顯示「重複預約」區塊（可互動預設值）
+  _bkResetRepeatUi();
   _resetBkOverrideUi('');
   document.getElementById('booking-modal').style.display = 'flex';
   _bkUpdateScopeInfo();
@@ -30341,13 +30699,13 @@ function editBooking(id) {
   document.getElementById('bk-room-conflict-warn').style.display = 'none';
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb2 = document.getElementById('btn-save-booking'); if (sb2) sb2.disabled = false;
-  // 編輯/複製時也顯示重複預約（可選擇再新增後續）
-  const _erw = document.getElementById('bk-repeat-wrap');
-  if (_erw) _erw.style.display = '';
-  const _ert = document.getElementById('bk-repeat-toggle');
-  if (_ert) _ert.checked = false;
-  const _erp = document.getElementById('bk-repeat-panel');
-  if (_erp) _erp.style.display = 'none';
+  // 重複預約區塊：系列預約唯讀呈現當初的重複設定；非系列直接隱藏（現況顯示但存檔會被忽略，是誤導）
+  if (b.seriesId) {
+    _bkShowSeriesRepeatReadonly(b);
+  } else {
+    const _erw = document.getElementById('bk-repeat-wrap');
+    if (_erw) _erw.style.display = 'none';
+  }
   _resetBkOverrideUi(b.bkOverrideColor || '');
   _bkEditScope = 'this';
   // 若屬系列，先選範圍
@@ -30439,12 +30797,7 @@ function _bkCopyOpenModal() {
   document.getElementById('bk-room-conflict-warn').style.display = 'none';
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb = document.getElementById('btn-save-booking'); if (sb) sb.disabled = false;
-  const _crw = document.getElementById('bk-repeat-wrap');
-  if (_crw) _crw.style.display = '';
-  const _crt = document.getElementById('bk-repeat-toggle');
-  if (_crt) _crt.checked = false;
-  const _crp = document.getElementById('bk-repeat-panel');
-  if (_crp) _crp.style.display = 'none';
+  _bkResetRepeatUi();
   _resetBkOverrideUi(b.bkOverrideColor || '');
   _bkEditScope = 'this';
   document.getElementById('booking-modal').style.display = 'flex';
@@ -38352,6 +38705,20 @@ function toggleNavPin(navId) {
     </div>
     <div style="margin-top:14px;text-align:right;">
       <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bk-drag-scope-modal').style.display='none';_bkDragPending=null;">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 拖曳衝突修正 Modal：前端本機偵測到拖曳後衝突，逐筆調整或刪除，全部解決前不能套用 -->
+<div id="bk-drag-fix-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10001;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:12px;max-width:520px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+    <h3 style="margin:0 0 8px;font-size:1rem;color:#2d3748;">拖曳衝突修正</h3>
+    <p style="font-size:.875rem;color:#718096;margin-bottom:14px;">以下 <b id="bk-drag-fix-count">0</b> 筆拖曳後與其他預約衝突，請逐筆調整或刪除；全部解決後才能套用。</p>
+    <div id="bk-drag-fix-tabs" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;"></div>
+    <div id="bk-drag-fix-content"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
+      <button class="btn btn-secondary" onclick="_bkDragFixCancel()">取消</button>
+      <button class="btn btn-primary" id="bk-drag-fix-apply-btn" onclick="_bkDragFixApply()">套用並儲存</button>
     </div>
   </div>
 </div>
