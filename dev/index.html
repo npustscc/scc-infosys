@@ -23012,9 +23012,11 @@ async function proxyCall(action, params = {}, _silent = false, _retry = 0, _auth
       redirect: 'follow',
     });
     if (!r.ok) {
-      if ((r.status === 404 || r.status === 503) && _retry < 2) {
-        if (!_silent) _syslog('debug', `→ ${action} 冷啟動重試 #${_retry + 1}（HTTP ${r.status}）`);
-        _showRetryNotice(`⟳ 伺服器連線異常（HTTP ${r.status}），正在自動重試（第 ${_retry + 1}/2 次），請稍候…`);
+      // 404：Google Apps Script 已知間歇性問題——POST /exec 被 302 轉到 googleusercontent /macros/echo
+      // 的一次性網址，Google 端偶爾回 404（非本系統故障）；429/503：後端冷啟動或過載。皆為暫時性，重試即可。
+      if ((r.status === 404 || r.status === 429 || r.status === 503) && _retry < 4) {
+        if (!_silent) _syslog('debug', `→ ${action} 暫時性錯誤重試 #${_retry + 1}（HTTP ${r.status}）`);
+        _showRetryNotice(`⟳ 伺服器連線異常（HTTP ${r.status}），正在自動重試（第 ${_retry + 1}/4 次），請稍候…`);
         await new Promise(res => setTimeout(res, 1200 * (_retry + 1)));
         return proxyCall(action, params, _silent, _retry + 1, _authRetried);
       }
@@ -25829,6 +25831,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-08', v: 135, title: '強化後端連線自動重試：因應 Google Apps Script 間歇性 404', isProd: false, items: [
+      item('改善', '後端呼叫遇到暫時性錯誤（HTTP 404/503，Google Apps Script 端的已知間歇性問題）時，自動重試次數由 2 次提高到 4 次，並新增 429（伺服器過載）也納入自動重試；重試間隔逐次拉長，成功後畫面提示自動消失'),
+      item('技術', '瀏覽器 console 出現的紅色「GET …googleusercontent.com/macros/echo… 404」訊息是瀏覽器記錄失敗的網路請求，即使後續自動重試成功仍會顯示，屬正常現象；可從系統日誌確認該次呼叫最終是否成功（成功會標示 [重試N次]）'),
+    ]},
     { date: '2026-07-08', v: 134, title: '修正空間預約無法儲存的嚴重錯誤＋#29 個案搜尋排序＋預約視窗可調寬度等（#29 與三項新需求）', isProd: false, items: [
       item('修正', '空間預約的新增、雙擊新增、編輯全部無法儲存：v108 改寫重複頻率（#24）時遺失了 isRepeat 變數的定義，儲存流程執行到重複預約區塊即中斷且按鈕停在停用狀態；已補回定義',),
       item('修正', '#29 主責個案排最前：先前只做在輸入框下方的建議提示，瀏覽器原生下拉建議（datalist）仍是原始順序；現在 datalist 也以「目前選定主責人員」的主責個案排最前，切換主責人員時即時重排'),
