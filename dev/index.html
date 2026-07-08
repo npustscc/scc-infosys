@@ -6872,8 +6872,12 @@ function _crisisRenderResults() {
     el.innerHTML = `<div style="color:#a0aec0;font-size:.88rem;">${_priv ? '無符合的個案。' : '無符合的個案（或都已可檢視）。'}</div>`;
     return;
   }
-  el.innerHTML = `<div style="overflow-x:auto;"><table class="data-table" style="min-width:640px;">
-    <thead><tr><th>姓名</th><th>學號</th><th>案號</th><th>狀態</th><th>服務學期</th><th>主責</th><th></th></tr></thead>
+  el.innerHTML = `<div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
+      <button class="btn btn-secondary btn-sm" onclick="_resetCrisisColWidths()" data-tip="清除已儲存的欄寬設定，恢復預設比例" style="font-size:.74rem;">重設欄寬</button>
+    </div>
+    <div style="overflow-x:auto;"><table class="data-table" id="crisis-results-table" style="min-width:640px;">
+    <colgroup>${[1,2,3,4,5,6,7].map(n => `<col id="crisis-col-${n}">`).join('')}</colgroup>
+    <thead><tr><th data-col="1">姓名</th><th data-col="2">學號</th><th data-col="3">案號</th><th data-col="4">狀態</th><th data-col="5">服務學期</th><th data-col="6">主責</th><th data-col="7"></th></tr></thead>
     <tbody>${rows.map(c => {
       const cid = escHtml(c.id);
       // #13-4：主任/管理者一律與其他人一樣走「申請閱讀」流程，不再提供不留紀錄的直接開啟按鈕
@@ -6887,6 +6891,12 @@ function _crisisRenderResults() {
                     : '';
       return `<tr><td>${escHtml(c.name || '—')}</td><td>${escHtml(c.studentId || '—')}</td><td style="font-family:monospace;">${cid}${abBadge}</td><td>${_crisisStatusBadge(c)}</td><td>${_crisisSemChipsHtml(c)}</td><td>${escHtml(c.counselorName || configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '—')}${_counselorStatusBadge(c.counselorEmail)}</td><td style="text-align:right;">${btn}</td></tr>`;
     }).join('')}</tbody></table></div>`;
+  // #7：搜尋結果欄寬可拖曳調整（套用既有共用機制，偏好存 crisisColWidths）
+  _makeTableResizable({ table: document.getElementById('crisis-results-table'), colPrefix: 'crisis-col-', colNums: [1,2,3,4,5,6,7], prefKey: 'crisisColWidths' });
+}
+function _resetCrisisColWidths() {
+  _resetTableColWidths({ table: document.getElementById('crisis-results-table'), colPrefix: 'crisis-col-', colNums: [1,2,3,4,5,6,7], prefKey: 'crisisColWidths' });
+  _crisisRenderResults();
 }
 
 function _crisisPickTarget(caseId) {
@@ -7036,6 +7046,8 @@ function renderCases() {
 
   // ── 套用搜尋 / 篩選 ──
   const { q, status, semester, counselor, dateFrom, dateTo, archived } = caseFilters;
+  // #8：搜尋完整姓名/學號/案號時，用來補回被 archived/status/semester 篩掉的相符個案（權限已在此之前套過）
+  const _searchBaseForHint = [...visible];
   if (archived === 'unarchived') {
     visible = visible.filter(c => !c.archived);
   } else if (archived === 'archived') {
@@ -7080,6 +7092,30 @@ function renderCases() {
         if (mlTo   && _lf > mlTo)   return false;
         return true;
       });
+    });
+  }
+
+  // #8：搜尋完整姓名/學號/案號 → 補回被篩掉的相符個案並標記狀態提示
+  //   ・本學期未開案（該生歷來有案但本學期無開案紀錄）
+  //   ・本學期有開案但已結案／已封存
+  const _exactHintMap = new Map();
+  if (q) {
+    const _qx = q.trim().toLowerCase();
+    const _cur = currentSemesterPrefix();
+    const _isExact = c => (c.name || '').toLowerCase() === _qx || (c.studentId || '').toLowerCase() === _qx
+      || (c.id || '').toLowerCase() === _qx || (c.formerIds || []).some(f => (f.id || '').toLowerCase() === _qx);
+    const _visIds = new Set(visible.map(c => c.id));
+    _searchBaseForHint.forEach(c => {
+      if (!c || c.deleted || !_isExact(c)) return;
+      const openedThisSem = _caseHasSem(c, _cur);
+      const semClosed = openedThisSem && ((c.semesterStatus && c.semesterStatus[_cur] === 'closed') || c.status === 'closed');
+      let hint = '';
+      if (!openedThisSem) hint = '本學期未開案';
+      else if (c.archived) hint = '本學期有開案但已封存';
+      else if (semClosed) hint = '本學期有開案但已結案';
+      if (!hint) return;
+      if (!_visIds.has(c.id)) { visible.push(c); _visIds.add(c.id); }
+      _exactHintMap.set(c.id, hint);
     });
   }
 
@@ -7245,9 +7281,14 @@ function renderCases() {
       const range = dates.length >= 2 ? `${fmt(dates[0])}–${fmt(dates[dates.length-1])}` : dates[0] ? fmt(dates[0]) : '';
       return riskBadges + `<div style="margin-top:3px;"><span style="display:inline-block;background:#e9d8fd;color:#553c9a;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;" title="近30天有身心調適假紀錄">身心調適假 ${escHtml(range)}</span></div>`;
     })();
+    // #8：搜尋完整相符且屬「本學期未開案／有開案但已結案(封存)」→ 於狀態欄加提示徽章
+    const _searchHint = _exactHintMap.get(c.id);
+    const _searchHintBadge = _searchHint
+      ? ` <span style="display:inline-block;background:#feebc8;color:#9c4221;border:1px solid #f6ad55;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:700;" data-tip="依你搜尋的完整姓名/學號/案號比對此個案的本學期開案狀態">${escHtml(_searchHint)}</span>`
+      : '';
     const statusCell = c.deleted
       ? `<span class="badge-case-deleted">已刪除</span>`
-      : statusBadge(c.status) + archivedBadge + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '') + mlRecentBadge;
+      : statusBadge(c.status) + _searchHintBadge + archivedBadge + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '') + mlRecentBadge;
     const rowBg = !c.deleted && !c.archived && c.status !== 'closed' && pastUnclosedSems.length ? 'background:#fffbeb;' : '';
     const canCheckCase = !c.deleted; // 封存個案也可勾選，以便批次解封
     // 底色優先順序：deleted > archived > closed > pastUnclosed(warm) > active(白)
@@ -8022,7 +8063,21 @@ function toggleRecordExpand(rid) {
   const expanded = card.classList.toggle('rec-expanded');
   const btn = card.querySelector('.rec-toggle-btn');
   if (btn) btn.textContent = expanded ? '收合 ▲' : '展開 ▼';
-  if (expanded) _loadRecordImages(rid);
+  if (expanded) {
+    _loadRecordImages(rid);
+    // #10：展開紀錄卡片 → 依卡片所屬區塊記錄查閱（晤談紀錄／精神科醫師評估／初次晤談表）
+    try {
+      const dc = (window.casesData || []).find(c => c.id === window._detailCaseId);
+      if (dc) {
+        const bare = String(rid).replace(/^rec-card-/, '');
+        let label = '個案紀錄';
+        if (/psy/i.test(String(rid)) || (dc.psychiatristRecords || []).some(r => r.id === bare || r.id === rid)) label = '精神科醫師評估';
+        else if (/ii|initial/i.test(String(rid))) label = '初次晤談表';
+        else if ((dc.records || []).some(r => r.id === bare || r.id === rid)) label = '晤談紀錄';
+        _auditCaseSectionView('展開' + label);
+      }
+    } catch (_) {}
+  }
 }
 
 // 點擊卡片頂端 banner 也可收合/展開；保留拖曳反白選字（有選取範圍或點在按鈕等互動元件上則不觸發）
@@ -8927,11 +8982,32 @@ async function clearUserPin(key) {
 // ══════════════════════════════════════════════
 //  個案詳細頁
 // ══════════════════════════════════════════════
+// #10：非上班時間監督細緻化——記錄使用者在個案詳細頁展開了哪些敏感區塊（BSRS/紀錄/心測/精神科評估等）。
+// 每個（個案｜區塊）於同一次詳細頁瀏覽只記一次（避免反覆展開收合灌爆稽核）；auditLog 會自動在非上班時段
+// 轉入「非上班時間監督」共享 feed，並全部進稽核日誌頁（動作含「查閱個案」關鍵字→歸「個案列表」類）。
+let _viewedSectionsThisDetail = new Set();
+function _auditCaseSectionView(label) {
+  const cid = window._detailCaseId;
+  if (!cid || !label) return;
+  const key = cid + '|' + label;
+  if (_viewedSectionsThisDetail.has(key)) return;
+  _viewedSectionsThisDetail.add(key);
+  auditLog('查閱個案—' + label, cid);
+}
+// 個案詳細頁的敏感區塊關鍵字（section 標題含其一才記錄，避免基本資料等一般區塊灌爆）
+const _AUDIT_SENSITIVE_SECTIONS = ['BSRS', '心理測驗', '精神科', '結案', '學期評估', '轉銜', '身心調適', '事件處理'];
+
 function toggleSection(id) {
   const el = document.getElementById(id);
   if (!el) return;
   const nowCollapsed = !el.classList.contains('collapsed');
   el.classList.toggle('collapsed', nowCollapsed);
+  // #10：展開（非收合）敏感區塊 → 記錄查閱
+  if (!nowCollapsed && _detailCaseId && id.startsWith('cs-')) {
+    const titleEl = el.querySelector('.form-section-title');
+    const label = titleEl ? titleEl.textContent.replace(/[▲▼]/g, '').trim() : '';
+    if (label && _AUDIT_SENSITIVE_SECTIONS.some(k => label.includes(k))) _auditCaseSectionView('展開' + label);
+  }
   // Persist state per user per case for case-detail sections
   if (_detailCaseId && id.startsWith('cs-')) {
     const key = `scc_sec_${currentUser?.email||''}_${_detailCaseId}`;
@@ -9452,6 +9528,9 @@ function _switchCasePsychTest(idx, caseId) {
   const sy = window.scrollY;
   _caseDetailMode = 'psychtest';
   _caseDetailPsychIdx = idx;
+  // #10：檢視心理測驗結果報告 → 記錄查閱（showCaseDetail 內會重設 _detailCaseId，故先記）
+  window._detailCaseId = caseId;
+  _auditCaseSectionView('檢視心理測驗結果報告');
   showCaseDetail(caseId);
   requestAnimationFrame(() => window.scrollTo(0, sy));
 }
@@ -9696,7 +9775,7 @@ async function showCaseDetail(caseId) {
       _syslog('warn', `cold case 載入失敗（${caseId}）：${e.message}`);
     }
   }
-  if (_detailCaseId !== caseId) { _recPage = 1; _detailCaseId = caseId; _caseDetailActiveSem = null; _caseDetailMode = 'semester'; _caseDetailPsychIdx = 0; _detailSemFilter = 'current'; }
+  if (_detailCaseId !== caseId) { _recPage = 1; _detailCaseId = caseId; _caseDetailActiveSem = null; _caseDetailMode = 'semester'; _caseDetailPsychIdx = 0; _detailSemFilter = 'current'; _viewedSectionsThisDetail = new Set(); /* #10：換個案時重設區塊查閱去重 */ }
   _recSortDesc = _userPref_('recSortDesc', false);
   // 危機唯讀檢視：非危機途徑本就看不到、但今日有危機授權 → 唯讀 + 記錄閱讀
   const _crisisView = !_caseNormallyAccessible(c) && _hasCrisisGrant(c.id);
