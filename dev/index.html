@@ -26260,6 +26260,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-08', v: 147, title: 'Google 日曆雙向同步修正：修改反映、新增自動匯入', isProd: false, items: [
+      item('修復', '在 Google 日曆修改預約（時間／空間／人員／說明）後，系統同步時會確實把變更拉進來（先前的「系統較新就推回日曆」時間戳判斷會把你在日曆的修改覆蓋回去，導致修改看似無效）。日曆端有差異一律以日曆現況為準；系統內的修改仍在儲存當下即時推到日曆，雙向一致'),
+      item('新功能', '在 Google 日曆直接新增的事件，若標題可解析為「已知空間．人員」（如「玉.王小明」），系統同步時會自動匯入為對應的空間預約（配流水號、回寫建立者與流水號至日曆事件）；解析不出已知空間的事件仍列入待辦頁「Google 日曆事件待確認」清單供人工「匯入為預約」'),
+      item('技術', '前端手動同步與後端每 5 分鐘自動同步採同一套規則；匯入以 calendarEventId 做唯一性檢查（bookingsCommit 內鎖定），避免前後端同時匯入同一新事件而重複建立'),
+    ]},
     { date: '2026-07-08', v: 146, title: '登入與 Session 管理：登入紀錄、IP/位置通知、登出所有裝置', isProd: true, items: [
       item('新功能', '登入通知信新增「IP 位址」與「大致位置」（由前端向公開 IP 服務查詢後帶入；查不到則略過，不影響登入）'),
       item('新功能', '偏好設定頁新增「登入紀錄」卡片：列出近期以你的帳號登入的裝置（作業系統／瀏覽器）、IP、大致位置、登入時間與狀態（目前裝置／使用中／已登出／已過期）'),
@@ -28747,6 +28752,72 @@ function _parseBkGcTitle(title) {
   };
 }
 
+// 2026-07-08：判斷 GC 標題是否解析得出「已知空間．人員」——只認內建 ROOMS（排除「其他」）的首字。
+// 未知/自訂空間一律回 null（→ 留待確認清單人工匯入，不自動建立）。純檢查、無副作用（不呼叫會註冊自訂空間的 _parseBkGcTitle）。
+function _gcKnownRoomOfTitle(title) {
+  const m = (title || '').match(/^([^.]+)\.(.+)$/);
+  if (!m) return null;
+  const roomChar = m[1];
+  const person = (m[2] || '').trim();
+  if (!person) return null;
+  return ROOMS.filter(r => r !== '其他').find(r => r.charAt(0) === roomChar) || null;
+}
+
+// GC 上「無對應 INFOSYS 預約」且標題可解析為已知空間的新事件 → 自動匯入為系統預約（配流水號、回寫 GC serial/creator）。
+// 解析不出已知空間者不在此處理，留給 _runGcValidationAndBackfill 列入待確認清單供人工「匯入為預約」。回傳匯入筆數。
+async function _gcAutoImportKnownRoomEvents(gcEvents, startDate, endDate) {
+  const matched = new Set((bookingsData || []).map(b => b.calendarEventId).filter(Boolean));
+  const toImport = (gcEvents || []).filter(ev =>
+    ev && ev.id && !matched.has(ev.id) &&
+    ev.date >= startDate && ev.date <= endDate &&
+    _gcKnownRoomOfTitle(ev.title));
+  if (!toImport.length) return 0;
+  const myName = configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '';
+  const baseSerial = _bkNextSerial();
+  const newBks = toImport.map((ev, idx) => {
+    const parsed = _parseBkGcTitle(ev.title) || { room: '', counselors: [], counselorName: '', counselorEmail: '' };
+    const raw = ev.description || '';
+    let notes = '';
+    const sm = raw.match(/\n#(\d+)\s*$/);
+    if (sm) { let body = raw.slice(0, raw.length - sm[0].length); const si = body.lastIndexOf('\n---\n'); if (si >= 0) body = body.slice(0, si); notes = body.trim(); }
+    else { const si = raw.lastIndexOf('\n---\n'); notes = (si >= 0 ? raw.slice(0, si) : raw).trim(); }
+    const now = new Date().toISOString();
+    return {
+      id: 'bk_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      bkSerial: baseSerial + idx,
+      room: parsed.room || '', customRoom: '',
+      date: ev.date, startTime: ev.startTime, endTime: ev.endTime,
+      counselors: parsed.counselors || [], counselorEmail: parsed.counselorEmail || '', counselorName: parsed.counselorName || '',
+      caseId: '', caseName: '', notes,
+      createdAt: now, updatedAt: now, creatorName: myName,
+      calendarEventId: ev.id,
+    };
+  });
+  const ops = newBks.map(bk => ({ op: 'upsert', booking: { ...bk }, gc: { mode: 'none' } }));
+  const res = await bkCommit(ops, { checkConflicts: false });
+  // 只認伺服器確認寫入的預約（後端可能因 calendarEventId 已被占用而略過重複匯入）
+  let confirmed = newBks;
+  if (res.fallback) { newBks.forEach(bk => bookingsData.push(bk)); await saveBookings(); }
+  else if (!res.error) {
+    const byId = new Map((res.bookings || []).map(x => [x.id, x]));
+    confirmed = newBks.filter(bk => byId.has(bk.id));
+    confirmed.forEach(bk => bookingsData.push(byId.get(bk.id)));
+  } else { confirmed = []; }
+  for (const bk of confirmed) {
+    try {
+      await proxyCall('updateCalendarEvent', {
+        eventId: bk.calendarEventId, room: bk.room, customRoom: '',
+        date: bk.date, startTime: bk.startTime, endTime: bk.endTime,
+        counselorName: bk.counselorName || '', notes: bk.notes || '',
+        creatorName: bk.creatorName || bk.counselorName || '',
+        createdAt: bk.createdAt, updatedAt: bk.updatedAt, isEdit: false, bkSerial: bk.bkSerial,
+        colorId: _bkGcColorId(bk) });
+    } catch (_) {}
+    auditLog('因同步日曆自動匯入預約', null, null, `${bk.room}　${bk.date}　${(bk.startTime || '').slice(0, 5)}–${(bk.endTime || '').slice(0, 5)}${bk.counselorName ? '　' + bk.counselorName : ''}`);
+  }
+  return confirmed.length;
+}
+
 async function syncFromCalendar(silent = false) {
   const jobId = silent ? null : bgJobAdd('Google 日曆同步', '取得事件中…');
   try {
@@ -28823,15 +28894,9 @@ async function syncFromCalendar(silent = false) {
 
       if (titleChanged || timeChanged || notesChanged) {
         const rd = b.room === '其他' ? (b.customRoom || '其他') : (b.room || '');
-        // 交叉驗證：比較 GC lastModified 與系統 updatedAt / createdAt
-        const gcIsNewer = !gcE.lastModified || gcE.lastModified > (b.updatedAt || b.createdAt || '');
-
-        if (!gcIsNewer) {
-          // 系統較新 → 推回 GC，不更新本機
-          gcPushBackQueue.push(b.id);
-          return b;
-        }
-
+        // 2026-07-08：GC 端有差異一律拉進 INFOSYS（以 GC 現況為準）。先前的「系統較新就推回 GC」時間戳
+        // 仲裁會把使用者在 GC 的修改覆蓋回去（使用者回報「GC 修改不反映」根因）→ 已移除。
+        // INFOSYS 端自己的修改仍在儲存當下即時推到 GC（bookingsCommit），雙向一致不依賴本同步的推回。
         const diffs = [];
         const update = {};
 
@@ -28914,9 +28979,13 @@ async function syncFromCalendar(silent = false) {
         } catch (_) {}
       }
     }
+    // 自動匯入 GC 新增、可解析為已知空間的事件（解析不出的留給下方驗證列入待確認清單）
+    let _autoImported = 0;
+    try { _autoImported = await _gcAutoImportKnownRoomEvents(gcEvents, startDate, endDate); } catch (e) { console.warn('gc auto-import failed', e); }
+    if (_autoImported > 0) { try { renderBookingsPage?.(); } catch (_) {} }
     // GC 事件驗證 + 自動補註 + 廣播（背景，不阻擋 sync 完成回報）
     try { await _runGcValidationAndBackfill(gcEvents); } catch (e) { console.warn('gc validation failed', e); }
-    if (jobId) bgJobDone(jobId);
+    if (jobId) bgJobDone(jobId, _autoImported > 0 ? `已自動匯入 ${_autoImported} 筆 GC 新增事件` : undefined);
   } catch (e) {
     if (jobId) bgJobFail(jobId, e.message);
     if (!silent) setAlert('bookings-alert', 'warn', '同步失敗：' + e.message);

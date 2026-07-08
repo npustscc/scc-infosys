@@ -1782,10 +1782,20 @@ function bookingsCommit_({ ops, checkConflicts, skipPersonConflict }, ctx) {
     data.bookings.forEach(function (b, idx) { if (b && b.id) pos[b.id] = idx; });
     const usedSerials = {};
     data.bookings.forEach(function (b) { if (b && b.bkSerial) usedSerials[b.bkSerial] = true; });
+    // GC 事件→預約 唯一性（防止前端手動同步與後端 5 分鐘 trigger 同時匯入同一新事件而重複建立）：
+    // 記錄鎖內現有各 calendarEventId 對應的預約 id。
+    const eventIdOwner = {};
+    data.bookings.forEach(function (b) { if (b && b.id && b.calendarEventId) eventIdOwner[b.calendarEventId] = b.id; });
 
     upsertOps.forEach(function (o) {
       const entry = o.booking;
       const isNew = pos[entry.id] === undefined;
+      // 新預約若帶已被其他預約占用的 calendarEventId → 視為重複匯入，略過（idempotent）。
+      // 正常新增預約在此階段 calendarEventId 為空（事件於 Phase 2 才建立），不受影響。
+      if (isNew && entry.calendarEventId && eventIdOwner[entry.calendarEventId] && eventIdOwner[entry.calendarEventId] !== entry.id) {
+        return;
+      }
+      if (entry.calendarEventId) eventIdOwner[entry.calendarEventId] = entry.id;
       if (isNew && entry.bkSerial && usedSerials[entry.bkSerial]) {
         let maxSerial = 0;
         data.bookings.forEach(function (b) { if (b && b.bkSerial > maxSerial) maxSerial = b.bkSerial; });
@@ -2025,15 +2035,9 @@ function gcSyncCore_(ctx) {
 
       if (titleChanged || timeChanged || notesChanged) {
         const rd = b.room === '其他' ? (b.customRoom || '其他') : (b.room || '');
-        // 交叉驗證：比較 GC lastModified 與系統 updatedAt / createdAt
-        const gcIsNewer = !gcE.lastModified || gcE.lastModified > (b.updatedAt || b.createdAt || '');
-
-        if (!gcIsNewer) {
-          // 系統較新 → 推回 GC，不更新本機
-          gcPushBackQueue.push(b.id);
-          return b;
-        }
-
+        // 2026-07-08：GC 端有差異一律拉進 INFOSYS（以 GC 現況為準）。先前「系統較新就推回 GC」的時間戳
+        // 仲裁會把使用者在 GC 的修改覆蓋回去（使用者回報「GC 修改不反映」根因）→ 已移除。
+        // INFOSYS 端自己的修改仍在儲存當下即時推到 GC（bookingsCommit），不依賴本同步的推回。
         const diffs = [];
         const update = {};
 
@@ -2115,9 +2119,92 @@ function gcSyncCore_(ctx) {
         console.error('gcSyncCore_ 還原/推回 GC 失敗 [' + id + ']: ' + ((e && e.message) || e));
       }
     });
+
+    // GC 新增、可解析為已知空間的事件 → 自動匯入為系統預約（解析不出者略過，留待前端待確認清單人工匯入）。
+    try {
+      gcAutoImportKnownRoom_(gcEvents, startDate, endDate, users, ctx);
+    } catch (e) {
+      console.error('gcSyncCore_ 自動匯入失敗: ' + ((e && e.message) || e));
+    }
   } catch (e) {
     console.error('gcSyncCore_ 失敗: ' + ((e && e.message) || e));
   }
+}
+
+// 判斷 GC 標題是否解析得出「已知空間．人員」——只認 GC_SYNC_ROOMS（排除「其他」）首字＋有人員。
+// 未知/自訂空間回 null（後端不自動建立，留給前端待確認清單）。
+function _gcKnownRoomOfTitleGs_(title) {
+  var m = String(title || '').match(/^([^.]+)\.(.+)$/);
+  if (!m) return null;
+  var roomChar = m[1];
+  var person = String(m[2] || '').trim();
+  if (!person) return null;
+  var known = GC_SYNC_ROOMS.filter(function (r) { return r !== '其他'; });
+  for (var i = 0; i < known.length; i++) { if (known[i].charAt(0) === roomChar) return known[i]; }
+  return null;
+}
+
+// 後端自動匯入：重讀 bookings.json 取最新占用與最大流水號，逐一為「未對應且標題為已知空間」的 GC 事件
+// 建立預約（bookingsCommit_ upsert，gc:'none' 不重建事件），再回寫 GC serial/creator＋記稽核。
+function gcAutoImportKnownRoom_(gcEvents, startDate, endDate, users, ctx) {
+  var loaded = _bkReadFile_(ctx);
+  var bookings = (loaded.data && Array.isArray(loaded.data.bookings)) ? loaded.data.bookings : [];
+  var matched = {};
+  var maxSerial = 0;
+  bookings.forEach(function (b) {
+    if (b && b.calendarEventId) matched[b.calendarEventId] = true;
+    if (b && b.bkSerial > maxSerial) maxSerial = b.bkSerial;
+  });
+  var toImport = (gcEvents || []).filter(function (ev) {
+    return ev && ev.id && !matched[ev.id] && ev.date >= startDate && ev.date <= endDate && _gcKnownRoomOfTitleGs_(ev.title);
+  });
+  if (!toImport.length) return;
+
+  var ops = [];
+  var created = [];
+  var auditActions = [];
+  toImport.forEach(function (ev, idx) {
+    var parsed = _gcSyncParseTitle_(ev.title, users) || { room: '', counselors: [], counselorName: '', counselorEmail: '' };
+    var raw = ev.description || '';
+    var notes = '';
+    var sm = raw.match(/\n#(\d+)\s*$/);
+    if (sm) { var body = raw.slice(0, raw.length - sm[0].length); var si = body.lastIndexOf('\n---\n'); if (si >= 0) body = body.slice(0, si); notes = body.trim(); }
+    else { var si2 = raw.lastIndexOf('\n---\n'); notes = (si2 >= 0 ? raw.slice(0, si2) : raw).trim(); }
+    var now = new Date().toISOString();
+    var bk = {
+      id: 'bk_gc_' + Date.now() + '_' + idx,
+      bkSerial: maxSerial + 1 + idx,
+      room: parsed.room || '', customRoom: '',
+      date: ev.date, startTime: ev.startTime, endTime: ev.endTime,
+      counselors: parsed.counselors || [], counselorEmail: parsed.counselorEmail || '', counselorName: parsed.counselorName || '',
+      caseId: '', caseName: '', notes: notes,
+      createdAt: now, updatedAt: now, creatorName: '系統自動同步',
+      calendarEventId: ev.id,
+    };
+    created.push(bk);
+    ops.push({ op: 'upsert', booking: bk, gc: { mode: 'none' } });
+    auditActions.push({
+      action: '因系統自動同步日曆而匯入預約',
+      caseId: null,
+      detail: (bk.room || '') + '　' + bk.date + '　' + (bk.startTime || '').slice(0, 5) + '–' + (bk.endTime || '').slice(0, 5) + (bk.counselorName ? '　' + bk.counselorName : ''),
+    });
+  });
+
+  try { bookingsCommit_({ ops: ops, checkConflicts: false }, ctx); }
+  catch (e) { console.error('gcAutoImportKnownRoom_ bookingsCommit_ 失敗: ' + ((e && e.message) || e)); return; }
+
+  created.forEach(function (bk) {
+    try {
+      updateCalendarEvent_({
+        eventId: bk.calendarEventId, room: bk.room, customRoom: '',
+        date: bk.date, startTime: bk.startTime, endTime: bk.endTime,
+        counselorName: bk.counselorName || '', notes: bk.notes || '',
+        creatorName: bk.creatorName, createdAt: bk.createdAt, updatedAt: bk.updatedAt,
+        isEdit: false, bkSerial: bk.bkSerial,
+      }, ctx);
+    } catch (e) { console.error('gcAutoImportKnownRoom_ 回寫 GC 失敗: ' + ((e && e.message) || e)); }
+  });
+  try { _gcSyncAppendAuditLog_(auditActions, ctx); } catch (e) { console.error('gcAutoImportKnownRoom_ 稽核失敗: ' + ((e && e.message) || e)); }
 }
 
 // 純函式：判斷此刻是否該跑 GC 同步。weekday: 1=週一…7=週日（Utilities.formatDate 'u' 格式）。
