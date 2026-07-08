@@ -25829,6 +25829,14 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-08', v: 134, title: '修正空間預約無法儲存的嚴重錯誤＋#29 個案搜尋排序＋預約視窗可調寬度等（#29 與三項新需求）', isProd: false, items: [
+      item('修正', '空間預約的新增、雙擊新增、編輯全部無法儲存：v108 改寫重複頻率（#24）時遺失了 isRepeat 變數的定義，儲存流程執行到重複預約區塊即中斷且按鈕停在停用狀態；已補回定義',),
+      item('修正', '#29 主責個案排最前：先前只做在輸入框下方的建議提示，瀏覽器原生下拉建議（datalist）仍是原始順序；現在 datalist 也以「目前選定主責人員」的主責個案排最前，切換主責人員時即時重排'),
+      item('調整', '連結個案搜尋新原則（#7＋#29 定案）：封存/結案個案輸入「完整案號／完整全名／完整學號」一律可搜到；「模糊比對」（姓名部分字）只納入近 2 學期內仍有開案者，已 2 學期以上未開案者不因隨手打字曝光（個資保護）。搜尋結果排序：主責 > 非主責，同層內 啟用 > 結案 > 封存，並帶狀態徽章'),
+      item('新功能', '新增/編輯預約視窗可從右下角拖曳調整寬度，並記住偏好（本裝置瀏覽器）；最大不超過瀏覽器視窗寬度'),
+      item('調整', '「其他使用者的預設色一覽」hover 說明正名：INFOSYS 預設色→學諮資訊系統預設色、GC 預設色→Google 日曆預設色'),
+      item('新功能', 'GC 預設色選色盤比照學諮資訊系統選色盤：已被其他使用者選用的色塊加深色外框，hover 顯示是誰選用（僅提示，不阻擋選擇）；兩色盤提示文字統一為「已由 ○○○ 選用」'),
+    ]},
     { date: '2026-07-08', v: 133, title: '「我的差勤」移除「打卡」分頁（#26-5 定案）', isProd: false, items: [
       item('調整', '「我的差勤」頁依確認結果移除「打卡」分頁，改為三個分頁：本週差勤／請假申請／月報表；打卡功能不受影響，仍可從側欄「差勤打卡」頁或手機捷徑的快速打卡頁（?page=clock）使用'),
       item('技術', '若先前記憶的分頁停留在「打卡」，下次進入自動回到「本週差勤」；renderClockPage 的容器前綴（ns）機制保留供未來內嵌需求使用，目前僅獨立打卡頁使用'),
@@ -26721,7 +26729,7 @@ function _renderBkColorGrid(gridId, currentId, extraGridId) {
     const key = hex.toUpperCase();
     const sel = key === (my || '').toUpperCase();
     const others = usersByColor[key] || [];
-    const tip = others.length ? ` data-tip="由 ${escHtml(others.join('、'))} 使用"` : '';
+    const tip = others.length ? ` data-tip="已由 ${escHtml(others.join('、'))} 選用"` : '';
     const box = sel
       ? 'inset 0 0 0 3px #fff, 0 0 0 2px #2b6cb0'
       : others.length
@@ -26777,11 +26785,24 @@ function _renderBkGcDefaultGrid(gridId, currentId) {
   if (!grid) return;
   const me = currentUser?.email;
   const my = String(configData?.users?.[me]?.bkColorGc || '');
+  // 比照 INFOSYS 選色盤：已被其他使用者選用的色塊加深色外框＋hover 顯示誰在用（僅提示，不阻擋選擇）
+  const usersByGc = {};
+  Object.entries(configData?.users || {}).forEach(([email, u]) => {
+    if (!u || u.disabled || email === me || !u.bkColorGc) return;
+    const key = String(u.bkColorGc);
+    (usersByGc[key] = usersByGc[key] || []).push(u.name || email);
+  });
   grid.innerHTML = Object.entries(GC_EVENT_COLORS).map(([id, hex]) => {
     const sel = id === my;
-    const box = sel ? 'inset 0 0 0 3px #fff, 0 0 0 2px #2b6cb0' : 'inset 0 0 0 1px rgba(0,0,0,.08)';
+    const others = usersByGc[id] || [];
+    const tip = others.length ? ` data-tip="已由 ${escHtml(others.join('、'))} 選用"` : '';
+    const box = sel
+      ? 'inset 0 0 0 3px #fff, 0 0 0 2px #2b6cb0'
+      : others.length
+        ? 'inset 0 0 0 2px #fff, 0 0 0 2px #2d3748'
+        : 'inset 0 0 0 1px rgba(0,0,0,.08)';
     return `<div onclick="pickMyBkGcColor('${id}','${escHtml(gridId||'pref-bkcolor-gc-grid')}','${escHtml(currentId||'pref-bkcolor-gc-current')}')"
-      title="${escHtml(hex)}"
+      title="${escHtml(hex)}"${tip}
       style="width:32px;height:32px;border-radius:6px;background:${hex};cursor:pointer;
       box-shadow:${box};transition:transform .1s;"
       onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform=''"></div>`;
@@ -26826,8 +26847,8 @@ function _renderBkColorRoster(containerId) {
         : `<span style="width:16px;height:16px;border-radius:4px;background:#edf2f7;display:inline-block;border:1px dashed #cbd5e0;"></span>`;
       return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:.82rem;color:#4a5568;">
         <span style="min-width:70px;">${escHtml(u.name || email)}</span>
-        <span style="display:flex;align-items:center;gap:4px;" data-tip="INFOSYS 預設色">${infosysSwatch}</span>
-        <span style="display:flex;align-items:center;gap:4px;" data-tip="GC 預設色">${gcSwatch}</span>
+        <span style="display:flex;align-items:center;gap:4px;" data-tip="學諮資訊系統預設色">${infosysSwatch}</span>
+        <span style="display:flex;align-items:center;gap:4px;" data-tip="Google 日曆預設色">${gcSwatch}</span>
       </div>`;
     });
   el.innerHTML = rows.length ? rows.join('') : '<div style="font-size:.8rem;color:#a0aec0;">（尚無其他使用者）</div>';
@@ -28044,6 +28065,7 @@ function _bkConfirmSeriesScope(scope) {
   _bkEditScope = scope;
   document.getElementById('bk-series-scope-modal').style.display = 'none';
   document.getElementById('booking-modal').style.display = 'flex';
+  _bkModalResizeSetup();
   _bkUpdateScopeInfo();
   _checkBkConflict();
 }
@@ -32180,6 +32202,7 @@ function _bkPickOpt(value, label, isCustom) {
     else _bkSelectedOpts.push({ value, label, isCustom: !!isCustom });
   }
   _populateBookingCounselorSelect();
+  _populateBookingCaseDatalist(); // #29：主責變更後重排 datalist（主責個案排最前）
   _checkBkConflict();
 }
 function _bkAddCustomOpt() {
@@ -32485,8 +32508,17 @@ async function syncBookingToCalendar(id) {
 }
 
 function _populateBookingCaseDatalist() {
-  document.getElementById('bk-case-list').innerHTML =
-    casesData.filter(c => !c.deleted && c.status === 'active')
+  const el = document.getElementById('bk-case-list');
+  if (!el) return;
+  // #29：datalist（瀏覽器原生建議）依插入順序顯示，主責個案要排最前只能在這裡排；
+  // 主責人員變更時由 _bkPickOpt 重建，維持排序與目前選定主責一致
+  const sel = _bkPrimaryCounselorEmail();
+  const list = casesData.filter(c => !c.deleted && c.status === 'active');
+  const sorted = sel
+    ? list.slice().sort((a, b) =>
+        (_getLatestCounselorEmail(a) === sel ? 0 : 1) - (_getLatestCounselorEmail(b) === sel ? 0 : 1))
+    : list;
+  el.innerHTML = sorted
       .map(c => {
         const label = [c.id, c.name, c.studentId].filter(Boolean).join(' ');
         return `<option value="${escHtml(c.id)}">${escHtml(label)}</option>`;
@@ -32501,37 +32533,46 @@ function _bkPrimaryCounselorEmail() {
   return configData?.users?.[o.value] ? o.value : '';
 }
 
+// 近 2 學期（本學期＋上一學期）的學期 prefix，供 #29 封存/結案個案的模糊搜尋門檻判定
+function _recentSemPrefixes() {
+  const cur = currentSemesterPrefix();
+  const y = parseInt(cur.slice(0, -1), 10), t = cur.slice(-1);
+  return [cur, t === '2' ? `${y}1` : `${y - 1}2`];
+}
+
 function onBkCaseIdInput() {
   const raw = document.getElementById('bk-case-id').value.trim();
   const hint = document.getElementById('bk-case-hint');
   if (!raw) { hint.style.display = 'none'; return; }
 
-  const active = casesData.filter(c => !c.deleted && c.status === 'active');
-  let matches = active.filter(c => c.id === raw);
-  if (!matches.length) matches = active.filter(c => c.studentId && c.studentId === raw);
-  if (!matches.length && raw.length >= 2) matches = active.filter(c => (c.name || '').includes(raw));
+  // #29：搜尋資料源改用 cases-index 全量索引（涵蓋 hot/cold 分層後不在 casesData 的封存/結案個案），
+  // 尚無索引時退回 casesData
+  const src = (_casesIndexCache?.cases?.length ? _casesIndexCache.cases : casesData)
+    .filter(c => c?.id && !c.deleted);
 
-  // #7：封存／已結案個案原則上不在此曝光——避免只是隨手打幾個字模糊比對，就能得知某人是否曾有
-  // 已結案／封存的諮商紀錄（個資保護，刻意設計）。唯一例外：輸入字串「完全等於」全名或完整學號，
-  // 視為使用者本就已經知道這個人的完整身分（而非用來試探），才把封存／已結案個案一併納入建議，
-  // 並加上狀態徽章。資料源用 _casesIndexCache 全量索引（涵蓋 hot/cold 分層後未必在 casesData 的個案）。
-  const _matchedIds = new Set(matches.map(c => c.id));
-  const archivedExact = raw ? (_casesIndexCache?.cases || []).filter(c =>
-    c?.id && !c.deleted && !_matchedIds.has(c.id) &&
-    (c.archived || c.status === 'closed') &&
-    (c.name === raw || (c.studentId && c.studentId === raw))
-  ) : [];
-  // 精準命中的封存／結案個案排最前面，模糊比對的一般個案在後
-  matches = [...archivedExact, ...matches];
+  // #7＋#29 定案（2026-07-08）：封存／已結案個案輸入「完整案號／完整全名／完整學號」一律可搜到
+  // （視為使用者本就知道完整身分）；「模糊比對」（姓名部分字）只納入近 2 學期內仍有開案者——
+  // 已 2 學期以上未開案的封存個案不因隨手打幾個字就曝光曾有諮商紀錄（個資保護，刻意設計）。
+  const recentSems = _recentSemPrefixes();
+  const _isActive = c => !c.archived && c.status === 'active';
+  const _isRecent = c => (Array.isArray(c.semesters) ? c.semesters : []).some(s => recentSems.includes(s));
+
+  let matches = src.filter(c => c.id === raw);
+  if (!matches.length) matches = src.filter(c => c.studentId && c.studentId === raw);
+  if (!matches.length) matches = src.filter(c => c.name && c.name === raw);
+  if (!matches.length && raw.length >= 2) {
+    matches = src.filter(c => (c.name || '').includes(raw) && (_isActive(c) || _isRecent(c)));
+  }
 
   if (!matches.length) { hint.style.display = 'none'; return; }
 
-  // 目前選定主責人員為主責的個案排最前面，其餘維持原順序（sort 為穩定排序，同分不改變相對順序）
+  // #29 排序：主責 > 非主責；同層內 啟用 > 結案 > 封存（sort 為穩定排序，同分維持原相對順序）
   const _selCounselor = _bkPrimaryCounselorEmail();
-  if (_selCounselor) {
-    matches = matches.slice().sort((a, b) =>
-      (a.counselorEmail === _selCounselor ? 0 : 1) - (b.counselorEmail === _selCounselor ? 0 : 1));
-  }
+  const _tier = c => c.archived ? 2 : (c.status === 'closed' ? 1 : 0);
+  matches = matches.slice().sort((a, b) =>
+    ((_selCounselor && _getLatestCounselorEmail(a) === _selCounselor) ? 0 : 1)
+      - ((_selCounselor && _getLatestCounselorEmail(b) === _selCounselor) ? 0 : 1)
+    || _tier(a) - _tier(b));
 
   // 封存／已結案狀態徽章（配色沿用事件處理記錄個案搜尋 _evrSearch 既有樣式，維持全站一致）
   const _statusBadge = m =>
@@ -32667,6 +32708,7 @@ function openBookingModal(prefillCaseId, prefill) {
   _bkResetRepeatUi();
   _resetBkOverrideUi('');
   document.getElementById('booking-modal').style.display = 'flex';
+  _bkModalResizeSetup();
   _bkUpdateScopeInfo();
 }
 
@@ -32713,6 +32755,7 @@ function editBooking(id) {
     document.getElementById('bk-series-scope-modal').style.display = 'flex';
   } else {
     document.getElementById('booking-modal').style.display = 'flex';
+    _bkModalResizeSetup();
     _bkUpdateScopeInfo();
     _checkBkConflict();
   }
@@ -32983,6 +33026,7 @@ function _bkCopyOpenModal() {
   _resetBkOverrideUi(b.bkOverrideColor || '');
   _bkEditScope = 'this';
   document.getElementById('booking-modal').style.display = 'flex';
+  _bkModalResizeSetup();
   _bkUpdateScopeInfo();
   _checkBkConflict();
 }
@@ -33045,6 +33089,28 @@ async function _bkCopyToNextWeekConfirm() {
 
 function closeBookingModal() {
   document.getElementById('booking-modal').style.display = 'none';
+}
+
+// 需求（2026-07-08）：預約視窗寬度可拖曳調整（CSS resize:horizontal，見 booking-modal-box），
+// 並記住使用者偏好（本裝置 localStorage）；上限＝瀏覽器寬度（max-width:calc(100vw - 32px)）。
+// 首次開啟時套用記憶寬度；ResizeObserver 於使用者拖曳後 debounce 寫回。
+let _bkModalResizeInited = false;
+function _bkModalResizeSetup() {
+  if (_bkModalResizeInited) return;
+  const box = document.getElementById('booking-modal-box');
+  if (!box || typeof ResizeObserver === 'undefined') return;
+  _bkModalResizeInited = true;
+  const saved = parseInt(localStorage.getItem('scc_bk_modal_w') || '', 10);
+  if (saved >= 320) box.style.width = Math.min(saved, Math.max(320, window.innerWidth - 32)) + 'px';
+  let t = null;
+  new ResizeObserver(() => {
+    if (document.getElementById('booking-modal')?.style.display !== 'flex') return;
+    clearTimeout(t);
+    t = setTimeout(() => {
+      const w = Math.round(box.getBoundingClientRect().width);
+      if (w >= 320) { try { localStorage.setItem('scc_bk_modal_w', String(w)); } catch {} }
+    }, 400);
+  }).observe(box);
 }
 
 // v103：編輯預約 Modal 內的「刪除」按鈕——先關閉編輯 Modal 再走既有 deleteBooking 流程
@@ -33192,6 +33258,7 @@ async function saveBooking() {
   const creatorName = configData?.users?.[currentUser?.email]?.name || currentUser?.name || currentUser?.given_name || (currentUser?.email?.split('@')[0] ?? '') || '';
 
   // T2：重複預約設定（#24：頻率除固定天數 7/14/21 外，新增 'monthly' 每月同一天，見 _bkAddFreq）
+  const isRepeat = !_editingBookingId && !!(document.getElementById('bk-repeat-toggle')?.checked);
   const _repeatFreqVal = document.querySelector('input[name="bk-repeat-freq"]:checked')?.value || '7';
   const repeatFreq = isRepeat ? (_repeatFreqVal === 'monthly' ? 'monthly' : parseInt(_repeatFreqVal, 10)) : 0;
   const repeatCount = isRepeat ? Math.max(2, Math.min(16, parseInt(document.getElementById('bk-repeat-count')?.value || '4'))) : 1;
@@ -41155,7 +41222,7 @@ function toggleNavPin(navId) {
 
 <!-- 空間預約 Modal -->
 <div id="booking-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:500;align-items:center;justify-content:center;">
-  <div style="background:#fff;border-radius:12px;padding:28px 28px 20px;width:90%;max-width:520px;max-height:90vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.2);">
+  <div id="booking-modal-box" style="background:#fff;border-radius:12px;padding:28px 28px 20px;width:min(520px,90vw);min-width:320px;max-width:calc(100vw - 32px);max-height:90vh;overflow-y:auto;resize:horizontal;box-shadow:0 8px 32px rgba(0,0,0,.2);">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
       <h3 id="booking-modal-title" style="font-size:1.1rem;color:#1a202c;">新增預約</h3>
       <button onclick="closeBookingModal()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
