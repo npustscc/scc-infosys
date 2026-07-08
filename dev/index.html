@@ -3670,6 +3670,7 @@ const DEFAULT_WORK_HOURS = {
   },
   holidays: [],                   // ['YYYY-MM-DD']；覆蓋 workDays（假日不上班）
   extraWorkDays: [],              // ['YYYY-MM-DD']；補班日（週末也算上班）
+  dutyRoster: [],                 // [{date:'YYYY-MM-DD', email}]；#4 輪值上班：該日僅輪值者算上班
 };
 // 空間預約使用者顏色（32 色）+ GC 11 色映射
 const BK_USER_COLORS = [
@@ -5905,8 +5906,8 @@ async function afterLogin() {
     loadOffHoursLog().catch(() => {}); // 非上班時間監督 feed（主任/管理者/專任在待辦頁可見）
     loadGcErrorsCache().catch(() => {}); // GC 事件錯誤 feed（同上可見範圍）
 
-    // ── 非上班時間登入：寫入 feed + 首次觸發廣播通知（非 priv 才推）──
-    if (_isOffHours()) {
+    // ── 非上班（含輪值日非輪值者）登入：寫入 feed + 首次觸發廣播通知（非 priv 才推）──
+    if (_isOffDutyNow(currentUser.email)) {
       const _isPriv = currentRole === '主任' || extraRole === '管理者';
       _appendOffHoursLog({
         id:    `oh-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
@@ -6682,6 +6683,29 @@ function _isOffHours(isoOrDate) {
   if (!hours) return true;                                             // 非上班日
   const hh = d.getHours();
   return hh < hours.start || hh >= hours.end;                          // 時區以本機為準
+}
+// #4：某人此刻是否「非排班／非上班」——輪值日只有輪值者算上班，其餘人一律 off-duty（列入監督）；
+// 非輪值日則沿用全域 _isOffHours。用於決定「沒排班卻上線/看改個案」是否寫入監督 feed。
+function _isOffDutyNow(email, isoOrDate) {
+  const cfg = _getWorkHoursConfig();
+  const d = isoOrDate ? new Date(isoOrDate) : new Date();
+  if (isNaN(d)) return false;
+  const ymd = _fmtDate(d);
+  const roster = (cfg.dutyRoster || []).filter(r => r && r.date === ymd);
+  if (roster.length) {
+    const onDuty = new Set(roster.map(r => r.email));
+    if (onDuty.has(email)) {
+      // 輪值者：該日視為上班；用該星期時段，無則沿用其他星期第一組，皆無則預設 08–18
+      const dow = d.getDay();
+      const hours = cfg.weeklyHours?.[dow]
+        || Object.values(cfg.weeklyHours || {}).find(h => h && Number.isFinite(h.start) && Number.isFinite(h.end))
+        || { start: 8, end: 18 };
+      const hh = d.getHours();
+      return hh < hours.start || hh >= hours.end;
+    }
+    return true; // 非輪值者 → off-duty
+  }
+  return _isOffHours(isoOrDate);
 }
 // 判斷 auditLog 的 action 是否屬於「看/改個案相關」——排除 PIN 解鎖、偏好設定等純系統事件
 function _isCaseRelatedAction(a) {
@@ -25497,8 +25521,8 @@ function auditLog(action, caseId = null, recordId = null, detail = null, opts = 
     } catch (e) { console.warn('audit log failed:', e); }
   })();
 
-  // 非上班時間 + 看/改個案相關 → 追加到 off_hours_log 共享 feed，並於首次觸發廣播通知
-  if (_isCaseRelatedAction(action) && _isOffHours(entry.t)) {
+  // 非上班（含輪值日非輪值者）+ 看/改個案相關 → 追加到 off_hours_log 共享 feed，並於首次觸發廣播通知
+  if (_isCaseRelatedAction(action) && _isOffDutyNow(currentUser.email, entry.t)) {
     const _isPriv = currentRole === '主任' || extraRole === '管理者';
     _appendOffHoursLog({
       id:      `oh-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
@@ -36424,6 +36448,16 @@ function renderAdminWorkHours() {
         ${escHtml(d)}<button onclick="_adminWhRemoveDate('${id}','${escHtml(d)}')" style="background:none;border:none;cursor:pointer;color:#553c9a;font-size:1rem;line-height:1;padding:0 0 0 3px;">×</button>
       </span>`).join('')
     : '<span style="font-size:.83rem;color:#a0aec0;">（尚無）</span>';
+  // #4 輪值上班：人員下拉 + 輪值 chips（日期·姓名）
+  const dutyPersonOpts = Object.entries(configData?.users || {})
+    .filter(([, u]) => u && !u.disabled && u.name)
+    .sort((a, b) => (a[1].name || '').localeCompare(b[1].name || '', 'zh-Hant'))
+    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name)}</option>`).join('');
+  const dutyChips = (arr) => (arr && arr.length)
+    ? [...arr].sort((a, b) => (a.date || '').localeCompare(b.date || '')).map(r => `<span style="display:inline-flex;align-items:center;gap:2px;background:#fffaf0;color:#9c4221;border:1px solid #fbd38d;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;">
+        ${escHtml(r.date)} · ${escHtml(configData?.users?.[r.email]?.name || r.email)}<button onclick="_adminWhRemoveDuty('${escHtml(r.date)}','${escHtml(r.email)}')" style="background:none;border:none;cursor:pointer;color:#9c4221;font-size:1rem;line-height:1;padding:0 0 0 3px;">×</button>
+      </span>`).join('')
+    : '<span style="font-size:.83rem;color:#a0aec0;">（尚無）</span>';
   el.innerHTML = `
     <div style="margin-bottom:16px;">
       <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">
@@ -36450,6 +36484,18 @@ function renderAdminWorkHours() {
         <button class="btn btn-secondary btn-sm" onclick="_adminWhAddDate('extraWorkDays','wh-extra-input')">加入補班日</button>
       </div>
       <div id="wh-extras-chips">${dateChips(cfg.extraWorkDays, 'extraWorkDays')}</div>
+    </div>
+    <div style="margin-bottom:16px;">
+      <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">
+        輪值上班（寒暑假等僅一人上班的排班）
+        <span style="font-size:.75rem;font-weight:400;color:#718096;">（指定某日的輪值人員；該日僅輪值者視為上班，其他人若上線／看改個案會列入「非上班時間監督」通知）</span>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap;">
+        <input type="date" id="wh-duty-date" class="field-input" style="max-width:180px;">
+        <select id="wh-duty-person" class="field-input" style="max-width:220px;"><option value="">選擇輪值人員…</option>${dutyPersonOpts}</select>
+        <button class="btn btn-secondary btn-sm" onclick="_adminWhAddDuty()">加入輪值</button>
+      </div>
+      <div id="wh-duty-chips">${dutyChips(cfg.dutyRoster)}</div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;padding-top:12px;border-top:1px solid #e2e8f0;">
       <button class="btn btn-primary" onclick="_adminSaveWorkHours()">儲存上班時間設定</button>
@@ -36480,6 +36526,30 @@ async function _adminWhRemoveDate(field, val) {
   const arr = (cur[field] || []).filter(d => d !== val);
   const next = { ...cur, [field]: arr };
   configData.workHoursConfig = next;
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminWorkHours(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+// #4：輪值上班——新增/移除某日的輪值人員（dutyRoster: [{date,email}]）
+async function _adminWhAddDuty() {
+  const date  = (document.getElementById('wh-duty-date')?.value || '').trim();
+  const email = (document.getElementById('wh-duty-person')?.value || '').trim();
+  if (!date || !email) { alert('請選擇日期與輪值人員。'); return; }
+  const cur = _getWorkHoursConfig();
+  const arr = [...(cur.dutyRoster || [])];
+  if (arr.some(r => r.date === date && r.email === email)) { alert('此輪值已存在。'); return; }
+  arr.push({ date, email });
+  configData.workHoursConfig = { ...cur, dutyRoster: arr };
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('新增輪值上班', null, null, `${date}　${configData?.users?.[email]?.name || email}`, { major: true });
+    renderAdminWorkHours();
+  } catch (e) { alert('儲存失敗：' + e.message); }
+}
+async function _adminWhRemoveDuty(date, email) {
+  if (!confirm(`確認移除輪值「${date} · ${configData?.users?.[email]?.name || email}」？`)) return;
+  const cur = _getWorkHoursConfig();
+  const arr = (cur.dutyRoster || []).filter(r => !(r.date === date && r.email === email));
+  configData.workHoursConfig = { ...cur, dutyRoster: arr };
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminWorkHours(); }
   catch (e) { alert('儲存失敗：' + e.message); }
 }
