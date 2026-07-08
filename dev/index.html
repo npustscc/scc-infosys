@@ -18810,8 +18810,7 @@ function checkCaseIdDuplicate() {
     html = `<div style="margin-top:6px;padding:10px 14px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;font-size:.875rem;">
       ℹ️ 此學生已有案號 <strong>${escHtml(dup.id)}</strong>，儲存時將自動採用該案號新增本學期開案。
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
-        <button class="btn btn-secondary btn-sm" onclick="_useExistingCaseId('${escHtml(dup.id)}')">帶入既有案號</button>
-        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();_detailReturnToNewCase=true;showCaseDetail('${escHtml(dup.id)}')">查看現有案號</button>
+        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();_ncViewExistingCase('${escHtml(dup.id)}')" data-tip="若此個案非你主責/個管，點選後你在該個案詳細頁的所有操作都會被記錄並通知全體專任，主責與個管會被加強通知。">察看個案資料與過去紀錄</button>
       </div>
     </div>`;
   } else {
@@ -18833,6 +18832,129 @@ function _useExistingCaseId(dupId) {
   el.classList.remove('_nc-id-flash'); void el.offsetWidth; el.classList.add('_nc-id-flash');
   document.getElementById('nc-id-message').style.display = 'none';
   renderCaseIdSuggestions(); checkCaseIdDuplicate(); checkCurrentSemesterDuplicate();
+}
+
+// ── #9：察看個案資料與過去紀錄（自新增個案頁的既有案號提示進入）──
+// 主責/個管/初談/未派案，或今日已授權 → 直接檢視；否則走警語流程（是=危機閱讀／否=填理由）。
+function _ncViewExistingCase(caseId) {
+  const c = (casesData || []).find(x => x.id === caseId) || _casesIndexCache?.cases?.find(x => x.id === caseId);
+  if (!c) { alert('找不到個案'); return; }
+  const allowedSet = new Set(configData?.users?.[currentUser?.email]?.allowedCases || []);
+  const isOwner = _caseVisibleToUser(c, currentUser?.email, allowedSet); // 主責/同學期主責/個管/初談/未派案/督導窗口
+  if (isOwner || _hasCrisisGrant(caseId)) {
+    _crisisEnsureCaseStub(caseId);
+    _detailReturnToNewCase = true;
+    showCaseDetail(caseId);
+    return;
+  }
+  _showViewCaseWarnModal(c);
+}
+
+// 步驟 b：警語 window——提醒「全體專任＋主責/個管會知悉」，詢問是否以危機個案閱讀進行（是/否/取消）
+function _showViewCaseWarnModal(c) {
+  document.getElementById('view-case-warn-modal')?.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'view-case-warn-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:500px;">
+      <div class="modal-header"><h3>⚠ 查閱他人個案</h3></div>
+      <div class="modal-body" style="padding:12px 2px 8px;font-size:.9rem;color:#4a5568;line-height:1.75;">
+        <p>你即將查閱<strong>非你主責／個管</strong>的個案　<strong>${escHtml(c.name || '')}</strong>（${escHtml(c.id)}）的完整資料與過去紀錄。</p>
+        <p style="color:#c53030;">⚠ 進入後，你在此個案詳細頁的<strong>所有操作都會被記錄</strong>，並通知<strong>全體專任</strong>；<strong>主責與個管會被加強通知</strong>。</p>
+        <p>是否以「<strong>危機個案閱讀</strong>」進行？（危機閱讀會取得該案當日唯讀權限並留下正式紀錄）</p>
+      </div>
+      <div class="modal-footer" style="gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-secondary" onclick="document.getElementById('view-case-warn-modal').remove()">取消</button>
+        <button class="btn btn-secondary" onclick="_viewCaseWarnChoose('${escHtml(c.id)}', false)">否，填理由後閱讀</button>
+        <button class="btn btn-danger" onclick="_viewCaseWarnChoose('${escHtml(c.id)}', true)">是，危機個案閱讀</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function _viewCaseWarnChoose(caseId, isCrisis) {
+  document.getElementById('view-case-warn-modal')?.remove();
+  if (isCrisis) _grantViewCaseAccess(caseId, '危機個案閱讀', true);
+  else _showViewCaseReasonModal(caseId); // 步驟 c
+}
+
+// 步驟 c：填寫閱讀理由（必填）→ 送出後授權閱讀
+function _showViewCaseReasonModal(caseId) {
+  document.getElementById('view-case-reason-modal')?.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'view-case-reason-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:480px;">
+      <div class="modal-header"><h3>填寫閱讀理由</h3></div>
+      <div class="modal-body" style="padding:12px 2px 8px;">
+        <label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">閱讀個案資料的理由（必填，將公開於全體監督區並通知主責／個管）</label>
+        <textarea id="view-case-reason" class="field-input" rows="3" style="width:100%;" placeholder="例：協助處理該生之危機事件，需了解近期晤談與精神科評估"></textarea>
+      </div>
+      <div class="modal-footer" style="gap:8px;">
+        <button class="btn btn-secondary" onclick="document.getElementById('view-case-reason-modal').remove()">取消</button>
+        <button class="btn btn-primary" onclick="_viewCaseReasonSubmit('${escHtml(caseId)}')">送出並閱讀</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  setTimeout(() => document.getElementById('view-case-reason')?.focus(), 50);
+}
+function _viewCaseReasonSubmit(caseId) {
+  const reason = (document.getElementById('view-case-reason')?.value || '').trim();
+  if (!reason) { alert('請填寫閱讀理由'); return; }
+  document.getElementById('view-case-reason-modal')?.remove();
+  _grantViewCaseAccess(caseId, reason, false);
+}
+
+// 授權閱讀 + 記錄 + 加強通知主責/個管 + 開啟詳細頁（返回動線回新增個案頁）
+async function _grantViewCaseAccess(caseId, reason, isCrisis) {
+  const c = (casesData || []).find(x => x.id === caseId) || _casesIndexCache?.cases?.find(x => x.id === caseId);
+  if (!c) { alert('找不到個案'); return; }
+  const entry = {
+    id: 'acg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), type: 'grant',
+    email: currentUser.email, name: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
+    caseId, caseName: c.name || '', caseStudentId: c.studentId || '', reason,
+    viaViewButton: true, isCrisis: !!isCrisis, t: new Date().toISOString(),
+  };
+  try {
+    await _appendAccessLog(entry);
+    auditLog(isCrisis ? '危機案件閱讀申請' : '查閱他人個案資料', caseId, null, reason, { major: true });
+    _notifyCaseOwnersOfView(c, reason, isCrisis);
+    _crisisEnsureCaseStub(caseId);
+    renderCases();
+    _detailReturnToNewCase = true;
+    showToast('✅ 已記錄並取得當日閱讀權限，開啟中…', 'success');
+    showCaseDetail(caseId);
+  } catch (e) {
+    alert('記錄失敗：' + e.message);
+  }
+}
+
+// 加強通知：主責 + 個管 + 初談者（排除本人）鈴鐺通知
+function _notifyCaseOwnersOfView(c, reason, isCrisis) {
+  const owners = new Set();
+  const lat = _getLatestCounselorEmail(c); if (lat) owners.add(lat);
+  _getManagersForCase(c.id).forEach(e => owners.add(e));
+  _getInitialInterviewersForCase(c).forEach(e => owners.add(e));
+  owners.delete(currentUser?.email);
+  if (!owners.size) return;
+  const actorName = configData?.users?.[currentUser.email]?.name || currentUser.name || currentUser.email;
+  const msg = `⚠ ${actorName} 查閱了個案「${c.name || c.id}」（${isCrisis ? '危機個案閱讀' : '一般閱讀'}）的完整資料。理由：${reason}`;
+  const nowIso = new Date().toISOString();
+  let changed = false;
+  owners.forEach(email => {
+    const u = configData?.users?.[email]; if (!u) return;
+    if (!Array.isArray(u.notifications)) u.notifications = [];
+    u.notifications.unshift({
+      id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      type: 'case_viewed_by_other', message: msg, caseId: c.id,
+      actorEmail: currentUser.email, createdAt: nowIso, read: false,
+    });
+    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
+    changed = true;
+  });
+  if (changed) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
 }
 
 function _showEmgRelChips() { _filterEmgRelChips(document.getElementById('nc-emg-relation')?.value || ''); }
