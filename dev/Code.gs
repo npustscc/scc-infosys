@@ -1482,17 +1482,22 @@ function casesUpsert_({ path, upserts, removes }, ctx) {
   try {
     let fileId = null;
     let data = { updatedAt: '', cases: [] };
-    try {
-      fileId = resolvePathToId_(path, ctx);
+    // 🔴 2026-07-08 事故防護（fail-closed）：檔案存在但「讀取失敗／內容非預期」時一律中止，
+    // 絕不可退回空殼再重寫——那會把整份 index/hot 清成只剩本次 upserts 的幾筆。
+    try { fileId = resolvePathToId_(path, ctx); } catch (_) { fileId = null; /* 檔不存在，稍後建立 */ }
+    if (fileId) {
       const res = UrlFetchApp.fetch(
         'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
         { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
       );
-      if (res.getResponseCode() < 400) {
-        try { data = JSON.parse(res.getContentText()); } catch (_) { data = { updatedAt: '', cases: [] }; }
-        if (!data || !Array.isArray(data.cases)) data = { updatedAt: '', cases: [] };
+      if (res.getResponseCode() >= 400) {
+        throw new Error('casesUpsert: 讀取 ' + path + ' 失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
       }
-    } catch (_) { /* 檔不存在，稍後建立 */ }
+      data = JSON.parse(res.getContentText()); // 內容損毀 → 直接拋出，不可以空殼為基底重寫
+      if (!data || !Array.isArray(data.cases)) {
+        throw new Error('casesUpsert: ' + path + ' 內容異常（cases 非陣列），已中止寫入以保護資料');
+      }
+    }
 
     const pos = {};
     data.cases.forEach(function (c, i) { if (c && c.id) pos[c.id] = i; });
@@ -1570,21 +1575,26 @@ function _bkFindConflictGs_(existing, candidate, opts) {
 }
 
 // 讀 bookings.json（檔不存在則回傳空殼）；回傳 { fileId, data }
+// 🔴 2026-07-08 事故防護（fail-closed）：檔案存在但讀取失敗／內容異常時一律拋出中止，
+// 不可退回空殼——後續整檔重寫會把所有預約清空。
 function _bkReadFile_(ctx) {
   var path = 'bookings.json';
   var fileId = null;
   var data = { bookings: [] };
-  try {
-    fileId = resolvePathToId_(path, ctx);
+  try { fileId = resolvePathToId_(path, ctx); } catch (_) { fileId = null; /* 檔不存在，稍後建立 */ }
+  if (fileId) {
     var res = UrlFetchApp.fetch(
       'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
       { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
     );
-    if (res.getResponseCode() < 400) {
-      try { data = JSON.parse(res.getContentText()); } catch (_) { data = { bookings: [] }; }
-      if (!data || !Array.isArray(data.bookings)) data = { bookings: [] };
+    if (res.getResponseCode() >= 400) {
+      throw new Error('bookings.json 讀取失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
     }
-  } catch (_) { /* 檔不存在，稍後建立 */ }
+    data = JSON.parse(res.getContentText());
+    if (!data || !Array.isArray(data.bookings)) {
+      throw new Error('bookings.json 內容異常（bookings 非陣列），已中止寫入以保護資料');
+    }
+  }
   return { fileId: fileId, data: data };
 }
 

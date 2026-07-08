@@ -6013,14 +6013,14 @@ async function _clbReloadChunk(chunk) {
     const modTime = ft.get(fullFile) || ft.get(`${yearPfx}/${fullFile}`) || ft.get(leaf) || '';
     const data = await (fid ? driveReadJsonById(fid) : driveReadJson(`cases/${fullFile}`));
     if (modTime) await _ckSave(chunk, data, modTime);
-    // 從 casesData 移除舊 chunk 個案並加入新資料（依 semStart 比對）
-    const chunkSem = chunk.split('/').pop().slice(0, 4);
+    // 從 casesData 移除舊 chunk 個案並加入新資料
+    // 🔴 2026-07-08 修正：改依 getCaseChunkName 精準比對本 chunk。舊版依「學期」比對會把
+    // 同學期其他 chunk 的個案一併從記憶體移除，只補回本 chunk 的 20 筆。
     const newCases = (data.cases || []).filter(c => c?.id);
     const newIds = new Set(newCases.map(c => c.id));
-    const sameChunkIds = new Set((window.casesData || []).filter(c => {
-      const cs = typeof openDateToSemPrefix === 'function' ? openDateToSemPrefix(c.openDate) : '';
-      return cs === chunkSem;
-    }).map(c => c.id));
+    const sameChunkIds = new Set((window.casesData || [])
+      .filter(c => c?.id && getCaseChunkName(c.id) === chunk)
+      .map(c => c.id));
     window.casesData = (window.casesData || []).filter(c => !sameChunkIds.has(c.id) || newIds.has(c.id));
     newCases.forEach(nc => { if (!window.casesData.find(c => c.id === nc.id)) window.casesData.push(nc); });
     casesData = window.casesData;
@@ -6077,6 +6077,12 @@ async function loadCases() {
     const hasManifest = manifest && Array.isArray(manifest.chunks) && manifest.chunks.length > 0;
     const hasIndex    = indexData && Array.isArray(indexData.cases) && indexData.cases.length > 0;
     const hasHot      = hotData   && Array.isArray(hotData.cases);
+    // 🔴 2026-07-08 事故防護：cases-index.json 明明存在卻讀不到（GAS 瞬時異常）時，
+    // 絕不可誤判「無 index」落入全載入重建分支——該分支會整檔覆寫 index/hot，
+    // 一旦重建來源有任何 chunk 載入異常，該 chunk 的個案就會從索引整批消失。
+    if (fileMap?.get(CASES_INDEX_FILE) && !hasIndex) {
+      throw new Error('個案索引檔存在但暫時無法讀取（伺服器忙碌），已中止載入以保護索引。請稍候重新整理再試。');
+    }
     // 特權身份（主任/管理者）載入全部；其餘走 scoped，只載自己有權檢視的個案（資料最小化）
     const isPriv = currentRole === '主任' || extraRole === '管理者';
 
@@ -6245,6 +6251,8 @@ async function loadCases() {
     }
     _syslog('success', `個案載入完成：${casesData.length} 筆`);
     renderCases();
+    // 索引自我修復（背景執行；只有持有全體資料的 session 會動作）
+    _selfHealMissingChunks().catch(e => _syslog('error', `索引自我修復失敗：${e.message}`));
   } catch (err) {
     _syslog('error', `個案載入失敗：${err.message}`);
     casesData = [];
@@ -21185,6 +21193,15 @@ async function _saveCasesIndex() {
   const cases = casesData
     .filter(c => c?.id && !delSet.has(c.id))
     .map(_caseToIndexEntry);
+  // 🔴 2026-07-08 事故防護（覆蓋率驗證）：manifest 列出的每個 chunk 都必須至少貢獻 1 筆，
+  // 否則代表重建來源載入異常（chunk 檔非空卻 0 筆），寧可放棄本次重建（index 為衍生快取，
+  // 舊版仍可用），也不可寫出缺整塊 chunk 的索引讓該批個案從系統消失。
+  const _coveredChunks = new Set(cases.map(c => getCaseChunkName(c.id)));
+  const _emptyChunks = (casesManifest?.chunks || []).filter(n => !_coveredChunks.has(n));
+  if (_emptyChunks.length) {
+    _syslog('error', `cases-index 重建中止：${_emptyChunks.length} 個 chunk 重建後 0 筆（${_emptyChunks.join('、')}），疑似來源載入異常，已放棄覆寫`);
+    return;
+  }
   _casesIndexCache = { updatedAt: new Date().toISOString(), cases };
   await driveSaveJsonInCases(CASES_INDEX_FILE, _casesIndexCache);
   _syslog('info', `cases-index 已建立：${cases.length} 筆`);
@@ -21214,7 +21231,9 @@ async function _updateCasesIndexEntries(ids) {
   idSet.forEach(id => {
     if (delSet.has(id)) { removes.push(id); return; }
     const c = casesData.find(x => x.id === id);
-    if (!c) { removes.push(id); return; }
+    // 🔴 2026-07-08 事故防護：記憶體找不到 ≠ 個案已刪除（可能只是本 session 資料不全），
+    // 只有墓碑（deletedIds）才可從索引移除；找不到一律跳過。
+    if (!c) { _syslog('warn', `cases-index patch：${id} 不在記憶體，跳過（不移除索引）`); return; }
     upserts.push(_caseToIndexEntry(c));
   });
   try {
@@ -21235,18 +21254,54 @@ async function _updateCasesHotEntries(ids) {
   idSet.forEach(id => {
     if (delSet.has(id)) { removes.push(id); return; }
     const c = casesData.find(x => x.id === id);
-    if (!c || c._indexOnly) { removes.push(id); return; } // 沒完整資料就不能 upsert
+    // 🔴 2026-07-08 事故防護：本機沒有完整資料（找不到或僅 index stub）時「跳過」而非「移除」——
+    // 誤移除會讓該案下次啟動失去 hot 快路徑、且曾直接造成個案自 hot 消失（見事故紀錄）。
+    if (!c) { _syslog('warn', `cases-hot patch：${id} 不在記憶體，跳過（不移除）`); return; }
+    if (c._indexOnly) { _syslog('warn', `cases-hot patch：${id} 僅索引資料，跳過（不上傳、不移除）`); return; }
     if (_isHotCase(c)) {
       const { _indexOnly, _fullLoaded, ...rest } = c;
       upserts.push(rest);
     } else {
-      removes.push(id);
+      removes.push(id); // 有完整資料且判定非 hot（結案/封存/非本學期）→ 移除合理
     }
   });
   try {
     await proxyCall('casesUpsert', { path: `cases/${CASES_HOT_FILE}`, upserts, removes });
   } catch (e) {
     _syslog('warn', `更新 cases-hot 失敗：${e.message}`);
+  }
+}
+
+// 索引自我修復：manifest 列出的 chunk 在索引中一筆都沒有 → 從 chunk 檔把個案補回索引（與 hot）。
+// 對應 2026-07-08 事故：index 全量重建時單一 chunk 載入異常，該 chunk 20 筆個案自索引整批消失
+// （chunk 原始資料完好）。僅在持有全體資料的 session（主任/管理者）執行，patch 走 casesUpsert（有鎖）。
+async function _selfHealMissingChunks() {
+  if (!_loadedFullDataset) return;
+  const chunks = casesManifest?.chunks || [];
+  if (!chunks.length) return;
+  const delSet = new Set(casesManifest?.deletedIds || []);
+  const covered = new Set(casesData.filter(c => c?.id).map(c => getCaseChunkName(c.id)));
+  const missing = chunks.filter(n => !covered.has(n));
+  if (!missing.length) return;
+  _syslog('warn', `索引自我修復：${missing.length} 個 chunk 在索引中 0 筆，嘗試從 chunk 檔補回（${missing.join('、')}）`);
+  let healedTotal = 0;
+  for (const name of missing) {
+    let data = null;
+    try { data = await driveReadJson(`cases/${name}.json`); }
+    catch (e) { _syslog('error', `自我修復讀取 ${name} 失敗：${e.message}`); continue; }
+    const restore = (data?.cases || []).filter(c => c?.id && !delSet.has(c.id) && !casesData.some(x => x.id === c.id));
+    if (!restore.length) { _syslog('info', `自我修復：${name} 無可補回個案（chunk 為空或全數為墓碑）`); continue; }
+    restore.forEach(c => casesData.push({ ...c, _fullLoaded: !c._indexOnly, _indexOnly: !!c._indexOnly }));
+    const ids = restore.map(c => c.id);
+    await _updateCasesIndexEntries(ids);
+    await _updateCasesHotEntries(ids);
+    healedTotal += ids.length;
+    auditLog('系統自動修復個案索引', null, null, `${name}：補回 ${ids.length} 筆索引`, { major: true });
+    _syslog('info', `自我修復完成：${name} 補回 ${ids.length} 筆`);
+  }
+  if (healedTotal) {
+    renderCases();
+    showToast(`已自動修復個案索引：補回 ${healedTotal} 筆個案`, 'success', 8000);
   }
 }
 
@@ -21306,9 +21361,10 @@ async function _ensureFullCases(caseIds) {
         data = await driveReadJson(`cases/${chunkName}.json`);
         if (data) _ckSave(chunkName, data, '');
       } catch (e) {
-        _syslog('warn', `_ensureFullCases 讀取 ${chunkName} 失敗：${e.message}`);
-        cases.forEach(c => { c._fullLoaded = true; }); // 防死循環
-        return;
+        // 🔴 2026-07-08 事故防護：讀取失敗絕不可標記 _fullLoaded（假完整），否則後續儲存會用
+        // index 摘要 stub 覆寫 Drive 上的完整個案（晤談紀錄等全數消失）。改為 fail-closed 中止操作。
+        _syslog('error', `_ensureFullCases 讀取 ${chunkName} 失敗：${e.message}`);
+        throw new Error(`個案完整資料暫時無法載入（${chunkName}），已中止本次儲存以避免資料被覆寫，請稍候重試`);
       }
     }
     const byId = new Map((data?.cases || []).map(x => [x.id, x]));
@@ -21493,8 +21549,17 @@ async function saveCasesChunks(...args) {
         (fresh?.cases || []).forEach(c => { if (c.id) driveMap.set(c.id, c); });
       } catch (_) { /* 新 chunk，Drive 尚無此檔 */ }
       // 覆蓋：本次被修改的個案 + Drive 沒有的新個案，用記憶體版本
+      // 🔴 2026-07-08 事故防護：index 摘要 stub（_indexOnly）絕不可寫入 chunk——
+      // 修改中的個案若仍是 stub 代表完整資料未載入，直接中止；未修改的 stub 一律略過（Drive 版本為準）。
       casesData.filter(c => c.id && getCaseChunkName(c.id) === name).forEach(c => {
-        if (modifiedIds.has(c.id) || !driveMap.has(c.id)) driveMap.set(c.id, c);
+        if (c._indexOnly) {
+          if (modifiedIds.has(c.id)) throw new Error(`個案 ${c.id} 完整資料未載入，已中止儲存以避免覆寫 Drive 上的完整資料`);
+          return;
+        }
+        if (modifiedIds.has(c.id) || !driveMap.has(c.id)) {
+          const { _indexOnly, _fullLoaded, ...clean } = c;
+          driveMap.set(c.id, clean);
+        }
       });
       // 移除已永久刪除的個案（manifest.deletedIds）
       (casesManifest.deletedIds || []).forEach(id => driveMap.delete(id));
@@ -24258,6 +24323,14 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-08', v: 143, title: '重大修復：個案索引整批消失事故（緊急修補）', isProd: true, items: [
+      item('修復', '修復索引重建防護漏洞：伺服器瞬時異常時，索引檔明明存在卻讀取失敗，系統誤判「無索引」而進行全量重建，重建中單一資料區塊載入異常即導致該區塊全部個案（20 筆）自列表消失（原始資料完好，僅索引遺失）。現已加入「索引檔存在但讀不到即中止載入」與「重建結果須涵蓋所有資料區塊才可寫入」雙重防護'),
+      item('修復', '修復個案完整資料載入失敗時的錯誤標記：先前失敗仍標記為已載入，後續儲存會以摘要資料覆寫雲端完整個案（晤談紀錄消失）。現改為載入失敗即中止儲存並提示重試，摘要資料一律禁止寫入個案資料檔'),
+      item('修復', '索引／本學期快取的單筆更新，在本機找不到該案時不再誤判為「已刪除」而從索引移除，僅墓碑（永久刪除）名單可觸發移除'),
+      item('新功能', '新增索引自我修復：管理者登入時自動偵測「資料區塊存在但索引中零筆」的異常，直接從原始資料補回索引並記錄稽核（本次事故的 20 筆個案將由此自動復原）'),
+      item('修復', '修復 chunk 重新載入工具誤刪同學期其他區塊個案的記憶體資料問題'),
+      item('修復', '後端 casesUpsert 讀取現有索引失敗時改為中止寫入（先前會以空索引為基底重寫，可能清空整份索引）'),
+    ]},
     { date: '2026-07-07', v: 101, title: '系列預約儲存前確認預覽', isProd: true, items: [
       item('新功能', '新增預約勾選「重複預約」時，按儲存會先跳出預覽視窗，逐筆列出即將建立的每一筆（日期含週幾、時間、空間，主責列於頂部），確認後才實際建立'),
       item('新功能', '編輯系列預約且會影響多筆時（套用範圍為「此筆及之後」／「全部系列」，或調整了頻率／次數觸發系列重排），儲存前先顯示「修正前 → 修正後」對照表：每筆標示不變／修改／新增／刪除，有變動的日期時間空間以粗體強調、未變的以灰色呈現，人員／備註等內容變更加註「內容更新」；純單筆修改（僅此筆且未動頻率次數）不跳預覽'),

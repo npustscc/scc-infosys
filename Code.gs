@@ -1388,17 +1388,22 @@ function casesUpsert_({ path, upserts, removes }, ctx) {
   try {
     let fileId = null;
     let data = { updatedAt: '', cases: [] };
-    try {
-      fileId = resolvePathToId_(path, ctx);
+    // 🔴 2026-07-08 事故防護（fail-closed）：檔案存在但「讀取失敗／內容非預期」時一律中止，
+    // 絕不可退回空殼再重寫——那會把整份 index/hot 清成只剩本次 upserts 的幾筆。
+    try { fileId = resolvePathToId_(path, ctx); } catch (_) { fileId = null; /* 檔不存在，稍後建立 */ }
+    if (fileId) {
       const res = UrlFetchApp.fetch(
         'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
         { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
       );
-      if (res.getResponseCode() < 400) {
-        try { data = JSON.parse(res.getContentText()); } catch (_) { data = { updatedAt: '', cases: [] }; }
-        if (!data || !Array.isArray(data.cases)) data = { updatedAt: '', cases: [] };
+      if (res.getResponseCode() >= 400) {
+        throw new Error('casesUpsert: 讀取 ' + path + ' 失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
       }
-    } catch (_) { /* 檔不存在，稍後建立 */ }
+      data = JSON.parse(res.getContentText()); // 內容損毀 → 直接拋出，不可以空殼為基底重寫
+      if (!data || !Array.isArray(data.cases)) {
+        throw new Error('casesUpsert: ' + path + ' 內容異常（cases 非陣列），已中止寫入以保護資料');
+      }
+    }
 
     const pos = {};
     data.cases.forEach(function (c, i) { if (c && c.id) pos[c.id] = i; });
@@ -1476,21 +1481,26 @@ function _bkFindConflictGs_(existing, candidate, opts) {
 }
 
 // 讀 bookings.json（檔不存在則回傳空殼）；回傳 { fileId, data }
+// 🔴 2026-07-08 事故防護（fail-closed）：檔案存在但讀取失敗／內容異常時一律拋出中止，
+// 不可退回空殼——後續整檔重寫會把所有預約清空。
 function _bkReadFile_(ctx) {
   var path = 'bookings.json';
   var fileId = null;
   var data = { bookings: [] };
-  try {
-    fileId = resolvePathToId_(path, ctx);
+  try { fileId = resolvePathToId_(path, ctx); } catch (_) { fileId = null; /* 檔不存在，稍後建立 */ }
+  if (fileId) {
     var res = UrlFetchApp.fetch(
       'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
       { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
     );
-    if (res.getResponseCode() < 400) {
-      try { data = JSON.parse(res.getContentText()); } catch (_) { data = { bookings: [] }; }
-      if (!data || !Array.isArray(data.bookings)) data = { bookings: [] };
+    if (res.getResponseCode() >= 400) {
+      throw new Error('bookings.json 讀取失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
     }
-  } catch (_) { /* 檔不存在，稍後建立 */ }
+    data = JSON.parse(res.getContentText());
+    if (!data || !Array.isArray(data.bookings)) {
+      throw new Error('bookings.json 內容異常（bookings 非陣列），已中止寫入以保護資料');
+    }
+  }
   return { fileId: fileId, data: data };
 }
 
@@ -1615,4 +1625,63 @@ function bookingsCommit_({ ops, checkConflicts, skipPersonConflict }, ctx) {
   const finalBookings = data.bookings.filter(function (b) { return b && affectedIds[b.id]; });
 
   return { ok: true, bookings: finalBookings, gcErrors: gcErrors };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  2026-07-08 事故一次性修復（於 GAS 編輯器手動執行 repairIncident20260708 一次，成功後此區塊可刪除）
+//  背景：個案 1142017 的完整資料（晤談紀錄等）於 06:13Z 被 index 摘要 stub 覆寫；
+//  本函式從該 chunk 檔的 Drive 版本歷史取回覆寫前最後一版，以舊版完整資料為底、
+//  保留當日新填的初次晤談表，合併寫回 chunk。
+//  索引缺的 20 筆（1142001–1142020）由前端「索引自我修復」於管理者下次登入時自動補回，毋須在此處理。
+// ══════════════════════════════════════════════════════════════════════════
+function repairIncident20260708() {
+  var ctx = { root: ROOT_FOLDER_ID, configOverride: CONFIG_FILE_ID_OVERRIDE, calendarName: CALENDAR_NAME };
+  var chunkPath = 'cases/114/1142001-1142020.json';
+  var caseId = '1142017';
+  var cutoff = '2026-07-08T06:13:00.000Z'; // stub 覆寫發生於 06:13:54Z，取此前最後一版
+
+  var fileId = resolvePathToId_(chunkPath, ctx);
+  var revRes = UrlFetchApp.fetch(
+    'https://www.googleapis.com/drive/v3/files/' + fileId + '/revisions?fields=revisions(id,modifiedTime)&pageSize=1000',
+    { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+  );
+  if (revRes.getResponseCode() >= 400) throw new Error('讀取版本清單失敗：' + revRes.getContentText());
+  var revs = (JSON.parse(revRes.getContentText()).revisions) || [];
+  var target = null;
+  revs.forEach(function (r) {
+    if (r.modifiedTime < cutoff && (!target || r.modifiedTime > target.modifiedTime)) target = r;
+  });
+  if (!target) throw new Error('找不到 ' + cutoff + ' 之前的版本（版本共 ' + revs.length + ' 個）');
+
+  var oldRes = UrlFetchApp.fetch(
+    'https://www.googleapis.com/drive/v3/files/' + fileId + '/revisions/' + target.id + '?alt=media',
+    { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+  );
+  if (oldRes.getResponseCode() >= 400) throw new Error('讀取舊版內容失敗：' + oldRes.getContentText());
+  var oldContent = JSON.parse(oldRes.getContentText());
+  var oldCase = (oldContent.cases || []).filter(function (c) { return c && c.id === caseId; })[0];
+  if (!oldCase) throw new Error('舊版本（' + target.modifiedTime + '）中找不到 ' + caseId);
+  if (!Array.isArray(oldCase.records) || !oldCase.records.length) {
+    Logger.log('警告：舊版 ' + caseId + ' 的 records 為空（' + target.modifiedTime + '），仍繼續合併其餘欄位。');
+  }
+
+  var cur = readJson_({ path: chunkPath }, ctx);
+  var merged = false;
+  cur.cases = (cur.cases || []).map(function (c) {
+    if (!c || c.id !== caseId) return c;
+    var m = {};
+    Object.keys(oldCase).forEach(function (k) { m[k] = oldCase[k]; }); // 舊版完整資料為底
+    if (c.initialInterview)  m.initialInterview  = c.initialInterview;   // 保留當日新填初談表
+    if (c.initialInterviews) m.initialInterviews = c.initialInterviews;
+    if (c.updatedAt && (!m.updatedAt || c.updatedAt > m.updatedAt)) m.updatedAt = c.updatedAt;
+    delete m._indexOnly; delete m._fullLoaded;
+    merged = true;
+    return m;
+  });
+  if (!merged) throw new Error('現行 chunk 中找不到 ' + caseId);
+
+  updateJson_({ path: chunkPath, content: cur }, ctx);
+  Logger.log('✅ 已還原 ' + caseId + '：採用版本 ' + target.modifiedTime +
+    '，records ' + ((oldCase.records || []).length) + ' 筆，並保留當日初次晤談表。' +
+    '請通知管理者重新登入系統，索引自我修復會自動補回 1142001–1142020 共 20 筆索引。');
 }
