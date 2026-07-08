@@ -26160,6 +26160,9 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-08', v: 144, title: '空間預約視窗開啟延遲修正', isProd: false, items: [
+      item('修復', '新增預約、雙擊空白時段、雙擊預約卡片、按「編輯」開啟預約視窗時，先前都會先向後端重新讀取一次最新預約才顯示視窗，在後端忙碌時造成視窗延遲數秒才出現（誤以為沒反應）。現改為立即開窗，最新預約於背景重讀，回來後再自動重跑撞房／撞人檢查；編輯中的預約若已被他人刪除，背景讀取回來時仍會提示並關窗'),
+    ]},
     { date: '2026-07-08', v: 143, title: '重大修復：個案索引整批消失事故（緊急修補，已同步正式版）', isProd: true, items: [
       item('修復', '修復索引重建防護漏洞：伺服器瞬時異常時，索引檔明明存在卻讀取失敗，系統誤判「無索引」而進行全量重建，重建中單一資料區塊載入異常即導致該區塊全部個案（20 筆）自列表消失（原始資料完好，僅索引遺失）。現已加入「索引檔存在但讀不到即中止載入」與「重建結果須涵蓋所有資料區塊才可寫入」雙重防護'),
       item('修復', '修復個案完整資料載入失敗時的錯誤標記：先前失敗仍標記為已載入，後續儲存會以摘要資料覆寫雲端完整個案（晤談紀錄消失）。現改為載入失敗即中止儲存並提示重試，摘要資料一律禁止寫入個案資料檔'),
@@ -33088,9 +33091,9 @@ function _bkShowSeriesRepeatEditable(b) {
 
 // prefill：由格子雙擊帶入（見 _bkCellDblClick）時提供 { room, date }，指定該空間／日期；
 // 未提供時（如點頁面上方「＋新增預約」按鈕）日期一律預設為今天（本地時區），不沿用目前檢視中瀏覽到的日期。
-async function openBookingModal(prefillCaseId, prefill) {
-  // 開窗前先拉最新資料，避免對著過時畫面新增而撞期；讀取失敗則沿用記憶體既有資料照常開窗。
-  try { await loadBookings(); } catch (_) { /* 沿用記憶體資料 */ }
+function openBookingModal(prefillCaseId, prefill) {
+  // 立即用記憶體資料開窗（不卡畫面）；最新預約改在背景重讀，回來後重跑衝突檢查（見函式結尾）。
+  // 先前在此 await loadBookings() 才顯示視窗，後端讀取慢時會讓視窗遲遲不出現（誤以為沒反應）。
   _editingBookingId = null;
   _bkSkipPersonConflict = false;
   _bkSelectedOpts = [];
@@ -33120,11 +33123,16 @@ async function openBookingModal(prefillCaseId, prefill) {
   document.getElementById('booking-modal').style.display = 'flex';
   _bkModalResizeSetup();
   _bkUpdateScopeInfo();
+  // 背景重讀最新預約，回來後（若仍停在此新增視窗）重跑衝突檢查，兼顧即時性與撞期偵測。
+  loadBookings().then(() => {
+    const modalOpen = document.getElementById('booking-modal')?.style.display === 'flex';
+    if (modalOpen && _editingBookingId === null) _checkBkConflict();
+  }).catch(() => {});
 }
 
-async function editBooking(id) {
-  // 開窗前先拉最新資料：確保看到的是他人最新變更，且能偵測該筆是否已被刪除。
-  try { await loadBookings(); } catch (_) { /* 讀取失敗，沿用記憶體既有資料 */ }
+function editBooking(id) {
+  // 立即用記憶體資料開窗（不卡畫面）；最新資料改在背景重讀，回來後偵測「已被他人刪除」並重跑衝突檢查。
+  // 先前在此 await loadBookings() 才開窗，後端讀取慢時雙擊卡片／按「編輯」都要等數秒視窗才出現。
   const b = bookingsData.find(x => x.id === id);
   if (!b) {
     alert('此預約已被其他使用者刪除，清單已更新。');
@@ -33175,6 +33183,18 @@ async function editBooking(id) {
     _bkUpdateScopeInfo();
     _checkBkConflict();
   }
+  // 背景重讀最新預約：若此筆已被他人刪除則提示並關窗，否則（仍停在此筆編輯）重跑衝突檢查。
+  loadBookings().then(() => {
+    if (_editingBookingId !== id) return; // 使用者已切到別筆或關窗
+    if (!bookingsData.find(x => x.id === id)) {
+      alert('此預約已被其他使用者刪除，清單已更新。');
+      closeBookingModal();
+      document.getElementById('bk-series-scope-modal').style.display = 'none';
+      renderBookingsPage();
+      return;
+    }
+    if (document.getElementById('booking-modal')?.style.display === 'flex') _checkBkConflict();
+  }).catch(() => {});
 }
 
 let _copyingBkId = null;
