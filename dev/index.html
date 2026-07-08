@@ -1069,7 +1069,7 @@
       <div style="font-size:.75rem;opacity:.8;" id="user-role"></div>
       <div style="font-size:.7rem;opacity:.6;" id="user-email"></div>
     </div>
-    <button id="btn-logout" onclick="signOut()">登出</button>
+    <button id="btn-logout" onclick="signOutClicked()">登出</button>
   </div>
   <button id="header-scroll-top" onclick="scrollToTop()" title="回到頂端" style="display:none;">↑ 頂端</button>
   <div id="bg-job-banner"></div>
@@ -1649,6 +1649,18 @@
           <div>
             <button class="btn btn-primary" onclick="savePrefs()">儲存偏好設定</button>
             <button id="pref-immediate-lock-btn" class="btn btn-secondary" style="margin-left:8px;" onclick="lockScreen(true)">立即鎖定</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>登入紀錄</h3></div>
+        <div style="padding:16px 20px;">
+          <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">近期以你的帳號登入本系統的裝置、IP 與大致位置。若發現非本人登入，請按「登出所有裝置」使所有登入憑證即時失效，並儘速更改 Google 密碼、聯繫系統管理者。</p>
+          <div id="pref-login-history-body" style="font-size:.85rem;color:#4a5568;">載入中…</div>
+          <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <button class="btn btn-danger btn-sm" onclick="_logoutAllDevices()">登出所有裝置</button>
+            <button class="btn btn-secondary btn-sm" onclick="_renderMySessions()">重新整理</button>
           </div>
         </div>
       </div>
@@ -4076,6 +4088,29 @@ function _getSession() {
     return { token, exp: Number(p.exp) };
   } catch (_) { return null; }
 }
+// 目前 session 的 jti（登入紀錄頁標記「這台就是目前裝置」用）
+function _getSessionJti() {
+  try {
+    const token = localStorage.getItem(_SESSION_LS_KEY);
+    if (!token) return '';
+    const p = JSON.parse(atob(token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/')));
+    return p.jti || '';
+  } catch (_) { return ''; }
+}
+// 取用戶端 IP 與大致位置（供登入通知信與登入紀錄）。GAS 拿不到來源 IP，改由前端向公開 IP 服務查詢。
+// best-effort：逾 3 秒或失敗一律回空物件，絕不阻斷登入。
+async function _fetchClientIpGeo() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3000);
+    const r = await fetch('https://ipapi.co/json/', { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) return {};
+    const d = await r.json();
+    const geo = [d.city, d.region, d.country_name].filter(Boolean).join(', ');
+    return { ip: d.ip || '', geo: geo };
+  } catch (_) { return {}; }
+}
 let currentUser  = null;   // { email, name, picture }
 let currentRole  = null;   // 從 config.json 讀來
 let extraRole    = null;   // 管理者 / 個案管理員 / null
@@ -5631,7 +5666,8 @@ async function handleCredentialResponse(response) {
   // 未授權帳號（申請帳號流程）拿不到 session（Unauthorized user）→ 不阻斷，靠記憶體 idToken 繼續。
   try { localStorage.removeItem(_SESSION_LS_KEY); } catch (_) {}
   try {
-    const s = await proxyCall('sessionStart', { ua: navigator.userAgent.slice(0, 200) });
+    const _ipgeo = await _fetchClientIpGeo();  // best-effort，失敗回空物件、不阻斷登入
+    const s = await proxyCall('sessionStart', { ua: navigator.userAgent.slice(0, 200), ip: _ipgeo.ip || '', geo: _ipgeo.geo || '' });
     try {
       localStorage.setItem(_SESSION_LS_KEY, s.sessionToken);
       localStorage.setItem(_USER_LS_KEY, JSON.stringify(currentUser));
@@ -19536,6 +19572,64 @@ function signOut() {
   document.getElementById('login-screen').style.display = '';
 }
 
+// 使用者主動按「登出」：先請後端註銷該帳號全部裝置的 session（#12），再登出本機。
+// （內部/強制登出仍用 signOut()，不註銷全裝置。）
+async function signOutClicked() {
+  try { await proxyCall('sessionLogout'); } catch (_) { /* 註銷失敗不阻斷登出 */ }
+  signOut();
+}
+
+// 登入紀錄頁（#6）：載入本帳號近期 session 並渲染。
+async function _renderMySessions() {
+  const body = document.getElementById('pref-login-history-body');
+  if (!body) return;
+  body.textContent = '載入中…';
+  let list = [];
+  try {
+    const r = await proxyCall('listMySessions', { currentJti: _getSessionJti() });
+    list = (r && r.sessions) || [];
+  } catch (e) {
+    body.innerHTML = `<span style="color:#c53030;">登入紀錄載入失敗：${escHtml(e.message)}</span>`;
+    return;
+  }
+  if (!list.length) { body.innerHTML = '<span style="color:#718096;">目前沒有登入紀錄。</span>'; return; }
+  const fmt = iso => { try { return new Date(iso).toLocaleString('zh-TW', { hour12: false }); } catch (_) { return iso || ''; } };
+  const uaShort = ua => {
+    if (!ua) return '（未知裝置）';
+    let os = /Windows/.test(ua) ? 'Windows' : /iPhone|iPad|iOS/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Mac/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : '其他';
+    let br = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : '瀏覽器';
+    return `${os}・${br}`;
+  };
+  body.innerHTML = list.map(s => {
+    const statusBadge = s.current
+      ? '<span style="font-size:.72rem;font-weight:700;color:#276749;background:#f0fff4;border:1px solid #9ae6b4;border-radius:4px;padding:1px 6px;">目前裝置</span>'
+      : s.active
+        ? '<span style="font-size:.72rem;font-weight:700;color:#2b6cb0;background:#ebf8ff;border:1px solid #bee3f8;border-radius:4px;padding:1px 6px;">使用中</span>'
+        : s.revoked
+          ? '<span style="font-size:.72rem;color:#822727;background:#fff5f5;border:1px solid #feb2b2;border-radius:4px;padding:1px 6px;">已登出</span>'
+          : '<span style="font-size:.72rem;color:#718096;background:#f7fafc;border:1px solid #e2e8f0;border-radius:4px;padding:1px 6px;">已過期</span>';
+    return `<div style="padding:8px 0;border-bottom:1px solid #edf2f7;display:flex;flex-direction:column;gap:2px;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <strong>${escHtml(uaShort(s.ua))}</strong>${statusBadge}
+      </div>
+      <div style="color:#718096;font-size:.8rem;">登入時間：${escHtml(fmt(s.issuedAt))}</div>
+      <div style="color:#718096;font-size:.8rem;">IP：${escHtml(s.ip || '（未取得）')}${s.geo ? '　位置：' + escHtml(s.geo) : ''}</div>
+    </div>`;
+  }).join('');
+}
+
+// #12：登出所有裝置——註銷該帳號全部 session token，並登出本機。
+async function _logoutAllDevices() {
+  if (!confirm('確定要登出所有裝置嗎？\n\n所有目前有效的登入憑證（包含本裝置與其他電腦）都會立即失效，下次都需要重新登入。')) return;
+  try {
+    await proxyCall('sessionLogout');
+    showToast('已登出所有裝置，即將回到登入畫面…', 'success', 2500);
+    setTimeout(() => signOut(), 800);
+  } catch (e) {
+    alert('登出所有裝置失敗：' + e.message);
+  }
+}
+
 // ══════════════════════════════════════════════
 //  Google Drive API helpers
 // ══════════════════════════════════════════════
@@ -26166,6 +26260,13 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-08', v: 146, title: '登入與 Session 管理：登入紀錄、IP/位置通知、登出所有裝置', isProd: false, items: [
+      item('新功能', '登入通知信新增「IP 位址」與「大致位置」（由前端向公開 IP 服務查詢後帶入；查不到則略過，不影響登入）'),
+      item('新功能', '偏好設定頁新增「登入紀錄」卡片：列出近期以你的帳號登入的裝置（作業系統／瀏覽器）、IP、大致位置、登入時間與狀態（目前裝置／使用中／已登出／已過期）'),
+      item('新功能', '「登入紀錄」卡片與此頁提供「登出所有裝置」：按下後該帳號目前所有登入憑證（含其他電腦）立即失效，須重新登入——用於發現非本人登入時緊急處置'),
+      item('改善', '每台裝置每日首次登入都會各自寄出一封登入通知信（先前跨裝置可能因沿用當日既有登入而未再通知）；主動按「登出」現在也會註銷該帳號全部裝置的登入憑證'),
+      item('技術', 'session token 加上唯一識別碼（jti）；後端以「該帳號登出時間點」判斷憑證是否已被註銷（登出即全裝置失效）；登入紀錄存於後端 sessions.json（每人最多留 15 筆、逾 45 天自動清除）'),
+    ]},
     { date: '2026-07-08', v: 145, title: '「查看現有案號」返回動線與快速開案提示修正', isProd: true, items: [
       item('修復', '#7：從「新增個案」頁按「查看現有案號」進入個案詳細頁後，上方 banner 的「← 返回」也會正確回到新增個案頁（先前只有頁面內的返回按鈕會，banner 返回一律回個案列表，導致回不去新增個案）'),
       item('修復', '#7：新增預約跳出「本學期尚未開案」提示並點「前往開案」後，若最終放棄開案（例如點「查看現有案號」繞一圈後結束、未實際開案），之後再新增該個案的預約會再次跳出開案提示；先前因同一 session 只詢問一次的機制，導致案未開卻不再提醒。「稍後再說」仍維持不再糾纏'),
@@ -27091,6 +27192,9 @@ function renderPrefsPage() {
       gmailCard.style.display = 'none';
     }
   }
+
+  // 登入紀錄（#6）：背景載入，不阻塞頁面渲染
+  _renderMySessions().catch(() => {});
 
   // 空間預約顯示顏色 grid（INFOSYS 預設色／GC 預設色／其他使用者一覽）
   _renderBkColorGrid();
