@@ -4553,6 +4553,12 @@ function handleFloatingBack() {
     }
     return;
   }
+  // #7：從「新增個案」按「查看現有案號」進入詳細頁時，banner 返回也要走專屬動線回新增個案頁
+  // （與頁內 btn-detail-back 一致，見 _renderDetailBackBtn），先前一律回列表導致回不去新增個案。
+  if (from === 'page-case-detail' && typeof _detailReturnToNewCase !== 'undefined' && _detailReturnToNewCase) {
+    _detailBackToNewCase();
+    return;
+  }
   if (from === 'page-case-detail' || from === 'page-new-case' || from === 'page-pending') {
     showPage('page-cases', document.querySelector('[data-nav-id="page-cases"]'));
     try { renderCases(); } catch(_) {}
@@ -26160,6 +26166,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-08', v: 145, title: '「查看現有案號」返回動線與快速開案提示修正', isProd: false, items: [
+      item('修復', '#7：從「新增個案」頁按「查看現有案號」進入個案詳細頁後，上方 banner 的「← 返回」也會正確回到新增個案頁（先前只有頁面內的返回按鈕會，banner 返回一律回個案列表，導致回不去新增個案）'),
+      item('修復', '#7：新增預約跳出「本學期尚未開案」提示並點「前往開案」後，若最終放棄開案（例如點「查看現有案號」繞一圈後結束、未實際開案），之後再新增該個案的預約會再次跳出開案提示；先前因同一 session 只詢問一次的機制，導致案未開卻不再提醒。「稍後再說」仍維持不再糾纏'),
+    ]},
     { date: '2026-07-08', v: 144, title: '空間預約視窗開啟延遲修正', isProd: false, items: [
       item('修復', '新增預約、雙擊空白時段、雙擊預約卡片、按「編輯」開啟預約視窗時，先前都會先向後端重新讀取一次最新預約才顯示視窗，在後端忙碌時造成視窗延遲數秒才出現（誤以為沒反應）。現改為立即開窗，最新預約於背景重讀，回來後再自動重跑撞房／撞人檢查；編輯中的預約若已被他人刪除，背景讀取回來時仍會提示並關窗'),
     ]},
@@ -36679,6 +36689,10 @@ function _showQuickOpenCasePrompt(c, sem) {
 // 直接以案號精準選中，不需使用者再手動搜尋一次）。個案若只在索引中（cold/封存尚未載入完整資料）
 // 先比照 _evrPick／_crisisEnsureCaseStub 的既有作法補一個 stub 再載入完整資料，帶入才不會缺欄位。
 async function _goQuickOpenCase(caseId) {
+  // #7 修正：點「前往開案」代表有意開案 → 清掉本案所有「已詢問」記錄。
+  // 若使用者最終放棄開案（含經「查看現有案號」繞一圈後放棄），下次新增預約仍會再次提示；
+  // 若確實完成開案，_hasCaseInSem 會為真、本就不再提示。（「稍後再說」不清除，維持 #17 不糾纏）
+  [..._quickOpenCaseAsked].forEach(k => { if (k.startsWith(caseId + '|')) _quickOpenCaseAsked.delete(k); });
   _crisisEnsureCaseStub(caseId);
   const stub = casesData.find(x => x.id === caseId);
   if (stub?._indexOnly && !stub._fullLoaded) {
