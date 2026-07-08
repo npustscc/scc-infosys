@@ -68,7 +68,9 @@ function doPost(e) {
     let result;
     switch (action) {
       case 'ping':               result = { ok: true, email: userEmail }; break;
-      case 'sessionStart':       result = sessionStart_(userEmail, params); break;
+      case 'sessionStart':       result = sessionStart_(userEmail, params, ctx); break;
+      case 'sessionLogout':      result = sessionLogout_(userEmail); break;
+      case 'listMySessions':     result = sessionsListForUser_(userEmail, params, ctx); break;
       case 'getMetadata':        result = getMetadata_(params); break;
       case 'readJson':           result = readJson_(params, ctx); break;
       case 'readJsonById':       result = readJsonById_(params); break;
@@ -182,12 +184,38 @@ function issueSessionToken_(email) {
   var secret = sessionSecret_();
   if (!secret) throw new Error('SESSION_SECRET 未設定，請於 GAS 編輯器執行 setupSessionSecret()');
   var now = Math.floor(Date.now() / 1000);
-  var payload = { e: email, iat: now, exp: nextTaipeiMidnightEpochSec_(Date.now()) };
+  var jti = Utilities.getUuid();  // 每個 token 唯一識別碼（登入紀錄頁用；每台裝置各自一組）
+  var payload = { e: email, jti: jti, iat: now, exp: nextTaipeiMidnightEpochSec_(Date.now()) };
   var payloadB64 = Utilities.base64EncodeWebSafe(JSON.stringify(payload)).replace(/=+$/, '');
-  return { token: payloadB64 + '.' + signSessionPayload_(payloadB64, secret), exp: payload.exp };
+  return { token: payloadB64 + '.' + signSessionPayload_(payloadB64, secret), exp: payload.exp, jti: jti, iat: now };
 }
 
-// 驗證通過回 email，否則 null（fail-closed：密鑰未設定、格式錯、簽章不符、過期都是 null）。
+// ── 登出即註銷（全部裝置）：以「該帳號的 revokedBefore 時間戳」實作 ──
+// 登出時把 revokedBefore[email] 設為當下秒數；驗證時 iat < revokedBefore 一律拒絕，
+// 等於讓該帳號「登出前簽發的所有 token（不分裝置）」全部失效。存 Script Properties 單一 JSON，
+// 以 CacheService 快取 60 秒（登出時主動清快取→實質即時生效），避免每個請求都讀 Property。
+function sessionRevokedBeforeMap_() {
+  var cache = CacheService.getScriptCache();
+  try { var hit = cache.get('sess_rb'); if (hit) return JSON.parse(hit); } catch (_) {}
+  var raw = PropertiesService.getScriptProperties().getProperty('SESSION_REVOKED_BEFORE') || '{}';
+  try { cache.put('sess_rb', raw, 60); } catch (_) {}
+  try { return JSON.parse(raw); } catch (_) { return {}; }
+}
+
+function sessionRevokeAllDevices_(email) {
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(5000); } catch (_) {}
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var map = {};
+    try { map = JSON.parse(props.getProperty('SESSION_REVOKED_BEFORE') || '{}'); } catch (_) { map = {}; }
+    map[email] = Math.floor(Date.now() / 1000);
+    props.setProperty('SESSION_REVOKED_BEFORE', JSON.stringify(map));
+    try { CacheService.getScriptCache().remove('sess_rb'); } catch (_) {}  // 清快取→下次驗證立即讀到新值
+  } finally { try { lock.releaseLock(); } catch (_) {} }
+}
+
+// 驗證通過回 email，否則 null（fail-closed：密鑰未設定、格式錯、簽章不符、過期、已被登出註銷都是 null）。
 function verifySessionToken_(token) {
   try {
     var secret = sessionSecret_();
@@ -199,32 +227,135 @@ function verifySessionToken_(token) {
     var payload = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(padded)).getDataAsString());
     if (!payload || !payload.e) return null;
     if (Number(payload.exp) <= Math.floor(Date.now() / 1000)) return null;
+    var rb = sessionRevokedBeforeMap_()[payload.e];  // 登出註銷檢查（全部裝置）
+    if (rb && Number(payload.iat) < Number(rb)) return null;
     return payload.e;
   } catch (e) { return null; }
 }
 
-// 簽發 session＋寄登入通知信。GAS 拿不到來源 IP、無法做異常偵測，
-// 以每次簽發（每人每日 1~2 封）通知信彌補；寄信失敗不阻斷登入。
-function sessionStart_(userEmail, params) {
+// 簽發 session＋寄登入通知信＋寫入登入紀錄。IP／大致位置由前端取得後傳入（GAS 拿不到來源 IP）。
+// 寄信、記錄失敗都不阻斷登入。
+function sessionStart_(userEmail, params, ctx) {
   var issued = issueSessionToken_(userEmail);
+  var ua  = String((params && params.ua)  || '').slice(0, 200) || '（未提供）';
+  var ip  = String((params && params.ip)  || '').slice(0, 64);
+  var geo = String((params && params.geo) || '').slice(0, 120);
   var mailSent = false;
   try {
-    var ua = String(params.ua || '').slice(0, 200) || '（未提供）';
     var loginTime = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy/MM/dd HH:mm:ss');
-    MailApp.sendEmail(
-      userEmail,
-      '【屏科大學諮資訊系統】登入通知',
-      '有人以此帳號登入屏科大學諮資訊系統。\n\n' +
-      '登入時間：' + loginTime + '（台北時間）\n' +
-      '瀏覽器資訊：' + ua + '\n\n' +
-      '此登入憑證將於今日 24:00（台北時間）自動失效。\n' +
-      '若非本人操作，請立即聯繫系統管理者停用帳號。'
-    );
+    var lines = [
+      '有人以此帳號登入屏科大學諮資訊系統。', '',
+      '登入時間：' + loginTime + '（台北時間）',
+      '瀏覽器資訊：' + ua,
+    ];
+    if (ip)  lines.push('IP 位址：' + ip);
+    if (geo) lines.push('大致位置：' + geo);
+    lines.push('', '此登入憑證將於今日 24:00（台北時間）自動失效。',
+      '若非本人操作，請立即聯繫系統管理者停用帳號，並可於系統「登入紀錄」頁按「登出所有裝置」使所有憑證即時失效。');
+    MailApp.sendEmail(userEmail, '【屏科大學諮資訊系統】登入通知', lines.join('\n'));
     mailSent = true;
   } catch (mailErr) {
     Logger.log('sessionStart 通知信寄送失敗：' + mailErr.message);
   }
+  try {
+    sessionsAppendRecord_({
+      jti: issued.jti, email: userEmail, ua: ua, ip: ip, geo: geo,
+      iat: issued.iat, exp: issued.exp, issuedAtMs: Date.now(), issuedAt: new Date().toISOString(),
+    }, ctx);
+  } catch (recErr) {
+    Logger.log('sessionStart 登入紀錄寫入失敗：' + recErr.message);
+  }
   return { sessionToken: issued.token, exp: issued.exp, email: userEmail, mailSent: mailSent };
+}
+
+// 登出：註銷該帳號全部裝置的 token（見 sessionRevokeAllDevices_）。
+function sessionLogout_(userEmail) {
+  sessionRevokeAllDevices_(userEmail);
+  return { ok: true };
+}
+
+// ── 登入紀錄（sessions.json）：供「登入紀錄」頁顯示（#6）與登入通知（#5/#11）──
+// 每筆 { jti, email, ua, ip, geo, iat, exp, issuedAtMs, issuedAt }；寫入時 prune（>45 天丟棄、每人最多留 15 筆）。
+function sessionsAppendRecord_(rec, ctx) {
+  if (!ctx) return;  // 無 ctx（不知寫哪個資料夾）則略過記錄，不阻斷登入
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(10000); } catch (_) {}
+  try {
+    var fileId = null;
+    var data = { sessions: [] };
+    try {
+      fileId = resolvePathToId_('sessions.json', ctx);
+      var res = UrlFetchApp.fetch(
+        'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+        { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+      );
+      if (res.getResponseCode() < 400) {
+        try { data = JSON.parse(res.getContentText()); } catch (_) { data = { sessions: [] }; }
+        if (!data || !Array.isArray(data.sessions)) data = { sessions: [] };
+      }
+    } catch (_) { /* 檔不存在，稍後建立 */ }
+
+    data.sessions.push(rec);
+    var cutoff = Date.now() - 45 * 24 * 3600 * 1000;
+    data.sessions = data.sessions.filter(function (s) { return s && s.issuedAtMs && s.issuedAtMs >= cutoff; });
+    data.sessions.sort(function (a, b) { return (b.issuedAtMs || 0) - (a.issuedAtMs || 0); });
+    var perUser = {};
+    var kept = [];
+    data.sessions.forEach(function (s) {
+      var e = s.email || '';
+      perUser[e] = (perUser[e] || 0) + 1;
+      if (perUser[e] <= 15) kept.push(s);
+    });
+    data.sessions = kept;
+
+    if (fileId) {
+      driveUpdateContent_(fileId, data);
+    } else {
+      var pn = resolvePathToParentAndName_('sessions.json', ctx);
+      driveUpload_(pn.fileName, data, pn.parentId);
+    }
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// 回傳指定使用者的登入紀錄（新到舊），每筆標記 revoked（已登出註銷或已過期）與是否為本次 session。
+function sessionsListForUser_(userEmail, params, ctx) {
+  var data = { sessions: [] };
+  try {
+    var fileId = resolvePathToId_('sessions.json', ctx);
+    var res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() < 400) {
+      try { data = JSON.parse(res.getContentText()); } catch (_) { data = { sessions: [] }; }
+      if (!data || !Array.isArray(data.sessions)) data = { sessions: [] };
+    }
+  } catch (_) {}
+  var rb = sessionRevokedBeforeMap_()[userEmail];
+  var nowSec = Math.floor(Date.now() / 1000);
+  var curJti = String((params && params.currentJti) || '');
+  var mine = data.sessions.filter(function (s) { return s && s.email === userEmail; });
+  mine.sort(function (a, b) { return (b.issuedAtMs || 0) - (a.issuedAtMs || 0); });
+  mine.forEach(function (s) {
+    s.expired = Number(s.exp) <= nowSec;
+    s.revoked = !!(rb && Number(s.iat) < Number(rb));
+    s.active  = !s.expired && !s.revoked;
+    s.current = curJti && s.jti === curJti;
+  });
+  return { sessions: mine };
+}
+
+// #13 診斷：於 GAS 編輯器手動執行一次，印出 Google 日曆「事件」實際可用的顏色數與色碼。
+// 用來確認事件色究竟是 11 還是 24（進階 Calendar 服務已於 appsscript.json 啟用）。
+function dumpGcEventColors() {
+  var colors = Calendar.Colors.get();
+  var ev = (colors && colors.event) || {};
+  var keys = Object.keys(ev);
+  Logger.log('GC 事件可用色數：' + keys.length);
+  keys.forEach(function (k) { Logger.log('  colorId ' + k + ' → ' + ev[k].background); });
+  return keys.length;
 }
 
 // ── 使用者授權閘 ──────────────────────────────────────────────────────────────
