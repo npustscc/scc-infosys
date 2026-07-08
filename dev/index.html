@@ -4060,7 +4060,22 @@ window._dimExpUpdate = function(prefix, i, v) {
 // ══════════════════════════════════════════════
 //  全域狀態
 // ══════════════════════════════════════════════
-let gIdToken     = null;   // Google ID token（傳給 Apps Script 驗證用）
+let gIdToken     = null;   // Google ID token（只留記憶體，僅供 sessionStart 與申請帳號流程）
+// 自簽 session token（每日首次 Google 登入後由後端簽發，效期至當日 24:00 台北時間）。
+// 鍵名以 DRIVE_FOLDER_ID 命名空間隔離：dev 與 prod 同源（npustscc.github.io）共用 localStorage，
+// 不隔離會把 dev 密鑰簽的 token 帶去打 prod 後端。
+const _SESSION_LS_KEY = 'scc_session_' + DRIVE_FOLDER_ID;
+const _USER_LS_KEY    = 'scc_user_' + DRIVE_FOLDER_ID;
+// 讀 localStorage 中的 session；exp 尚有 30 秒以上緩衝才視為有效，否則回 null。
+function _getSession() {
+  try {
+    const token = localStorage.getItem(_SESSION_LS_KEY);
+    if (!token) return null;
+    const p = JSON.parse(atob(token.split('.')[0].replace(/-/g, '+').replace(/_/g, '/')));
+    if (!p.exp || Number(p.exp) <= Math.floor(Date.now() / 1000) + 30) return null;
+    return { token, exp: Number(p.exp) };
+  } catch (_) { return null; }
+}
 let currentUser  = null;   // { email, name, picture }
 let currentRole  = null;   // 從 config.json 讀來
 let extraRole    = null;   // 管理者 / 個案管理員 / null
@@ -5562,67 +5577,64 @@ window.addEventListener('load', () => {
     }
   }, 1500);
 
-  // 嘗試從 sessionStorage 恢復登入狀態
-  const stored = sessionStorage.getItem('scc_user');
-  if (stored) {
-    try {
-      currentUser = JSON.parse(stored);
-      const storedToken = sessionStorage.getItem('scc_idtoken');
-      // 檢查 ID token 是否還有效（JWT exp claim，過期則清掉強制重新登入）
-      let tokenValid = false;
-      if (storedToken) {
-        try {
-          const p = JSON.parse(atob(storedToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-          tokenValid = p.exp && Number(p.exp) > Math.floor(Date.now() / 1000) + 30;
-        } catch (_) {}
+  // 一次性遷移：清除舊制 sessionStorage 登入狀態（已改用 localStorage 自簽 session）
+  try { sessionStorage.removeItem('scc_user'); sessionStorage.removeItem('scc_idtoken'); } catch (_) {}
+
+  // 嘗試從 localStorage 恢復登入狀態（自簽 session，效期至當日 24:00 台北時間）
+  const sess = _getSession();
+  let storedUser = null;
+  try { storedUser = JSON.parse(localStorage.getItem(_USER_LS_KEY)); } catch (_) {}
+  if (sess && storedUser && storedUser.email) {
+    // session 仍有效：直接進系統，完全不碰 Google（新分頁、重開瀏覽器都無感）
+    currentUser = storedUser;
+    showLoading('自動登入中…');
+    afterLogin();
+  } else if (storedUser && storedUser.email) {
+    // 昨天（或更早）登入過但 session 已過期：透過 GSI 靜默重登換發今日 session
+    // （auto_select 情況下無需使用者動作）
+    try { localStorage.removeItem(_SESSION_LS_KEY); } catch (_) {}
+    showLoading('驗證身分中…');
+    google.accounts.id.prompt(notification => {
+      if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+        // 無法靜默重新登入（如瀏覽器封鎖 One Tap），退回登入畫面
+        hideLoading();
+        try { localStorage.removeItem(_USER_LS_KEY); } catch (_) {}
+        currentUser = null;
+        const blocked = document.getElementById('login-popup-blocked');
+        if (blocked) blocked.style.display = '';
       }
-      if (!tokenValid) {
-        // Token 已過期：清掉舊 token，透過 GSI 靜默取得新 token（auto_select 情況下無需使用者動作）
-        sessionStorage.removeItem('scc_idtoken');
-        gIdToken = null;
-        showLoading('驗證身分中…');
-        google.accounts.id.prompt(notification => {
-          if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-            // 無法靜默重新登入（如瀏覽器封鎖 One Tap），退回登入畫面
-            hideLoading();
-            sessionStorage.removeItem('scc_user');
-            currentUser = null;
-            const blocked = document.getElementById('login-popup-blocked');
-            if (blocked) blocked.style.display = '';
-          }
-          // 若靜默成功，handleCredentialResponse 會自動接手並呼叫 afterLogin()
-        });
-      } else {
-        gIdToken = storedToken;
-        try { _gTokenExp = Number(JSON.parse(atob(storedToken.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).exp) || 0; } catch (_) { _gTokenExp = 0; }
-        showLoading('自動登入中…');
-        afterLogin();
-      } // end else (token valid)
-    } catch (e) {
-      sessionStorage.removeItem('scc_user');
-      sessionStorage.removeItem('scc_idtoken');
-    }
+      // 若靜默成功，handleCredentialResponse 會自動接手並呼叫 afterLogin()
+    });
   }
 });
 
 // ══════════════════════════════════════════════
 //  登入 callback
 // ══════════════════════════════════════════════
-function handleCredentialResponse(response) {
+async function handleCredentialResponse(response) {
   // 解碼 JWT payload（Base64url → Base64 → JSON）
   const b64 = response.credential.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
   const payload = JSON.parse(decodeURIComponent(
     atob(b64).split('').map(c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0')).join('')
   ));
-  // 刷新模式：App 已啟動（configData 已載入）且同一使用者 → 只更新權杖，不重跑 afterLogin
+  // 刷新模式：App 已啟動（configData 已載入）且同一使用者 → 只換發 session，不重跑 afterLogin
   const _isRefresh = !!(configData && configData.users) && currentUser?.email === payload.email;
   currentUser = { email: payload.email, name: payload.name, picture: payload.picture };
-  sessionStorage.setItem('scc_user', JSON.stringify(currentUser));
-  gIdToken = response.credential;
-  sessionStorage.setItem('scc_idtoken', response.credential);
-  _gTokenExp = Number(payload.exp) || 0;
+  gIdToken = response.credential;  // 只留記憶體（sessionStart 與申請帳號流程用），不再持久化
+  // 用 idToken 向後端換發自簽 session（效期至當日 24:00 台北時間），成功後當天不再依賴 Google 權杖。
+  // 未授權帳號（申請帳號流程）拿不到 session（Unauthorized user）→ 不阻斷，靠記憶體 idToken 繼續。
+  try { localStorage.removeItem(_SESSION_LS_KEY); } catch (_) {}
+  try {
+    const s = await proxyCall('sessionStart', { ua: navigator.userAgent.slice(0, 200) });
+    try {
+      localStorage.setItem(_SESSION_LS_KEY, s.sessionToken);
+      localStorage.setItem(_USER_LS_KEY, JSON.stringify(currentUser));
+    } catch (_) { /* localStorage 已滿等寫入失敗僅略過（session 只活在本次頁面），不影響登入 */ }
+  } catch (e) {
+    _syslog?.('warn', '換發登入憑證失敗（' + e.message + '），以 Google 權杖繼續');
+  }
   if (_isRefresh) {
-    _syslog?.('success', '登入權杖已於背景更新（畫面資料保留，不需重新整理）');
+    _syslog?.('success', '今日登入憑證已換發（畫面資料保留，不需重新整理）');
     _hideReloginModal();
     _resolveTokenRefresh(true);
     return;
@@ -5632,22 +5644,22 @@ function handleCredentialResponse(response) {
   afterLogin();
 }
 
-// ── AFK 過久 token 過期處理：背景靜默刷新 + 重新登入 modal ──
-let _gTokenExp = 0;               // 目前 gIdToken 的 exp（Unix 秒）
-let _tokenRefreshPromise = null;  // in-flight 刷新去重（多個 proxyCall 共用同一次刷新）
+// ── session 過期處理（每日 00:00 台北時間重置）：One Tap 靜默重登換發 + 重新登入 modal ──
+let _tokenRefreshPromise = null;  // in-flight 重登去重（多個 proxyCall 共用同一次重登）
 let _tokenRefreshResolve = null;
 function _resolveTokenRefresh(ok) {
   const r = _tokenRefreshResolve;
   _tokenRefreshPromise = null; _tokenRefreshResolve = null;
   if (r) r(ok);
 }
+// 重新走「Google 登入 → sessionStart 換發今日 session」：只在 session 過期時被呼叫。
+// One Tap auto_select 多半可靜默完成；8 秒未完成或被封鎖 → 顯示重新登入 modal。
 function _refreshIdToken() {
   if (_tokenRefreshPromise) return _tokenRefreshPromise;
   _tokenRefreshPromise = new Promise(resolve => { _tokenRefreshResolve = resolve; });
   const p = _tokenRefreshPromise;
-  // 8 秒內靜默刷新未完成 → 顯示重新登入 modal（promise 續等使用者完成登入）
   const fallbackTimer = setTimeout(() => { if (_tokenRefreshResolve) _showReloginModal(); }, 8000);
-  _syslog?.('warn', '登入權杖已過期，嘗試背景更新…');
+  _syslog?.('warn', '今日登入憑證已到期，嘗試背景重新登入…');
   try {
     google.accounts.id.prompt(n => {
       try {
@@ -5669,7 +5681,7 @@ function _showReloginModal() {
     el.innerHTML = `<div style="background:#fff;border-radius:12px;padding:28px 32px;max-width:400px;width:90%;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.25);">
       <div style="font-size:2rem;margin-bottom:10px;">🔐</div>
       <div style="font-weight:700;font-size:1.05rem;color:#2d3748;margin-bottom:8px;">登入已逾時</div>
-      <div style="font-size:.9rem;color:#4a5568;margin-bottom:18px;">閒置過久，Google 登入憑證已過期。<br>請重新登入以繼續，畫面上的資料不會遺失。</div>
+      <div style="font-size:.9rem;color:#4a5568;margin-bottom:18px;">今日登入憑證已到期（每日 00:00 重置）。<br>請重新登入以繼續，畫面上的資料不會遺失。</div>
       <div id="relogin-btn-slot" style="display:flex;justify-content:center;"></div>
     </div>`;
     document.body.appendChild(el);
@@ -5683,14 +5695,6 @@ function _hideReloginModal() {
   const el = document.getElementById('relogin-modal');
   if (el) el.style.display = 'none';
 }
-
-// 背景主動刷新：分頁開著時定期檢查權杖是否快過期，提早靜默更新（不等使用者下次操作才檢查），
-// 降低「回來操作時剛好撞上過期+靜默失敗」而跳出重新登入按鈕的機率；分頁不可見時跳過，避免無謂嘗試。
-setInterval(() => {
-  if (!gIdToken || !_gTokenExp) return;
-  if (document.visibilityState !== 'visible') return;
-  if ((Date.now() / 1000) > (_gTokenExp - 300)) _refreshIdToken();
-}, 3 * 60 * 1000);
 
 function _showDisabledScreen() {
   let el = document.getElementById('disabled-overlay');
@@ -19503,8 +19507,7 @@ async function runInitialization() {
 // ══════════════════════════════════════════════
 function signOut() {
   google.accounts.id.disableAutoSelect();
-  sessionStorage.removeItem('scc_user');
-  sessionStorage.removeItem('scc_idtoken');
+  try { localStorage.removeItem(_SESSION_LS_KEY); localStorage.removeItem(_USER_LS_KEY); } catch (_) {}
   gIdToken = null;
   currentUser = currentRole = extraRole = configData = null;
   casesData = [];
@@ -23194,9 +23197,14 @@ async function driveUpdateJsonFile(path, content) {
 //  Apps Script Proxy（所有 Drive 操作將透過此函式）
 // ══════════════════════════════════════════════
 async function proxyCall(action, params = {}, _silent = false, _retry = 0, _authRetried = false) {
-  if (!gIdToken) throw new Error('尚未取得 ID token，請重新登入');
-  // token 即將過期（60 秒緩衝）→ 先刷新再送出，避免 AFK 過久後操作出現 Unauthorized
-  if (_gTokenExp && (Date.now() / 1000) > (_gTokenExp - 60)) await _refreshIdToken();
+  // sessionStart 一律帶 idToken（後端不允許以舊 session 換新 session）；其餘請求優先帶自簽 session
+  let sess = (action === 'sessionStart') ? null : _getSession();
+  if (action !== 'sessionStart' && !sess && localStorage.getItem(_SESSION_LS_KEY)) {
+    // localStorage 有 session 但已過期（每日 00:00 台北時間重置）→ 先重登換發再送出本次請求
+    await _refreshIdToken();
+    sess = _getSession();
+  }
+  if (!sess && !gIdToken) throw new Error('尚未取得登入憑證，請重新登入');
   const _isRead = _SYSLOG_READ_ACTIONS.has(action);
   const _logDetail = Object.entries(params)
     .filter(([k]) => k !== 'content')
@@ -23204,7 +23212,7 @@ async function proxyCall(action, params = {}, _silent = false, _retry = 0, _auth
     .join(', ');
   const _t0 = Date.now();
   if (!_silent && _retry === 0) _syslog(_isRead ? 'debug' : 'info', `→ ${action}`, _logDetail || undefined);
-  const payload = JSON.stringify({ idToken: gIdToken, action, rootFolderId: DRIVE_FOLDER_ID, ...params });
+  const payload = JSON.stringify({ ...(sess ? { sessionToken: sess.token } : { idToken: gIdToken }), action, rootFolderId: DRIVE_FOLDER_ID, ...params });
   const form = new URLSearchParams();
   form.append('payload', payload);
   try {
@@ -23228,13 +23236,22 @@ async function proxyCall(action, params = {}, _silent = false, _retry = 0, _auth
     if (data.status === 401 || data.error === '身份驗證失敗') {
       if (!_authRetried) {
         if (!_silent) _syslog('warn', `→ ${action} 身份驗證失敗，更新登入權杖後自動重試`);
-        _gTokenExp = 0;
         await _refreshIdToken();
         return proxyCall(action, params, _silent, 0, true);
       }
       throw new Error('身份驗證失敗，請重新登入');
     }
     if (!data.success && data.pong === undefined) throw new Error(data.error || 'Apps Script 回應錯誤');
+    // 後端判定憑證失效（GAS 錯誤都包在 data.data.error）→ 重登換發後重試一次：
+    // 'Session expired' ＝ session 過午夜/密鑰輪替；'Unauthorized' ＝ idToken 路徑（申請帳號流程）權杖過期。
+    // （'Unauthorized user'/'Unauthorized rootFolderId' 為授權閘拒絕，非憑證問題，不在此重試。）
+    if (action !== 'sessionStart' && !_authRetried && data.data && typeof data.data === 'object'
+        && (data.data.error === 'Session expired' || data.data.error === 'Unauthorized')) {
+      if (!_silent) _syslog('warn', `→ ${action} 登入憑證已到期，重新換發後自動重試`);
+      if (data.data.error === 'Session expired') { try { localStorage.removeItem(_SESSION_LS_KEY); } catch (_) {} }
+      await _refreshIdToken();
+      return proxyCall(action, params, _silent, 0, true);
+    }
     // bookingsCommit 的 { error:'conflict', conflictType, with } 是正常業務結果（非後端故障），
     // 由 bkCommit() 自行判讀，不可在此攔截丟棄成一般 Error（會遺失 conflictType/with 細節）。
     if (action !== 'bookingsCommit' && data.data && typeof data.data === 'object' && data.data.error && !data.data.ok) throw new Error(data.data.error);
@@ -26078,6 +26095,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-08', v: 142, title: '每天只需登入一次＋新增登入通知信', isProd: false, items: [
+      item('改善', '登入狀態大幅改善：每天第一次使用登入一次後，當天之內不再跳出任何重新登入提示（原本每小時就可能跳一次），開新分頁、關閉瀏覽器重開也不用重新登入；登入憑證於每日 00:00 自動重置，隔天首次使用時多半可由 Google 一鍵（或無感）完成'),
+      item('新功能', '登入通知信：每天首次登入系統時，會寄一封通知信到你的 Gmail（含登入時間與瀏覽器資訊）；若收到非本人操作的通知，請立即聯繫系統管理者停用帳號'),
+    ]},
     { date: '2026-07-08', v: 141, title: '空間預約即時性改善＋Google 日曆同步改由後端定時執行', isProd: false, items: [
       item('改善', '空間預約即時性：他人新增或修改的預約最慢 5 分鐘內自動出現（進頁自動更新＋頁面開啟時定期更新）'),
       item('改善', '建立與編輯預約前自動拉取最新資料，畫面直接顯示最新占用避免撞期'),

@@ -21,15 +21,25 @@ const BOOTSTRAP_ADMINS = ['npust.scc@heartnpust.tw', 'linkinlol528101@gmail.com'
 function doPost(e) {
   try {
     const payload = JSON.parse(e.parameter.payload);
-    const { idToken, action, rootFolderId, ...params } = payload;
+    const { idToken, sessionToken, action, rootFolderId, ...params } = payload;
 
     // OAuth2 code exchange 不需要 idToken（code 本身即為授權證明）
     if (action === 'exchangeNpust5OAuthCode') {
       return jsonResp_(exchangeNpust5OAuthCode_(params));
     }
 
-    const userEmail = verifyIdToken_(idToken);
-    if (!userEmail) return jsonResp_({ error: 'Unauthorized' });
+    // 身分解析：優先走自簽 session token（純 HMAC 運算、無外部 HTTP），
+    // 無 session 才走 Google ID token（sessionStart、申請帳號流程、舊前端相容）。
+    let userEmail;
+    if (sessionToken) {
+      userEmail = verifySessionToken_(sessionToken);
+      if (!userEmail) return jsonResp_({ error: 'Session expired' });
+      // sessionStart 只收 idToken：不允許拿舊 session 換新 session（每日重登為設計目標）
+      if (action === 'sessionStart') return jsonResp_({ error: 'Session expired' });
+    } else {
+      userEmail = verifyIdToken_(idToken);
+      if (!userEmail) return jsonResp_({ error: 'Unauthorized' });
+    }
 
     // 根據前端傳入的 rootFolderId 決定此次請求的資料根目錄與日曆名稱
     let ctx = { root: ROOT_FOLDER_ID, configOverride: CONFIG_FILE_ID_OVERRIDE, calendarName: CALENDAR_NAME };
@@ -58,6 +68,7 @@ function doPost(e) {
     let result;
     switch (action) {
       case 'ping':               result = { ok: true, email: userEmail }; break;
+      case 'sessionStart':       result = sessionStart_(userEmail, params); break;
       case 'getMetadata':        result = getMetadata_(params); break;
       case 'readJson':           result = readJson_(params, ctx); break;
       case 'readJsonById':       result = readJsonById_(params); break;
@@ -131,6 +142,89 @@ function verifyIdToken_(idToken) {
     try { cache.put(cacheKey, d.email, 300); } catch (_) {}
     return d.email;
   } catch (e) { return null; }
+}
+
+// ── 自簽 Session Token ────────────────────────────────────────────────────────
+// 取代「拿 Google ID token（1 小時過期）當 session」：登入後由後端簽發 HMAC token，
+// 效期固定至當日 24:00（台北時間），當天所有請求不再依賴 One Tap 靜默刷新。
+// 密鑰只存 Script Properties（repo 為 public，絕不進版控）；驗證為純運算、無外部 HTTP。
+
+// 一次性設定：於 GAS 編輯器手動執行，產生並保存 SESSION_SECRET（已存在則不覆寫）。
+function setupSessionSecret() {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('SESSION_SECRET')) {
+    Logger.log('SESSION_SECRET 已存在，未覆寫。若需輪替請先手動刪除該 property 再執行。');
+    return;
+  }
+  var secret = Utilities.getUuid() + Utilities.getUuid();
+  props.setProperty('SESSION_SECRET', secret);
+  Logger.log('SESSION_SECRET 已產生並保存（64+ 字元）。');
+}
+
+// 下一個台北午夜的 Unix 秒。台北固定 UTC+8、無日光節約，可用純算術（不依賴 script timezone），
+// 也因此可被 test/session-exp.test.js 就地抽出做單元測試。
+function nextTaipeiMidnightEpochSec_(nowMs) {
+  var OFF = 8 * 3600;
+  var tpeSec = Math.floor(nowMs / 1000) + OFF;
+  return (Math.floor(tpeSec / 86400) + 1) * 86400 - OFF;
+}
+
+function sessionSecret_() {
+  return PropertiesService.getScriptProperties().getProperty('SESSION_SECRET') || '';
+}
+
+function signSessionPayload_(payloadB64, secret) {
+  var sig = Utilities.computeHmacSha256Signature(payloadB64, secret);
+  return Utilities.base64EncodeWebSafe(sig).replace(/=+$/, '');
+}
+
+function issueSessionToken_(email) {
+  var secret = sessionSecret_();
+  if (!secret) throw new Error('SESSION_SECRET 未設定，請於 GAS 編輯器執行 setupSessionSecret()');
+  var now = Math.floor(Date.now() / 1000);
+  var payload = { e: email, iat: now, exp: nextTaipeiMidnightEpochSec_(Date.now()) };
+  var payloadB64 = Utilities.base64EncodeWebSafe(JSON.stringify(payload)).replace(/=+$/, '');
+  return { token: payloadB64 + '.' + signSessionPayload_(payloadB64, secret), exp: payload.exp };
+}
+
+// 驗證通過回 email，否則 null（fail-closed：密鑰未設定、格式錯、簽章不符、過期都是 null）。
+function verifySessionToken_(token) {
+  try {
+    var secret = sessionSecret_();
+    if (!secret || !token || typeof token !== 'string') return null;
+    var parts = token.split('.');
+    if (parts.length !== 2) return null;
+    if (signSessionPayload_(parts[0], secret) !== parts[1]) return null;
+    var padded = parts[0] + '='.repeat((4 - parts[0].length % 4) % 4);  // 簽發時去掉的 padding 補回再 decode
+    var payload = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(padded)).getDataAsString());
+    if (!payload || !payload.e) return null;
+    if (Number(payload.exp) <= Math.floor(Date.now() / 1000)) return null;
+    return payload.e;
+  } catch (e) { return null; }
+}
+
+// 簽發 session＋寄登入通知信。GAS 拿不到來源 IP、無法做異常偵測，
+// 以每次簽發（每人每日 1~2 封）通知信彌補；寄信失敗不阻斷登入。
+function sessionStart_(userEmail, params) {
+  var issued = issueSessionToken_(userEmail);
+  var mailSent = false;
+  try {
+    var ua = String(params.ua || '').slice(0, 200) || '（未提供）';
+    var loginTime = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy/MM/dd HH:mm:ss');
+    MailApp.sendEmail(
+      userEmail,
+      '【屏科大學諮資訊系統】登入通知（測試版）',
+      '有人以此帳號登入屏科大學諮資訊系統（測試版）。\n\n' +
+      '登入時間：' + loginTime + '（台北時間）\n' +
+      '瀏覽器資訊：' + ua + '\n\n' +
+      '此登入憑證將於今日 24:00（台北時間）自動失效。\n' +
+      '若非本人操作，請立即聯繫系統管理者停用帳號。'
+    );
+    mailSent = true;
+  } catch (mailErr) {
+    Logger.log('sessionStart 通知信寄送失敗：' + mailErr.message);
+  }
+  return { sessionToken: issued.token, exp: issued.exp, email: userEmail, mailSent: mailSent };
 }
 
 // ── 使用者授權閘 ──────────────────────────────────────────────────────────────
