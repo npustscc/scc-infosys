@@ -2196,7 +2196,7 @@
     <!-- 個案詳細資料 -->
     <div id="page-case-detail" class="page">
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px;flex-wrap:wrap;">
-        <button class="btn btn-secondary" onclick="backToCaseList()">← 返回列表</button>
+        <button class="btn btn-secondary" id="btn-detail-back" onclick="backToCaseList()">← 返回列表</button>
         <div class="page-title" style="margin:0;border:none;padding:0;">個案詳細資料</div>
       </div>
 
@@ -4094,10 +4094,10 @@ function openDateToSemPrefix(dateStr) {
 }
 function semesterLabel(prefix) {
   if (!prefix) return '—';
-  // 同學期重複開案的 sem key 帶 '#N' 後綴（如 '1142#2'）；base 轉一般標籤，附加 '_N' 後綴（'114-2_2'）
+  // 同學期重複開案的 sem key 帶 '#N' 後綴（如 '1142#2'）；base 轉一般標籤，附加 '#N' 後綴（'114-2#2'）
   const hashIdx = prefix.indexOf('#');
   const base   = hashIdx === -1 ? prefix : prefix.slice(0, hashIdx);
-  const suffix = hashIdx === -1 ? '' : '_' + prefix.slice(hashIdx + 1);
+  const suffix = hashIdx === -1 ? '' : '#' + prefix.slice(hashIdx + 1);
   if (base.length < 4) return prefix;
   return `${base.slice(0, -1)}-${base.slice(-1)}${suffix}`;
 }
@@ -4271,6 +4271,11 @@ function showPage(pageId, navEl) {
     let changed = false;
     todosData.forEach(t => { if (t.type === 'case_assignment' && !t.done && !t.notifRead) { t.notifRead = true; changed = true; } });
     if (changed) saveUserTodos().catch(() => {});
+  }
+  // #7：離開個案詳細頁時，若目的地不是「新增個案」頁（自己專屬的返回動線），清掉「查看現有案號」旗標，
+  // 避免之後從一般列表進入詳細頁也被誤套用改過的返回動線
+  if (prevPage === 'page-case-detail' && pageId !== 'page-case-detail' && pageId !== 'page-new-case') {
+    _detailReturnToNewCase = false;
   }
   const alreadyActive = document.getElementById(pageId)?.classList.contains('active');
   if (prevPage && prevPage !== pageId) { _prevNavState = _buildNavState(prevPage); }
@@ -6391,6 +6396,12 @@ async function loadCases() {
 // ══════════════════════════════════════════════
 //  渲染個案表格
 // ══════════════════════════════════════════════
+// 個案「最新學期快照」的 abType，缺快照/未填時 fallback 頂層 c.abType
+function _caseLatestAbType(c) {
+  const sems = (Array.isArray(c.semesters) && c.semesters.length ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean)).sort().reverse();
+  for (const s of sems) { const snap = c.basicInfoSnapshots?.[s]; if (snap?.abType) return snap.abType; }
+  return c.abType || '';
+}
 function _getLatestCounselorEmail(c) {
   const sems = (Array.isArray(c.semesters) && c.semesters.length
     ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean)).sort();
@@ -6498,11 +6509,24 @@ function _getAutoManagersForCase(caseId) {
 
 // 個案（可為 index-only entry）對某使用者是否「屬於我／我可見的自有案」——非管理者可見性單一真相
 // 供 renderCases 過濾與 scoped 載入 chunk 計算共用，確保兩處判定一致
+// #35-6：個案「最新 base 學期」若有 2 筆以上開案（#N），回傳這些快照中所有不重複的 counselorEmail
+// （供可見性判斷用；只看最新 base 這群，不下探更舊的學期）
+function _getLatestSemCounselorEmails(c) {
+  const sems = (Array.isArray(c.semesters) && c.semesters.length
+    ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean)).sort();
+  if (!sems.length) return [];
+  const latestBase = _semKeyBase(sems[sems.length - 1]);
+  const emails = sems.filter(s => _semKeyBase(s) === latestBase)
+    .map(s => c.basicInfoSnapshots?.[s]?.counselorEmail)
+    .filter(Boolean);
+  return [...new Set(emails)];
+}
 function _caseVisibleToUser(c, email, allowedSet) {
   if (!email) return false;
   const lat = _getLatestCounselorEmail(c); // index-only 時 fallback 到 index.counselorEmail
   if (!lat) return true;                    // 未派案：全員可見
   if (lat === email) return true;           // 主責
+  if (_getLatestSemCounselorEmails(c).includes(email)) return true; // #35-6：同 base 學期多筆開案，各主責互相可見
   if (allowedSet && allowedSet.has(c.id)) return true; // 個管（手動）
   if (_isInitialInterviewerOfCase(c, email)) return true; // 初次晤談者（index 相容）
   // 當然個管（派生：督導/窗口）——直接查 supervisee 名單，避免依賴 casesData（chunk 載入期 casesData 尚未 populate）
@@ -6697,9 +6721,10 @@ function renderCrisisAccessPage() {
   const body = document.getElementById('crisis-access-body');
   if (!body) return;
   if (!_canApplyCrisisAccess()) { body.innerHTML = '<div class="alert alert-info">此頁供專任／實習人員於危機案件時申請閱讀他人個案。</div>'; return; }
-  // #13：主任/管理者本就可檢視全部個案，此頁對他們只是留下正式閱讀申請紀錄（供監督區留痕），並非授權管道
+  // #13-4：主任/管理者由此頁開啟個案同樣需留下閱讀申請紀錄（全體監督區可見），不再提供不留紀錄的直接開啟捷徑；
+  // 他們原本就能從一般個案列表開啟全部個案，此頁只管「留紀錄」這件事，不影響列表那邊的檢視權限
   const _privNotice = _crisisIsPriv()
-    ? `<div class="alert alert-info" style="margin-bottom:16px;background:#ebf8ff;border:1px solid #90cdf4;color:#2c5282;border-radius:8px;padding:10px 16px;font-size:.86rem;">ℹ️ 您已可檢視全部個案，此頁僅供留下正式閱讀申請紀錄，不影響您原有的檢視權限。</div>`
+    ? `<div class="alert alert-info" style="margin-bottom:16px;background:#ebf8ff;border:1px solid #90cdf4;color:#2c5282;border-radius:8px;padding:10px 16px;font-size:.86rem;">ℹ️ 主任／管理者由此頁開啟個案，同樣需送出閱讀申請並留下紀錄（全體監督區可見）；不影響您在一般個案列表原有的檢視權限。</div>`
     : '';
   body.innerHTML = `
     <div class="alert alert-warn" style="margin-bottom:16px;background:#fffbeb;border:1px solid #f6ad55;color:#744210;border-radius:8px;padding:12px 16px;">
@@ -6731,6 +6756,33 @@ function _crisisEnsureCaseStub(caseId) {
   if (idxEntry) casesData.push({ ...idxEntry, _indexOnly: true });
 }
 
+// #13-2：個案狀態徽章（已封存／已結案／進行中）；資料來源為 cases-index 條目（缺欄位時優雅降級不顯示）
+function _crisisStatusBadge(c) {
+  if (c.archived) return '<span style="display:inline-block;background:#e2e8f0;color:#4a5568;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;white-space:nowrap;">已封存</span>';
+  if (c.status === 'closed') return '<span style="display:inline-block;background:#e0e7ef;color:#3f4f66;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;white-space:nowrap;">已結案</span>';
+  if (c.status === 'active') return '<span style="display:inline-block;background:#d5f5e3;color:#1d6a3a;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;white-space:nowrap;">進行中</span>';
+  return ''; // status 欄位缺失（舊 index 尚未重建）：不顯示，避免誤導
+}
+// #13-3：服務學期 chips 展開/收合狀態（純檢視用；預設收合，只有點「+N ▾」才展開，chips 本身不可點擊）
+let _crisisSemExpanded = new Set();
+function _crisisToggleSemExpand(caseId) {
+  if (_crisisSemExpanded.has(caseId)) _crisisSemExpanded.delete(caseId); else _crisisSemExpanded.add(caseId);
+  _crisisRenderResults();
+}
+function _crisisSemChipsHtml(c) {
+  const sems = Array.isArray(c.semesters) ? [...c.semesters].sort() : [];
+  if (!sems.length) return '';
+  const chip = s => `<span style="display:inline-block;background:#f0f4f8;border:1px solid #cbd5e0;color:#4a5568;border-radius:10px;padding:0 6px;font-size:.72rem;margin:1px 2px;">${escHtml(semesterLabel(s))}</span>`;
+  const expanded = _crisisSemExpanded.has(c.id);
+  const visible = expanded ? sems : sems.slice(0, 3);
+  const extra = expanded ? [] : sems.slice(3);
+  const moreBtn = extra.length
+    ? `<span onclick="event.stopPropagation();_crisisToggleSemExpand('${escHtml(c.id)}')" style="display:inline-block;font-size:.72rem;color:#3182ce;cursor:pointer;padding:0 6px;border-radius:10px;background:#ebf8ff;border:1px solid #bee3f8;margin:1px 2px;">+${extra.length} ▾</span>`
+    : (expanded && sems.length > 3
+        ? `<span onclick="event.stopPropagation();_crisisToggleSemExpand('${escHtml(c.id)}')" style="display:inline-block;font-size:.72rem;color:#3182ce;cursor:pointer;padding:0 6px;border-radius:10px;background:#ebf8ff;border:1px solid #bee3f8;margin:1px 2px;">收合 ▴</span>`
+        : '');
+  return `<div style="max-width:220px;">${visible.map(chip).join('')}${moreBtn}</div>`;
+}
 function _crisisRenderResults() {
   const el = document.getElementById('crisis-results');
   if (!el) return;
@@ -6755,17 +6807,20 @@ function _crisisRenderResults() {
     el.innerHTML = `<div style="color:#a0aec0;font-size:.88rem;">${_priv ? '無符合的個案。' : '無符合的個案（或都已可檢視）。'}</div>`;
     return;
   }
-  el.innerHTML = `<div style="overflow-x:auto;"><table class="data-table" style="min-width:520px;">
-    <thead><tr><th>姓名</th><th>學號</th><th>案號</th><th>主責</th><th></th></tr></thead>
+  el.innerHTML = `<div style="overflow-x:auto;"><table class="data-table" style="min-width:640px;">
+    <thead><tr><th>姓名</th><th>學號</th><th>案號</th><th>狀態</th><th>服務學期</th><th>主責</th><th></th></tr></thead>
     <tbody>${rows.map(c => {
       const cid = escHtml(c.id);
-      const btn = _priv
-        ? `<button class="btn btn-secondary btn-sm" style="font-size:.76rem;" onclick="_crisisEnsureCaseStub('${cid}');showCaseDetail('${cid}')">開啟</button>
-           <button class="btn btn-danger btn-sm" style="font-size:.76rem;margin-left:4px;" onclick="_crisisPickTarget('${cid}')">申請閱讀（留紀錄）</button>`
-        : (_hasCrisisGrant(c.id)
-            ? `<button class="btn btn-secondary btn-sm" style="font-size:.76rem;" onclick="_crisisEnsureCaseStub('${cid}');showCaseDetail('${cid}')">開啟（今日已授權）</button>`
-            : `<button class="btn btn-danger btn-sm" style="font-size:.76rem;" onclick="_crisisPickTarget('${cid}')">申請閱讀</button>`);
-      return `<tr><td>${escHtml(c.name || '—')}</td><td>${escHtml(c.studentId || '—')}</td><td style="font-family:monospace;">${cid}</td><td>${escHtml(c.counselorName || configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '—')}${_counselorStatusBadge(c.counselorEmail)}</td><td style="text-align:right;">${btn}</td></tr>`;
+      // #13-4：主任/管理者一律與其他人一樣走「申請閱讀」流程，不再提供不留紀錄的直接開啟按鈕
+      const btn = _hasCrisisGrant(c.id)
+        ? `<button class="btn btn-secondary btn-sm" style="font-size:.76rem;" onclick="_crisisEnsureCaseStub('${cid}');showCaseDetail('${cid}')">開啟（今日已授權）</button>`
+        : `<button class="btn btn-danger btn-sm" style="font-size:.76rem;" onclick="_crisisPickTarget('${cid}')">申請閱讀${_priv ? '（留紀錄）' : ''}</button>`;
+      // #13-6：A案/B案徽章（最新學期快照優先，fallback 頂層 abType；index 缺欄位時不顯示）
+      const _abType = _caseLatestAbType(c);
+      const abBadge = _abType === 'A案' ? '<span style="display:inline-block;background:#dbeafe;color:#1e40af;border-radius:4px;padding:0 5px;font-size:.7rem;font-weight:600;margin-left:4px;">A案</span>'
+                    : _abType === 'B案' ? '<span style="display:inline-block;background:#fef3c7;color:#92400e;border-radius:4px;padding:0 5px;font-size:.7rem;font-weight:600;margin-left:4px;">B案</span>'
+                    : '';
+      return `<tr><td>${escHtml(c.name || '—')}</td><td>${escHtml(c.studentId || '—')}</td><td style="font-family:monospace;">${cid}${abBadge}</td><td>${_crisisStatusBadge(c)}</td><td>${_crisisSemChipsHtml(c)}</td><td>${escHtml(c.counselorName || configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '—')}${_counselorStatusBadge(c.counselorEmail)}</td><td style="text-align:right;">${btn}</td></tr>`;
     }).join('')}</tbody></table></div>`;
 }
 
@@ -6893,7 +6948,7 @@ function renderCases() {
   const cfSemester = document.getElementById('cf-semester');
   if (cfSemester) {
     const semesters = [...new Set(
-      visible.flatMap(c => Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)]).filter(Boolean)
+      visible.flatMap(c => Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)]).filter(Boolean).map(_semKeyBase)
     )].sort().reverse();
     const prev = caseFilters.semester;
     cfSemester.innerHTML = '<option value="">全部學期</option>' +
@@ -6922,7 +6977,7 @@ function renderCases() {
     visible = visible.filter(c => !!c.archived);
   }
   if (semester) visible = visible.filter(c => {
-    if (Array.isArray(c.semesters) && c.semesters.length) return c.semesters.includes(semester);
+    if (Array.isArray(c.semesters) && c.semesters.length) return _caseHasSem(c, semester);
     return openDateToSemPrefix(c.openDate) === semester;
   });
   if (q) {
@@ -7060,11 +7115,7 @@ function renderCases() {
       actionBtn = mainBtn + archiveBtn;
     }
     const sessCount = (c.records||[]).filter(r => !r.deleted && r.status !== 'pending' && (!_semMs || _semMs.includes((r.date||'').slice(0,7)))).length;
-    const _latestAbType = (() => {
-      const sems = (Array.isArray(c.semesters) && c.semesters.length ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean)).sort().reverse();
-      for (const s of sems) { const snap = c.basicInfoSnapshots?.[s]; if (snap?.abType) return snap.abType; }
-      return c.abType || '';
-    })();
+    const _latestAbType = _caseLatestAbType(c);
     const abBadge = _latestAbType === 'A案' ? '<span style="display:inline-block;background:#dbeafe;color:#1e40af;border-radius:4px;padding:0 5px;font-size:.7rem;font-weight:600;margin-top:2px;">A案</span>'
                   : _latestAbType === 'B案' ? '<span style="display:inline-block;background:#fef3c7;color:#92400e;border-radius:4px;padding:0 5px;font-size:.7rem;font-weight:600;margin-top:2px;">B案</span>'
                   : '';
@@ -7083,11 +7134,13 @@ function renderCases() {
       ? `<div style="font-size:.72rem;color:#9c4221;background:#feebc8;border-radius:3px;padding:1px 5px;margin-top:3px;display:inline-block;">${pastUnclosedSems.map(s => `<span onclick="event.stopPropagation();showCaseDetailAtSem('${escHtml(cid)}','${escHtml(s)}')" style="cursor:pointer;text-decoration:underline;" data-tip="點選跳至該學期結案評估">${semesterLabel(s)}</span>`).join('、')} 學期未完成結案</div>`
       : '';
     const caseSems = Array.isArray(c.semesters) && c.semesters.length ? c.semesters : [openDateToSemPrefix(c.openDate)].filter(Boolean);
-    const displaySems = caseFilters.semester ? [caseFilters.semester] : caseSems;
+    const displaySems = caseFilters.semester ? caseSems.filter(s => _semKeyBase(s) === caseFilters.semester) : caseSems;
     const semTag = displaySems.length
       ? `<div style="margin-top:3px;">${displaySems.map(s => {
-          const { bg, border, color } = _semLightStyle(c, s);
-          return `<span onclick="event.stopPropagation();showCaseDetailAtSem('${cid}','${s}')" style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:0 6px;font-size:.73rem;margin:1px 2px;cursor:pointer;" data-tip="點選跳至該學期詳細資料">${escHtml(semesterLabel(s))}</span>`;
+          const dupStyle = _semDupStyle(caseSems, s);
+          const { bg, border, color } = dupStyle || _semLightStyle(c, s);
+          const tip = dupStyle ? '此學生本學期有多筆開案' : '點選跳至該學期詳細資料';
+          return `<span onclick="event.stopPropagation();showCaseDetailAtSem('${cid}','${s}')" style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:0 6px;font-size:.73rem;margin:1px 2px;cursor:pointer;" data-tip="${tip}">${escHtml(semesterLabel(s))}</span>`;
         }).join('')}</div>`
       : '';
     const archivedBadge = c.archived ? ' <span style="display:inline-block;background:#e2e8f0;color:#4a5568;border-radius:4px;padding:1px 6px;font-size:.75rem;font-weight:600;">封存</span>' : '';
@@ -8998,6 +9051,21 @@ function _caseSems(c) {
 function _caseHasSem(c, sem) {
   return _caseSems(c).some(k => _semKeyBase(k) === sem);
 }
+// 同一 base 學期若有 2 筆以上開案（#N），依序號給不同醒目底色；單筆開案回傳 null（維持原樣式不受影響）
+function _semDupStyle(caseSems, sem) {
+  const base = _semKeyBase(sem);
+  const siblings = (caseSems || []).filter(k => _semKeyBase(k) === base);
+  if (siblings.length < 2) return null;
+  const hashIdx = sem.indexOf('#');
+  const n = hashIdx === -1 ? 1 : (parseInt(sem.slice(hashIdx + 1), 10) || 1);
+  const palette = [
+    { bg:'#e0f2fe', border:'#38bdf8', color:'#075985' }, // #1
+    { bg:'#fce7f3', border:'#f472b6', color:'#9d174d' }, // #2
+    { bg:'#ecfccb', border:'#a3e635', color:'#3f6212' }, // #3
+    { bg:'#ede9fe', border:'#a78bfa', color:'#5b21b6' }, // #4 以後循環
+  ];
+  return palette[(n - 1) % palette.length];
+}
 // 取得某學期下一個可用的開案 key：該學期未開過→回傳原樣；已開過 N 次→回傳 'sem#(N+1)'
 function _nextSemOpenKey(c, sem) {
   const sems = _caseSems(c);
@@ -9585,6 +9653,7 @@ async function showCaseDetail(caseId) {
   const _snapData = (c.basicInfoSnapshots && _activeSem && c.basicInfoSnapshots[_activeSem]) || null;
   const _cd = (field) => (_snapData !== null && _snapData[field] !== undefined) ? _snapData[field] : c[field];
 
+  _renderDetailBackBtn();
   document.getElementById('detail-name').textContent = c.name || '—';
   document.getElementById('detail-meta').innerHTML =
     `案號：<strong>${escHtml(c.id)}</strong> &nbsp;|&nbsp; ` +
@@ -9774,7 +9843,7 @@ async function showCaseDetail(caseId) {
   // 已刪除：管理者可見全部；建立者可看到自己被刪除的「痕跡」；其他人不顯示已刪除
   const visibleRecords = readable.filter(r => {
     if (_csems && _detailSemFilter !== 'all' && r.date && r.status !== 'pending') {
-      if (openDateToSemPrefix(r.date) !== _activeSem) return false;
+      if (openDateToSemPrefix(r.date) !== _semKeyBase(_activeSem)) return false;
     }
     if (!r.deleted) return true;
     if (isAdminUser) return true;
@@ -9788,7 +9857,7 @@ async function showCaseDetail(caseId) {
   const _visiblePsyForTimeline = (c.psychiatristRecords || []).filter(pr => {
     if (pr.deleted) return false;
     if (_csems && _detailSemFilter !== 'all' && pr.date) {
-      if (openDateToSemPrefix(pr.date) !== _activeSem) return false;
+      if (openDateToSemPrefix(pr.date) !== _semKeyBase(_activeSem)) return false;
     }
     return true;
   });
@@ -9798,7 +9867,7 @@ async function showCaseDetail(caseId) {
     if (l.deleted || !l.assessment || l.studentId !== c.studentId) return false;
     const _mlaDate = l.assessment.evalDate || (l.assessment.filledAt || '').slice(0, 10);
     if (_csems && _detailSemFilter !== 'all' && _mlaDate) {
-      if (openDateToSemPrefix(_mlaDate) !== _activeSem) return false;
+      if (openDateToSemPrefix(_mlaDate) !== _semKeyBase(_activeSem)) return false;
     }
     return true;
   });
@@ -10217,7 +10286,7 @@ async function showCaseDetail(caseId) {
     const allPsy = (c.psychiatristRecords || []);
     const visiblePsy = allPsy.filter(pr => {
       if (_csems && _detailSemFilter !== 'all' && pr.date) {
-        if (openDateToSemPrefix(pr.date) !== _activeSem) return false;
+        if (openDateToSemPrefix(pr.date) !== _semKeyBase(_activeSem)) return false;
       }
       if (!pr.deleted) return true;
       if (isAdminUser) return true;
@@ -10287,12 +10356,12 @@ async function showCaseDetail(caseId) {
   // 結案/學期評估：合併單一卡片，依填表時間排序，歷程淡化呈現
   const evalHtml = (() => {
     const allEvals = c.semesterEvaluations || [];
-    const semEvals = allEvals.filter(e => !_activeSem || e.semester === _activeSem);
+    const semEvals = allEvals.filter(e => !_activeSem || _semKeyBase(e.semester) === _semKeyBase(_activeSem));
     const hasAnyTyped = allEvals.some(e => !e.deletedAt && !e.replacedBy);
     let displayEvals = [...semEvals];
     if (!hasAnyTyped && c.closureEvaluation) {
       const legSem = c.closureEvaluation.semester || _activeSem;
-      if (!_activeSem || legSem === _activeSem)
+      if (!_activeSem || _semKeyBase(legSem) === _semKeyBase(_activeSem))
         displayEvals = [{ ...c.closureEvaluation, _isLegacy: true, type: c.closureEvaluation.type || 'closure' }];
     }
     if (!displayEvals.length) return '';
@@ -10865,6 +10934,8 @@ let _recPageSize = parseInt(localStorage.getItem('scc_rec_pagesize') || '5');
 let _recPage = 1;
 let _detailCaseId = null; // tracks which case is open; resets page when case changes
 let _detailSemFilter = 'current'; // 'current' | 'all'
+// #7：新增個案表單「查看現有案號」進入個案詳細頁時設此旗標，讓返回動線改回「新增個案」頁且不重置表單內容
+let _detailReturnToNewCase = false;
 
 function isEditable(createdAt) {
   return true;
@@ -10874,8 +10945,18 @@ function isEditable(createdAt) {
 // 跨學期個案：若剛儲存的紀錄所屬學期不是目前分頁，先切過去，避免捲動時找不到該卡片
 function _switchDetailSemTo(c, sem) {
   if (!c || !sem) return;
-  if (Array.isArray(c.semesters) && c.semesters.length > 1 && c.semesters.includes(sem)) {
-    _caseDetailActiveSem = sem;
+  if (!(Array.isArray(c.semesters) && c.semesters.length > 1)) return;
+  // sem 可能是精確的 #N key（呼叫端已知確切開案），也可能是由日期推算出的 base（不含 #N）；
+  // 精確符合優先；否則以 base 相符尋找，若目前分頁已符合該 base 則維持不跳頁（避免 #1/#2 間跳動）
+  let target = c.semesters.includes(sem) ? sem : null;
+  if (!target) {
+    const base = _semKeyBase(sem);
+    target = (_caseDetailActiveSem && _semKeyBase(_caseDetailActiveSem) === base)
+      ? _caseDetailActiveSem
+      : c.semesters.find(k => _semKeyBase(k) === base);
+  }
+  if (target) {
+    _caseDetailActiveSem = target;
     _detailSemFilter = 'current';
   }
 }
@@ -11414,7 +11495,7 @@ function searchCoupleCases(q) {
   const thisSem = currentSemesterPrefix();
   const hasCaseThisSem = c =>
     !c.deleted &&
-    (Array.isArray(c.semesters) ? c.semesters.includes(thisSem) : openDateToSemPrefix(c.openDate) === thisSem);
+    (Array.isArray(c.semesters) ? _caseHasSem(c, thisSem) : openDateToSemPrefix(c.openDate) === thisSem);
   const qLow = q.toLowerCase();
   const hits = casesData.filter(c =>
     c.id !== _recordCaseId && !c.deleted &&
@@ -12402,10 +12483,10 @@ function _dupRenderAlert(containerId, key, match) {
   _dupStates[key] = { matchId: match.id, choice: null };
   el.style.display = '';
   el.innerHTML = `<div class="alert alert-warn" style="margin-top:6px;">
-    此時段已有一筆同類型紀錄（建立於 ${escHtml(_dupFormatWhen(match))}），儲存時要整合嗎？
+    此時段已有一筆同類型紀錄（建立於 ${escHtml(_dupFormatWhen(match))}），儲存時要覆蓋嗎？
     <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
-      <button type="button" class="btn btn-secondary btn-sm" onclick="_dupChoose('${key}','merge','${containerId}')">整合（取代既有紀錄）</button>
-      <button type="button" class="btn btn-secondary btn-sm" onclick="_dupChoose('${key}','keep','${containerId}')">保留兩筆</button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="_dupChoose('${key}','merge','${containerId}')">覆蓋（覆蓋既有紀錄，保留本筆）</button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="_dupChoose('${key}','keep','${containerId}')">並存（保留兩筆）</button>
     </div>
     <div id="${containerId}-choice" style="margin-top:4px;font-size:.78rem;color:#4a5568;"></div>
   </div>`;
@@ -12415,7 +12496,7 @@ function _dupChoose(key, choice, containerId) {
   if (!_dupStates[key]) return;
   _dupStates[key].choice = choice;
   const noteEl = document.getElementById(containerId + '-choice');
-  if (noteEl) noteEl.textContent = choice === 'merge' ? '已選擇：儲存時整合（取代既有紀錄）' : '已選擇：保留兩筆';
+  if (noteEl) noteEl.textContent = choice === 'merge' ? '已選擇：儲存時覆蓋（覆蓋既有紀錄，保留本筆）' : '已選擇：並存（保留兩筆）';
 }
 
 // 儲存前最後把關：偵測到同時段既存紀錄但使用者尚未於畫面上選擇時，跳出 confirm 詢問。
@@ -12424,7 +12505,7 @@ function _dupResolveAtSave(key, match) {
   if (!match) return 'keep';
   const st = _dupStates[key];
   if (st && st.matchId === match.id && st.choice) return st.choice;
-  return confirm(`此時段已有一筆同類型紀錄（建立於 ${_dupFormatWhen(match)}），確定要整合（取代既有紀錄）嗎？\n\n「確定」＝整合取代既有紀錄；「取消」＝保留兩筆並存。`)
+  return confirm(`此時段已有一筆同類型紀錄（建立於 ${_dupFormatWhen(match)}），確定要覆蓋嗎？\n\n「確定」＝覆蓋既有紀錄（保留本筆）；「取消」＝並存（保留兩筆）。`)
     ? 'merge' : 'keep';
 }
 
@@ -12548,8 +12629,8 @@ async function saveRecord() {
   if (cidx === -1) return;
 
   // ── 同時段重複紀錄檢核（#9）：儲存前最後把關 ──
-  // 選「整合」時把 _editingRecordId 改指向既存那筆，讓後面既有的「編輯現有紀錄」分支
-  // 直接把本次表單內容覆寫進去，等同整合取代（若原本就在編輯另一筆，原筆維持原樣不動，
+  // 選「覆蓋」時把 _editingRecordId 改指向既存那筆，讓後面既有的「編輯現有紀錄」分支
+  // 直接把本次表單內容覆寫進去，等同覆蓋取代（若原本就在編輯另一筆，原筆維持原樣不動，
   // 屬於刻意縮小範圍的簡化：避免同時處理「刪除原筆」牽動的下游分支）。
   let _recDidMerge = false;
   {
@@ -12777,7 +12858,7 @@ async function saveRecord() {
         const _coupleEditNote = _newPartnerRecOnEdit ? `；新增共用對象：${_editedRec.couplePartnerName || ''}` : '';
         auditLog('編輯晤談紀錄', _recordCaseId, editedId,
           (date ? `${date}（${semesterLabel(openDateToSemPrefix(date))}）` : '') + _auditBkNote + _coupleEditNote +
-          (_recDidMerge ? '；整合取代同時段紀錄' : ''));
+          (_recDidMerge ? '；覆蓋同時段紀錄' : ''));
         bgJobDone(jobId);
       } catch(err) {
         casesData[cidx].records[ridx] = prev;
@@ -13341,7 +13422,7 @@ function _clDateGet() {
 
 function _clDateSet(val, evalSem, caseRecords) {
   const dates = (caseRecords || [])
-    .filter(r => r.date && !r.deleted && openDateToSemPrefix(r.date) === evalSem)
+    .filter(r => r.date && !r.deleted && openDateToSemPrefix(r.date) === _semKeyBase(evalSem))
     .map(r => r.date)
     .filter((v, i, a) => a.indexOf(v) === i)
     .sort().reverse();
@@ -13782,7 +13863,27 @@ async function saveClosureEval() {
 }
 
 function backToCaseList() {
+  _detailReturnToNewCase = false; // 一般返回列表：離開詳細頁，清掉「返回繼續新增個案」旗標
   showPage('page-cases', document.querySelector('[data-nav-id="page-cases"]'));
+}
+
+// #7：從「新增個案」頁按「查看現有案號」進入詳細頁時，返回動線改回新增個案頁，且不得重置表單內容
+// （page-new-case 是獨立 page div，內容仍在 DOM，這裡只切換顯示的 page，不呼叫 openNewCasePage()）
+function _detailBackToNewCase() {
+  _detailReturnToNewCase = false;
+  showPage('page-new-case', null);
+}
+// 個案詳細頁的「返回」按鈕：依 _detailReturnToNewCase 旗標切換文字與行為
+function _renderDetailBackBtn() {
+  const btn = document.getElementById('btn-detail-back');
+  if (!btn) return;
+  if (_detailReturnToNewCase) {
+    btn.textContent = '← 返回繼續新增個案';
+    btn.onclick = _detailBackToNewCase;
+  } else {
+    btn.textContent = '← 返回列表';
+    btn.onclick = backToCaseList;
+  }
 }
 
 function closeCaseConfirm(caseId) {
@@ -13807,6 +13908,15 @@ function nextSemesterPrefix(prefix) {
   const rocYear = parseInt(base.slice(0, -1));
   return semType === '1' ? `${rocYear}2` : `${rocYear + 1}1`;
 }
+function prevSemesterPrefix(prefix) {
+  if (!prefix) return prefix;
+  const hashIdx = prefix.indexOf('#');
+  const base = hashIdx === -1 ? prefix : prefix.slice(0, hashIdx);
+  if (base.length < 4) return prefix;
+  const semType = base.slice(-1);
+  const rocYear = parseInt(base.slice(0, -1));
+  return semType === '1' ? `${rocYear - 1}2` : `${rocYear}1`;
+}
 
 function _semPrefixToApproxDate(prefix) {
   const hashIdx = prefix ? prefix.indexOf('#') : -1;
@@ -13829,15 +13939,13 @@ function showNewSemModal(caseId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
   const curSem = currentSemesterPrefix();
-  // Offer current + 2 future semesters that aren't already in semesters
-  const existing = new Set(c.semesters || [openDateToSemPrefix(c.openDate)]);
-  const candidates = [];
-  let s = curSem;
-  for (let i = 0; i < 4 && candidates.length < 3; i++) {
-    if (!existing.has(s)) candidates.push(s);
-    s = nextSemesterPrefix(s);
-  }
-  if (!candidates.length) candidates.push(curSem); // fallback
+  // #35 需求1：以「當前學期」為中心，固定提供 前2學期、前1學期、當前學期、後1學期 共 4 個選項，預設選中當前學期
+  const candidates = [
+    prevSemesterPrefix(prevSemesterPrefix(curSem)),
+    prevSemesterPrefix(curSem),
+    curSem,
+    nextSemesterPrefix(curSem),
+  ];
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
   modal.innerHTML = `
@@ -13847,7 +13955,7 @@ function showNewSemModal(caseId) {
         <p style="font-size:.88rem;color:#4a5568;margin-bottom:12px;">個案：<strong>${escHtml(c.name)}（${escHtml(c.id)}）</strong></p>
         <label class="field-label">選擇開案學期</label>
         <select class="field-input" id="new-sem-select">
-          ${candidates.map(sem => `<option value="${escHtml(sem)}">${escHtml(semesterLabel(sem))}</option>`).join('')}
+          ${candidates.map(sem => `<option value="${escHtml(sem)}"${sem===curSem?' selected':''}>${escHtml(semesterLabel(sem))}</option>`).join('')}
         </select>
       </div>
       <div class="modal-footer">
@@ -13903,7 +14011,11 @@ function deleteCaseSemData(caseId, sem) {
   const c = casesData.find(x => x.id === caseId);
   if (!c || !sem) return;
   const semMonths_ = semesterMonths(sem);
-  const hasRec = (c.records||[]).some(r => !r.deleted && semMonths_.includes((r.date||'').slice(0,7)));
+  // #35：若刪的是 #N 分身、且同 base 學期還有其他開案 key 存在，紀錄仍歸屬存活的開案，此處不擋刪除；
+  // 只有刪除該 base 學期「最後一筆開案」時才需保護（該學期有紀錄則不可刪）
+  const _semBaseChk = _semKeyBase(sem);
+  const _isLastOpenForBase = !(c.semesters || []).some(k => k !== sem && _semKeyBase(k) === _semBaseChk);
+  const hasRec = _isLastOpenForBase && (c.records||[]).some(r => !r.deleted && semMonths_.includes((r.date||'').slice(0,7)));
   if (hasRec) { alert('此學期已有個案紀錄，無法刪除此學期基本資料。'); return; }
   if (!confirm(`確定要刪除「${semesterLabel(sem)}」的基本資料快照嗎？\n此操作無法復原。`)) return;
 
@@ -17909,7 +18021,7 @@ async function saveInitialInterview() {
   }
 
   // ── 同時段重複紀錄檢核（#9）：儲存前最後把關 ──
-  // 若同個案在別的學期分頁已有「同日期時間＋同初談者」的既存初談表，選「整合」時直接改存進
+  // 若同個案在別的學期分頁已有「同日期時間＋同初談者」的既存初談表，選「覆蓋」時直接改存進
   // 那個既有分頁的 key（等同編輯那一筆），而不是存進本次日期推得的 _iiSemKey
   let _iiDidMerge = false;
   {
@@ -17990,7 +18102,7 @@ async function saveInitialInterview() {
     // #18：稽核日誌的學期標籤改以「初談日期推得的實際歸屬學期」為準（原本固定顯示個案開案學期，
     // 多學期個案在較晚學期補填初談表時會誤標成最早那個學期）
     const _iiSemLabel = semesterLabel(_iiSemKey || openDateToSemPrefix(casesData[cidx]?.openDate));
-    auditLog('儲存初次晤談表', `案號 ${_initialInterviewCaseId}（${_iiSemLabel} 學期）` + (_iiDidMerge ? '；整合取代同時段紀錄' : ''));
+    auditLog('儲存初次晤談表', `案號 ${_initialInterviewCaseId}（${_iiSemLabel} 學期）` + (_iiDidMerge ? '；覆蓋同時段紀錄' : ''));
     bgJobDone(jobId, '初次晤談表已儲存');
     clearIIDraft();
     _switchDetailSemTo(casesData[cidx], _iiSemKey);
@@ -18555,7 +18667,7 @@ function checkCaseIdDuplicate() {
       ℹ️ 此學生已有案號 <strong>${escHtml(dup.id)}</strong>，儲存時將自動採用該案號新增本學期開案。
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-secondary btn-sm" onclick="_useExistingCaseId('${escHtml(dup.id)}')">帶入既有案號</button>
-        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();showCaseDetail('${escHtml(dup.id)}')">查看現有案號</button>
+        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();_detailReturnToNewCase=true;showCaseDetail('${escHtml(dup.id)}')">查看現有案號</button>
       </div>
     </div>`;
   } else {
@@ -21834,7 +21946,8 @@ function _buildEvrCardHtml(r, idx) {
           </div>
           <div class="full">
             <label class="field-label">晤談對象<span class="req">*</span></label>
-            <div style="display:flex;flex-wrap:wrap;gap:6px 16px;padding:8px;border:1px solid #cbd5e0;border-radius:6px;background:#fff;">${itvHtml}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px 16px;padding:8px;border:1px solid #cbd5e0;border-radius:6px;background:#fff;" onchange="_updateIntervieweeMultiHint('${pfx}-interviewee','${pfx}-interviewee-multi-hint')">${itvHtml}</div>
+            <div id="${pfx}-interviewee-multi-hint" style="display:none;font-size:.78rem;color:#718096;margin-top:6px;line-height:1.5;">已勾選多位晤談對象：代表同一場次一起晤談（如伴侶/家庭聯合晤談），統計時整場僅計 1 筆；若為分別晤談，請各自建立一筆紀錄。</div>
             <input type="text" id="${pfx}-interviewee-note" class="field-input" style="margin-top:8px;font-size:.87rem;" placeholder="備註：如高中朋友、爸爸、○○導師…（非必填）" value="${escHtml(r.intervieweeNote||'')}">
           </div>
         </div>
@@ -21864,6 +21977,7 @@ function _evrRestoreCard(r, idx) {
   sv(`${pfx}-room`, r.room);
   sv(`${pfx}-mode`, r.interventionMode);
   sv(`${pfx}-interviewee-note`, r.intervieweeNote || '');
+  _updateIntervieweeMultiHint(`${pfx}-interviewee`, `${pfx}-interviewee-multi-hint`); // 回填既有勾選後同步顯示多選提示
   if (r.summary) setRichTextValue(`${pfx}-summary`, r.summary);
   attachInit('evr_' + idx, r.attachments || [], { dropTargets: [`evr${idx}-summary`] });
   if (idx === 0 && r.nextBk) {
@@ -22312,7 +22426,7 @@ async function saveEventRecords() {
   try {
     await saveCasesChunks(savedCaseId);
     bgJobDone(jobId, '已儲存');
-    auditLog('新增事件處理記錄', savedCaseId, null, _evrMergedCount.n ? `整合取代 ${_evrMergedCount.n} 筆同時段紀錄` : '');
+    auditLog('新增事件處理記錄', savedCaseId, null, _evrMergedCount.n ? `覆蓋 ${_evrMergedCount.n} 筆同時段紀錄` : '');
     if (savedTodoId) saveUserTodos().catch(() => {});
   } catch (e) {
     bgJobFail(jobId, e.message);
@@ -22494,7 +22608,7 @@ function _caseToIndexEntry(c) {
     updatedAt: c.updatedAt || '',
     lastActivityAt: c.lastActivityAt || '',
     status: c.status || '',
-    abType: c.abType || '',
+    abType: _caseLatestAbType(c),
     caseType: c.caseType || '',
     isTransferCase: !!c.isTransferCase,
     // 精神科醫師「僅評估列表可見」權限用：標記此案是否有（未刪除的）精神科評估
@@ -23065,7 +23179,7 @@ async function proxyCall(action, params = {}, _silent = false, _retry = 0, _auth
       // 的一次性網址，Google 端偶爾回 404（非本系統故障）；429/503：後端冷啟動或過載。皆為暫時性，重試即可。
       if ((r.status === 404 || r.status === 429 || r.status === 503) && _retry < 4) {
         if (!_silent) _syslog('debug', `→ ${action} 暫時性錯誤重試 #${_retry + 1}（HTTP ${r.status}）`);
-        _showRetryNotice(`⟳ 伺服器連線異常（HTTP ${r.status}），正在自動重試（第 ${_retry + 1}/4 次），請稍候…`);
+        _showRetryNotice(`⟳ 伺服器連線異常（HTTP ${r.status}），正在自動重試（第 ${_retry + 1}/4 次），請稍候…（系統會自動處理連線波動：若需要您重新整理會明確通知，未通知前都可放心繼續使用）`);
         await new Promise(res => setTimeout(res, 1200 * (_retry + 1)));
         return proxyCall(action, params, _silent, _retry + 1, _authRetried);
       }
@@ -25883,6 +25997,21 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-08', v: 137, title: '#35 多筆開案五項修正＋#13 危機閱讀頁強化＋#7 返回動線＋#9 wording 等（第三輪驗證修正）', isProd: false, items: [
+      item('修正', '#35 重大修正：同學期多筆開案（#N）時，該學期的晤談紀錄、精神科評估、身心狀態評估表、結案/學期評估、次數統計全部消失的問題——日期推導學期與帶 #N 的學期 key 比對不相等所致，已全面改為比對基準學期；同學期各筆開案會看到該學期全部紀錄（無法按 #N 細分為既知限制）'),
+      item('修正', '#35 個案列表的學期篩選不再出現 #2 選項；篩選某學期（如 114-1）時，該學期所有開案（#1/#2/#3）的個案都會正確列出'),
+      item('修正', '#35 「刪除此學期基本資料」誤擋修正：刪除 #N 分身且同學期還有其他開案時，不再被該學期紀錄擋下（紀錄歸屬存活的開案）；刪除該學期最後一筆開案時維持有紀錄不可刪的保護'),
+      item('調整', '#35 學期標籤的重複開案後綴由「_N」改為「#N」（如 114-1#2）；同學期多筆開案的學期 chips 依序號上不同醒目底色（#1 藍、#2 粉、#3 綠），hover 提示「此學生本學期有多筆開案」，單筆開案的個案不受影響；畢業轉銜/休退轉頁的歷史學期 chips 一併套用'),
+      item('修正', '#35 同學期多筆開案且主責不同時，各筆開案的主責互相可見該案（僅限最新學期的多筆開案；舊學期主責不因此擴大可見範圍），已補測試'),
+      item('調整', '#9 同時段檢核 wording：「整合（取代既有紀錄）」→「覆蓋（覆蓋既有紀錄，保留本筆）」、「保留兩筆」→「並存（保留兩筆）」，含按鈕、確認對話框與稽核紀錄用字'),
+      item('修正', '#7 新增個案時按「查看現有案號」進入個案詳細頁後，返回按鈕改為「← 返回繼續新增個案」，點擊回到新增個案頁且填到一半的表單內容完整保留；從一般列表進入詳細頁的返回動線不受影響'),
+      item('調整', '新學期開案的學期下拉改為以當前學期為中心提供 前2、前1、當前、後1 共 4 個學期，預設選中當前學期（如現在 114-2 → 113-2、114-1、114-2、115-1）'),
+      item('調整', '連線異常自動重試的提示文字加上安撫說明：系統會自動處理連線波動，若需要重新整理會明確通知，未通知前可放心繼續使用'),
+      item('新功能', '事件處理記錄的「晤談對象」勾選 2 位（含）以上時，比照晤談紀錄顯示「同場次聯合晤談統計僅計 1 筆」提示'),
+      item('調整', '#13 危機個案閱讀頁：移除主任/管理者「開啟（不留紀錄）」捷徑，全員一律送出閱讀申請留下紀錄後才可由此頁開啟（主任/管理者從一般個案列表的檢視權限不受影響），頁面說明文字同步更新'),
+      item('新功能', '#13 危機個案閱讀搜尋結果新增：個案狀態徽章（進行中/已結案/已封存）、A案/B案徽章、歷來服務學期 chips（預設收合、可展開、純檢視不可點擊）'),
+      item('技術', '新增共用 helper：_caseLatestAbType()（最新學期快照 abType，cases-index 產生器同步改用，索引的 A/B 案資訊與列表顯示一致）、_semDupStyle()、prevSemesterPrefix()、_getLatestSemCounselorEmails()；測試擴充至 187 項'),
+    ]},
     { date: '2026-07-08', v: 136, title: '#10 身分色補齊＋#34 BSRS 卡片變色＋預約卡片改雙擊編輯＋統計分析開放專任等（第二輪驗證修正與新需求）', isProd: false, items: [
       item('修正', '#10 輔導人員身分分類色補齊：新增 駐校精神科醫師（桃紅）與 義務輔導老師（青），chips 與下拉選單皆套用；下拉選單改為只用文字變色，移除「●」前綴（chips 的色點維持不變）'),
       item('修正', '#34 BSRS 卡片變色：未完整填寫（不論只填 1 題或全空，含勾選「個案未填寫」確認）→ 卡片琥珀色醒目標示「⚠ 未完整填寫」且不顯示無意義的評估文字；完整填寫 → 整張卡片依嚴重度變色（正常綠／輕度黃／中度橘／重度紅）；全空個案的 BSRS 卡片不再整個隱藏，改以待補狀態呈現'),
@@ -36779,7 +36908,7 @@ function openTransferEvalForm(caseId, teId) {
     const badges = allSems.map(s => {
       const snap = c.basicInfoSnapshots?.[s];
       const coName = snap?.counselorText || snap?.counselorName || snap?.counselorEmail || c.counselorText || c.counselorName || c.counselorEmail || '—';
-      const cnt = (c.records||[]).filter(r => !r.deleted && openDateToSemPrefix(r.date) === s).length;
+      const cnt = (c.records||[]).filter(r => !r.deleted && openDateToSemPrefix(r.date) === _semKeyBase(s)).length;
       const isCur = s === activeSem;
       return `<span style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:20px;font-size:.8rem;background:${isCur?'#ebf8ff':'#f7fafc'};border:1px solid ${isCur?'#90cdf4':'#e2e8f0'};color:${isCur?'#2b6cb0':'#4a5568'};white-space:nowrap;font-weight:${isCur?600:400};">`
         + `<span style="color:#a0aec0;font-size:.72rem;">${escHtml(semesterLabel(s))}</span>`
@@ -37001,17 +37130,19 @@ function _buildCaseSemMap(studentId) {
   return semMap;
 }
 
-function _makeHistChip({ sem, caseId, counselorName, light, status, recCount }, curSem) {
-  const { bg, border, color } = _HIST_LIGHT_STYLES[light]
+function _makeHistChip({ sem, caseId, counselorName, light, status, recCount }, curSem, allSemKeys) {
+  const dupStyle = _semDupStyle(allSemKeys || [], sem);
+  const { bg, border, color } = dupStyle || _HIST_LIGHT_STYLES[light]
     || (status !== 'closed'
       ? (sem < curSem ? { bg:'#f3e8ff',border:'#a855f7',color:'#6b21a8' } : { bg:'#ebf8ff',border:'#63b3ed',color:'#2b6cb0' })
       : { bg:'#f0f4f8',border:'#cbd5e0',color:'#718096' });
-  const tipText = `學期：${semesterLabel(sem)}｜主責：${counselorName||'—'}｜服務次數：${recCount??0} 次`;
+  const tipText = (dupStyle ? '此學生本學期有多筆開案｜' : '') + `學期：${semesterLabel(sem)}｜主責：${counselorName||'—'}｜服務次數：${recCount??0} 次`;
   return `<span onclick="event.stopPropagation();showCaseDetailAtSem('${escHtml(caseId)}','${escHtml(sem)}')" style="display:inline-block;background:${bg};border:1px solid ${border};color:${color};border-radius:10px;padding:1px 8px;font-size:.78rem;white-space:nowrap;cursor:pointer;" data-tip="${escHtml(tipText)}">${escHtml(semesterLabel(sem))}${counselorName ? `<span style="font-size:.7rem;opacity:.75;margin-left:3px;">${escHtml(counselorName)}</span>` : ''}<span style="font-size:.7rem;opacity:.8;margin-left:3px;">: ${recCount??0}次</span></span>`;
 }
 
 function _buildHistBadgesHtml(semMap, curSem, isExpanded, cardId, toggleFnPrefix) {
-  const histSems = Object.keys(semMap).sort().reverse().map(sem => ({ sem, ...semMap[sem] }));
+  const allSemKeys = Object.keys(semMap);
+  const histSems = allSemKeys.sort().reverse().map(sem => ({ sem, ...semMap[sem] }));
   if (!histSems.length) return '';
   const visible = histSems.slice(0, 2);
   const extra   = histSems.slice(2);
@@ -37021,8 +37152,8 @@ function _buildHistBadgesHtml(semMap, curSem, isExpanded, cardId, toggleFnPrefix
     : '';
   return `<div style="padding:3px 0 5px 30px;display:flex;align-items:center;flex-wrap:wrap;gap:3px;border-top:1px solid #f0f4f8;margin-top:4px;">
     ${chevHtml}<span style="font-size:.74rem;color:#a0aec0;flex-shrink:0;margin-right:2px;">歷史：</span>
-    ${visible.map(h => _makeHistChip(h, curSem)).join('')}
-    ${hasExtra ? `<span data-hist-extra="${escHtml(cardId)}" style="display:${isExpanded?'contents':'none'};">${extra.map(h => _makeHistChip(h, curSem)).join('')}</span><span data-hist-more="${escHtml(cardId)}" onclick="event.stopPropagation();${toggleFnPrefix}ToggleHistory('${escHtml(cardId)}')" style="display:${isExpanded?'none':'inline-block'};font-size:.76rem;color:#3182ce;cursor:pointer;padding:1px 7px;border-radius:8px;background:#ebf8ff;border:1px solid #bee3f8;" data-tip="顯示全部 ${histSems.length} 個學期">...${extra.length} 筆</span>` : ''}
+    ${visible.map(h => _makeHistChip(h, curSem, allSemKeys)).join('')}
+    ${hasExtra ? `<span data-hist-extra="${escHtml(cardId)}" style="display:${isExpanded?'contents':'none'};">${extra.map(h => _makeHistChip(h, curSem, allSemKeys)).join('')}</span><span data-hist-more="${escHtml(cardId)}" onclick="event.stopPropagation();${toggleFnPrefix}ToggleHistory('${escHtml(cardId)}')" style="display:${isExpanded?'none':'inline-block'};font-size:.76rem;color:#3182ce;cursor:pointer;padding:1px 7px;border-radius:8px;background:#ebf8ff;border:1px solid #bee3f8;" data-tip="顯示全部 ${histSems.length} 個學期">...${extra.length} 筆</span>` : ''}
   </div>`;
 }
 
@@ -40231,7 +40362,7 @@ async function savePsychiatristRecord(caseId, recordId) {
   const now = new Date().toISOString();
 
   // ── 同時段重複紀錄檢核（#9）：儲存前最後把關 ──
-  // 選「整合」時把 recordId 改指向既存那筆，讓下面既有的「編輯」分支覆寫進去
+  // 選「覆蓋」時把 recordId 改指向既存那筆，讓下面既有的「編輯」分支覆寫進去
   let _psyDidMerge = false;
   {
     const _psyDupList = (c.psychiatristRecords || [])
@@ -40276,10 +40407,7 @@ async function savePsychiatristRecord(caseId, recordId) {
   // 避免 showCaseDetail 的 cold-load 分支用舊資料覆蓋剛寫入的紀錄
   c._fullLoaded = true; c._indexOnly = false;
   // 跨學期個案：若新/編輯紀錄的日期落在其他學期分頁，自動切換過去，避免存檔後在目前分頁看不到
-  if (Array.isArray(c.semesters) && c.semesters.length > 1 && data.date) {
-    const _prSem = openDateToSemPrefix(data.date);
-    if (c.semesters.includes(_prSem)) { _caseDetailActiveSem = _prSem; _detailSemFilter = 'current'; }
-  }
+  if (data.date) _switchDetailSemTo(c, openDateToSemPrefix(data.date));
   showCaseDetail(caseId);
   _flashRecordCard('rec-card-' + _savedRecId);
   const _psyJobLabel = recordId === '__new__' ? '新增精神科評估' : '更新精神科評估';
@@ -40289,7 +40417,7 @@ async function savePsychiatristRecord(caseId, recordId) {
       bgJobProgress(jobId, 40);
       await saveCasesChunks(caseId);
       bgJobProgress(jobId, 90);
-      auditLog('儲存精神科評估', `${c.name} ${data.date}` + (_psyDidMerge ? '；整合取代同時段紀錄' : ''));
+      auditLog('儲存精神科評估', `${c.name} ${data.date}` + (_psyDidMerge ? '；覆蓋同時段紀錄' : ''));
       bgJobDone(jobId);
     } catch(e) {
       if (recordId === '__new__') {

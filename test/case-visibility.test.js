@@ -10,6 +10,8 @@ const { load, makeFixedDate } = require('./harness');
 const VIS_FNS = [
   '_caseVisibleToUser',
   '_getLatestCounselorEmail',
+  '_getLatestSemCounselorEmails',
+  '_semKeyBase',
   '_isInitialInterviewerOfCase',
   '_getSuperviseeEmails',
   '_isVolunteerContact',
@@ -66,6 +68,37 @@ test('_caseVisibleToUser：最新學期快照缺主責時往前找、再 fallbac
   // 所有快照皆無 → fallback c.counselorEmail
   const c2 = { id: '1142001', semesters: ['1142'], basicInfoSnapshots: { 1142: {} }, counselorEmail: 'b@x.tw' };
   assert.equal(S._caseVisibleToUser(c2, 'b@x.tw', null), true);
+});
+
+test('_caseVisibleToUser：#35-6 最新 base 學期多筆開案（#N）時各主責互相可見；第三者不可見', () => {
+  const S = loadVis();
+  const c = {
+    id: '1141005',
+    semesters: ['1141#1', '1141#2'],
+    basicInfoSnapshots: {
+      '1141#1': { counselorEmail: 'a@x.tw' },
+      '1141#2': { counselorEmail: 'b@x.tw' },
+    },
+  };
+  assert.equal(S._caseVisibleToUser(c, 'a@x.tw', null), true);
+  assert.equal(S._caseVisibleToUser(c, 'b@x.tw', null), true);
+  assert.equal(S._caseVisibleToUser(c, 'c@x.tw', null), false);
+});
+
+test('_caseVisibleToUser：#35-6 舊學期（非最新 base）主責不因 #N 擴大可見範圍', () => {
+  const S = loadVis();
+  const c = {
+    id: '1141006',
+    semesters: ['1132#1', '1132#2', '1141'],
+    basicInfoSnapshots: {
+      '1132#1': { counselorEmail: 'old1@x.tw' },
+      '1132#2': { counselorEmail: 'old2@x.tw' },
+      '1141': { counselorEmail: 'new@x.tw' },
+    },
+  };
+  assert.equal(S._caseVisibleToUser(c, 'new@x.tw', null), true);
+  assert.equal(S._caseVisibleToUser(c, 'old1@x.tw', null), false);
+  assert.equal(S._caseVisibleToUser(c, 'old2@x.tw', null), false);
 });
 
 test('_caseVisibleToUser：手動個管（allowedSet）可見', () => {

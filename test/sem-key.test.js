@@ -53,11 +53,11 @@ test('_nextSemOpenKey：已開過兩次（base + #2）→ 回傳 sem#3', () => {
   assert.equal(S._nextSemOpenKey(c, '1142'), '1142#3');
 });
 
-// ── semesterLabel：'#N' 後綴轉可讀標籤（'1142#2' → '114-2_2'）────────────────
-test('semesterLabel：帶 #N 後綴時附加 _N；不影響既有無 # 輸入行為', () => {
+// ── semesterLabel：'#N' 後綴轉可讀標籤（'1142#2' → '114-2#2'）────────────────
+test('semesterLabel：帶 #N 後綴時附加 #N；不影響既有無 # 輸入行為', () => {
   const S = load(['semesterLabel']);
-  assert.equal(S.semesterLabel('1142#2'), '114-2_2');
-  assert.equal(S.semesterLabel('1142#3'), '114-2_3');
+  assert.equal(S.semesterLabel('1142#2'), '114-2#2');
+  assert.equal(S.semesterLabel('1142#3'), '114-2#3');
   assert.equal(S.semesterLabel('1142'), '114-2'); // 既有行為不變
   assert.equal(S.semesterLabel(''), '—');
   assert.equal(S.semesterLabel('11'), '11');
