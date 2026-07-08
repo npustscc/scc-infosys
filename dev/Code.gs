@@ -1616,3 +1616,306 @@ function bookingsCommit_({ ops, checkConflicts, skipPersonConflict }, ctx) {
 
   return { ok: true, bookings: finalBookings, gcErrors: gcErrors };
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+//  Google 日曆同步（後端定時執行版）
+//  移植自 dev/index.html 的 syncFromCalendar（前端函式仍保留，供手動按鈕使用）。
+//  由 runGcSyncTick()（time trigger，見 setupGcSyncTrigger()）呼叫，不透過 doPost，
+//  不新增任何 action，公開攻擊面零增加。
+// ══════════════════════════════════════════════════════════════════════════
+
+// 與 dev/index.html 的 ROOMS 同步維護（該常數變動時本表也要跟著改）。
+const GC_SYNC_ROOMS = ['玉山', '雪山', '中央山脈', '阿里山', '海岸山脈', '團體諮商室', '會議室', '其他'];
+
+// 解析 GC 事件標題「{空間字首}.{人員姓名,...}」→ 對照 config.users 還原 email。
+// 與前端 _parseBkGcTitle 的刻意差異：後端沒有使用者偏好可寫，無法辨識的空間字首
+// 一律當成 customRoom 字串原樣保留，不會註冊到任何人的「自訂空間」清單。
+function _gcSyncParseTitle_(title, users) {
+  if (!title) return null;
+  const dotIdx = title.indexOf('.');
+  const roomPart   = dotIdx >= 0 ? title.slice(0, dotIdx) : title;
+  const personPart = dotIdx >= 0 ? title.slice(dotIdx + 1) : '';
+
+  const knownRooms = GC_SYNC_ROOMS.filter(function (r) { return r !== '其他'; });
+  let room = null;
+  for (let i = 0; i < knownRooms.length; i++) {
+    if (knownRooms[i].charAt(0) === roomPart) { room = knownRooms[i]; break; }
+  }
+  if (!room && roomPart) room = roomPart; // 未知字首：原樣當 customRoom 字串保留（不做偏好註冊）
+
+  const names = personPart ? personPart.split(',').map(function (s) { return s.trim(); }).filter(Boolean) : [];
+  const counselors = names.map(function (name) {
+    let found = null;
+    Object.keys(users || {}).some(function (email) {
+      if (((users[email] || {}).name || '') === name) { found = [email, users[email]]; return true; }
+      return false;
+    });
+    return found
+      ? { value: found[0], label: found[1].name || name, isCustom: false }
+      : { value: name, label: name, isCustom: true };
+  });
+  return {
+    room: room || '',
+    counselors: counselors,
+    counselorName: counselors.map(function (c) { return c.label; }).join(','),
+    counselorEmail: (counselors[0] && !counselors[0].isCustom) ? counselors[0].value : '',
+  };
+}
+
+// 讀 config.json 取 users（人名→email 解析用）；讀不到則回傳空物件（不阻擋同步，只是無法還原 email）。
+function _gcSyncReadUsers_(ctx) {
+  try {
+    const cfgId = ctx.configOverride || resolvePathToId_('config.json', ctx);
+    const res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + cfgId + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() >= 400) return {};
+    const cfg = JSON.parse(res.getContentText());
+    return (cfg && cfg.users) || {};
+  } catch (e) { return {}; }
+}
+
+// 稽核寫入：append 到 audit_log.json（read-modify-write，LockService 防與其他寫入競態）。
+// entry 形如前端 auditLog() 寫入的形狀：{t, email, name, action, caseId?, detail?}。
+// 去識別化：detail 只含空間/時間/人員姓名，不含學號等額外欄位（照抄前端組字）。
+function _gcSyncAppendAuditLog_(entries, ctx) {
+  if (!entries || !entries.length) return;
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    let fileId = null;
+    let data = { logs: [] };
+    try {
+      fileId = resolvePathToId_('audit_log.json', ctx);
+      const res = UrlFetchApp.fetch(
+        'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+        { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+      );
+      if (res.getResponseCode() < 400) {
+        try { data = JSON.parse(res.getContentText()); } catch (_) { data = { logs: [] }; }
+        if (!data || !Array.isArray(data.logs)) data = { logs: [] };
+      }
+    } catch (_) { /* 檔案不存在，稍後建立 */ }
+
+    const now = new Date().toISOString();
+    entries.forEach(function (a) {
+      const entry = { t: now, email: 'system', name: '系統自動同步', action: a.action };
+      if (a.caseId) entry.caseId = a.caseId;
+      if (a.detail) entry.detail = a.detail;
+      data.logs.push(entry);
+    });
+
+    if (fileId) {
+      driveUpdateContent_(fileId, data);
+    } else {
+      const pn = resolvePathToParentAndName_('audit_log.json', ctx);
+      driveUpload_(pn.fileName, data, pn.parentId);
+    }
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// GC 同步核心：讀 bookings.json + config.json + GC 事件（-30d~+90d），逐筆比對，
+// 套用變更（刪除/更新/推回 GC/流水號還原），寫回 bookings.json 並記稽核。
+// 全程 try/catch：單筆 GC 推回/還原失敗 console.error 後繼續；整體失敗 console.error 不拋出（trigger 不該紅）。
+function gcSyncCore_(ctx) {
+  try {
+    const loaded = _bkReadFile_(ctx);
+    const bookings = (loaded.data && Array.isArray(loaded.data.bookings)) ? loaded.data.bookings : [];
+    if (!bookings.length) return;
+
+    const users = _gcSyncReadUsers_(ctx);
+
+    const minus30 = new Date(); minus30.setDate(minus30.getDate() - 30);
+    const plus90  = new Date(); plus90.setDate(plus90.getDate() + 90);
+    const pad2 = function (n) { return String(n).padStart(2, '0'); };
+    const toYmd = function (d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); };
+    const startDate = toYmd(minus30);
+    const endDate   = toYmd(plus90);
+
+    const gcEvents = listCalendarEvents_({ startDate: startDate, endDate: endDate }, ctx);
+    const gcMap = {};
+    gcEvents.forEach(function (e) { gcMap[e.id] = e; });
+
+    const deletedIds = {};
+    const changedIds = {};
+    const serialRestoreQueue = [];
+    const gcPushBackQueue = [];
+    const auditActions = [];
+
+    const newBookings = bookings.map(function (b) {
+      if (!b || !b.calendarEventId) return b;
+      // 查詢範圍外的預約不納入刪除判斷（可能仍存在於 GC）
+      if (b.date < startDate || b.date > endDate) return b;
+
+      const gcE = gcMap[b.calendarEventId];
+      if (!gcE) {
+        // GC 上已刪除 → 同步刪除本機預約
+        const rd = b.room === '其他' ? (b.customRoom || '其他') : (b.room || '');
+        auditActions.push({
+          action: '因系統自動同步日曆而刪除預約',
+          caseId: b.caseId || null,
+          detail: rd + '　' + b.date + '　' + (b.startTime || '').slice(0, 5) + '–' + (b.endTime || '').slice(0, 5) + (b.counselorName ? '　' + b.counselorName : ''),
+        });
+        deletedIds[b.id] = true;
+        return b;
+      }
+
+      const bStart = (b.startTime || '').slice(0, 5);
+      const bEnd   = (b.endTime   || '').slice(0, 5);
+      // 解析 GC description：{備註}\n---\n{actor} 建立/編輯 YYYY/MM/DD HH:mm\n#{serial}
+      const rawDesc = gcE.description || '';
+      let gcSerial = null;
+      let gcNotes = '';
+      const serialMatch = rawDesc.match(/\n#(\d+)\s*$/);
+      if (serialMatch) {
+        gcSerial = parseInt(serialMatch[1], 10);
+        let body = rawDesc.slice(0, rawDesc.length - serialMatch[0].length);
+        const sepIdx = body.lastIndexOf('\n---\n');
+        if (sepIdx >= 0) body = body.slice(0, sepIdx);
+        gcNotes = body.trim();
+      } else {
+        const sepIdx = rawDesc.lastIndexOf('\n---\n');
+        gcNotes = sepIdx >= 0 ? rawDesc.slice(0, sepIdx).trim() : rawDesc.trim();
+      }
+      // 流水號對不上 → 排入還原佇列
+      if (b.bkSerial && gcSerial !== b.bkSerial) serialRestoreQueue.push(b.id);
+
+      const expectedTitle = buildEventTitle_(b.room, b.counselorName, b.customRoom || '');
+      const titleChanged = gcE.title !== expectedTitle;
+      const timeChanged  = gcE.date !== b.date || gcE.startTime !== bStart || gcE.endTime !== bEnd;
+      const notesChanged = gcNotes !== (b.notes || '');
+
+      if (titleChanged || timeChanged || notesChanged) {
+        const rd = b.room === '其他' ? (b.customRoom || '其他') : (b.room || '');
+        // 交叉驗證：比較 GC lastModified 與系統 updatedAt / createdAt
+        const gcIsNewer = !gcE.lastModified || gcE.lastModified > (b.updatedAt || b.createdAt || '');
+
+        if (!gcIsNewer) {
+          // 系統較新 → 推回 GC，不更新本機
+          gcPushBackQueue.push(b.id);
+          return b;
+        }
+
+        const diffs = [];
+        const update = {};
+
+        if (titleChanged) {
+          const parsed = _gcSyncParseTitle_(gcE.title, users);
+          if (parsed) {
+            if (parsed.room && parsed.room !== rd) {
+              diffs.push('空間 ' + rd + '→' + parsed.room);
+              update.room = parsed.room; update.customRoom = '';
+            }
+            if ((parsed.counselorName || '') !== (b.counselorName || '')) {
+              diffs.push('人員 ' + (b.counselorName || '—') + '→' + (parsed.counselorName || '—'));
+              update.counselors = parsed.counselors; update.counselorName = parsed.counselorName; update.counselorEmail = parsed.counselorEmail;
+            }
+          }
+        }
+        if (timeChanged) {
+          diffs.push(b.date + ' ' + bStart + '–' + bEnd + '→' + gcE.date + ' ' + gcE.startTime + '–' + gcE.endTime);
+          update.date = gcE.date; update.startTime = gcE.startTime; update.endTime = gcE.endTime;
+        }
+        if (notesChanged) {
+          diffs.push('說明 ' + (b.notes || '—') + '→' + (gcNotes || '—'));
+          update.notes = gcNotes;
+        }
+
+        if (Object.keys(update).length > 0) {
+          changedIds[b.id] = true;
+          auditActions.push({
+            action: '因系統自動同步日曆而更新',
+            caseId: b.caseId || null,
+            detail: rd + (b.counselorName ? '　' + b.counselorName : '') + '　' + diffs.join('；'),
+          });
+          return Object.assign({}, b, update);
+        }
+      }
+      return b;
+    });
+
+    // 寫回 bookings.json（走 bookingsCommit_，天然享有 LockService＋衝突檢查略過——
+    // 這裡的變更全部來自 GC 現況比對，不是新的使用者操作，不需再做撞房/撞人檢查）。
+    if (Object.keys(changedIds).length || Object.keys(deletedIds).length) {
+      const ops = [];
+      newBookings.forEach(function (b) { if (b && changedIds[b.id]) ops.push({ op: 'upsert', booking: Object.assign({}, b), gc: { mode: 'none' } }); });
+      Object.keys(deletedIds).forEach(function (id) { ops.push({ op: 'delete', id: id, gcEventId: null }); });
+      if (ops.length) {
+        try {
+          bookingsCommit_({ ops: ops, checkConflicts: false }, ctx);
+        } catch (e) {
+          console.error('gcSyncCore_ bookingsCommit_ 失敗: ' + ((e && e.message) || e));
+        }
+      }
+    }
+    if (auditActions.length) {
+      try {
+        _gcSyncAppendAuditLog_(auditActions, ctx);
+      } catch (e) {
+        console.error('gcSyncCore_ 稽核寫入失敗: ' + ((e && e.message) || e));
+      }
+    }
+
+    // 流水號還原＋系統較新推回：重寫 GC description／標題／時間。
+    // 差異：後端無使用者色彩偏好可查，不重算 colorId，沿用 GC 事件既有顏色（不影響資料正確性，僅色彩不會被動修正）。
+    const restoreIds = {};
+    serialRestoreQueue.concat(gcPushBackQueue).forEach(function (id) { restoreIds[id] = true; });
+    Object.keys(restoreIds).forEach(function (id) {
+      const bk = newBookings.find(function (b) { return b && b.id === id; });
+      if (!bk || !bk.calendarEventId) return;
+      try {
+        const isEdit = !!(bk.updatedAt && bk.updatedAt !== bk.createdAt);
+        updateCalendarEvent_({
+          eventId: bk.calendarEventId, room: bk.room, customRoom: bk.customRoom || '',
+          date: bk.date, startTime: bk.startTime, endTime: bk.endTime,
+          counselorName: bk.counselorName || '', notes: bk.notes || '',
+          creatorName: bk.creatorName || bk.counselorName || '',
+          createdAt: bk.createdAt, updatedAt: bk.updatedAt || bk.createdAt,
+          isEdit: isEdit, bkSerial: bk.bkSerial,
+        }, ctx);
+      } catch (e) {
+        console.error('gcSyncCore_ 還原/推回 GC 失敗 [' + id + ']: ' + ((e && e.message) || e));
+      }
+    });
+  } catch (e) {
+    console.error('gcSyncCore_ 失敗: ' + ((e && e.message) || e));
+  }
+}
+
+// 純函式：判斷此刻是否該跑 GC 同步。weekday: 1=週一…7=週日（Utilities.formatDate 'u' 格式）。
+// 上班時段（一、四 08:00-21:00；二、三、五 08:00-18:00）→ 每次 trigger（5 分鐘）都跑；
+// 其餘時段（含週末、收班後）→ 只在整點附近（分鐘 < 5）跑，等效每小時一次。
+function _gcSyncShouldRun(weekday, hour, minute) {
+  let isWorkHour = false;
+  if (weekday === 1 || weekday === 4) {
+    isWorkHour = hour >= 8 && hour < 21;
+  } else if (weekday === 2 || weekday === 3 || weekday === 5) {
+    isWorkHour = hour >= 8 && hour < 18;
+  }
+  if (isWorkHour) return true;
+  return minute < 5;
+}
+
+// Time trigger handler（見 setupGcSyncTrigger()，每 5 分鐘跑一次）。
+function runGcSyncTick() {
+  const weekday = Number(Utilities.formatDate(new Date(), 'Asia/Taipei', 'u'));
+  const hour    = Number(Utilities.formatDate(new Date(), 'Asia/Taipei', 'H'));
+  const minute  = Number(Utilities.formatDate(new Date(), 'Asia/Taipei', 'm'));
+  if (!_gcSyncShouldRun(weekday, hour, minute)) return;
+
+  const ctx = { root: ROOT_FOLDER_ID, configOverride: CONFIG_FILE_ID_OVERRIDE, calendarName: CALENDAR_NAME, gmailLabel: 'ml-processed-dev' };
+  gcSyncCore_(ctx);
+}
+
+// 一次性設定：刪除既有同 handler 的 trigger 後，建立每 5 分鐘一次的 time trigger。
+// 於 GAS 編輯器手動執行一次即可（dev/prod 各自的專案都要各跑一次）。
+function setupGcSyncTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'runGcSyncTick') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('runGcSyncTick').timeBased().everyMinutes(5).create();
+  console.log('setupGcSyncTrigger: runGcSyncTick 已設定為每 5 分鐘執行一次');
+}

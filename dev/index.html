@@ -1249,7 +1249,7 @@
       <div class="nav-item" data-nav-id="page-pending" onclick="showPage('page-pending', this); renderPendingList()">
         <span class="icon">📁</span> 不開案個案 <span class="nav-drag-handle">⠿</span>
       </div>
-      <div class="nav-item" data-nav-id="page-bookings" onclick="showPage('page-bookings', this); renderBookingsPage()">
+      <div class="nav-item" data-nav-id="page-bookings" onclick="_bkNavOpen(this)">
         <span class="icon">📅</span> 空間預約 <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" data-nav-id="page-psychiatry" onclick="showPage('page-psychiatry', this); renderPsychiatryPage()">
@@ -5780,12 +5780,13 @@ async function afterLogin() {
     // ── 其他資料 ──
     pendingCasesData       = Array.isArray(batch.pending_cases?.cases)   ? batch.pending_cases.cases   : [];
     bookingsData           = Array.isArray(batch.bookings?.bookings)      ? batch.bookings.bookings      : [];
+    _bkLastLoadAt          = Date.now(); // startupBatch 已一併帶回最新 bookings，視同剛讀取過
     transferData           = Array.isArray(batch.transfer?.records)       ? batch.transfer.records       : [];
     unassignedRecordsData  = Array.isArray(batch.unassigned?.records)     ? batch.unassigned.records     : [];
     issuesData             = Array.isArray(batch.issues?.issues)          ? batch.issues.issues          : [];
 
     // ── 補充 side effects ──
-    scheduleHourlyCalendarSync();
+    // Google 日曆定時同步已改由後端 GAS trigger 執行（runGcSyncTick），此處不再排程前端輪詢。
     // 二重防護：前端再次確認此帳號存在於 config.json 的授權名單
     // （防禦 GAS 白名單被繞過，或「殭屍帳號」殘留在 config.json 中）
     if (currentUser.email !== BOOTSTRAP_ADMIN_EMAIL && !configData?.users?.[currentUser.email]) {
@@ -25846,6 +25847,16 @@ document.addEventListener('DOMContentLoaded', () => {
   checkForUpdate();
   setInterval(checkForUpdate, 5 * 60 * 1000);
   setInterval(pollNotifications, 15 * 60 * 1000);
+  // 空間預約背景重讀：頁面開著時每 5 分鐘靜默拉最新資料，讓他人新增/修改的預約及時出現。
+  // 條件：空間預約頁為目前作用頁＋分頁可見＋新增/編輯視窗未開啟（避免重繪清掉使用者輸入）＋無 in-flight 重讀。
+  setInterval(() => {
+    if (_bkBgRereadInFlight) return;
+    if (document.visibilityState !== 'visible') return;
+    if (!document.getElementById('page-bookings')?.classList.contains('active')) return;
+    if (document.getElementById('booking-modal')?.style.display === 'flex') return;
+    _bkBgRereadInFlight = true;
+    loadBookings().then(renderBookingsPage).catch(() => {}).finally(() => { _bkBgRereadInFlight = false; });
+  }, 5 * 60 * 1000);
 
   // AFK 偵測：任意操作重設計時器
   ['mousemove','keydown','click','scroll','touchstart'].forEach(evt =>
@@ -26067,6 +26078,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-08', v: 141, title: '空間預約即時性改善＋Google 日曆同步改由後端定時執行', isProd: false, items: [
+      item('改善', '空間預約即時性：他人新增或修改的預約最慢 5 分鐘內自動出現（進頁自動更新＋頁面開啟時定期更新）'),
+      item('改善', '建立與編輯預約前自動拉取最新資料，畫面直接顯示最新占用避免撞期'),
+      item('調整', 'Google 日曆同步改由系統後端定時執行（上班時間每 5 分鐘、非上班時間每小時），不再依賴有人開著頁面'),
+    ]},
     { date: '2026-07-08', v: 140, title: '#20 延伸：個案詳細頁展開紀錄的清單縮排修正', isProd: false, items: [
       item('修正', '個案詳細頁展開晤談紀錄/精神科評估等紀錄時，主述、問題評估等富文字欄位的自動標號（1. 2. 3.）與項目符號同樣凸出到欄位標題左側——與 v131 列印問題同根因（全域樣式 reset 清掉 ol/ul 縮排）；修正後畫面上所有富文字唯讀顯示（含列表摘要、時間軸、轉銜/事件檢視）統一補回清單縮排，括號編號/短橫項目符號也與編輯器一致'),
     ]},
@@ -28450,14 +28466,21 @@ let _bkAuditTotalPages = 1;
 let _bkAuditFilter = { dateFrom: '', dateTo: '', operator: '', room: '' };
 const BK_AUDIT_PAGE_SIZE = 50;
 
+// 上次成功讀取 bookings.json 的時間戳（ms）；供進頁重讀／背景重讀判斷「多久沒讀了」。
+let _bkLastLoadAt = 0;
+// 背景重讀 in-flight 旗標，避免上一輪還沒讀完又疊加下一輪。
+let _bkBgRereadInFlight = false;
+
 async function loadBookings() {
   try {
     const data = await driveReadJson(BOOKINGS_FILE);
     bookingsData = Array.isArray(data?.bookings) ? data.bookings : [];
+    _bkLastLoadAt = Date.now();
   } catch (e) {
-    bookingsData = [];
+    // 讀取失敗保留記憶體既有資料：背景重讀／開窗前重讀如今頻繁呼叫本函式，
+    // 偶發網路錯誤不得把畫面上的預約清空（也避免 editBooking 誤判「已被刪除」）。
+    if (!Array.isArray(bookingsData)) bookingsData = [];
   }
-  scheduleHourlyCalendarSync();
 }
 
 async function refreshBookings() {
@@ -28465,15 +28488,19 @@ async function refreshBookings() {
   renderBookingsPage();
 }
 
-// ── Google Calendar 同步 ────────────────────────────────
-let _bkHourlySyncScheduled = false;
-function scheduleHourlyCalendarSync() {
-  if (_bkHourlySyncScheduled) return;
-  _bkHourlySyncScheduled = true;
-  // First sync 60s after login (let initial data load finish), then every hour
-  setTimeout(() => syncFromCalendar(true), 60000);
-  setInterval(() => syncFromCalendar(true), 3600000);
+// nav 進入空間預約頁：showPage/renderBookingsPage 行為不變；若距上次讀取已超過 2 分鐘，
+// 背景靜默重讀一次最新資料再重繪（不卡畫面，失敗忽略）。
+function _bkNavOpen(el) {
+  showPage('page-bookings', el);
+  renderBookingsPage();
+  if (Date.now() - _bkLastLoadAt > 2 * 60 * 1000) {
+    loadBookings().then(renderBookingsPage).catch(() => {});
+  }
 }
+
+// ── Google Calendar 同步 ────────────────────────────────
+// 定時同步已移至後端 GAS trigger（runGcSyncTick，見 dev/Code.gs），不再依賴前端分頁開著；
+// 手動「與Google日曆同步」按鈕仍呼叫下方 syncFromCalendar() 本體，行為不變。
 
 function _buildBkExpectedTitle(b) {
   const room = b.room === '其他' ? (b.customRoom || '其他') : (b.room || '');
@@ -32967,7 +32994,9 @@ function _bkShowSeriesRepeatEditable(b) {
 
 // prefill：由格子雙擊帶入（見 _bkCellDblClick）時提供 { room, date }，指定該空間／日期；
 // 未提供時（如點頁面上方「＋新增預約」按鈕）日期一律預設為今天（本地時區），不沿用目前檢視中瀏覽到的日期。
-function openBookingModal(prefillCaseId, prefill) {
+async function openBookingModal(prefillCaseId, prefill) {
+  // 開窗前先拉最新資料，避免對著過時畫面新增而撞期；讀取失敗則沿用記憶體既有資料照常開窗。
+  try { await loadBookings(); } catch (_) { /* 沿用記憶體資料 */ }
   _editingBookingId = null;
   _bkSkipPersonConflict = false;
   _bkSelectedOpts = [];
@@ -32999,9 +33028,15 @@ function openBookingModal(prefillCaseId, prefill) {
   _bkUpdateScopeInfo();
 }
 
-function editBooking(id) {
+async function editBooking(id) {
+  // 開窗前先拉最新資料：確保看到的是他人最新變更，且能偵測該筆是否已被刪除。
+  try { await loadBookings(); } catch (_) { /* 讀取失敗，沿用記憶體既有資料 */ }
   const b = bookingsData.find(x => x.id === id);
-  if (!b) return;
+  if (!b) {
+    alert('此預約已被其他使用者刪除，清單已更新。');
+    renderBookingsPage();
+    return;
+  }
   _bkSkipPersonConflict = false;
   _editingBookingId = id;
   document.getElementById('booking-modal-title').textContent = '編輯預約';
