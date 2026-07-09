@@ -9164,6 +9164,10 @@ function _setDetailSemFilter(val, caseId) {
 }
 function _switchCaseSem(sem, caseId) {
   const sy = window.scrollY;
+  // B5 修正：同案號內點學期 chip 切換檢視也要稽核（v152 只涵蓋跨案號的「歷年學期」nav）；點當前學期不記
+  if (sem !== _caseDetailActiveSem) {
+    try { auditLog('查閱個案—切換學期檢視', caseId, null, `切換至 ${semesterLabel(sem)}（案號 ${caseId}）`); } catch (_) {}
+  }
   _caseDetailMode = 'semester';
   _caseDetailActiveSem = sem;
   _detailSemFilter = 'current';
@@ -9905,8 +9909,12 @@ async function showCaseDetail(caseId) {
   }
   if (_detailCaseId !== caseId) { _recPage = 1; _detailCaseId = caseId; _caseDetailActiveSem = null; _caseDetailMode = 'semester'; _caseDetailPsychIdx = 0; _detailSemFilter = 'current'; _viewedSectionsThisDetail = new Set(); /* #10：換個案時重設區塊查閱去重 */ }
   _recSortDesc = _userPref_('recSortDesc', false);
-  // 危機唯讀檢視：非危機途徑本就看不到、但今日有危機授權 → 唯讀 + 記錄閱讀
-  const _crisisView = !_caseNormallyAccessible(c) && _hasCrisisGrant(c.id);
+  // 危機唯讀檢視：非危機途徑本就看不到、但今日有危機授權 → 唯讀。
+  // B5 修正：「記錄閱讀」與「唯讀」語義分離——主任/管理者因 _caseNormallyAccessible 恆 true，
+  // 舊條件使其經危機閱讀開啟個案時完全不留閱讀紀錄（#13-4 本意是特權身份同樣受監督）。
+  // 改為只要今日有危機授權（授權只會因走過危機閱讀申請而存在）就記錄閱讀；唯讀判定維持原條件不變。
+  const _crisisRead = _hasCrisisGrant(c.id);
+  const _crisisView = !_caseNormallyAccessible(c) && _crisisRead;
   _detailReadOnly = _crisisView;
   const _relatedCases = _getRelatedCases(caseId);
   const _hasRelated = _relatedCases.length > 1;
@@ -9920,7 +9928,7 @@ async function showCaseDetail(caseId) {
     _caseDetailActiveSem = openDateToSemPrefix(c.openDate);
   }
   const _activeSem = _caseDetailActiveSem;
-  if (_crisisView) _logCrisisRead(c, _activeSem); // 區塊級閱讀記錄（session 節流）
+  if (_crisisRead) _logCrisisRead(c, _activeSem); // 區塊級閱讀記錄（session 節流）；含主任/管理者（B5 修正）
   // Per-semester snapshot: use snapshot data if available, otherwise fall back to case
   const _snapData = (c.basicInfoSnapshots && _activeSem && c.basicInfoSnapshots[_activeSem]) || null;
   const _cd = (field) => (_snapData !== null && _snapData[field] !== undefined) ? _snapData[field] : c[field];
@@ -26863,6 +26871,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-09', v: 153, title: 'v152 驗證回饋修正：學期chip切換稽核補漏、主任/管理者危機閱讀留紀錄', isProd: false, items: [
+      item('修正', 'B5-1：v152 的「切換學期檢視」稽核只涵蓋跨案號的「歷年學期」導覽，同一案號內點學期 chip 切換（新架構主要切換方式）沒有記錄；已補上（點當前學期不重複記）'),
+      item('修正', 'B5-2：主任/管理者透過危機個案閱讀開啟個案時，「同仁個案閱讀監督」完全沒有留下閱讀紀錄——舊判定「非正常途徑可存取才記錄」對特權身份恆不成立；改為只要當日有危機閱讀授權就記錄閱讀軌跡（唯讀與否的判定維持不變，不影響特權身份的編輯權）'),
+    ]},
     { date: '2026-07-09', v: 152, title: 'v150 驗證回饋修正：個案資料載入提示改置中、展開紀錄與切換學期補稽核', isProd: false, items: [
       item('改善', 'B4：「察看個案資料與過去紀錄」點入封存／舊學期個案時的「◯◯◯個案資料載入中」提示，原本走右下角綠色 toast 且要等記錄查閱理由的 Drive 寫入完成（約2秒延遲）才出現；改為點擊當下（任何 await 之前）就同步顯示置中半透明遮罩，讀取完成或失敗都會自動關閉'),
       item('新功能', 'B5：個案詳細頁展開晤談紀錄／事件處理記錄／精神科醫師評估／初次晤談表時，逐筆記入稽核（不去重，每次展開都記），detail 附上該筆紀錄的日期時間；收合不記錄'),
