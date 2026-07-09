@@ -9385,6 +9385,25 @@ function _caseSems(c) {
 function _caseHasSem(c, sem) {
   return _caseSems(c).some(k => _semKeyBase(k) === sem);
 }
+// 個案架構重構 Slice 4：統計雙指標——服務學生數 vs 開案人次。
+// 一學生一案號後，casesData 筆數＝不重複學生數；但同一學生可能跨多學期開案（甚至同學期 #N 重複開案），
+// 與歷史報表（每學期開案各算一件）比較時需要「開案人次」而非「學生數」。
+// semFilter 為 falsy（未篩選學期）：students=全部符合篩選條件的個案（學生）數；openings=所有學期開案人次總和（含 #N）。
+// semFilter 為某學期 base key：students=該學期有開案的學生數；openings=該學期開案人次（含同學期 #N 重複開案）。
+function _statCaseCounts(cases, semFilter) {
+  let students = 0, openings = 0;
+  (cases || []).forEach(c => {
+    const sems = _caseSems(c);
+    if (semFilter) {
+      const matched = sems.filter(k => _semKeyBase(k) === semFilter).length;
+      if (matched > 0) { students++; openings += matched; }
+    } else {
+      students++;
+      openings += sems.length;
+    }
+  });
+  return { students, openings };
+}
 // #8：個案相對「本學期」的開案狀態徽章（本學期開案中／有開案但已結案／有開案但已封存／未開案）。
 // 共用於個案列表（完整搜尋時）、危機個案閱讀、案號查詢管理三處。
 function _semStatusBadgeHtml(c) {
@@ -26748,7 +26767,9 @@ async function renderStats() {
   const now = new Date();
   const thisMonth = now.toISOString().slice(0, 7);
 
-  const total        = visible.length;
+  // Slice 4：雙指標——服務學生數（不重複個案記錄）與開案人次（依學期展開，含 #N 重複開案）。
+  // overview 分頁本身無學期篩選 UI，故傳 null（= 全部學期）。
+  const ovCounts     = _statCaseCounts(visible, null);
   const active       = visible.filter(c => c.status !== 'closed').length;
   const closed       = visible.filter(c => c.status === 'closed').length;
   const newThisMonth = visible.filter(c => (c.createdAt || '').slice(0, 7) === thisMonth).length;
@@ -26873,7 +26894,7 @@ async function renderStats() {
     ).join('');
     const totalsRow = `<tr style="background:#edf2f7;border-top:2px solid #cbd5e0;"><td style="padding:6px 10px;font-size:.82rem;font-weight:700;white-space:nowrap;border-right:1px solid #e2e8f0;">合計</td>${totalCols}</tr>`;
     return `<div style="overflow-x:auto;">
-      <p style="font-size:.8rem;color:#718096;margin:0 0 8px 0;">格式：<strong>人數 / 人次</strong>（人數為當月不重複個案數；合計人數為期間不重複個案總數）</p>
+      <p style="font-size:.8rem;color:#718096;margin:0 0 8px 0;">格式：<strong>人數 / 人次</strong>（人數為當月不重複學生數；合計人數為期間不重複學生總數）</p>
       <table style="width:100%;border-collapse:collapse;min-width:520px;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">
         <thead><tr style="background:#edf2f7;">
           <th style="padding:7px 10px;text-align:left;font-size:.79rem;font-weight:600;min-width:50px;border-bottom:2px solid #e2e8f0;border-right:1px solid #e2e8f0;">月份</th>${hdr}</tr></thead>
@@ -27064,28 +27085,33 @@ async function renderStats() {
 
   const _overviewHtml = `
     <div class="stats-cards">
-      <div class="stats-card"><div class="stats-num">${total}</div><div class="stats-lbl">可檢視個案</div></div>
-      <div class="stats-card"><div class="stats-num" style="color:#2980b9;">${active}</div><div class="stats-lbl">進行中</div></div>
-      <div class="stats-card"><div class="stats-num" style="color:#718096;">${closed}</div><div class="stats-lbl">已結案</div></div>
-      <div class="stats-card"><div class="stats-num" style="color:#27ae60;">${newThisMonth}</div><div class="stats-lbl">本月新增</div></div>
+      <div class="stats-card" data-tip="服務學生：不重複學生數（一學生一案號，即可檢視的個案記錄數）。&#10;開案人次：依學期展開加總，每學期開案（含同學期重複開案 #N）各算 1 人次，可與歷史報表對照。">
+        <div class="stats-num">${ovCounts.students}</div>
+        <div class="stats-lbl">服務學生（人）</div>
+        <div style="font-size:.76rem;color:#a0aec0;margin-top:4px;">開案 ${ovCounts.openings} 人次</div>
+      </div>
+      <div class="stats-card"><div class="stats-num" style="color:#2980b9;">${active}</div><div class="stats-lbl">進行中（學生）</div></div>
+      <div class="stats-card"><div class="stats-num" style="color:#718096;">${closed}</div><div class="stats-lbl">已結案（學生）</div></div>
+      <div class="stats-card"><div class="stats-num" style="color:#27ae60;">${newThisMonth}</div><div class="stats-lbl">本月新增（學生）</div></div>
       <div class="stats-card"><div class="stats-num" style="color:#8e44ad;">${totalSessions}</div><div class="stats-lbl">總晤談次數</div></div>
     </div>
+    <p style="font-size:.78rem;color:#a0aec0;margin:-10px 0 16px;">※ 歷史資料完成合併遷移前，同一學生可能仍有多筆個案記錄，服務學生數可能略高於實際；開案人次不受影響。</p>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px;">
       <div class="card">
-        <div class="card-header"><h3>依案件類型</h3></div>
+        <div class="card-header"><h3>依案件類型（學生數）</h3></div>
         <div style="padding:16px;">
           ${sortedEntries(byType).map(([k,v]) => mkBar(k, v, typeMax, '#3498db')).join('') || '<p style="color:#a0aec0;font-size:.85rem;">暫無資料</p>'}
         </div>
       </div>
       <div class="card">
-        <div class="card-header"><h3>依主責人員</h3></div>
+        <div class="card-header"><h3>依主責人員（學生數）</h3></div>
         <div style="padding:16px;">
           ${sortedEntries(byCounselor).map(([k,v]) => mkBar(k, v, counselorMax, '#9b59b6')).join('') || '<p style="color:#a0aec0;font-size:.85rem;">暫無資料</p>'}
         </div>
       </div>
     </div>
     <div class="card" style="margin-bottom:20px;">
-      <div class="card-header"><h3>近 6 個月開案趨勢</h3></div>
+      <div class="card-header"><h3 data-tip="以個案記錄建立時間（首次開案）分組，計「新增學生」數；學生於既有案號下跨學期重複開案不會重複計入">近 6 個月新增學生趨勢</h3></div>
       <div style="padding:16px;">
         ${months.map(m => mkBar(parseInt(m.slice(5)) + ' 月', byMonth[m], monthMax, '#27ae60')).join('')}
       </div>
@@ -27403,6 +27429,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-10', v: 158, title: '個案架構重構 Slice 4：統計雙指標——服務學生數與開案人次並列', isProd: false, items: [
+      item('新功能', '統計分析頁「個案概況」主要數字卡改為雙指標並列：服務學生（不重複學生數）與開案人次（依學期展開加總，同學期重複開案 #N 各算 1 人次），hover 顯示兩者定義；開案人次可與一學生一案號重構前的歷史報表對照'),
+      item('改善', '「進行中」「已結案」「本月新增」等其他統計卡與「依案件類型」「依主責人員」圖表標註為「學生數」語義；「近 6 個月開案趨勢」更名為「近 6 個月新增學生趨勢」並附註計算基準（個案記錄建立時間），避免與開案人次混淆；服務狀況統計表格說明文字「個案數」改為「學生數」（計算方式不變，僅澄清語義）'),
+      item('改善', '統計頁新增小字提示：歷史資料完成合併遷移前，同一學生可能仍有多筆個案記錄，服務學生數可能略高於實際，開案人次不受影響'),
+      item('技術', '新增純函式 _statCaseCounts(cases, semFilter)：未篩選學期時回傳全部學生數與學期開案人次總和；篩選特定學期時回傳該學期有開案的學生數與該學期人次（含 #N），供統計頁與未來報表共用；新增 9 個單元測試涵蓋單學期／多學期／同學期重複開案／學期篩選／空資料'),
+    ]},
     { date: '2026-07-10', v: 157, title: '個案架構重構 Slice 3：chunk 與案號脫鉤（active/cold 分塊）', isProd: false, items: [
       item('新功能', 'chunk 歸屬與案號（首次開案學期）脫鉤：新增「案號查詢與管理」管理卡「個案重新分塊」——手動觸發後，本學期開案中的活躍個案集中到少數 active-NN chunk，其餘依最後活動學年歸檔為 cold-{學年}-N chunk（每塊 ≤20 案），解決舊制下活躍個案散落各學年 chunk、啟動要下載的「使用中」chunk 壓不下來的問題（實測 66/109）'),
       item('改善', 'cases-index.json 每筆新增 chunk 欄位記錄歸屬；getCaseChunkName 優先讀取歸屬記錄，沒有記錄（尚未重新分塊）則完全沿用現行案號推導公式，重新分塊前系統行為不變'),
