@@ -8100,7 +8100,7 @@ function toggleRecordExpand(rid) {
     _loadRecordImages(rid);
     // #10：展開紀錄卡片 → 依卡片所屬區塊記錄查閱（晤談紀錄／精神科醫師評估／初次晤談表）
     try {
-      const dc = (window.casesData || []).find(c => c.id === window._detailCaseId);
+      const dc = (casesData || []).find(c => c.id === _detailCaseId); // 修正：用模組變數
       if (dc) {
         const bare = String(rid).replace(/^rec-card-/, '');
         let label = '個案紀錄';
@@ -9023,7 +9023,7 @@ async function clearUserPin(key) {
 // 轉入「非上班時間監督」共享 feed，並全部進稽核日誌頁（動作含「查閱個案」關鍵字→歸「個案列表」類）。
 let _viewedSectionsThisDetail = new Set();
 function _auditCaseSectionView(label) {
-  const cid = window._detailCaseId;
+  const cid = _detailCaseId; // 修正：用模組變數（showCaseDetail 設的是 _detailCaseId，非 window._detailCaseId）
   if (!cid || !label) return;
   const key = cid + '|' + label;
   if (_viewedSectionsThisDetail.has(key)) return;
@@ -9032,6 +9032,37 @@ function _auditCaseSectionView(label) {
 }
 // 個案詳細頁的敏感區塊關鍵字（section 標題含其一才記錄，避免基本資料等一般區塊灌爆）
 const _AUDIT_SENSITIVE_SECTIONS = ['BSRS', '心理測驗', '精神科', '結案', '學期評估', '轉銜', '身心調適', '事件處理'];
+
+// #9c/#10：只有「敏感查閱」才做進入＋捲動級細緻稽核——非上班/非排班時段（#10）或查閱非主責/個管個案（#9）。
+// （一般同仁在上班時間看自己的個案不細記，避免稽核灌爆。）
+function _shouldAuditDetailViewing(c) {
+  if (!c) return false;
+  try { if (_isOffDutyNow(currentUser?.email)) return true; } catch (_) {}
+  const allowedSet = new Set(configData?.users?.[currentUser?.email]?.allowedCases || []);
+  return !_caseVisibleToUser(c, currentUser?.email, allowedSet);
+}
+let _detailScrollObserver = null;
+// 進入詳細頁即記「查閱基本資料」；並以 IntersectionObserver 記錄捲動時看到的各敏感區塊（不必展開）。
+function _setupDetailViewAudit(caseId) {
+  if (_detailScrollObserver) { try { _detailScrollObserver.disconnect(); } catch (_) {} _detailScrollObserver = null; }
+  const c = (casesData || []).find(x => x.id === caseId);
+  if (!c || !_shouldAuditDetailViewing(c)) return;
+  _auditCaseSectionView('進入詳細頁·查閱基本資料');
+  if (typeof IntersectionObserver === 'undefined') return;
+  _detailScrollObserver = new IntersectionObserver(entries => {
+    entries.forEach(en => {
+      if (!en.isIntersecting) return;
+      const titleEl = en.target.querySelector('.form-section-title') || en.target.querySelector('.rec-section-label');
+      const label = titleEl ? titleEl.textContent.replace(/[▲▼]/g, '').trim() : '';
+      if (label && _AUDIT_SENSITIVE_SECTIONS.some(k => label.includes(k))) _auditCaseSectionView('捲動查閱·' + label);
+    });
+  }, { threshold: 0.35 });
+  // 詳細頁 DOM 已由 showPage 顯示；稍候觀察各區塊（mkSection 產生的 .form-section）
+  setTimeout(() => {
+    if (!_detailScrollObserver) return;
+    document.querySelectorAll('#page-case-detail .form-section').forEach(el => { try { _detailScrollObserver.observe(el); } catch (_) {} });
+  }, 300);
+}
 
 function toggleSection(id) {
   const el = document.getElementById(id);
@@ -9564,8 +9595,8 @@ function _switchCasePsychTest(idx, caseId) {
   const sy = window.scrollY;
   _caseDetailMode = 'psychtest';
   _caseDetailPsychIdx = idx;
-  // #10：檢視心理測驗結果報告 → 記錄查閱（showCaseDetail 內會重設 _detailCaseId，故先記）
-  window._detailCaseId = caseId;
+  // #10：檢視心理測驗結果報告 → 記錄查閱（此時 _detailCaseId 已是同一案）
+  _detailCaseId = caseId;
   _auditCaseSectionView('檢視心理測驗結果報告');
   showCaseDetail(caseId);
   requestAnimationFrame(() => window.scrollTo(0, sy));
@@ -9794,7 +9825,8 @@ async function showCaseDetail(caseId) {
   if (!c) return;
   // Cold case：列表只有 index 摘要，點開時 on-demand 載入完整 chunk
   if (c._indexOnly && !c._fullLoaded) {
-    showToast('此個案已封存，正在讀取資料，請稍候…', 'info');
+    // #9b：封存/舊學期個案 on-demand 載入較慢 → 顯示明確「載入中」遮罩（含個案姓名），讀取完成自動關閉
+    showLoading(`「${c.name || caseId}」個案資料載入中…`);
     const chunkName = getCaseChunkName(caseId);
     try {
       let data = await _ckLoadAny(chunkName).catch(() => null); // 先試 IndexedDB
@@ -9809,6 +9841,8 @@ async function showCaseDetail(caseId) {
       c._fullLoaded = true;
       showToast('讀取完整資料失敗，僅顯示摘要：' + e.message, 'warn');
       _syslog('warn', `cold case 載入失敗（${caseId}）：${e.message}`);
+    } finally {
+      hideLoading();
     }
   }
   if (_detailCaseId !== caseId) { _recPage = 1; _detailCaseId = caseId; _caseDetailActiveSem = null; _caseDetailMode = 'semester'; _caseDetailPsychIdx = 0; _detailSemFilter = 'current'; _viewedSectionsThisDetail = new Set(); /* #10：換個案時重設區塊查閱去重 */ }
@@ -10873,6 +10907,7 @@ async function showCaseDetail(caseId) {
   } catch (_) {}
 
   showPage('page-case-detail', null);
+  _setupDetailViewAudit(caseId); // #9c/#10：敏感查閱時記錄進入＋捲動看到的區塊
 }
 
 function _detailChangeCounselor(caseId) {
@@ -18926,7 +18961,7 @@ function _showViewCaseReasonModal(caseId) {
       <div class="modal-header"><h3>填寫閱讀理由</h3></div>
       <div class="modal-body" style="padding:12px 2px 8px;">
         <label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">閱讀個案資料的理由（必填，將公開於全體監督區並通知主責／個管）</label>
-        <textarea id="view-case-reason" class="field-input" rows="3" style="width:100%;" placeholder="例：協助處理該生之危機事件，需了解近期晤談與精神科評估"></textarea>
+        <textarea id="view-case-reason" class="field-input" rows="3" style="width:100%;" placeholder="例：原主責離職，個案前來預約，想確認是否是同一個案。"></textarea>
       </div>
       <div class="modal-footer" style="gap:8px;">
         <button class="btn btn-secondary" onclick="document.getElementById('view-case-reason-modal').remove()">取消</button>
