@@ -107,6 +107,7 @@ function doPost(e) {
       case 'attendanceCommit':     result = attendanceCommit_(params, ctx); break;
       case 'bookingsCommit':       result = bookingsCommit_(params, ctx); break;
       case 'listCommit':           result = listCommit_(params, ctx); break;
+      case 'notifCommit':          result = notifCommit_(params, ctx); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
     return jsonResp_(result);
@@ -1854,6 +1855,108 @@ function listCommit_(params, ctx) {
       driveUpload_(pn.fileName, data, pn.parentId);
     }
     return { ok: true, data: data };
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// ── 通知系統併發安全寫入（notifications.json，2026-07-09 事故延伸修復 v154）──
+// 原本 notifications 存在 configData.users[email].notifications，任何使用者收/發/讀通知都會觸發
+// 整份 config.json 覆寫（config 含全部使用者帳號與權限）：①兩則通知同時推播互相蓋掉
+// ②管理者改權限的瞬間撞上任何人的通知寫入會被蓋回。拆成獨立 notifications.json，
+// LockService 鎖內讀-改-寫，取代 config.json 作為通知的儲存位置——config.json 之後只剩低頻管理操作寫入。
+//
+// ops 元素（陣列，逐一套用）：
+//   { op:'push', email, notif }           — 若該 email 已有同 notif.id → 先移除再 unshift（取代語義）；裁切至 100 則
+//   { op:'markRead', email, id, readAt }  — 找到該則 → read=true, readAt
+//   { op:'markAllRead', email, readAt }   — 該 email 全部未讀 → read=true, readAt
+//   { op:'removeIds', email, ids }        — 移除指定 id 們
+//
+// 純函式：套用單一 op 到 users map（{ [email]: [notif,...] }），供測試就地抽出驗證。
+function _notifApplyOp_(users, op) {
+  if (!op || !op.email) return;
+  var email = op.email;
+  if (!Array.isArray(users[email])) users[email] = [];
+  var arr = users[email];
+  if (op.op === 'push') {
+    if (!op.notif || !op.notif.id) return;
+    var idx = arr.findIndex(function (n) { return n && n.id === op.notif.id; });
+    if (idx >= 0) arr.splice(idx, 1);
+    arr.unshift(op.notif);
+    if (arr.length > 100) users[email] = arr.slice(0, 100);
+  } else if (op.op === 'markRead') {
+    var n = arr.find(function (x) { return x && x.id === op.id; });
+    if (n) { n.read = true; n.readAt = op.readAt || new Date().toISOString(); }
+  } else if (op.op === 'markAllRead') {
+    arr.forEach(function (n) { if (n && !n.read) { n.read = true; n.readAt = op.readAt || new Date().toISOString(); } });
+  } else if (op.op === 'removeIds') {
+    var ids = {};
+    (op.ids || []).forEach(function (id) { if (id) ids[id] = true; });
+    users[email] = arr.filter(function (n) { return !(n && ids[n.id]); });
+  }
+}
+
+function notifCommit_(params, ctx) {
+  var ops = (params && params.ops) || [];
+  if (!ops.length) throw new Error('notifCommit: ops required');
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var file = 'notifications.json';
+    var fileId = null;
+    var data = null;
+    try { fileId = resolvePathToId_(file, ctx); } catch (_) { fileId = null; /* 檔不存在，稍後視為首次遷移 */ }
+    if (fileId) {
+      var res = UrlFetchApp.fetch(
+        'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+        { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+      );
+      if (res.getResponseCode() >= 400) {
+        throw new Error('notifCommit: 讀取 notifications.json 失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
+      }
+      data = JSON.parse(res.getContentText());
+      if (!data || typeof data.users !== 'object' || data.users === null || Array.isArray(data.users)) {
+        throw new Error('notifCommit: notifications.json 內容異常（users 非物件），已中止寫入以保護資料');
+      }
+    } else {
+      // 首次建檔＝一次性遷移：把 config.json 裡所有 users[email].notifications 複製進來作為初始內容，
+      // 再套用本次 ops。config.json 本身不動（殘留 notifications 欄位屬無害死資料，前端之後一律忽略）。
+      var users = {};
+      try {
+        var cfg = readJson_({ path: 'config.json' }, ctx);
+        if (cfg && cfg.users && typeof cfg.users === 'object') {
+          Object.keys(cfg.users).forEach(function (email) {
+            var u = cfg.users[email];
+            if (u && Array.isArray(u.notifications) && u.notifications.length) {
+              users[email] = u.notifications;
+            }
+          });
+        }
+      } catch (e) {
+        // config.json 讀取失敗不應永久卡住通知系統啟用；以空殼繼續（遺失既有通知的風險已相對次要——
+        // config.json 讀不到本身就是更嚴重的系統性問題）
+      }
+      data = { updatedAt: new Date().toISOString(), users: users };
+    }
+
+    var touched = {};
+    ops.forEach(function (op) {
+      _notifApplyOp_(data.users, op);
+      if (op && op.email) touched[op.email] = true;
+    });
+    data.updatedAt = new Date().toISOString();
+
+    if (fileId) {
+      driveUpdateContent_(fileId, data);
+    } else {
+      var pn = resolvePathToParentAndName_(file, ctx);
+      driveUpload_(pn.fileName, data, pn.parentId);
+    }
+
+    var result = {};
+    Object.keys(touched).forEach(function (email) { result[email] = data.users[email] || []; });
+    return { ok: true, touched: result };
   } finally {
     try { lock.releaseLock(); } catch (_) {}
   }

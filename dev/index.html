@@ -5921,6 +5921,7 @@ async function afterLogin() {
     loadAttendance().catch(() => {});
     loadLeaves().catch(() => {});
     loadPendingUsers().catch(() => {});
+    loadNotifications().then(() => renderNotifBell()).catch(() => {}); // 通知獨立檔（v154 拆自 config.json）
     loadAccessLog().catch(() => {}); // 危機閱讀監督 feed + 我今日的授權
     loadOffHoursLog().catch(() => {}); // 非上班時間監督 feed（主任/管理者/專任在待辦頁可見）
     loadGcErrorsCache().catch(() => {}); // GC 事件錯誤 feed（同上可見範圍）
@@ -6801,20 +6802,17 @@ async function _broadcastOffHoursSession(actorEmail, kind, actionText) {
       || u.isAdmin === true || u.extraRole === '管理者'
       || (typeof r === 'string' && r.startsWith('專任'));
     if (!isRecipient) return;
-    if (!u.notifications) u.notifications = [];
-    u.notifications.unshift({
+    _queueNotifPush(email, {
       id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
       type: 'off_hours_activity',
       message: msg,
       actorEmail, actorName: actor.name || actorEmail,
       createdAt: nowIso, read: false,
     });
-    _pruneOldReadNotifications(u);
-    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
     pushed++;
   });
   if (pushed) {
-    try { await driveUpdateJsonFile(CONFIG_FILE, configData); }
+    try { await _flushNotifOps(); }
     catch (e) { console.warn('off-hours broadcast save failed:', e); }
   }
 }
@@ -7474,12 +7472,86 @@ function resetCaseFilters() {
 
 // ══════════════════════════════════════════════
 //  通知系統
+//  2026-07-09 事故延伸修復 v154：notifications 原存在 configData.users[email].notifications，
+//  任何使用者收/發/讀通知都會觸發整份 config.json 覆寫（config 含全部使用者帳號與權限）——
+//  ①兩則通知同時推播互相蓋掉 ②管理者改權限的瞬間撞上任何人的通知寫入會被蓋回。
+//  拆成獨立 notifications.json＋後端 notifCommit（LockService 鎖內 ops 寫入），config.json
+//  之後只剩低頻管理操作寫入。首次任何人推播/標讀會觸發後端一次性遷移建檔；遷移前所有讀寫點皆
+//  fallback 回舊 configData 路徑，確保功能不中斷。
 // ══════════════════════════════════════════════
+let notifData = { users: {} };
+let _notifLoaded = false; // true＝notifications.json 已成功載入，_myNotifs()／pollNotifications 改吃它
+async function loadNotifications() {
+  const data = await driveReadJsonOptional('notifications.json');
+  if (data && data.users && typeof data.users === 'object') {
+    notifData = data;
+    _notifLoaded = true;
+  } else {
+    _notifLoaded = false; // 檔案不存在（尚未遷移）或讀取失敗 → 呼叫端一律 fallback 舊來源
+  }
+}
+// 目前使用者的通知陣列：notifications.json 已載入就用它，否則 fallback 舊來源（尚未遷移／讀取失敗）
+function _myNotifs() {
+  if (_notifLoaded) return notifData.users?.[currentUser?.email] || [];
+  return configData?.users?.[currentUser?.email]?.notifications || [];
+}
+
+// 同檔 commit 序列化（比照 _listCommit），避免同一分頁對 notifications.json 的多次 commit 交錯
+let _notifCommitChain = Promise.resolve();
+// 送出通知 ops 到後端（LockService 鎖內套用；首次呼叫觸發 config.json → notifications.json 一次性遷移）。
+// 成功 → 把回傳 touched 合併進 notifData.users（涉及自己時順帶 renderNotifBell()）。
+// 後端未部署（Unknown action）→ 回傳 {fallback:true}，呼叫端自行走舊路徑；其他錯誤（如 fail-closed 中止）原樣拋出。
+function _notifCommit(ops) {
+  const run = _notifCommitChain.then(async () => {
+    try {
+      const res = await proxyCall('notifCommit', { ops });
+      if (res && res.touched) {
+        Object.entries(res.touched).forEach(([email, arr]) => { notifData.users[email] = arr; });
+        _notifLoaded = true;
+        if (currentUser?.email && res.touched[currentUser.email] !== undefined) renderNotifBell();
+      }
+      return res;
+    } catch (e) {
+      if (/Unknown action/i.test(e.message || '')) return { fallback: true };
+      throw e;
+    }
+  });
+  _notifCommitChain = run.catch(() => {});
+  return run;
+}
+
+// ── 推播佇列：同一次操作常需推播給多個收件人／呼叫多次 addNotificationToUser，
+//    收集後統一呼叫一次 _flushNotifOps，避免同一操作多次鎖等待 ──
+let _pendingNotifOps = [];
+function _queueNotifPush(email, notif) {
+  _pendingNotifOps.push({ op: 'push', email, notif });
+}
+// flush：送出本次累積的 ops。fallback（後端未部署）時套用到 configData in-memory，沿用舊「已讀存 7 天
+// 後自動永久移除＋上限 100 筆」慣例；呼叫端仍需自行寫回 config.json（沿用遷移前既有流程，確保功能不中斷）。
+async function _flushNotifOps() {
+  const ops = _pendingNotifOps;
+  _pendingNotifOps = [];
+  if (!ops.length) return { pushed: 0 };
+  const res = await _notifCommit(ops);
+  if (res && res.fallback) {
+    ops.forEach(o => {
+      const u = configData?.users?.[o.email];
+      if (!u) return;
+      if (!Array.isArray(u.notifications)) u.notifications = [];
+      const i = u.notifications.findIndex(n => n.id === o.notif.id);
+      if (i >= 0) u.notifications.splice(i, 1);
+      u.notifications.unshift(o.notif);
+      _pruneOldReadNotifications(u);
+      if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
+    });
+    return { pushed: ops.length, fallback: true };
+  }
+  return { pushed: ops.length };
+}
+
 function addNotificationToUser(toEmail, type, caseId, caseName, customMsg) {
   if (!toEmail || !configData?.users?.[toEmail]) return false;
   if (toEmail === currentUser?.email) return false;
-  const user = configData.users[toEmail];
-  if (!user.notifications) user.notifications = [];
   const msgs = {
     assigned_counselor:       `您已被指派為個案「${caseName}（${caseId}）」的主責輔導人員`,
     assigned_manager:         `您已被委任為個案「${caseName}（${caseId}）」的個案管理員`,
@@ -7488,19 +7560,17 @@ function addNotificationToUser(toEmail, type, caseId, caseName, customMsg) {
     unassigned_record_match:  `未歸屬輔導記錄找到可能對應的個案「${caseName}（${caseId}）」，請至未歸屬記錄管理頁確認`,
     new_issue:                `新的錯誤回報/許願池 #${String(caseName).padStart(3,'0')}，請至錯誤回報/許願池頁面查看`,
   };
-  user.notifications.unshift({
+  _queueNotifPush(toEmail, {
     id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
     type, caseId, caseName,
     message: customMsg || msgs[type] || type,
     createdAt: new Date().toISOString(),
     read: false,
   });
-  // 已讀存 7 天後自動永久移除；同時保留上限 100 筆
-  _pruneOldReadNotifications(user);
-  if (user.notifications.length > 100) user.notifications = user.notifications.slice(0, 100);
   return true;
 }
-// 已讀通知：readAt 超過 7 天後自動永久移除
+// 已讀通知：readAt 超過 7 天後自動永久移除（僅 fallback 路徑使用；notifCommit 後端 push 目前只裁切 100 筆上限，
+// 不做 7 天已讀清除——遷移後這項資料衛生行為暫時只在尚未部署 notifCommit 的過渡期生效，屬已知簡化）
 function _pruneOldReadNotifications(user) {
   if (!user?.notifications?.length) return;
   const cutoff = Date.now() - 7 * 86400 * 1000;
@@ -7633,7 +7703,7 @@ function _syncBellBadge() {
   const bell   = document.getElementById('notif-bell');
   if (!badge) return;
   if (bell) bell.style.display = 'flex';
-  const notifs  = configData?.users?.[currentUser?.email]?.notifications || [];
+  const notifs  = _myNotifs();
   const unread  = notifs.filter(n => !n.read).length + (_updateAvailable ? 1 : 0);
   const failed  = _bgJobs.filter(j => j.state === 'failed').length;
   const running = _bgJobs.filter(j => j.state === 'running').length;
@@ -7738,7 +7808,7 @@ function toggleNotifPanel() {
   panel.style.display = 'block';
   renderNotifList(); renderJobList();
   // 自動切換到有紅色項目的分頁（提醒 > 工作執行 > 待辦）
-  const _unread = (configData?.users?.[currentUser?.email]?.notifications || []).filter(n => !n.read).length + (_updateAvailable ? 1 : 0);
+  const _unread = _myNotifs().filter(n => !n.read).length + (_updateAvailable ? 1 : 0);
   const _failed = _bgJobs.filter(j => j.state === 'failed').length;
   const _running = _bgJobs.filter(j => j.state === 'running').length;
   const _todoUnread = todosData.filter(t => !t.notifRead && !t.done).length;
@@ -7749,7 +7819,7 @@ function toggleNotifPanel() {
 }
 
 function renderNotifList() {
-  const notifs = configData?.users?.[currentUser?.email]?.notifications || [];
+  const notifs = _myNotifs();
   const list = document.getElementById('notif-list');
   if (!list) return;
   const updateBanner = _updateAvailable ? `
@@ -7839,31 +7909,27 @@ window._mlAcknowledgeAll = async (ids) => {
 };
 
 async function notifDismiss(notifId) {
-  const me = configData?.users?.[currentUser?.email];
-  if (!me?.notifications) return;
-  const n = me.notifications.find(x => x.id === notifId);
-  if (n) {
-    n.read = true;
-    if (!n.readAt) n.readAt = new Date().toISOString();
-    renderNotifBell(); renderNotifList();
-    driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
-  }
+  const n = _myNotifs().find(x => x.id === notifId);
+  if (!n) return;
+  n.read = true;
+  if (!n.readAt) n.readAt = new Date().toISOString();
+  renderNotifBell(); renderNotifList();
+  const res = await _notifCommit([{ op: 'markRead', email: currentUser.email, id: notifId, readAt: n.readAt }]);
+  if (res && res.fallback) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
 }
 
 async function notifClick(notifId, caseId) {
-  const me = configData?.users?.[currentUser?.email];
-  if (me?.notifications) {
-    const n = me.notifications.find(x => x.id === notifId);
-    if (n && !n.read) {
-      n.read = true;
-      n.readAt = new Date().toISOString();
-      renderNotifBell();
-      renderNotifList();
-      driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
-    }
+  const n = _myNotifs().find(x => x.id === notifId);
+  if (n && !n.read) {
+    n.read = true;
+    n.readAt = new Date().toISOString();
+    renderNotifBell();
+    renderNotifList();
+    const res = await _notifCommit([{ op: 'markRead', email: currentUser.email, id: notifId, readAt: n.readAt }]);
+    if (res && res.fallback) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
   }
   if (!caseId) return;
-  const notif = configData?.users?.[currentUser?.email]?.notifications?.find(x => x.id === notifId);
+  const notif = _myNotifs().find(x => x.id === notifId);
   if (notif?.type === 'unassigned_record_match') {
     const navEl = document.querySelector('[data-nav-id="page-unassigned-records"]');
     showPage('page-unassigned-records', navEl);
@@ -7885,13 +7951,14 @@ async function notifClick(notifId, caseId) {
 }
 
 async function markAllNotifRead() {
-  const me = configData?.users?.[currentUser?.email];
-  if (!me?.notifications?.length) return;
+  const notifs = _myNotifs();
+  if (!notifs.length) return;
   const nowIso = new Date().toISOString();
-  me.notifications.forEach(n => { if (!n.read) { n.read = true; n.readAt = nowIso; } });
+  notifs.forEach(n => { if (!n.read) { n.read = true; n.readAt = nowIso; } });
   renderNotifBell();
   renderNotifList();
-  await driveUpdateJsonFile(CONFIG_FILE, configData);
+  const res = await _notifCommit([{ op: 'markAllRead', email: currentUser.email, readAt: nowIso }]);
+  if (res && res.fallback) await driveUpdateJsonFile(CONFIG_FILE, configData);
 }
 
 // ── 列印/PDF 共用 helper ──────────────────────────────────────────────────
@@ -8070,6 +8137,17 @@ ${PRINT_RICH_LIST_CSS}
 async function pollNotifications() {
   if (!currentUser?.email || !configData) return;
   try {
+    // 主路徑：notifications.json 獨立輪詢（v154），檔案小、頻率不變
+    const freshNotif = await driveReadJsonOptional('notifications.json');
+    if (freshNotif && freshNotif.users && typeof freshNotif.users === 'object') {
+      notifData = freshNotif;
+      _notifLoaded = true;
+      renderNotifBell();
+      const panel = document.getElementById('notif-panel');
+      if (panel && panel.style.display === 'block') renderNotifList();
+      return;
+    }
+    // fallback：notifications.json 尚未遷移建檔（尚未有人呼叫過 notifCommit）→ 沿用舊讀 config 邏輯
     const fresh = await driveReadJson(CONFIG_FILE);
     if (!fresh?.users) return;
     const freshCount   = Object.keys(fresh.users).length;
@@ -8930,9 +9008,8 @@ async function _migrateUserEmail(oldEmail, newEmail, entryPatches = {}, opts = {
       ? `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 清空（改為無 Gmail 帳號）${_actorTag}`
       : `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 更改為 ${newEmail}${_actorTag}`;
     const nowIso = new Date().toISOString();
-    Object.entries(configData.users).forEach(([email, u]) => {
-      if (!u.notifications) u.notifications = [];
-      u.notifications.unshift({
+    Object.keys(configData.users).forEach(email => {
+      _queueNotifPush(email, {
         id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
         type: 'gmail_changed',
         message: gmailNoticeMsg,
@@ -8941,13 +9018,11 @@ async function _migrateUserEmail(oldEmail, newEmail, entryPatches = {}, opts = {
         createdAt: nowIso,
         read: false,
       });
-      _pruneOldReadNotifications(u);
-      if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
     });
     bgJobProgress(jobId, 55);
 
-    // 4. 儲存 configData（一次 Drive 寫入，含所有通知）
-    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    // 4. 儲存 configData（使用者 key 遷移）＋ notifications.json（廣播通知，v154 已拆出獨立檔）
+    await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
     bgJobProgress(jobId, 70);
 
     // 5. 儲存受影響的個案 chunks（無則跳過）
@@ -11099,7 +11174,7 @@ async function addCaseManager(caseId) {
   showLoading('儲存個案管理員…');
   const jobId = bgJobAdd(`新增個案管理員：${email}`);
   try {
-    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
     bgJobDone(jobId);
     renderNotifBell();
     auditLog(`新增個案管理員 ${email}`, caseId);
@@ -11128,7 +11203,7 @@ async function removeCaseManager(caseId, email) {
   showLoading('移除個案管理員…');
   const jobId = bgJobAdd(`移除個案管理員：${email}`);
   try {
-    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
     bgJobDone(jobId);
     auditLog(`移除個案管理員 ${email}`, caseId);
     hideLoading();
@@ -11191,7 +11266,7 @@ async function addCaseManagerInDetail(caseId) {
   showLoading('儲存個案管理員…');
   const jobId = bgJobAdd(`新增個案管理員：${email}`);
   try {
-    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
     bgJobDone(jobId);
     renderNotifBell();
     auditLog(`新增個案管理員 ${email}`, caseId);
@@ -14074,13 +14149,11 @@ async function saveClosureEval() {
     const evalTypeLabel = isClosure ? '結案評估' : '學期評估';
     const directors = Object.entries(configData?.users || {})
       .filter(([, u]) => u.role === '主任').map(([email]) => email);
-    let notified = false;
     directors.forEach(email => {
-      const sent = addNotificationToUser(email, 'closure_high_risk', caseId, caseName,
+      addNotificationToUser(email, 'closure_high_risk', caseId, caseName,
         `個案「${caseName}（${caseId}）」${evalTypeLabel}為${light}，請注意後續關懷`);
-      if (sent) notified = true;
     });
-    if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    _flushNotifOps().catch(() => {});
   }
 
   // 背景儲存
@@ -19083,19 +19156,15 @@ function _notifyCaseOwnersOfView(c, reason, isCrisis) {
   const actorName = configData?.users?.[currentUser.email]?.name || currentUser.name || currentUser.email;
   const msg = `⚠ ${actorName} 查閱了個案「${c.name || c.id}」（${isCrisis ? '危機個案閱讀' : '一般閱讀'}）的完整資料。理由：${reason}`;
   const nowIso = new Date().toISOString();
-  let changed = false;
   owners.forEach(email => {
-    const u = configData?.users?.[email]; if (!u) return;
-    if (!Array.isArray(u.notifications)) u.notifications = [];
-    u.notifications.unshift({
+    if (!configData?.users?.[email]) return;
+    _queueNotifPush(email, {
       id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       type: 'case_viewed_by_other', message: msg, caseId: c.id,
       actorEmail: currentUser.email, createdAt: nowIso, read: false,
     });
-    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
-    changed = true;
   });
-  if (changed) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  _flushNotifOps().catch(() => {});
 }
 
 function _showEmgRelChips() { _filterEmgRelChips(document.getElementById('nc-emg-relation')?.value || ''); }
@@ -19523,8 +19592,10 @@ async function saveCase() {
       await saveCasesChunks(_editingCaseId, newCase.id);
       let cfgChanged = syncManagersFromForm(newCase.id, _editingCaseId);
       if (counselorEmail && counselorEmail !== currentUser.email && counselorEmail !== oldCounselorEmail)
-        cfgChanged = addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name) || cfgChanged;
-      if (cfgChanged) { await driveUpdateJsonFile(CONFIG_FILE, configData); renderNotifBell(); }
+        addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name);
+      if (cfgChanged) await driveUpdateJsonFile(CONFIG_FILE, configData);
+      await _flushNotifOps();
+      renderNotifBell();
       auditLog('編輯個案', newCase.id, null, semesterLabel(_editSem) + '學期基本資料');
       document.getElementById('btn-save-case').disabled = false;
       hideLoading();
@@ -19605,7 +19676,7 @@ async function saveCase() {
         addNotificationToUser(counselorEmail, 'assigned_counselor', target.id, target.name);
       }
       await saveCasesChunks(target.id);
-      await driveUpdateJsonFile(CONFIG_FILE, configData);
+      await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
       renderNotifBell();
       if (window._transferPendingLink) {
         const _tIdx = transferData.findIndex(t => t.id === window._transferPendingLink);
@@ -19640,8 +19711,10 @@ async function saveCase() {
       await saveCasesChunks(newCase.id);
       let cfgChanged = syncManagersFromForm(newCase.id, null);
       if (counselorEmail && counselorEmail !== currentUser.email)
-        cfgChanged = addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name) || cfgChanged;
-      if (cfgChanged) { await driveUpdateJsonFile(CONFIG_FILE, configData); renderNotifBell(); }
+        addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name);
+      if (cfgChanged) await driveUpdateJsonFile(CONFIG_FILE, configData);
+      await _flushNotifOps();
+      renderNotifBell();
       // 若從轉銜管理「建立個案」進入，自動連結轉銜紀錄
       if (window._transferPendingLink) {
         const _tIdx = transferData.findIndex(t => t.id === window._transferPendingLink);
@@ -20396,16 +20469,14 @@ function _checkPastSemUnclosedForDirectors() {
   if (!unclosedSems.size) return;
   const semList = [...unclosedSems].sort().map(s => semesterLabel(s)).join('、');
   const notifKey = `past_sem_unclosed_${[...unclosedSems].sort().join('_')}`;
-  if (!me.notifications) me.notifications = [];
-  if (!me.notifications.find(n => n.id === notifKey && !n.read)) {
-    me.notifications = me.notifications.filter(n => n.id !== notifKey);
-    me.notifications.unshift({
+  if (!_myNotifs().find(n => n.id === notifKey && !n.read)) {
+    _queueNotifPush(currentUser.email, {
       id: notifKey, type: 'past_sem_unclosed', caseId: '', caseName: '',
       message: `提醒：${semList} 學期仍有個案尚未完成結案評估，請確認是否需要處理。`,
       createdAt: new Date().toISOString(), read: false,
     });
+    _flushNotifOps().catch(() => {});
     renderNotifBell();
-    driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
   }
   // 建立/更新 todo 項目（讓左側 badge 顯示）
   const todoKey = `unclosed_reminder_${[...unclosedSems].sort().join('_')}`;
@@ -21413,8 +21484,8 @@ window._mlToggleSection = function() {
   _renderMlNotifSection();
 };
 
-// 待辦頁「重大事件」區塊：拉 configData notifications 中的重大類型顯示（如 Gmail 變更、非上班時間活動）
-// 資料來源與鈴鐺同一份（configData.users[me].notifications），無需額外 Drive 寫入
+// 待辦頁「重大事件」區塊：拉通知中的重大類型顯示（如 Gmail 變更、非上班時間活動）
+// 資料來源與鈴鐺同一份（_myNotifs()，v154 起為獨立 notifications.json），無需額外 Drive 寫入
 const MAJOR_EVENT_NOTIF_TYPES = new Set(['gmail_changed', 'off_hours_activity']);
 // 空間預約成功兩類原列於重大事件；2026-07-08 依使用者需求降級為獨立的一般通知卡
 // （沒這麼嚴重），資料來源與「收到」即封存機制不變，只換呈現位置與視覺
@@ -21443,8 +21514,7 @@ function _renderMajorEventNotifs() {
   // 僅在檢視自己的待辦時顯示
   const viewingOwn = !_todosViewUser || _todosViewUser === currentUser?.email;
   if (!viewingOwn) { section.innerHTML = ''; return; }
-  const me = configData?.users?.[currentUser?.email];
-  const allNotifs = me?.notifications || [];
+  const allNotifs = _myNotifs();
   const notifs = allNotifs.filter(n =>
     MAJOR_EVENT_NOTIF_TYPES.has(n.type) && !(n.read && _majorEventDismissOnRead(n.type)));
   const bkNotifs = allNotifs.filter(n => BOOKING_NOTIF_TYPES.has(n.type) && !n.read); // 收到即封存
@@ -21514,30 +21584,31 @@ window._majorEventDismissPrefToggle = function(on) {
   _renderMajorEventNotifs();
 };
 window._majorEventMarkRead = async function(notifId) {
-  const me = configData?.users?.[currentUser?.email];
-  if (!me?.notifications) return;
-  const n = me.notifications.find(x => x.id === notifId);
+  const n = _myNotifs().find(x => x.id === notifId);
   if (!n) return;
   n.read = true;
   if (!n.readAt) n.readAt = new Date().toISOString();
   _renderMajorEventNotifs();
   renderNotifBell?.();
-  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  const res = await _notifCommit([{ op: 'markRead', email: currentUser.email, id: notifId, readAt: n.readAt }]);
+  if (res && res.fallback) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
 };
 window._majorEventMarkAllRead = async function() {
-  const me = configData?.users?.[currentUser?.email];
-  if (!me?.notifications) return;
+  const notifs = _myNotifs();
+  if (!notifs.length) return;
   const nowIso = new Date().toISOString();
-  let changed = 0;
-  me.notifications.forEach(n => {
+  const ids = [];
+  notifs.forEach(n => {
     if (MAJOR_EVENT_NOTIF_TYPES.has(n.type) && !n.read) {
-      n.read = true; n.readAt = nowIso; changed++;
+      n.read = true; n.readAt = nowIso; ids.push(n.id);
     }
   });
-  if (!changed) return;
+  if (!ids.length) return;
   _renderMajorEventNotifs();
   renderNotifBell?.();
-  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  // 只標記重大事件類型（非全部通知），backend markRead 逐則套用，故一次送出多筆 markRead ops
+  const res = await _notifCommit(ids.map(id => ({ op: 'markRead', email: currentUser.email, id, readAt: nowIso })));
+  if (res && res.fallback) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
 };
 
 function _mlUpdateBatchBtn() {
@@ -26871,6 +26942,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-09', v: 154, title: '通知系統拆出 config.json：獨立 notifications.json＋後端鎖內寫入（2026-07-09 事故延伸修復）', isProd: false, items: [
+      item('重大修復', '通知（notifications）原存在 configData.users[email].notifications，任何使用者收/發/讀通知都會觸發整份 config.json 覆寫（config 含全部使用者帳號與權限）：①兩則通知同時推播互相蓋掉 ②管理者改權限的瞬間撞上任何人的通知寫入會被蓋回'),
+      item('重大修復', '拆成獨立 notifications.json＋後端新增 notifCommit action（LockService 鎖內讀-改-寫、依 push/markRead/markAllRead/removeIds ops 套用、fail-closed），config.json 之後只剩低頻管理操作寫入；首次任何人推播/標讀會觸發後端一次性遷移建檔，遷移前所有讀寫點皆 fallback 回舊 config 路徑確保功能不中斷'),
+      item('改善', '推播／已讀／顯示／輪詢（pollNotifications）等所有通知讀寫點全數改走新架構；config.json 內殘留的舊 notifications 欄位視為無害死資料，不再作為顯示來源'),
+    ]},
     { date: '2026-07-09', v: 153, title: 'v152 驗證回饋修正：學期chip切換稽核補漏、主任/管理者危機閱讀留紀錄', isProd: false, items: [
       item('修正', 'B5-1：v152 的「切換學期檢視」稽核只涵蓋跨案號的「歷年學期」導覽，同一案號內點學期 chip 切換（新架構主要切換方式）沒有記錄；已補上（點當前學期不重複記）'),
       item('修正', 'B5-2：主任/管理者透過危機個案閱讀開啟個案時，「同仁個案閱讀監督」完全沒有留下閱讀紀錄——舊判定「非正常途徑可存取才記錄」對特權身份恆不成立；改為只要當日有危機閱讀授權就記錄閱讀軌跡（唯讀與否的判定維持不變，不影響特權身份的編輯權）'),
@@ -29063,7 +29139,6 @@ async function scanUnassignedRecords() {
 
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   let matched = 0;
-  let cfgChanged = false;
 
   for (const rec of pending) {
     const name = (rec.name || '').trim();
@@ -29083,31 +29158,25 @@ async function scanUnassignedRecords() {
 
     targets.forEach(email => {
       if (email === currentUser.email) return;
-      cfgChanged = addNotificationToUser(email, 'unassigned_record_match',
-        found.id, found.name) || cfgChanged;
+      addNotificationToUser(email, 'unassigned_record_match', found.id, found.name);
     });
 
-    if (isAdmin) {
-      const me = configData?.users?.[currentUser.email];
-      if (me) {
-        if (!me.notifications) me.notifications = [];
-        me.notifications.unshift({
-          id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
-          type: 'unassigned_record_match',
-          caseId: found.id,
-          caseName: found.name,
-          message: `未歸屬記錄「${name}」已找到可能對應的開案個案「${found.name}（${found.id}）」，請至未歸屬記錄管理頁確認`,
-          createdAt: new Date().toISOString(),
-          read: false,
-        });
-        cfgChanged = true;
-      }
+    if (isAdmin && configData?.users?.[currentUser.email]) {
+      _queueNotifPush(currentUser.email, {
+        id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+        type: 'unassigned_record_match',
+        caseId: found.id,
+        caseName: found.name,
+        message: `未歸屬記錄「${name}」已找到可能對應的開案個案「${found.name}（${found.id}）」，請至未歸屬記錄管理頁確認`,
+        createdAt: new Date().toISOString(),
+        read: false,
+      });
     }
   }
 
   if (matched > 0) {
     await saveUnassignedRecords();
-    if (cfgChanged) await driveUpdateJsonFile(CONFIG_FILE, configData);
+    await _flushNotifOps();
     renderNotifBell();
   }
   localStorage.setItem('scc_unassigned_scan', todayKey);
@@ -29822,19 +29891,16 @@ function _broadcastGcValidationErrors(newErrors) {
     const r = u.role || '';
     const recipient = r === '主任' || u.isAdmin === true || u.extraRole === '管理者' || (typeof r === 'string' && r.startsWith('專任'));
     if (!recipient) return;
-    if (!u.notifications) u.notifications = [];
-    u.notifications.unshift({
+    _queueNotifPush(email, {
       id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
       type: 'gc_validation_error',
       message: msg,
       navTarget: 'todos:gc-errors',
       createdAt: nowIso, read: false,
     });
-    _pruneOldReadNotifications(u);
-    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
     pushed++;
   });
-  if (pushed) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  if (pushed) _flushNotifOps().catch(() => {});
 }
 
 function _initBkAuditDropdowns() {
@@ -34507,7 +34573,7 @@ function _bkAckPersonConflict() {
 
 // #5-1：預約建立成功通知——(a) 建立者本人在待辦頁「重大事件」收到「已預約成功」提示；
 // (b) 若主責／人員含建立者以外的使用者，廣播「XXX 為你建立了一筆空間預約」給那些人。
-// 走既有 MAJOR_EVENT_NOTIF_TYPES 機制（configData.users[email].notifications），
+// 走既有 MAJOR_EVENT_NOTIF_TYPES 機制（notifications.json，v154 起拆自 config.json），
 // 「收到」＝點一下即從畫面消失（見 MAJOR_EVENT_DISMISS_ON_READ），只在此次使用者操作時寫檔一次，
 // 不在每次 render 時重複寫入。
 function _bkNotifyCreated(createdObjs, counselors) {
@@ -34521,15 +34587,12 @@ function _bkNotifyCreated(createdObjs, counselors) {
   const brief = `${roomD}　${timeStr}${countSuffix}${first.counselorName ? '　主責：' + first.counselorName : ''}`;
   const nowIso = new Date().toISOString();
 
-  if (!Array.isArray(me.notifications)) me.notifications = [];
-  me.notifications.unshift({
+  _queueNotifPush(currentUser.email, {
     id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
     type: 'booking_created_self',
     message: `✅ 已預約成功：${brief}`,
     createdAt: nowIso, read: false,
   });
-  _pruneOldReadNotifications(me);
-  if (me.notifications.length > 100) me.notifications = me.notifications.slice(0, 100);
 
   const myName = me.name || currentUser.name || currentUser.given_name || (currentUser.email?.split('@')[0] ?? '') || '';
   const notified = new Set();
@@ -34538,20 +34601,17 @@ function _bkNotifyCreated(createdObjs, counselors) {
     const u = configData.users[c.email];
     if (!u || u.disabled) return;
     notified.add(c.email);
-    if (!Array.isArray(u.notifications)) u.notifications = [];
-    u.notifications.unshift({
+    _queueNotifPush(c.email, {
       id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
       type: 'booking_created_broadcast',
       message: `${myName || '同仁'} 為你建立了一筆空間預約：${brief}`,
       createdAt: nowIso, read: false,
     });
-    _pruneOldReadNotifications(u);
-    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
   });
 
   renderNotifBell?.();
   if (document.getElementById('page-todos')?.classList.contains('active')) renderTodosPage();
-  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  _flushNotifOps().catch(() => {});
 }
 
 async function saveBooking() {
@@ -38545,7 +38605,7 @@ window._onDirectAssessorReassign = async function() {
   }
   addNotificationToUser(newEmail, 'transfer_reassign_assessor_notify', caseId || '', caseLbl,
     `${myName} 已將「${caseLbl}」的轉銜評估者直接指派給您，請完成評估`);
-  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  _flushNotifOps().catch(() => {});
   const jobId = bgJobAdd(`直接通知轉派 → ${newName}`);
   try {
     await _appendTodoToUser(newEmail, {
@@ -38611,7 +38671,7 @@ async function _executeAssessorReassign(todoId) {
     const caseLbl = t.caseLabel || '';
     addNotificationToUser(finalEmail, 'transfer_reassign_assessor_notify', t.caseId || '', caseLbl,
       `${myName} 已將「${caseLbl}」的轉銜評估者指派給您，請完成評估`);
-    driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    _flushNotifOps().catch(() => {});
     const jobId = bgJobAdd(`通知轉派 → ${finalName}`);
     try {
       await _appendTodoToUser(finalEmail, {
@@ -39846,7 +39906,9 @@ async function _confirmLinkRecord(recId) {
       try {
         await saveCasesChunks(newId);
         await saveTransfer();
-        if (_newUserKey) { await driveUpdateJsonFile(CONFIG_FILE, configData); renderNotifBell(); }
+        if (_newUserKey) await driveUpdateJsonFile(CONFIG_FILE, configData);
+        await _flushNotifOps();
+        renderNotifBell();
         bgJobDone(jobId);
         auditLog('建立個案並連結轉銜紀錄', newId, null, `recId:${recId}${_newUserKey?` (新建使用者${_newUserKey})`:''}` );
       } catch(e) {
@@ -43179,12 +43241,11 @@ async function _notifyIssueEvent(issue, comment, { notifyCreator = false, mentio
   const issueLabel = `#${String(issue.serial).padStart(3, '0')}`;
   const snippet = (comment ? comment.content : issue.description).slice(0, 60);
   const authorName = configData?.users?.[myEmail]?.name || currentUser?.displayName || myEmail;
-  let configChanged = false;
   for (const [email, { isMentioned }] of toNotify) {
     const msg = isMentioned
       ? `${authorName} 在回報 ${issueLabel} 中提及了您：${snippet}`
       : `${authorName} 在回報 ${issueLabel} 留言：${snippet}`;
-    if (addNotificationToUser(email, 'issue_comment', issue.id, issue.serial, msg)) configChanged = true;
+    addNotificationToUser(email, 'issue_comment', issue.id, issue.serial, msg);
     const todo = {
       id: _genTodoId(),
       type: 'issue_notification',
@@ -43203,7 +43264,7 @@ async function _notifyIssueEvent(issue, comment, { notifyCreator = false, mentio
       _appendTodoToUser(email, todo).catch(() => {});
     }
   }
-  if (configChanged) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  _flushNotifOps().catch(() => {});
 }
 
 // ── @提及 自動完成下拉 ──
@@ -43460,13 +43521,12 @@ async function submitIssue() {
     try {
       await _saveIssues();
       // 通知所有系統管理者（主任 or 管理者 extraRole）
-      let notified = false;
       Object.entries(configData?.users || {}).forEach(([email, u]) => {
         if (u.role === '主任' || u.extraRole === '管理者') {
-          notified = addNotificationToUser(email, 'new_issue', issue.id, issue.serial) || notified;
+          addNotificationToUser(email, 'new_issue', issue.id, issue.serial);
         }
       });
-      if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+      _flushNotifOps().catch(() => {});
       // @提及通知（排除已收到 new_issue 通知的管理者，避免重複）
       const _adminEmails = new Set(Object.entries(configData?.users || {})
         .filter(([, u]) => u.role === '主任' || u.extraRole === '管理者').map(([e]) => e));
@@ -43493,11 +43553,11 @@ function _onIssuePendingVerification(issue) {
   if (!issue.submittedBy) return;
   const _serialStr = `#${String(issue.serial).padStart(3,'0')}`;
   if (issue.submittedBy !== currentUser?.email) {
-    const notified = addNotificationToUser(
+    addNotificationToUser(
       issue.submittedBy, 'issue_pending_verification', issue.id, _serialStr,
       `您回報的 ${_serialStr} 已改為「待驗證」，請至錯誤回報/許願池頁面確認是否已解決`
     );
-    if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    _flushNotifOps().catch(() => {});
   }
   _appendTodoToUser(issue.submittedBy, {
     id: 'todo_issue_verify_' + issue.id + '_' + Date.now(),
@@ -43653,15 +43713,14 @@ async function _issueVerifyNotOk(issueId) {
   try {
     await _saveIssues();
     // 通知所有系統管理者（主任 or 管理者 extraRole）：驗證未通過需重新處理
-    let notified = false;
     const _label = `#${String(issue.serial).padStart(3, '0')}`;
     Object.entries(configData?.users || {}).forEach(([email, u]) => {
       if (u.role === '主任' || u.extraRole === '管理者') {
-        notified = addNotificationToUser(email, 'issue_comment', issue.id, issue.serial,
-          `回報 ${_label} 驗證未通過，已退回處理中：${reason.slice(0, 60)}`) || notified;
+        addNotificationToUser(email, 'issue_comment', issue.id, issue.serial,
+          `回報 ${_label} 驗證未通過，已退回處理中：${reason.slice(0, 60)}`);
       }
     });
-    if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    _flushNotifOps().catch(() => {});
     // 本人已完成驗證動作，收掉待辦提醒卡
     const relatedTodo = todosData.find(t => t.type === 'issue_pending_verification' && t.issueId === issueId && !t.done);
     if (relatedTodo) {
