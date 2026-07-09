@@ -19,7 +19,8 @@ const BASIC_INFO_SNAPSHOT_FIELDS = [
 
 function loadMergeFns(extra = {}) {
   return load(
-    ['_buildMergePlan', '_mergeCaseGroup', '_swapFormerId', '_migApplyCustomId', '_caseSems', '_semKeyBase', '_recomputeCaseStatus', 'openDateToSemPrefix'],
+    ['_buildMergePlan', '_mergeCaseGroup', '_swapFormerId', '_migApplyCustomId', '_caseSems', '_semKeyBase', '_recomputeCaseStatus', 'openDateToSemPrefix',
+      '_migIdentityConflicts', '_caseInternalIdMismatch', '_sameNameDiffIdSets'],
     { BASIC_INFO_SNAPSHOT_FIELDS, ...extra }
   );
 }
