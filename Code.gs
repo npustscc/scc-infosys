@@ -49,7 +49,8 @@ function doPost(e) {
         ctx = { root: rootFolderId, configOverride: rootCfg.configOverride, calendarName: rootCfg.calendarName || CALENDAR_NAME, gmailLabel: rootCfg.gmailLabel || 'ml-processed-dev' };
       } else {
         // 例外白名單：issues.json (許願池/錯誤回報) 允許跨環境（dev/prod 共用同一份）
-        const p = params.path || params.name || '';
+        // params.file：listCommit 專用參數名（見 listCommit_）
+        const p = params.path || params.name || params.file || '';
         const isIssuesOp = p === 'issues.json';
         if (!isIssuesOp) return jsonResp_({ error: 'Unauthorized rootFolderId' });
         ctx = { root: rootFolderId, configOverride: null, calendarName: CALENDAR_NAME };
@@ -105,6 +106,8 @@ function doPost(e) {
       case 'casesUpsert':          result = casesUpsert_(params, ctx); break;
       case 'attendanceCommit':     result = attendanceCommit_(params, ctx); break;
       case 'bookingsCommit':       result = bookingsCommit_(params, ctx); break;
+      case 'listCommit':           result = listCommit_(params, ctx); break;
+      case 'notifCommit':          result = notifCommit_(params, ctx); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
     return jsonResp_(result);
@@ -1564,6 +1567,9 @@ function startupBatch_(params, ctx) {
 }
 
 // ── 帳號申請送出
+// 修：無鎖 RMW 與前端管理者審核（整檔覆寫 pending_users*.json）互相競態，可能互蓋。
+// 改用 LockService 包住整段讀-改-寫；讀取失敗維持寬容（檔案不存在→視為空清單），
+// 但檔案存在而讀壞（HTTP≥400／內容非預期）改為 fail-closed 中止，不以空殼為基底重寫。
 function submitUserApplication_(params) {
   var targetEmail   = ((params.targetEmail || '').trim().toLowerCase()) || params.submittedByEmail;
   var name          = params.name;
@@ -1578,35 +1584,62 @@ function submitUserApplication_(params) {
   var filePath = (pendingFile && /^pending_users[\w-]*\.json$/.test(pendingFile))
     ? pendingFile : 'pending_users.json';
 
-  var data;
-  try { data = readJson_({ path: filePath }, ctx); } catch (_) { data = { applications: [] }; }
-  if (!Array.isArray(data.applications)) data.applications = [];
-
-  var dup = data.applications.filter(function(a) { return a.email === targetEmail && a.status === 'pending'; });
-  if (dup.length) throw new Error('此 Gmail 已有一筆待審申請，請等待管理者處理。');
-
-  data.applications.push({
-    id: 'app_' + Date.now(),
-    email: targetEmail,
-    submittedByEmail: submittedBy || targetEmail,
-    name: name,
-    requestedRole: requestedRole,
-    note: note,
-    submittedAt: new Date().toISOString(),
-    status: 'pending',
-  });
-
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
   try {
-    updateJson_({ path: filePath, content: data }, ctx);
-  } catch (writeErr) {
-    throw new Error('儲存申請失敗（' + filePath + '）：' + writeErr.message);
+    var fileId = null;
+    var data = { applications: [] };
+    try { fileId = resolvePathToId_(filePath, ctx); } catch (_) { fileId = null; /* 檔不存在，稍後建立 */ }
+    if (fileId) {
+      var res = UrlFetchApp.fetch(
+        'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+        { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+      );
+      if (res.getResponseCode() >= 400) {
+        throw new Error('submitUserApplication: 讀取 ' + filePath + ' 失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
+      }
+      data = JSON.parse(res.getContentText());
+      if (!data || !Array.isArray(data.applications)) {
+        throw new Error('submitUserApplication: ' + filePath + ' 內容異常（applications 非陣列），已中止寫入以保護資料');
+      }
+    }
+
+    var dup = data.applications.filter(function(a) { return a.email === targetEmail && a.status === 'pending'; });
+    if (dup.length) throw new Error('此 Gmail 已有一筆待審申請，請等待管理者處理。');
+
+    data.applications.push({
+      id: 'app_' + Date.now(),
+      email: targetEmail,
+      submittedByEmail: submittedBy || targetEmail,
+      name: name,
+      requestedRole: requestedRole,
+      note: note,
+      submittedAt: new Date().toISOString(),
+      status: 'pending',
+    });
+
+    try {
+      if (fileId) {
+        driveUpdateContent_(fileId, data);
+      } else {
+        var pn = resolvePathToParentAndName_(filePath, ctx);
+        driveUpload_(pn.fileName, data, pn.parentId);
+      }
+    } catch (writeErr) {
+      throw new Error('儲存申請失敗（' + filePath + '）：' + writeErr.message);
+    }
+    return { ok: true };
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
   }
-  return { ok: true };
 }
 
-// ── cases-hot.json / cases-index.json 併發安全的 upsert（LockService）──
-// 前端傳 { path, upserts:[{id,...完整entry}], removes:[id...] }，GAS 在 lock 內做 RMW。
-// 檔案結構固定：{ updatedAt, cases:[{ id, ... }] }
+// ── cases-hot.json／cases-index.json／個案 chunk 檔（cases/{name}.json）共用的併發安全 upsert（LockService）──
+// 前端傳 { path, upserts:[{id,...完整entry}], removes:[id...] }，GAS 在 lock 內做 RMW，path 可為任意
+// cases/ 底下的 JSON 檔（index、hot、或個別 chunk）。
+// 檔案結構須含 cases:[{ id, ... }] 陣列（頂層可有其他欄位，如 updatedAt——upsert 後一律補上/覆寫
+// updatedAt；chunk 檔原本沒有此欄位也無妨，讀取端只用 cases，多的欄位無害）。
+// 2026-07-09（v155）：saveCasesChunks 個案 chunk 寫入改走本 action，關閉「前端整檔覆寫」的併發覆蓋窗口。
 function casesUpsert_({ path, upserts, removes }, ctx) {
   if (!path) throw new Error('casesUpsert: path required');
   const lock = LockService.getScriptLock();
@@ -1702,6 +1735,231 @@ function attendanceCommit_({ upserts, removes }, ctx) {
       driveUpload_(pn.fileName, data, pn.parentId);
     }
     return { ok: true, records: data.records, count: data.records.length };
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// ── 泛用「清單型 JSON 檔」併發安全寫入（LockService 讀-改-寫）──
+// 修 2026-07-09 事故延伸：除 attendance.json／cases 索引外，還有多個「前端整份載入→改記憶體→整檔覆寫」
+// 的資料檔存在同型併發覆蓋風險。此函式收斂這些檔案的寫入，模式比照 attendanceCommit_/casesUpsert_：
+// 鎖內讀最新 → 依 id upsert／remove（或 append-only／map 模式）→ 寫回，回傳合併後完整內容。
+// fail-closed：檔案存在但讀取失敗／內容非預期一律中止，絕不以空殼為基底重寫。
+//
+// 白名單 registry（file 必須命中，否則 throw；預設 deny——不可讓呼叫端指定任意檔名）：
+//   mode 'list'  ：{ [key]: [{id,...}] }，依 id upsert/remove，保留其他頂層欄位不動（除非 meta 指定覆寫）
+//   mode 'append'：{ [key]: [...] }，upserts 只允許追加到尾端（不比 id），不允許 removes
+//   mode 'map'   ：整個檔案本身是 map（如 psych_test_db.json：{studentId:[...]}），
+//                  upserts 為 {key:value} 物件、removes 為 key 陣列
+var LIST_COMMIT_REGISTRY_ = {
+  'leaves.json':             { key: 'applications', mode: 'list' },
+  'transfer.json':           { key: 'records',       mode: 'list' },
+  'mental_leaves.json':      { key: 'records',       mode: 'list' },
+  'pending_cases.json':      { key: 'cases',         mode: 'list' },
+  'unassigned_records.json': { key: 'records',       mode: 'list' },
+  'issues.json':             { key: 'issues',        mode: 'list' },
+  'audit_log.json':          { key: 'logs',          mode: 'append' },
+  'case_access_log.json':    { key: 'entries',       mode: 'append', touchUpdatedAt: true },
+  'off_hours_log.json':      { key: 'entries',       mode: 'append', touchUpdatedAt: true },
+  'psych_test_db.json':      { mode: 'map' },
+};
+
+// file 命中 registry，或符合下列動態規則之一：
+//   pending_users*.json（pendingFile 命名規則，同 submitUserApplication_ 的 /^pending_users[\w-]*\.json$/）
+//   users/todos_*.json（每人一份的待辦事項檔）
+function _listCommitResolveEntry_(file) {
+  if (LIST_COMMIT_REGISTRY_[file]) return LIST_COMMIT_REGISTRY_[file];
+  if (/^pending_users[\w-]*\.json$/.test(file)) return { key: 'applications', mode: 'list' };
+  if (/^users\/todos_[^\/]+\.json$/.test(file)) return { key: 'todos', mode: 'list' };
+  return null;
+}
+
+function listCommit_(params, ctx) {
+  var file = params && params.file;
+  var upserts = (params && params.upserts) || [];
+  var removes = (params && params.removes) || [];
+  var meta = (params && params.meta) || null;
+  if (!file) throw new Error('listCommit: file required');
+
+  var entry = _listCommitResolveEntry_(file);
+  if (!entry) throw new Error('listCommit: 不支援的檔案（' + file + '）');
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var fileId = null;
+    var data = null;
+    try { fileId = resolvePathToId_(file, ctx); } catch (_) { fileId = null; /* 檔不存在，稍後建立 */ }
+    if (fileId) {
+      var res = UrlFetchApp.fetch(
+        'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+        { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+      );
+      if (res.getResponseCode() >= 400) {
+        throw new Error('listCommit: 讀取 ' + file + ' 失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
+      }
+      data = JSON.parse(res.getContentText());
+      if (entry.mode === 'map') {
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+          throw new Error('listCommit: ' + file + ' 內容異常（非物件），已中止寫入以保護資料');
+        }
+      } else {
+        if (!data || !Array.isArray(data[entry.key])) {
+          throw new Error('listCommit: ' + file + ' 內容異常（' + entry.key + ' 非陣列），已中止寫入以保護資料');
+        }
+      }
+    } else {
+      data = (entry.mode === 'map') ? {} : (function () { var o = {}; o[entry.key] = []; return o; })();
+    }
+
+    if (entry.mode === 'map') {
+      // upserts：{ key: value }；removes：[key,...]
+      if (removes && removes.length) {
+        removes.forEach(function (k) { if (k) delete data[k]; });
+      }
+      if (upserts && typeof upserts === 'object' && !Array.isArray(upserts)) {
+        Object.keys(upserts).forEach(function (k) { data[k] = upserts[k]; });
+      }
+    } else if (entry.mode === 'append') {
+      if (removes && removes.length) {
+        throw new Error('listCommit: ' + file + ' 為 append-only，不允許 removes');
+      }
+      (upserts || []).forEach(function (item) {
+        if (item !== undefined && item !== null) data[entry.key].push(item);
+      });
+      if (entry.touchUpdatedAt) data.updatedAt = new Date().toISOString();
+    } else {
+      // list：依 id upsert/remove
+      var list = data[entry.key];
+      var pos = {};
+      list.forEach(function (item, i) { if (item && item.id) pos[item.id] = i; });
+      (upserts || []).forEach(function (item) {
+        if (!item || !item.id) return;
+        if (pos[item.id] !== undefined) list[pos[item.id]] = item;
+        else { pos[item.id] = list.length; list.push(item); }
+      });
+      var rmSet = {};
+      (removes || []).forEach(function (id) { if (id) rmSet[id] = true; });
+      if (Object.keys(rmSet).length) {
+        data[entry.key] = list.filter(function (item) { return item && item.id && !rmSet[item.id]; });
+      }
+    }
+
+    // meta：呼叫端指定的其他頂層欄位覆寫（如 mental_leaves 的 lastFetchedAt、
+    // todos 的 suppressedRecordIds/caseSearchPrefs/updatedAt）。只有檔案擁有者才會帶 meta。
+    if (meta && typeof meta === 'object') {
+      Object.keys(meta).forEach(function (k) { data[k] = meta[k]; });
+    }
+
+    if (fileId) {
+      driveUpdateContent_(fileId, data);
+    } else {
+      var pn = resolvePathToParentAndName_(file, ctx);
+      driveUpload_(pn.fileName, data, pn.parentId);
+    }
+    return { ok: true, data: data };
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// ── 通知系統併發安全寫入（notifications.json，2026-07-09 事故延伸修復 v154）──
+// 原本 notifications 存在 configData.users[email].notifications，任何使用者收/發/讀通知都會觸發
+// 整份 config.json 覆寫（config 含全部使用者帳號與權限）：①兩則通知同時推播互相蓋掉
+// ②管理者改權限的瞬間撞上任何人的通知寫入會被蓋回。拆成獨立 notifications.json，
+// LockService 鎖內讀-改-寫，取代 config.json 作為通知的儲存位置——config.json 之後只剩低頻管理操作寫入。
+//
+// ops 元素（陣列，逐一套用）：
+//   { op:'push', email, notif }           — 若該 email 已有同 notif.id → 先移除再 unshift（取代語義）；裁切至 100 則
+//   { op:'markRead', email, id, readAt }  — 找到該則 → read=true, readAt
+//   { op:'markAllRead', email, readAt }   — 該 email 全部未讀 → read=true, readAt
+//   { op:'removeIds', email, ids }        — 移除指定 id 們
+//
+// 純函式：套用單一 op 到 users map（{ [email]: [notif,...] }），供測試就地抽出驗證。
+function _notifApplyOp_(users, op) {
+  if (!op || !op.email) return;
+  var email = op.email;
+  if (!Array.isArray(users[email])) users[email] = [];
+  var arr = users[email];
+  if (op.op === 'push') {
+    if (!op.notif || !op.notif.id) return;
+    var idx = arr.findIndex(function (n) { return n && n.id === op.notif.id; });
+    if (idx >= 0) arr.splice(idx, 1);
+    arr.unshift(op.notif);
+    if (arr.length > 100) users[email] = arr.slice(0, 100);
+  } else if (op.op === 'markRead') {
+    var n = arr.find(function (x) { return x && x.id === op.id; });
+    if (n) { n.read = true; n.readAt = op.readAt || new Date().toISOString(); }
+  } else if (op.op === 'markAllRead') {
+    arr.forEach(function (n) { if (n && !n.read) { n.read = true; n.readAt = op.readAt || new Date().toISOString(); } });
+  } else if (op.op === 'removeIds') {
+    var ids = {};
+    (op.ids || []).forEach(function (id) { if (id) ids[id] = true; });
+    users[email] = arr.filter(function (n) { return !(n && ids[n.id]); });
+  }
+}
+
+function notifCommit_(params, ctx) {
+  var ops = (params && params.ops) || [];
+  if (!ops.length) throw new Error('notifCommit: ops required');
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var file = 'notifications.json';
+    var fileId = null;
+    var data = null;
+    try { fileId = resolvePathToId_(file, ctx); } catch (_) { fileId = null; /* 檔不存在，稍後視為首次遷移 */ }
+    if (fileId) {
+      var res = UrlFetchApp.fetch(
+        'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+        { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+      );
+      if (res.getResponseCode() >= 400) {
+        throw new Error('notifCommit: 讀取 notifications.json 失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
+      }
+      data = JSON.parse(res.getContentText());
+      if (!data || typeof data.users !== 'object' || data.users === null || Array.isArray(data.users)) {
+        throw new Error('notifCommit: notifications.json 內容異常（users 非物件），已中止寫入以保護資料');
+      }
+    } else {
+      // 首次建檔＝一次性遷移：把 config.json 裡所有 users[email].notifications 複製進來作為初始內容，
+      // 再套用本次 ops。config.json 本身不動（殘留 notifications 欄位屬無害死資料，前端之後一律忽略）。
+      var users = {};
+      try {
+        var cfg = readJson_({ path: 'config.json' }, ctx);
+        if (cfg && cfg.users && typeof cfg.users === 'object') {
+          Object.keys(cfg.users).forEach(function (email) {
+            var u = cfg.users[email];
+            if (u && Array.isArray(u.notifications) && u.notifications.length) {
+              users[email] = u.notifications;
+            }
+          });
+        }
+      } catch (e) {
+        // config.json 讀取失敗不應永久卡住通知系統啟用；以空殼繼續（遺失既有通知的風險已相對次要——
+        // config.json 讀不到本身就是更嚴重的系統性問題）
+      }
+      data = { updatedAt: new Date().toISOString(), users: users };
+    }
+
+    var touched = {};
+    ops.forEach(function (op) {
+      _notifApplyOp_(data.users, op);
+      if (op && op.email) touched[op.email] = true;
+    });
+    data.updatedAt = new Date().toISOString();
+
+    if (fileId) {
+      driveUpdateContent_(fileId, data);
+    } else {
+      var pn = resolvePathToParentAndName_(file, ctx);
+      driveUpload_(pn.fileName, data, pn.parentId);
+    }
+
+    var result = {};
+    Object.keys(touched).forEach(function (email) { result[email] = data.users[email] || []; });
+    return { ok: true, touched: result };
   } finally {
     try { lock.releaseLock(); } catch (_) {}
   }

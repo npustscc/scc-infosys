@@ -5828,20 +5828,28 @@ async function afterLogin() {
       const _prefs = raw?.caseSearchPrefs || {};
       if (_prefs.closureStatus !== undefined) _cnClosureStatus = _prefs.closureStatus;
       if (_prefs.archived !== undefined) _cnArchived = _prefs.archived;
+      // legacy 檔（無 env 後綴）尚未遷移到新檔 → 快照設空陣列，確保下一次 save 把目前全部
+      // todos 當成 upserts 寫入新檔（而非誤判「與快照相同→無需寫入」導致遷移遺漏資料）。
+      _todosSnapshot = batch.isTodoLegacy ? [] : _deepClone(todosData);
       if (batch.isTodoLegacy) saveUserTodos().catch(() => {});
     } else {
       todosData = [];
       _suppressedTodoRecordIds = new Set();
+      _todosSnapshot = [];
     }
     _cleanupOldTodos();
 
     // ── 其他資料 ──
     pendingCasesData       = Array.isArray(batch.pending_cases?.cases)   ? batch.pending_cases.cases   : [];
+    _pendingCasesSnapshot  = _deepClone(pendingCasesData);
     bookingsData           = Array.isArray(batch.bookings?.bookings)      ? batch.bookings.bookings      : [];
     _bkLastLoadAt          = Date.now(); // startupBatch 已一併帶回最新 bookings，視同剛讀取過
     transferData           = Array.isArray(batch.transfer?.records)       ? batch.transfer.records       : [];
+    _transferSnapshot      = _deepClone(transferData);
     unassignedRecordsData  = Array.isArray(batch.unassigned?.records)     ? batch.unassigned.records     : [];
+    _unassignedRecordsSnapshot = _deepClone(unassignedRecordsData);
     issuesData             = Array.isArray(batch.issues?.issues)          ? batch.issues.issues          : [];
+    _issuesSnapshot         = _deepClone(issuesData);
 
     // ── 補充 side effects ──
     // Google 日曆定時同步已改由後端 GAS trigger 執行（runGcSyncTick），此處不再排程前端輪詢。
@@ -5913,6 +5921,7 @@ async function afterLogin() {
     loadAttendance().catch(() => {});
     loadLeaves().catch(() => {});
     loadPendingUsers().catch(() => {});
+    loadNotifications().then(() => renderNotifBell()).catch(() => {}); // 通知獨立檔（v154 拆自 config.json）
     loadAccessLog().catch(() => {}); // 危機閱讀監督 feed + 我今日的授權
     loadOffHoursLog().catch(() => {}); // 非上班時間監督 feed（主任/管理者/專任在待辦頁可見）
     loadGcErrorsCache().catch(() => {}); // GC 事件錯誤 feed（同上可見範圍）
@@ -6651,14 +6660,21 @@ async function loadAccessLog() {
   _accessLogCache = await driveReadJsonOptional(CASE_ACCESS_LOG_FILE);
   if (!_accessLogCache || !Array.isArray(_accessLogCache.entries)) _accessLogCache = { entries: [] };
 }
-// append 一筆 feed 條目（RMW：讀最新→push→寫回；低頻，容忍極少數 race，auditLog 另有永久留存）
+// append 一筆 feed 條目：併發安全 append（2026-07-09 事故延伸修復）——後端 listCommit append-only
+// 模式（LockService 讀-改-寫，只 push 這一筆）。後端未部署 → fallback 舊 RMW（讀最新→push→整檔寫回）。
 async function _appendAccessLog(entry) {
-  let latest = await driveReadJsonOptional(CASE_ACCESS_LOG_FILE);
-  if (!latest || !Array.isArray(latest.entries)) latest = { entries: [] };
-  latest.entries.push(entry);
-  latest.updatedAt = new Date().toISOString();
-  await driveUpdateJsonFile(CASE_ACCESS_LOG_FILE, latest);
-  _accessLogCache = latest;
+  const res = await _listCommit(CASE_ACCESS_LOG_FILE, { upserts: [entry] });
+  if (res && res.fallback) {
+    let latest = await driveReadJsonOptional(CASE_ACCESS_LOG_FILE);
+    if (!latest || !Array.isArray(latest.entries)) latest = { entries: [] };
+    latest.entries.push(entry);
+    latest.updatedAt = new Date().toISOString();
+    await driveUpdateJsonFile(CASE_ACCESS_LOG_FILE, latest);
+    _accessLogCache = latest;
+    return;
+  }
+  if (res && res.data && Array.isArray(res.data.entries)) { _accessLogCache = res.data; return; }
+  _accessLogCache = { entries: [entry] };
 }
 
 // ══════════════════════════════════════════════
@@ -6747,7 +6763,15 @@ async function loadOffHoursLog() {
   _offHoursLogCache = await driveReadJsonOptional(OFF_HOURS_LOG_FILE);
   if (!_offHoursLogCache || !Array.isArray(_offHoursLogCache.entries)) _offHoursLogCache = { entries: [] };
 }
+// 併發安全 append（2026-07-09 事故延伸修復）：後端 listCommit append-only 模式（LockService 讀-改-寫，
+// 只 push 這一筆）。後端未部署（Unknown action）→ fallback 舊 RMW（讀最新→push→整檔寫回，含建檔分支）；
+// 其他錯誤（如 fail-closed 中止）不吞掉改走整檔覆寫——那正是要避免的整檔覆蓋風險，原樣往上拋。
 async function _appendOffHoursLog(entry) {
+  const res = await _listCommit(OFF_HOURS_LOG_FILE, { upserts: [entry] });
+  if (!res.fallback) {
+    if (res.data && Array.isArray(res.data.entries)) _offHoursLogCache = res.data;
+    return;
+  }
   let latest;
   latest = await driveReadJsonOptional(OFF_HOURS_LOG_FILE);
   if (!latest || !Array.isArray(latest.entries)) latest = { entries: [] };
@@ -6778,20 +6802,17 @@ async function _broadcastOffHoursSession(actorEmail, kind, actionText) {
       || u.isAdmin === true || u.extraRole === '管理者'
       || (typeof r === 'string' && r.startsWith('專任'));
     if (!isRecipient) return;
-    if (!u.notifications) u.notifications = [];
-    u.notifications.unshift({
+    _queueNotifPush(email, {
       id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
       type: 'off_hours_activity',
       message: msg,
       actorEmail, actorName: actor.name || actorEmail,
       createdAt: nowIso, read: false,
     });
-    _pruneOldReadNotifications(u);
-    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
     pushed++;
   });
   if (pushed) {
-    try { await driveUpdateJsonFile(CONFIG_FILE, configData); }
+    try { await _flushNotifOps(); }
     catch (e) { console.warn('off-hours broadcast save failed:', e); }
   }
 }
@@ -7451,12 +7472,86 @@ function resetCaseFilters() {
 
 // ══════════════════════════════════════════════
 //  通知系統
+//  2026-07-09 事故延伸修復 v154：notifications 原存在 configData.users[email].notifications，
+//  任何使用者收/發/讀通知都會觸發整份 config.json 覆寫（config 含全部使用者帳號與權限）——
+//  ①兩則通知同時推播互相蓋掉 ②管理者改權限的瞬間撞上任何人的通知寫入會被蓋回。
+//  拆成獨立 notifications.json＋後端 notifCommit（LockService 鎖內 ops 寫入），config.json
+//  之後只剩低頻管理操作寫入。首次任何人推播/標讀會觸發後端一次性遷移建檔；遷移前所有讀寫點皆
+//  fallback 回舊 configData 路徑，確保功能不中斷。
 // ══════════════════════════════════════════════
+let notifData = { users: {} };
+let _notifLoaded = false; // true＝notifications.json 已成功載入，_myNotifs()／pollNotifications 改吃它
+async function loadNotifications() {
+  const data = await driveReadJsonOptional('notifications.json');
+  if (data && data.users && typeof data.users === 'object') {
+    notifData = data;
+    _notifLoaded = true;
+  } else {
+    _notifLoaded = false; // 檔案不存在（尚未遷移）或讀取失敗 → 呼叫端一律 fallback 舊來源
+  }
+}
+// 目前使用者的通知陣列：notifications.json 已載入就用它，否則 fallback 舊來源（尚未遷移／讀取失敗）
+function _myNotifs() {
+  if (_notifLoaded) return notifData.users?.[currentUser?.email] || [];
+  return configData?.users?.[currentUser?.email]?.notifications || [];
+}
+
+// 同檔 commit 序列化（比照 _listCommit），避免同一分頁對 notifications.json 的多次 commit 交錯
+let _notifCommitChain = Promise.resolve();
+// 送出通知 ops 到後端（LockService 鎖內套用；首次呼叫觸發 config.json → notifications.json 一次性遷移）。
+// 成功 → 把回傳 touched 合併進 notifData.users（涉及自己時順帶 renderNotifBell()）。
+// 後端未部署（Unknown action）→ 回傳 {fallback:true}，呼叫端自行走舊路徑；其他錯誤（如 fail-closed 中止）原樣拋出。
+function _notifCommit(ops) {
+  const run = _notifCommitChain.then(async () => {
+    try {
+      const res = await proxyCall('notifCommit', { ops });
+      if (res && res.touched) {
+        Object.entries(res.touched).forEach(([email, arr]) => { notifData.users[email] = arr; });
+        _notifLoaded = true;
+        if (currentUser?.email && res.touched[currentUser.email] !== undefined) renderNotifBell();
+      }
+      return res;
+    } catch (e) {
+      if (/Unknown action/i.test(e.message || '')) return { fallback: true };
+      throw e;
+    }
+  });
+  _notifCommitChain = run.catch(() => {});
+  return run;
+}
+
+// ── 推播佇列：同一次操作常需推播給多個收件人／呼叫多次 addNotificationToUser，
+//    收集後統一呼叫一次 _flushNotifOps，避免同一操作多次鎖等待 ──
+let _pendingNotifOps = [];
+function _queueNotifPush(email, notif) {
+  _pendingNotifOps.push({ op: 'push', email, notif });
+}
+// flush：送出本次累積的 ops。fallback（後端未部署）時套用到 configData in-memory，沿用舊「已讀存 7 天
+// 後自動永久移除＋上限 100 筆」慣例；呼叫端仍需自行寫回 config.json（沿用遷移前既有流程，確保功能不中斷）。
+async function _flushNotifOps() {
+  const ops = _pendingNotifOps;
+  _pendingNotifOps = [];
+  if (!ops.length) return { pushed: 0 };
+  const res = await _notifCommit(ops);
+  if (res && res.fallback) {
+    ops.forEach(o => {
+      const u = configData?.users?.[o.email];
+      if (!u) return;
+      if (!Array.isArray(u.notifications)) u.notifications = [];
+      const i = u.notifications.findIndex(n => n.id === o.notif.id);
+      if (i >= 0) u.notifications.splice(i, 1);
+      u.notifications.unshift(o.notif);
+      _pruneOldReadNotifications(u);
+      if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
+    });
+    return { pushed: ops.length, fallback: true };
+  }
+  return { pushed: ops.length };
+}
+
 function addNotificationToUser(toEmail, type, caseId, caseName, customMsg) {
   if (!toEmail || !configData?.users?.[toEmail]) return false;
   if (toEmail === currentUser?.email) return false;
-  const user = configData.users[toEmail];
-  if (!user.notifications) user.notifications = [];
   const msgs = {
     assigned_counselor:       `您已被指派為個案「${caseName}（${caseId}）」的主責輔導人員`,
     assigned_manager:         `您已被委任為個案「${caseName}（${caseId}）」的個案管理員`,
@@ -7465,19 +7560,17 @@ function addNotificationToUser(toEmail, type, caseId, caseName, customMsg) {
     unassigned_record_match:  `未歸屬輔導記錄找到可能對應的個案「${caseName}（${caseId}）」，請至未歸屬記錄管理頁確認`,
     new_issue:                `新的錯誤回報/許願池 #${String(caseName).padStart(3,'0')}，請至錯誤回報/許願池頁面查看`,
   };
-  user.notifications.unshift({
+  _queueNotifPush(toEmail, {
     id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
     type, caseId, caseName,
     message: customMsg || msgs[type] || type,
     createdAt: new Date().toISOString(),
     read: false,
   });
-  // 已讀存 7 天後自動永久移除；同時保留上限 100 筆
-  _pruneOldReadNotifications(user);
-  if (user.notifications.length > 100) user.notifications = user.notifications.slice(0, 100);
   return true;
 }
-// 已讀通知：readAt 超過 7 天後自動永久移除
+// 已讀通知：readAt 超過 7 天後自動永久移除（僅 fallback 路徑使用；notifCommit 後端 push 目前只裁切 100 筆上限，
+// 不做 7 天已讀清除——遷移後這項資料衛生行為暫時只在尚未部署 notifCommit 的過渡期生效，屬已知簡化）
 function _pruneOldReadNotifications(user) {
   if (!user?.notifications?.length) return;
   const cutoff = Date.now() - 7 * 86400 * 1000;
@@ -7610,7 +7703,7 @@ function _syncBellBadge() {
   const bell   = document.getElementById('notif-bell');
   if (!badge) return;
   if (bell) bell.style.display = 'flex';
-  const notifs  = configData?.users?.[currentUser?.email]?.notifications || [];
+  const notifs  = _myNotifs();
   const unread  = notifs.filter(n => !n.read).length + (_updateAvailable ? 1 : 0);
   const failed  = _bgJobs.filter(j => j.state === 'failed').length;
   const running = _bgJobs.filter(j => j.state === 'running').length;
@@ -7715,7 +7808,7 @@ function toggleNotifPanel() {
   panel.style.display = 'block';
   renderNotifList(); renderJobList();
   // 自動切換到有紅色項目的分頁（提醒 > 工作執行 > 待辦）
-  const _unread = (configData?.users?.[currentUser?.email]?.notifications || []).filter(n => !n.read).length + (_updateAvailable ? 1 : 0);
+  const _unread = _myNotifs().filter(n => !n.read).length + (_updateAvailable ? 1 : 0);
   const _failed = _bgJobs.filter(j => j.state === 'failed').length;
   const _running = _bgJobs.filter(j => j.state === 'running').length;
   const _todoUnread = todosData.filter(t => !t.notifRead && !t.done).length;
@@ -7726,7 +7819,7 @@ function toggleNotifPanel() {
 }
 
 function renderNotifList() {
-  const notifs = configData?.users?.[currentUser?.email]?.notifications || [];
+  const notifs = _myNotifs();
   const list = document.getElementById('notif-list');
   if (!list) return;
   const updateBanner = _updateAvailable ? `
@@ -7816,31 +7909,27 @@ window._mlAcknowledgeAll = async (ids) => {
 };
 
 async function notifDismiss(notifId) {
-  const me = configData?.users?.[currentUser?.email];
-  if (!me?.notifications) return;
-  const n = me.notifications.find(x => x.id === notifId);
-  if (n) {
-    n.read = true;
-    if (!n.readAt) n.readAt = new Date().toISOString();
-    renderNotifBell(); renderNotifList();
-    driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
-  }
+  const n = _myNotifs().find(x => x.id === notifId);
+  if (!n) return;
+  n.read = true;
+  if (!n.readAt) n.readAt = new Date().toISOString();
+  renderNotifBell(); renderNotifList();
+  const res = await _notifCommit([{ op: 'markRead', email: currentUser.email, id: notifId, readAt: n.readAt }]);
+  if (res && res.fallback) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
 }
 
 async function notifClick(notifId, caseId) {
-  const me = configData?.users?.[currentUser?.email];
-  if (me?.notifications) {
-    const n = me.notifications.find(x => x.id === notifId);
-    if (n && !n.read) {
-      n.read = true;
-      n.readAt = new Date().toISOString();
-      renderNotifBell();
-      renderNotifList();
-      driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
-    }
+  const n = _myNotifs().find(x => x.id === notifId);
+  if (n && !n.read) {
+    n.read = true;
+    n.readAt = new Date().toISOString();
+    renderNotifBell();
+    renderNotifList();
+    const res = await _notifCommit([{ op: 'markRead', email: currentUser.email, id: notifId, readAt: n.readAt }]);
+    if (res && res.fallback) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
   }
   if (!caseId) return;
-  const notif = configData?.users?.[currentUser?.email]?.notifications?.find(x => x.id === notifId);
+  const notif = _myNotifs().find(x => x.id === notifId);
   if (notif?.type === 'unassigned_record_match') {
     const navEl = document.querySelector('[data-nav-id="page-unassigned-records"]');
     showPage('page-unassigned-records', navEl);
@@ -7862,13 +7951,14 @@ async function notifClick(notifId, caseId) {
 }
 
 async function markAllNotifRead() {
-  const me = configData?.users?.[currentUser?.email];
-  if (!me?.notifications?.length) return;
+  const notifs = _myNotifs();
+  if (!notifs.length) return;
   const nowIso = new Date().toISOString();
-  me.notifications.forEach(n => { if (!n.read) { n.read = true; n.readAt = nowIso; } });
+  notifs.forEach(n => { if (!n.read) { n.read = true; n.readAt = nowIso; } });
   renderNotifBell();
   renderNotifList();
-  await driveUpdateJsonFile(CONFIG_FILE, configData);
+  const res = await _notifCommit([{ op: 'markAllRead', email: currentUser.email, readAt: nowIso }]);
+  if (res && res.fallback) await driveUpdateJsonFile(CONFIG_FILE, configData);
 }
 
 // ── 列印/PDF 共用 helper ──────────────────────────────────────────────────
@@ -8047,6 +8137,17 @@ ${PRINT_RICH_LIST_CSS}
 async function pollNotifications() {
   if (!currentUser?.email || !configData) return;
   try {
+    // 主路徑：notifications.json 獨立輪詢（v154），檔案小、頻率不變
+    const freshNotif = await driveReadJsonOptional('notifications.json');
+    if (freshNotif && freshNotif.users && typeof freshNotif.users === 'object') {
+      notifData = freshNotif;
+      _notifLoaded = true;
+      renderNotifBell();
+      const panel = document.getElementById('notif-panel');
+      if (panel && panel.style.display === 'block') renderNotifList();
+      return;
+    }
+    // fallback：notifications.json 尚未遷移建檔（尚未有人呼叫過 notifCommit）→ 沿用舊讀 config 邏輯
     const fresh = await driveReadJson(CONFIG_FILE);
     if (!fresh?.users) return;
     const freshCount   = Object.keys(fresh.users).length;
@@ -8096,16 +8197,30 @@ function toggleRecordExpand(rid) {
   if (btn) btn.textContent = expanded ? '收合 ▲' : '展開 ▼';
   if (expanded) {
     _loadRecordImages(rid);
-    // #10：展開紀錄卡片 → 依卡片所屬區塊記錄查閱（晤談紀錄／精神科醫師評估／初次晤談表）
+    // B5：展開紀錄卡片 → 逐筆稽核（晤談紀錄／事件處理／精神科醫師評估／初次晤談表；不去重，每次展開都記，
+    // detail 含該筆紀錄的日期時間）。只在「展開」時記，收合不記（見下方 if(expanded)）。
     try {
       const dc = (casesData || []).find(c => c.id === _detailCaseId); // 修正：用模組變數
       if (dc) {
-        const bare = String(rid).replace(/^rec-card-/, '');
-        let label = '個案紀錄';
-        if (/psy/i.test(String(rid)) || (dc.psychiatristRecords || []).some(r => r.id === bare || r.id === rid)) label = '精神科醫師評估';
-        else if (/ii|initial/i.test(String(rid))) label = '初次晤談表';
-        else if ((dc.records || []).some(r => r.id === bare || r.id === rid)) label = '晤談紀錄';
-        _auditCaseSectionView('展開' + label);
+        const ridStr = String(rid);
+        const bare = ridStr.replace(/^rec-card-/, '').replace(/^psy-ded-/, '');
+        const psyRec = (dc.psychiatristRecords || []).find(r => r.id === bare);
+        const talkRec = (dc.records || []).find(r => r.id === bare);
+        let label = '個案紀錄', dateDetail = '';
+        if (/psy/i.test(ridStr) || psyRec) {
+          label = '精神科醫師評估';
+          dateDetail = psyRec?.date || '';
+        } else if (/ii|initial/i.test(ridStr)) {
+          label = '初次晤談表';
+          const ii = _getCaseII(dc, _caseDetailActiveSem);
+          dateDetail = (ii?.createdAt || '').slice(0, 10);
+        } else if (talkRec) {
+          label = talkRec.isEventRecord ? '事件處理記錄' : '晤談紀錄';
+          const t = talkRec.time ? (talkRec.time.startsWith('其他：') ? talkRec.time.slice(3) : talkRec.time) : '';
+          dateDetail = [talkRec.date, t].filter(Boolean).join(' ');
+        }
+        const detail = dateDetail ? `展開${label}（${dateDetail}）` : `展開${label}`;
+        auditLog('查閱個案—展開' + label, dc.id, bare, detail); // 直接寫入，不經 _auditCaseSectionView 去重
       }
     } catch (_) {}
   }
@@ -8245,6 +8360,8 @@ async function _refreshPendingAppsBtn() {
       return;
     }
   }
+  if (!pendingUsersData || !Array.isArray(pendingUsersData.applications)) pendingUsersData = { applications: [] };
+  _pendingUsersSnapshot = _deepClone(pendingUsersData.applications);
   _updatePendingUsersBadge();
   renderPendingUsersTab();
   const count = (pendingUsersData?.applications || []).filter(a => a.status === 'pending').length;
@@ -8891,9 +9008,8 @@ async function _migrateUserEmail(oldEmail, newEmail, entryPatches = {}, opts = {
       ? `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 清空（改為無 Gmail 帳號）${_actorTag}`
       : `使用者 ${merged.name || newEmail} 的 Gmail 已由 ${oldEmail} 更改為 ${newEmail}${_actorTag}`;
     const nowIso = new Date().toISOString();
-    Object.entries(configData.users).forEach(([email, u]) => {
-      if (!u.notifications) u.notifications = [];
-      u.notifications.unshift({
+    Object.keys(configData.users).forEach(email => {
+      _queueNotifPush(email, {
         id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
         type: 'gmail_changed',
         message: gmailNoticeMsg,
@@ -8902,13 +9018,11 @@ async function _migrateUserEmail(oldEmail, newEmail, entryPatches = {}, opts = {
         createdAt: nowIso,
         read: false,
       });
-      _pruneOldReadNotifications(u);
-      if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
     });
     bgJobProgress(jobId, 55);
 
-    // 4. 儲存 configData（一次 Drive 寫入，含所有通知）
-    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    // 4. 儲存 configData（使用者 key 遷移）＋ notifications.json（廣播通知，v154 已拆出獨立檔）
+    await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
     bgJobProgress(jobId, 70);
 
     // 5. 儲存受影響的個案 chunks（無則跳過）
@@ -9125,6 +9239,10 @@ function _setDetailSemFilter(val, caseId) {
 }
 function _switchCaseSem(sem, caseId) {
   const sy = window.scrollY;
+  // B5 修正：同案號內點學期 chip 切換檢視也要稽核（v152 只涵蓋跨案號的「歷年學期」nav）；點當前學期不記
+  if (sem !== _caseDetailActiveSem) {
+    try { auditLog('查閱個案—切換學期檢視', caseId, null, `切換至 ${semesterLabel(sem)}（案號 ${caseId}）`); } catch (_) {}
+  }
   _caseDetailMode = 'semester';
   _caseDetailActiveSem = sem;
   _detailSemFilter = 'current';
@@ -9725,7 +9843,7 @@ function _renderStudentSemNav(caseId, relatedCases) {
       const border = isCurrent ? '#3182ce' : ls.border;
       const color = isCurrent ? '#1a5276' : ls.color;
       const fw = isCurrent ? '700' : '500';
-      return `<button onclick="showCaseDetail('${escHtml(rc.id)}')"
+      return `<button onclick="_switchDetailSemester('${escHtml(rc.id)}','${escHtml(semLbl)}')"
         style="padding:4px 14px;border-radius:16px;border:1px solid ${border};
                background:${bg};color:${color};
                font-size:.82rem;font-weight:${fw};cursor:pointer;white-space:nowrap;">
@@ -9733,6 +9851,13 @@ function _renderStudentSemNav(caseId, relatedCases) {
       </button>`;
     }).join('')}
   </div>`;
+}
+// B5：個案詳細頁「歷年學期」chip 切換檢視學期 → 稽核（每次切換都記，不去重；detail 含案號與切到的學期）
+function _switchDetailSemester(targetCaseId, semLbl) {
+  if (targetCaseId !== _detailCaseId) {
+    try { auditLog('查閱個案—切換學期檢視', targetCaseId, null, `切換至 ${semLbl}（案號 ${targetCaseId}）`); } catch (_) {}
+  }
+  showCaseDetail(targetCaseId);
 }
 
 function _buildAllSemTimeline(relatedCases, currentCaseId, isAdminUser) {
@@ -9859,8 +9984,12 @@ async function showCaseDetail(caseId) {
   }
   if (_detailCaseId !== caseId) { _recPage = 1; _detailCaseId = caseId; _caseDetailActiveSem = null; _caseDetailMode = 'semester'; _caseDetailPsychIdx = 0; _detailSemFilter = 'current'; _viewedSectionsThisDetail = new Set(); /* #10：換個案時重設區塊查閱去重 */ }
   _recSortDesc = _userPref_('recSortDesc', false);
-  // 危機唯讀檢視：非危機途徑本就看不到、但今日有危機授權 → 唯讀 + 記錄閱讀
-  const _crisisView = !_caseNormallyAccessible(c) && _hasCrisisGrant(c.id);
+  // 危機唯讀檢視：非危機途徑本就看不到、但今日有危機授權 → 唯讀。
+  // B5 修正：「記錄閱讀」與「唯讀」語義分離——主任/管理者因 _caseNormallyAccessible 恆 true，
+  // 舊條件使其經危機閱讀開啟個案時完全不留閱讀紀錄（#13-4 本意是特權身份同樣受監督）。
+  // 改為只要今日有危機授權（授權只會因走過危機閱讀申請而存在）就記錄閱讀；唯讀判定維持原條件不變。
+  const _crisisRead = _hasCrisisGrant(c.id);
+  const _crisisView = !_caseNormallyAccessible(c) && _crisisRead;
   _detailReadOnly = _crisisView;
   const _relatedCases = _getRelatedCases(caseId);
   const _hasRelated = _relatedCases.length > 1;
@@ -9874,7 +10003,7 @@ async function showCaseDetail(caseId) {
     _caseDetailActiveSem = openDateToSemPrefix(c.openDate);
   }
   const _activeSem = _caseDetailActiveSem;
-  if (_crisisView) _logCrisisRead(c, _activeSem); // 區塊級閱讀記錄（session 節流）
+  if (_crisisRead) _logCrisisRead(c, _activeSem); // 區塊級閱讀記錄（session 節流）；含主任/管理者（B5 修正）
   // Per-semester snapshot: use snapshot data if available, otherwise fall back to case
   const _snapData = (c.basicInfoSnapshots && _activeSem && c.basicInfoSnapshots[_activeSem]) || null;
   const _cd = (field) => (_snapData !== null && _snapData[field] !== undefined) ? _snapData[field] : c[field];
@@ -11045,7 +11174,7 @@ async function addCaseManager(caseId) {
   showLoading('儲存個案管理員…');
   const jobId = bgJobAdd(`新增個案管理員：${email}`);
   try {
-    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
     bgJobDone(jobId);
     renderNotifBell();
     auditLog(`新增個案管理員 ${email}`, caseId);
@@ -11074,7 +11203,7 @@ async function removeCaseManager(caseId, email) {
   showLoading('移除個案管理員…');
   const jobId = bgJobAdd(`移除個案管理員：${email}`);
   try {
-    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
     bgJobDone(jobId);
     auditLog(`移除個案管理員 ${email}`, caseId);
     hideLoading();
@@ -11137,7 +11266,7 @@ async function addCaseManagerInDetail(caseId) {
   showLoading('儲存個案管理員…');
   const jobId = bgJobAdd(`新增個案管理員：${email}`);
   try {
-    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
     bgJobDone(jobId);
     renderNotifBell();
     auditLog(`新增個案管理員 ${email}`, caseId);
@@ -14020,13 +14149,11 @@ async function saveClosureEval() {
     const evalTypeLabel = isClosure ? '結案評估' : '學期評估';
     const directors = Object.entries(configData?.users || {})
       .filter(([, u]) => u.role === '主任').map(([email]) => email);
-    let notified = false;
     directors.forEach(email => {
-      const sent = addNotificationToUser(email, 'closure_high_risk', caseId, caseName,
+      addNotificationToUser(email, 'closure_high_risk', caseId, caseName,
         `個案「${caseName}（${caseId}）」${evalTypeLabel}為${light}，請注意後續關懷`);
-      if (sent) notified = true;
     });
-    if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    _flushNotifOps().catch(() => {});
   }
 
   // 背景儲存
@@ -18994,6 +19121,8 @@ function _viewCaseReasonSubmit(caseId) {
 async function _grantViewCaseAccess(caseId, reason, isCrisis) {
   const c = (casesData || []).find(x => x.id === caseId) || _casesIndexCache?.cases?.find(x => x.id === caseId);
   if (!c) { alert('找不到個案'); return; }
+  // B4：點擊（是/送出）當下同步立即顯示置中提示，不等 _appendAccessLog 等 await 跑完才出現（原本會晚約 2 秒）
+  showLoading(`「${c.name || caseId}」個案資料載入中…`);
   const entry = {
     id: 'acg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), type: 'grant',
     email: currentUser.email, name: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
@@ -19008,9 +19137,11 @@ async function _grantViewCaseAccess(caseId, reason, isCrisis) {
     renderCases();
     _detailReturnToNewCase = true;
     showToast('✅ 已記錄並取得當日閱讀權限，開啟中…', 'success');
-    showCaseDetail(caseId);
+    await showCaseDetail(caseId);
   } catch (e) {
     alert('記錄失敗：' + e.message);
+  } finally {
+    hideLoading();
   }
 }
 
@@ -19025,19 +19156,15 @@ function _notifyCaseOwnersOfView(c, reason, isCrisis) {
   const actorName = configData?.users?.[currentUser.email]?.name || currentUser.name || currentUser.email;
   const msg = `⚠ ${actorName} 查閱了個案「${c.name || c.id}」（${isCrisis ? '危機個案閱讀' : '一般閱讀'}）的完整資料。理由：${reason}`;
   const nowIso = new Date().toISOString();
-  let changed = false;
   owners.forEach(email => {
-    const u = configData?.users?.[email]; if (!u) return;
-    if (!Array.isArray(u.notifications)) u.notifications = [];
-    u.notifications.unshift({
+    if (!configData?.users?.[email]) return;
+    _queueNotifPush(email, {
       id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       type: 'case_viewed_by_other', message: msg, caseId: c.id,
       actorEmail: currentUser.email, createdAt: nowIso, read: false,
     });
-    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
-    changed = true;
   });
-  if (changed) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  _flushNotifOps().catch(() => {});
 }
 
 function _showEmgRelChips() { _filterEmgRelChips(document.getElementById('nc-emg-relation')?.value || ''); }
@@ -19465,8 +19592,10 @@ async function saveCase() {
       await saveCasesChunks(_editingCaseId, newCase.id);
       let cfgChanged = syncManagersFromForm(newCase.id, _editingCaseId);
       if (counselorEmail && counselorEmail !== currentUser.email && counselorEmail !== oldCounselorEmail)
-        cfgChanged = addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name) || cfgChanged;
-      if (cfgChanged) { await driveUpdateJsonFile(CONFIG_FILE, configData); renderNotifBell(); }
+        addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name);
+      if (cfgChanged) await driveUpdateJsonFile(CONFIG_FILE, configData);
+      await _flushNotifOps();
+      renderNotifBell();
       auditLog('編輯個案', newCase.id, null, semesterLabel(_editSem) + '學期基本資料');
       document.getElementById('btn-save-case').disabled = false;
       hideLoading();
@@ -19547,7 +19676,7 @@ async function saveCase() {
         addNotificationToUser(counselorEmail, 'assigned_counselor', target.id, target.name);
       }
       await saveCasesChunks(target.id);
-      await driveUpdateJsonFile(CONFIG_FILE, configData);
+      await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
       renderNotifBell();
       if (window._transferPendingLink) {
         const _tIdx = transferData.findIndex(t => t.id === window._transferPendingLink);
@@ -19582,8 +19711,10 @@ async function saveCase() {
       await saveCasesChunks(newCase.id);
       let cfgChanged = syncManagersFromForm(newCase.id, null);
       if (counselorEmail && counselorEmail !== currentUser.email)
-        cfgChanged = addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name) || cfgChanged;
-      if (cfgChanged) { await driveUpdateJsonFile(CONFIG_FILE, configData); renderNotifBell(); }
+        addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name);
+      if (cfgChanged) await driveUpdateJsonFile(CONFIG_FILE, configData);
+      await _flushNotifOps();
+      renderNotifBell();
       // 若從轉銜管理「建立個案」進入，自動連結轉銜紀錄
       if (window._transferPendingLink) {
         const _tIdx = transferData.findIndex(t => t.id === window._transferPendingLink);
@@ -20037,6 +20168,7 @@ async function getCasesFolderId() {
 // ══════════════════════════════════════════════
 
 let todosData = [];
+let _todosSnapshot = [];
 let _todoFileId = null;
 let _suppressedTodoRecordIds = new Set(); // recordIds whose todos were explicitly deleted
 let _todosViewUser = null;    // null=自己, '__all__'=全部, email=特定人員
@@ -20094,20 +20226,25 @@ async function loadUserTodos() {
       const _prefs = raw?.caseSearchPrefs || {};
       if (_prefs.closureStatus !== undefined) _cnClosureStatus = _prefs.closureStatus;
       if (_prefs.archived !== undefined) _cnArchived = _prefs.archived;
-      // Loaded from legacy file → clear file ID so saveUserTodos creates a new env-specific file
-      if (isLegacy) { _todoFileId = null; saveUserTodos().catch(() => {}); }
+      // Loaded from legacy file → clear file ID so saveUserTodos creates a new env-specific file。
+      // 快照設空陣列：目標新檔尚無資料，下一次 save 需把目前全部 todos 當成 upserts 寫入新檔，
+      // 否則若快照誤設為「與 todosData 相同」，diff 出的 upserts 會是空的，遷移將遺漏資料。
+      if (isLegacy) { _todoFileId = null; _todosSnapshot = []; saveUserTodos().catch(() => {}); }
+      else { _todosSnapshot = _deepClone(todosData); }
     } else {
       todosData = [];
       _suppressedTodoRecordIds = new Set();
+      _todosSnapshot = [];
     }
     _cleanupOldTodos();
   } catch (e) {
     console.warn('loadUserTodos failed:', e);
     todosData = [];
+    _todosSnapshot = [];
   }
 }
 
-async function saveUserTodos() {
+async function _saveUserTodosFallback() {
   const email = currentUser?.email;
   if (!email) return;
   const envSuffix = DRIVE_FOLDER_ID.slice(-8);
@@ -20143,21 +20280,49 @@ async function saveUserTodos() {
     const nf = await driveCreateJsonFile(fileName, content, usersId);
     if (nf?.id) _todoFileId = nf.id;
   }
+  _todosSnapshot = _deepClone(todosData);
 }
-
-async function _appendTodoToUser(email, newTodo) {
-  const usersId = await getUsersFolderId();
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的待辦事項，經 listCommit 依 id upsert/remove，
+// suppressedRecordIds/caseSearchPrefs/updatedAt 等非清單頂層欄位放 meta 一併送（只有檔案擁有者會帶 meta）。
+// 後端未部署或無法安全 diff → fallback 走舊 updateContentById 整檔覆寫（含既有的 legacy 檔遷移邏輯）。
+async function saveUserTodos() {
+  const email = currentUser?.email;
+  if (!email) return;
   const envSuffix = DRIVE_FOLDER_ID.slice(-8);
   const fileName = `todos_${email}_${envSuffix}.json`;
-  const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
-  const res = await driveQuery(q, 'id');
-  const fileId = res.files?.[0]?.id || null;
-  let todos = [];
-  if (fileId) {
-    try { const raw = await driveReadJsonById(fileId); todos = Array.isArray(raw?.todos) ? raw.todos : []; } catch(_) {}
+  const filePath = `users/${fileName}`;
+  const diff = _diffListById(_todosSnapshot, todosData);
+  if (!diff) { await _saveUserTodosFallback(); return; }
+  const meta = { suppressedRecordIds: [..._suppressedTodoRecordIds], caseSearchPrefs: { closureStatus: _cnClosureStatus, archived: _cnArchived }, updatedAt: new Date().toISOString() };
+  const res = await _listCommit(filePath, { ...diff, meta });
+  if (res && res.fallback) { await _saveUserTodosFallback(); return; }
+  if (res && res.data && Array.isArray(res.data.todos)) {
+    todosData = res.data.todos;
+    _todosSnapshot = _deepClone(todosData);
   }
-  todos.push(newTodo);
-  const content = { todos, updatedAt: new Date().toISOString() };
+}
+
+// 幫另一使用者（非目前登入者）附加一筆待辦——單筆 upsert，不帶 meta（避免覆寫對方的
+// suppressedRecordIds/caseSearchPrefs；那些欄位只由檔案擁有者本人的 saveUserTodos() 維護）。
+async function _appendTodoToUser(email, newTodo) {
+  const envSuffix = DRIVE_FOLDER_ID.slice(-8);
+  const fileName = `todos_${email}_${envSuffix}.json`;
+  const filePath = `users/${fileName}`;
+  const res = await _listCommit(filePath, { upserts: [newTodo] });
+  if (!(res && res.fallback)) return;
+  // 後端未部署（Unknown action）→ fallback 舊 RMW 路徑：讀最新→push→整檔寫回。
+  // 修 bug：舊版 fallback 曾把讀到的 suppressedRecordIds/caseSearchPrefs 等頂層欄位整個丟掉
+  // （content 只留 todos+updatedAt），改為保留原檔所有頂層欄位、只換 todos＋updatedAt。
+  const usersId = await getUsersFolderId();
+  const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
+  const q1 = await driveQuery(q, 'id');
+  const fileId = q1.files?.[0]?.id || null;
+  let raw = null;
+  if (fileId) {
+    try { raw = await driveReadJsonById(fileId); } catch(_) {}
+  }
+  const todos = Array.isArray(raw?.todos) ? [...raw.todos, newTodo] : [newTodo];
+  const content = { ...(raw || {}), todos, updatedAt: new Date().toISOString() };
   if (fileId) {
     await proxyCall('updateContentById', { fileId, content });
   } else {
@@ -20304,16 +20469,14 @@ function _checkPastSemUnclosedForDirectors() {
   if (!unclosedSems.size) return;
   const semList = [...unclosedSems].sort().map(s => semesterLabel(s)).join('、');
   const notifKey = `past_sem_unclosed_${[...unclosedSems].sort().join('_')}`;
-  if (!me.notifications) me.notifications = [];
-  if (!me.notifications.find(n => n.id === notifKey && !n.read)) {
-    me.notifications = me.notifications.filter(n => n.id !== notifKey);
-    me.notifications.unshift({
+  if (!_myNotifs().find(n => n.id === notifKey && !n.read)) {
+    _queueNotifPush(currentUser.email, {
       id: notifKey, type: 'past_sem_unclosed', caseId: '', caseName: '',
       message: `提醒：${semList} 學期仍有個案尚未完成結案評估，請確認是否需要處理。`,
       createdAt: new Date().toISOString(), read: false,
     });
+    _flushNotifOps().catch(() => {});
     renderNotifBell();
-    driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
   }
   // 建立/更新 todo 項目（讓左側 badge 顯示）
   const todoKey = `unclosed_reminder_${[...unclosedSems].sort().join('_')}`;
@@ -21321,8 +21484,8 @@ window._mlToggleSection = function() {
   _renderMlNotifSection();
 };
 
-// 待辦頁「重大事件」區塊：拉 configData notifications 中的重大類型顯示（如 Gmail 變更、非上班時間活動）
-// 資料來源與鈴鐺同一份（configData.users[me].notifications），無需額外 Drive 寫入
+// 待辦頁「重大事件」區塊：拉通知中的重大類型顯示（如 Gmail 變更、非上班時間活動）
+// 資料來源與鈴鐺同一份（_myNotifs()，v154 起為獨立 notifications.json），無需額外 Drive 寫入
 const MAJOR_EVENT_NOTIF_TYPES = new Set(['gmail_changed', 'off_hours_activity']);
 // 空間預約成功兩類原列於重大事件；2026-07-08 依使用者需求降級為獨立的一般通知卡
 // （沒這麼嚴重），資料來源與「收到」即封存機制不變，只換呈現位置與視覺
@@ -21351,8 +21514,7 @@ function _renderMajorEventNotifs() {
   // 僅在檢視自己的待辦時顯示
   const viewingOwn = !_todosViewUser || _todosViewUser === currentUser?.email;
   if (!viewingOwn) { section.innerHTML = ''; return; }
-  const me = configData?.users?.[currentUser?.email];
-  const allNotifs = me?.notifications || [];
+  const allNotifs = _myNotifs();
   const notifs = allNotifs.filter(n =>
     MAJOR_EVENT_NOTIF_TYPES.has(n.type) && !(n.read && _majorEventDismissOnRead(n.type)));
   const bkNotifs = allNotifs.filter(n => BOOKING_NOTIF_TYPES.has(n.type) && !n.read); // 收到即封存
@@ -21422,30 +21584,31 @@ window._majorEventDismissPrefToggle = function(on) {
   _renderMajorEventNotifs();
 };
 window._majorEventMarkRead = async function(notifId) {
-  const me = configData?.users?.[currentUser?.email];
-  if (!me?.notifications) return;
-  const n = me.notifications.find(x => x.id === notifId);
+  const n = _myNotifs().find(x => x.id === notifId);
   if (!n) return;
   n.read = true;
   if (!n.readAt) n.readAt = new Date().toISOString();
   _renderMajorEventNotifs();
   renderNotifBell?.();
-  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  const res = await _notifCommit([{ op: 'markRead', email: currentUser.email, id: notifId, readAt: n.readAt }]);
+  if (res && res.fallback) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
 };
 window._majorEventMarkAllRead = async function() {
-  const me = configData?.users?.[currentUser?.email];
-  if (!me?.notifications) return;
+  const notifs = _myNotifs();
+  if (!notifs.length) return;
   const nowIso = new Date().toISOString();
-  let changed = 0;
-  me.notifications.forEach(n => {
+  const ids = [];
+  notifs.forEach(n => {
     if (MAJOR_EVENT_NOTIF_TYPES.has(n.type) && !n.read) {
-      n.read = true; n.readAt = nowIso; changed++;
+      n.read = true; n.readAt = nowIso; ids.push(n.id);
     }
   });
-  if (!changed) return;
+  if (!ids.length) return;
   _renderMajorEventNotifs();
   renderNotifBell?.();
-  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  // 只標記重大事件類型（非全部通知），backend markRead 逐則套用，故一次送出多筆 markRead ops
+  const res = await _notifCommit(ids.map(id => ({ op: 'markRead', email: currentUser.email, id, readAt: nowIso })));
+  if (res && res.fallback) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
 };
 
 function _mlUpdateBatchBtn() {
@@ -23466,6 +23629,28 @@ async function _fetchCasesChunks(loadOrder, fileMap, fileTimesMap, deletedSet, o
   return out;
 }
 
+// 純函式（供測試）：算出單一 chunk 要送給後端 casesUpsert 的 { upserts, removes }。
+// modifiedIds／removeIds／deletedIds 為未過濾的完整清單，函式內部依 getChunkName(id) 分流到本 chunk；
+// getCase(id) 由呼叫端注入（記憶體 casesData 查找）。
+// 🔴 2026-07-08 事故防護：index 摘要 stub（_indexOnly）絕不可進 upserts——代表完整資料未載入，
+// 直接拋錯中止整批儲存（呼叫端應已先跑過 _ensureFullCases，此處是最後一道防線）。
+function _chunkCommitPayload(chunkName, modifiedIds, removeIds, deletedIds, getCase, getChunkName) {
+  const upserts = [];
+  (modifiedIds || []).forEach(id => {
+    if (getChunkName(id) !== chunkName) return;
+    const c = getCase(id);
+    if (!c) return; // 理論上不會發生：modifiedIds 來自呼叫端傳入的 caseIds，應存在於記憶體
+    if (c._indexOnly) throw new Error(`個案 ${id} 完整資料未載入，已中止儲存以避免覆寫 Drive 上的完整資料`);
+    const { _indexOnly, _fullLoaded, ...clean } = c;
+    upserts.push(clean);
+  });
+  const removes = [...new Set([
+    ...(removeIds || []).filter(id => getChunkName(id) === chunkName),
+    ...(deletedIds || []).filter(id => getChunkName(id) === chunkName),
+  ])];
+  return { upserts, removes };
+}
+
 async function saveCasesChunks(...args) {
   // 最後一個參數若為 function，視為 onProgress(done, total) callback
   let onProgress = null;
@@ -23500,32 +23685,24 @@ async function saveCasesChunks(...args) {
   let done = 0;
   // 逐批處理（每批 3 個），避免並發過多導致 Apps Script CORS/rate-limit 錯誤
   const BATCH = 3;
+  const _getCase = id => casesData.find(x => x.id === id);
+  // 2026-07-09：改走後端鎖內 upsert（casesUpsert_，LockService 保護），關閉「前端讀 Drive 最新版→
+  // 記憶體合併→整檔覆寫」這段 1~3 秒視窗內兩人同時存同一 chunk 不同個案會互蓋的最後漏洞。
+  // fail-closed：casesUpsert_ 讀取失敗／內容異常一律中止，此處失敗直接往上拋，不得退回舊整檔覆寫
+  // （那會繞過 fail-closed 保護）。舊版「先讀 Drive 最新版→driveMap 合併→整檔覆寫」的程式碼已移除，
+  // 可於 git 歷史查閱（v155 之前）。
+  // 語義差異（刻意）：舊版整檔覆寫時，除了本次修改的個案，還會順便把「記憶體有、Drive 沒有」的個案
+  // 一併補寫（涵蓋先前寫入失敗造成 Drive 缺漏的罕見情況）；改走 upsert 後只送 modifiedIds（本次真正
+  // 被修改的個案），不再順便補寫其餘個案——如需補回 Drive 缺漏，另外觸發該筆個案的儲存（例如重新
+  // 編輯後存檔）或走 _selfHealMissingChunks／管理者重建。
   for (let i = 0; i < chunkNames.length; i += BATCH) {
     await Promise.all(chunkNames.slice(i, i + BATCH).map(async name => {
-      // 先讀 Drive 最新版，避免覆蓋同時期其他人的改動
-      const driveMap = new Map();
-      try {
-        const fresh = await driveReadJson(`cases/${name}.json`);
-        (fresh?.cases || []).forEach(c => { if (c.id) driveMap.set(c.id, c); });
-      } catch (_) { /* 新 chunk，Drive 尚無此檔 */ }
-      // 覆蓋：本次被修改的個案 + Drive 沒有的新個案，用記憶體版本
-      // 🔴 2026-07-08 事故防護：index 摘要 stub（_indexOnly）絕不可寫入 chunk——
-      // 修改中的個案若仍是 stub 代表完整資料未載入，直接中止；未修改的 stub 一律略過（Drive 版本為準）。
-      casesData.filter(c => c.id && getCaseChunkName(c.id) === name).forEach(c => {
-        if (c._indexOnly) {
-          if (modifiedIds.has(c.id)) throw new Error(`個案 ${c.id} 完整資料未載入，已中止儲存以避免覆寫 Drive 上的完整資料`);
-          return;
-        }
-        if (modifiedIds.has(c.id) || !driveMap.has(c.id)) {
-          const { _indexOnly, _fullLoaded, ...clean } = c;
-          driveMap.set(c.id, clean);
-        }
-      });
-      // 明確移除：id 已變更／被合併掉的舊紀錄（見上方 removeIds 說明）
-      removeSet.forEach(id => { if (getCaseChunkName(id) === name) driveMap.delete(id); });
-      // 移除已永久刪除的個案（manifest.deletedIds）
-      (casesManifest.deletedIds || []).forEach(id => driveMap.delete(id));
-      await driveSaveJsonInCases(`${name}.json`, { cases: [...driveMap.values()] });
+      const { upserts, removes } = _chunkCommitPayload(
+        name, [...modifiedIds], [...removeSet], casesManifest.deletedIds || [], _getCase, getCaseChunkName
+      );
+      if (upserts.length || removes.length) {
+        await proxyCall('casesUpsert', { path: `cases/${name}.json`, upserts: upserts.map(_deepClone), removes });
+      }
       done++;
       if (onProgress) onProgress(done, chunkNames.length);
     }));
@@ -23845,6 +24022,76 @@ async function loadAttendance() {
   }
 }
 
+// ══════════════════════════════════════════════
+//  併發安全清單寫入 — 通用 diff + commit helper（2026-07-09 事故延伸修復）
+//  attendance.json／cases 索引之外，還有多個「整份載入→改記憶體→整檔覆寫」的資料檔存在同型
+//  併發覆蓋風險。以下 helper 收斂這些檔案的寫入：呼叫端維護一份「上次載入/寫入成功後的快照」，
+//  save 時 diff 出 upserts/removes，交由後端 listCommit（LockService 讀-改-寫、依 id upsert/remove
+//  或 append-only／map 模式）處理，取代整檔覆寫。後端未部署（Unknown action）或無法安全 diff
+//  （缺 id）時 fallback 回舊整檔覆寫路徑，確保功能不中斷。
+// ══════════════════════════════════════════════
+
+// 純函式：比較「上次快照」與「目前陣列」，算出 { upserts, removes }（依 id）。
+// 任一陣列存在缺 id 的元素 → 回傳 null（無法安全 diff，呼叫端應 fallback 整檔覆寫）。
+function _diffListById(prevArr, currArr) {
+  const prev = Array.isArray(prevArr) ? prevArr : [];
+  const curr = Array.isArray(currArr) ? currArr : [];
+  if (prev.some(x => !x || x.id == null) || curr.some(x => !x || x.id == null)) return null;
+  const prevMap = new Map(prev.map(x => [x.id, x]));
+  const currMap = new Map(curr.map(x => [x.id, x]));
+  const upserts = [];
+  currMap.forEach((item, id) => {
+    const p = prevMap.get(id);
+    if (!p || JSON.stringify(p) !== JSON.stringify(item)) upserts.push(item);
+  });
+  const removes = [];
+  prevMap.forEach((_, id) => { if (!currMap.has(id)) removes.push(id); });
+  return { upserts, removes };
+}
+
+// 純函式：map 版 diff（psych_test_db.json：{ studentId: [...測驗結果] }）。
+// 回傳 { upserts:{key:value,...}, removes:[key,...] }。
+function _diffMapByKey(prevObj, currObj) {
+  const prev = (prevObj && typeof prevObj === 'object' && !Array.isArray(prevObj)) ? prevObj : {};
+  const curr = (currObj && typeof currObj === 'object' && !Array.isArray(currObj)) ? currObj : {};
+  const upserts = {};
+  Object.keys(curr).forEach(k => {
+    if (!(k in prev) || JSON.stringify(prev[k]) !== JSON.stringify(curr[k])) upserts[k] = curr[k];
+  });
+  const removes = Object.keys(prev).filter(k => !(k in curr));
+  return { upserts, removes };
+}
+
+// 深拷貝快照用：save 函式常在呼叫前就地修改陣列元素（如 app.status = 'approved'）。
+// 若快照存的是同一物件參照，事後 diff 會比對到「已被修改的同一份物件」而誤判無異動，
+// 因此快照一律深拷貝，與之後的即地修改脫鉤。
+function _deepClone(x) { return x === undefined ? x : JSON.parse(JSON.stringify(x)); }
+
+// 每個檔案各自的寫入序列化 promise，避免同一分頁對同一檔案的多次 commit 交錯（比對/寫入順序錯亂）。
+const _listCommitChains = {};
+
+// 泛用清單型 JSON 檔併發安全寫入：呼叫後端 listCommit action。
+// 若後端尚未部署（回應含 'Unknown action'）→ 回傳 { fallback:true }，呼叫端自行走舊整檔覆寫路徑
+// （比照 _attendanceCommit 的 fallback 慣例）；其他錯誤（如 fail-closed 中止）原樣拋出。
+function _listCommit(file, { upserts, removes, meta, rootFolderId } = {}) {
+  const prevChain = _listCommitChains[file] || Promise.resolve();
+  const run = prevChain.then(async () => {
+    try {
+      const params = { file, upserts: upserts || [], removes: removes || [] };
+      if (meta) params.meta = meta;
+      if (rootFolderId) params.rootFolderId = rootFolderId;
+      return await proxyCall('listCommit', params);
+    } catch (e) {
+      if (/Unknown action/i.test(e.message || '')) return { fallback: true };
+      throw e;
+    }
+  });
+  // 鏈本身永遠 resolve（即使本次失敗），避免一次失敗卡住後續對同檔案的寫入；
+  // 呼叫端仍從回傳的 run 取得真正結果／例外。
+  _listCommitChains[file] = run.catch(() => {});
+  return run;
+}
+
 // 併發安全的打卡寫入：後端 LockService 讀-改-寫，只 upsert/remove 指定 id 的紀錄，回傳合併後全部 records。
 // 取代舊 saveAttendance() 的「整檔覆寫」——那會在多人同時打卡時後寫者蓋掉先寫者（2026-07-09 事故）。
 async function _attendanceCommit(upserts, removes) {
@@ -23876,6 +24123,7 @@ async function saveAttendance() {
 // ══════════════════════════════════════════════
 //  實習生差勤申請（請假 / 補休）
 // ══════════════════════════════════════════════
+let _leavesSnapshot = [];
 async function loadLeaves() {
   try {
     leavesData = await driveReadJson(LEAVES_FILE);
@@ -23883,11 +24131,21 @@ async function loadLeaves() {
   } catch {
     leavesData = { applications: [] };
   }
+  _leavesSnapshot = _deepClone(leavesData.applications);
   _updateLeaveBadges();
 }
 
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的申請單，經 listCommit 依 id upsert/remove，
+// 取代整檔覆寫（多人同時審核/申請時會互蓋）。後端未部署或無法安全 diff → fallback 整檔覆寫。
 async function saveLeaves() {
-  await driveUpdateJsonFile(LEAVES_FILE, leavesData);
+  const diff = _diffListById(_leavesSnapshot, leavesData.applications);
+  if (!diff) { await driveUpdateJsonFile(LEAVES_FILE, leavesData); _leavesSnapshot = _deepClone(leavesData.applications); return; }
+  const res = await _listCommit(LEAVES_FILE, diff);
+  if (res && res.fallback) { await driveUpdateJsonFile(LEAVES_FILE, leavesData); _leavesSnapshot = _deepClone(leavesData.applications); return; }
+  if (res && res.data && Array.isArray(res.data.applications)) {
+    leavesData.applications = res.data.applications;
+    _leavesSnapshot = _deepClone(leavesData.applications);
+  }
 }
 
 // 預設假別（首次無設定時用）；deductsQuota=是否扣抵額度
@@ -24755,12 +25013,15 @@ async function cancelLeave(id) {
   _updateLeaveBadges();
 }
 
+let _pendingUsersSnapshot = [];
 async function loadPendingUsers() {
   try {
     pendingUsersData = await proxyCall('readJson', { path: PENDING_USERS_FILE });
   } catch {
     pendingUsersData = { applications: [] };
   }
+  if (!pendingUsersData || !Array.isArray(pendingUsersData.applications)) pendingUsersData = { applications: [] };
+  _pendingUsersSnapshot = _deepClone(pendingUsersData.applications);
   _updatePendingUsersBadge();
 }
 
@@ -25650,7 +25911,7 @@ async function _doApproveUser() {
     app.status = 'approved';
     app.approvedAt = new Date().toISOString();
     app.approvedBy = currentUser.email;
-    await driveUpdateJsonFile(PENDING_USERS_FILE, pendingUsersData);
+    await savePendingUsers();
     const _approvedRole = action === 'new' ? document.getElementById('approve-role').value : '（連結現有使用者）';
     auditLog('審核通過帳號申請', null, null, `${app.name}（${app.email}）→ ${_approvedRole}`);
     document.getElementById('approve-modal').remove();
@@ -25668,9 +25929,23 @@ async function rejectUserApp(appId) {
   app.status   = 'rejected';
   app.rejectedAt = new Date().toISOString();
   app.rejectedBy = currentUser.email;
-  await driveUpdateJsonFile(PENDING_USERS_FILE, pendingUsersData);
+  await savePendingUsers();
   auditLog('拒絕帳號申請', null, null, `${app.name}（${app.email}）`);
   _refreshPendingAppsViews();
+}
+
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的申請單，經 listCommit 依 id upsert/remove，
+// 取代整檔覆寫（多位管理者同時審核時會互蓋彼此的審核結果）。
+async function savePendingUsers() {
+  if (!pendingUsersData || !Array.isArray(pendingUsersData.applications)) pendingUsersData = { applications: [] };
+  const diff = _diffListById(_pendingUsersSnapshot, pendingUsersData.applications);
+  if (!diff) { await driveUpdateJsonFile(PENDING_USERS_FILE, pendingUsersData); _pendingUsersSnapshot = _deepClone(pendingUsersData.applications); return; }
+  const res = await _listCommit(PENDING_USERS_FILE, diff);
+  if (res && res.fallback) { await driveUpdateJsonFile(PENDING_USERS_FILE, pendingUsersData); _pendingUsersSnapshot = _deepClone(pendingUsersData.applications); return; }
+  if (res && res.data && Array.isArray(res.data.applications)) {
+    pendingUsersData.applications = res.data.applications;
+    _pendingUsersSnapshot = _deepClone(pendingUsersData.applications);
+  }
 }
 
 // ══════════════════════════════════════════════
@@ -25692,8 +25967,12 @@ function auditLog(action, caseId = null, recordId = null, detail = null, opts = 
   if (!Array.isArray(window._auditLogsCache)) window._auditLogsCache = [];
   window._auditLogsCache.push(entry);
 
+  // 併發安全 append（2026-07-09 事故延伸修復）：後端 listCommit append-only 模式（LockService 讀-改-寫，
+  // 只 push 這一筆，不比對/不覆寫既有 logs）。後端未部署 → fallback 舊 RMW 整檔覆寫（含建檔分支）。
   (async () => {
     try {
+      const res = await _listCommit(AUDIT_LOG_FILE, { upserts: [entry] });
+      if (!(res && res.fallback)) return;
       let raw;
       try { raw = await driveReadJson(AUDIT_LOG_FILE); }
       catch { raw = null; /* 檔案尚未建立 */ }
@@ -26677,6 +26956,31 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-09', v: 155, title: '個案 chunk 檔寫入改走後端鎖內 upsert，關閉多人同時儲存互蓋的最後窗口', isProd: true, items: [
+      item('重大修復', '個案 chunk 檔（cases/{name}.json）寫入原本是「前端讀 Drive 最新版→記憶體合併→整檔覆寫」，讀取到寫入之間有 1~3 秒視窗，兩人同時儲存同一 chunk 內不同個案時仍可能互蓋（cases-index／cases-hot 先前已於 v141 修過，chunk 檔本體是最後一段整檔覆寫路徑）'),
+      item('重大修復', '改走既有後端 casesUpsert action（LockService 鎖內讀最新→依 id upsert/remove→寫回，fail-closed）逐 chunk 提交，取代前端整檔覆寫；沿用既有 2026-07-08 事故防護（stub 中止儲存、旗標剝離）'),
+      item('改善', '此路徑只送本次真正被修改的個案（不再順便補寫「記憶體有、Drive 沒有」的其餘個案），語意更精準；casesUpsert_ 使用範圍自 cases-index/hot 擴大到個案 chunk 檔'),
+    ]},
+    { date: '2026-07-09', v: 154, title: '通知系統拆出 config.json：獨立 notifications.json＋後端鎖內寫入（2026-07-09 事故延伸修復）', isProd: true, items: [
+      item('重大修復', '通知（notifications）原存在 configData.users[email].notifications，任何使用者收/發/讀通知都會觸發整份 config.json 覆寫（config 含全部使用者帳號與權限）：①兩則通知同時推播互相蓋掉 ②管理者改權限的瞬間撞上任何人的通知寫入會被蓋回'),
+      item('重大修復', '拆成獨立 notifications.json＋後端新增 notifCommit action（LockService 鎖內讀-改-寫、依 push/markRead/markAllRead/removeIds ops 套用、fail-closed），config.json 之後只剩低頻管理操作寫入；首次任何人推播/標讀會觸發後端一次性遷移建檔，遷移前所有讀寫點皆 fallback 回舊 config 路徑確保功能不中斷'),
+      item('改善', '推播／已讀／顯示／輪詢（pollNotifications）等所有通知讀寫點全數改走新架構；config.json 內殘留的舊 notifications 欄位視為無害死資料，不再作為顯示來源'),
+    ]},
+    { date: '2026-07-09', v: 153, title: 'v152 驗證回饋修正：學期chip切換稽核補漏、主任/管理者危機閱讀留紀錄', isProd: true, items: [
+      item('修正', 'B5-1：v152 的「切換學期檢視」稽核只涵蓋跨案號的「歷年學期」導覽，同一案號內點學期 chip 切換（新架構主要切換方式）沒有記錄；已補上（點當前學期不重複記）'),
+      item('修正', 'B5-2：主任/管理者透過危機個案閱讀開啟個案時，「同仁個案閱讀監督」完全沒有留下閱讀紀錄——舊判定「非正常途徑可存取才記錄」對特權身份恆不成立；改為只要當日有危機閱讀授權就記錄閱讀軌跡（唯讀與否的判定維持不變，不影響特權身份的編輯權）'),
+    ]},
+    { date: '2026-07-09', v: 152, title: 'v150 驗證回饋修正：個案資料載入提示改置中、展開紀錄與切換學期補稽核', isProd: true, items: [
+      item('改善', 'B4：「察看個案資料與過去紀錄」點入封存／舊學期個案時的「◯◯◯個案資料載入中」提示，原本走右下角綠色 toast 且要等記錄查閱理由的 Drive 寫入完成（約2秒延遲）才出現；改為點擊當下（任何 await 之前）就同步顯示置中半透明遮罩，讀取完成或失敗都會自動關閉'),
+      item('新功能', 'B5：個案詳細頁展開晤談紀錄／事件處理記錄／精神科醫師評估／初次晤談表時，逐筆記入稽核（不去重，每次展開都記），detail 附上該筆紀錄的日期時間；收合不記錄'),
+      item('新功能', 'B5：個案詳細頁點「歷年學期」chip 切換檢視其他學期的個案紀錄時，記入稽核（detail 含案號與切到的學期）'),
+    ]},
+    { date: '2026-07-09', v: 151, title: '重大修復：延伸修補多份清單型資料檔的整檔覆寫併發風險（比照 v149 打卡修復模式）', isProd: true, items: [
+      item('修復', '除打卡紀錄、個案索引外，請假/補休申請、轉銜紀錄、身心調適假、不開案個案、未歸屬輔導服務記錄、心理測驗資料庫、帳號審核清單、待辦事項、問題回報／許願池等資料檔，先前也都是「整份載入→改記憶體→整檔覆寫回 Drive」，多人同時操作時後存檔者可能蓋掉先存檔者的異動。改為與打卡紀錄相同的併發安全寫入模式：後端鎖定讀取最新版本後，只新增/更新/刪除本次異動的項目再寫回，不再整檔覆寫'),
+      item('技術', '新增後端 listCommit action（LockService 讀-改-寫、fail-closed），泛用於清單型 JSON 檔的併發安全寫入，支援依 id upsert/remove（一般清單）、append-only（稽核／存取監督日誌）、map 模式（心理測驗資料庫，依學號 key）三種模式；後端尚未部署或無法安全比對異動時，前端自動退回舊整檔覆寫路徑確保功能不中斷'),
+      item('修復', '帳號申請送出（submitUserApplication）補上併發鎖，避免與管理者審核同時寫入互蓋'),
+      item('修復', '「幫其他同仁補一筆待辦」的舊版寫入邏輯有 bug：整檔覆寫時會把該同仁的其他設定（隱藏清單、查詢偏好等）一併清空，這次一併修正為只更新待辦清單、保留其他設定'),
+    ]},
     { date: '2026-07-09', v: 150, title: 'v148 驗證回饋修正：查閱稽核、學期badge、開案徽章、輪值/學期時段、GC待確認、登入提醒', isProd: true, items: [
       item('修復', '#10 查閱稽核 bug：先前在個案詳細頁展開 BSRS／紀錄／心測／精神科等區塊「沒有被記錄」（程式誤用了錯的變數）。現已修正，展開這些區塊會確實記入稽核'),
       item('新功能', '#9/#10 查閱稽核強化：查閱「非你主責／個管」的個案、或在非上班（含輪值日非輪值者）時段查閱個案時，進入詳細頁即記「查閱基本資料」，且捲動看到哪個敏感區塊就記錄該區塊查閱（不必展開）；一般同仁上班看自己的個案不細記以免灌爆'),
@@ -28771,6 +29075,7 @@ ${records.map((r, i) => renderOne(r, i)).join('\n')}
 // ══════════════════════════════════════════════
 const PENDING_CASES_FILE = 'pending_cases.json';
 let pendingCasesData = [];
+let _pendingCasesSnapshot = [];
 
 async function loadPendingCases() {
   try {
@@ -28779,9 +29084,10 @@ async function loadPendingCases() {
   } catch (e) {
     pendingCasesData = [];
   }
+  _pendingCasesSnapshot = _deepClone(pendingCasesData);
 }
 
-async function savePendingCases() {
+async function _savePendingCasesFallback() {
   try {
     await driveUpdateJsonFile(PENDING_CASES_FILE, { cases: pendingCasesData });
   } catch(e) {
@@ -28789,12 +29095,25 @@ async function savePendingCases() {
       await driveCreateJsonFile(PENDING_CASES_FILE, { cases: pendingCasesData }, DRIVE_FOLDER_ID);
     } else throw e;
   }
+  _pendingCasesSnapshot = _deepClone(pendingCasesData);
+}
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的不開案個案，經 listCommit 依 id upsert/remove。
+async function savePendingCases() {
+  const diff = _diffListById(_pendingCasesSnapshot, pendingCasesData);
+  if (!diff) { await _savePendingCasesFallback(); return; }
+  const res = await _listCommit(PENDING_CASES_FILE, diff);
+  if (res && res.fallback) { await _savePendingCasesFallback(); return; }
+  if (res && res.data && Array.isArray(res.data.cases)) {
+    pendingCasesData = res.data.cases;
+    _pendingCasesSnapshot = _deepClone(pendingCasesData);
+  }
 }
 
 // ══════════════════════════════════════════════
 //  未歸屬輔導服務記錄
 // ══════════════════════════════════════════════
 let unassignedRecordsData = [];
+let _unassignedRecordsSnapshot = [];
 
 async function loadUnassignedRecords() {
   try {
@@ -28803,15 +29122,28 @@ async function loadUnassignedRecords() {
   } catch (e) {
     unassignedRecordsData = [];
   }
+  _unassignedRecordsSnapshot = _deepClone(unassignedRecordsData);
 }
 
-async function saveUnassignedRecords() {
+async function _saveUnassignedRecordsFallback() {
   try {
     await driveUpdateJsonFile(UNASSIGNED_RECORDS_FILE, { records: unassignedRecordsData });
   } catch(e) {
     if (e.message.includes('找不到')) {
       await driveCreateJsonFile(UNASSIGNED_RECORDS_FILE, { records: unassignedRecordsData }, DRIVE_FOLDER_ID);
     } else throw e;
+  }
+  _unassignedRecordsSnapshot = _deepClone(unassignedRecordsData);
+}
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的紀錄，經 listCommit 依 id upsert/remove。
+async function saveUnassignedRecords() {
+  const diff = _diffListById(_unassignedRecordsSnapshot, unassignedRecordsData);
+  if (!diff) { await _saveUnassignedRecordsFallback(); return; }
+  const res = await _listCommit(UNASSIGNED_RECORDS_FILE, diff);
+  if (res && res.fallback) { await _saveUnassignedRecordsFallback(); return; }
+  if (res && res.data && Array.isArray(res.data.records)) {
+    unassignedRecordsData = res.data.records;
+    _unassignedRecordsSnapshot = _deepClone(unassignedRecordsData);
   }
 }
 
@@ -28826,7 +29158,6 @@ async function scanUnassignedRecords() {
 
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   let matched = 0;
-  let cfgChanged = false;
 
   for (const rec of pending) {
     const name = (rec.name || '').trim();
@@ -28846,31 +29177,25 @@ async function scanUnassignedRecords() {
 
     targets.forEach(email => {
       if (email === currentUser.email) return;
-      cfgChanged = addNotificationToUser(email, 'unassigned_record_match',
-        found.id, found.name) || cfgChanged;
+      addNotificationToUser(email, 'unassigned_record_match', found.id, found.name);
     });
 
-    if (isAdmin) {
-      const me = configData?.users?.[currentUser.email];
-      if (me) {
-        if (!me.notifications) me.notifications = [];
-        me.notifications.unshift({
-          id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
-          type: 'unassigned_record_match',
-          caseId: found.id,
-          caseName: found.name,
-          message: `未歸屬記錄「${name}」已找到可能對應的開案個案「${found.name}（${found.id}）」，請至未歸屬記錄管理頁確認`,
-          createdAt: new Date().toISOString(),
-          read: false,
-        });
-        cfgChanged = true;
-      }
+    if (isAdmin && configData?.users?.[currentUser.email]) {
+      _queueNotifPush(currentUser.email, {
+        id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+        type: 'unassigned_record_match',
+        caseId: found.id,
+        caseName: found.name,
+        message: `未歸屬記錄「${name}」已找到可能對應的開案個案「${found.name}（${found.id}）」，請至未歸屬記錄管理頁確認`,
+        createdAt: new Date().toISOString(),
+        read: false,
+      });
     }
   }
 
   if (matched > 0) {
     await saveUnassignedRecords();
-    if (cfgChanged) await driveUpdateJsonFile(CONFIG_FILE, configData);
+    await _flushNotifOps();
     renderNotifBell();
   }
   localStorage.setItem('scc_unassigned_scan', todayKey);
@@ -29585,19 +29910,16 @@ function _broadcastGcValidationErrors(newErrors) {
     const r = u.role || '';
     const recipient = r === '主任' || u.isAdmin === true || u.extraRole === '管理者' || (typeof r === 'string' && r.startsWith('專任'));
     if (!recipient) return;
-    if (!u.notifications) u.notifications = [];
-    u.notifications.unshift({
+    _queueNotifPush(email, {
       id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
       type: 'gc_validation_error',
       message: msg,
       navTarget: 'todos:gc-errors',
       createdAt: nowIso, read: false,
     });
-    _pruneOldReadNotifications(u);
-    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
     pushed++;
   });
-  if (pushed) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  if (pushed) _flushNotifOps().catch(() => {});
 }
 
 function _initBkAuditDropdowns() {
@@ -29799,23 +30121,38 @@ async function _bkCommitOne(bk, gcMode, gcParams, jobLabel) {
   }
 }
 
+let _transferSnapshot = [];
 async function loadTransfer() {
   try {
     const data = await driveReadJson(TRANSFER_FILE);
     transferData = Array.isArray(data?.records) ? data.records : [];
   } catch(e) { transferData = []; }
+  _transferSnapshot = _deepClone(transferData);
 }
 
+let _psychTestDBSnapshot = {};
 async function loadPsychTestDB() {
   const data = await driveReadJsonOptional(PSYCH_TEST_DB_FILE);
   psychTestDB = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
+  _psychTestDBSnapshot = _deepClone(psychTestDB);
 }
-async function savePsychTestDB() {
+async function _savePsychTestDBFallback() {
   try {
     await driveUpdateJsonFile(PSYCH_TEST_DB_FILE, psychTestDB);
   } catch(e) {
     if (!e.message.includes('找不到')) throw e;
     await driveCreateJsonFile(PSYCH_TEST_DB_FILE, psychTestDB, DRIVE_FOLDER_ID);
+  }
+  _psychTestDBSnapshot = _deepClone(psychTestDB);
+}
+// 併發安全寫入（2026-07-09 事故延伸修復）：map 模式 diff（依學號 key），經 listCommit upsert/remove。
+async function savePsychTestDB() {
+  const diff = _diffMapByKey(_psychTestDBSnapshot, psychTestDB);
+  const res = await _listCommit(PSYCH_TEST_DB_FILE, diff);
+  if (res && res.fallback) { await _savePsychTestDBFallback(); return; }
+  if (res && res.data && typeof res.data === 'object') {
+    psychTestDB = res.data;
+    _psychTestDBSnapshot = _deepClone(psychTestDB);
   }
 }
 
@@ -29823,12 +30160,14 @@ async function savePsychTestDB() {
 //  身心調適假管理
 // ══════════════════════════════════════════════
 
+let _mentalLeavesSnapshot = [];
 async function loadMentalLeaves() {
   try {
     const data = await driveReadJson(MENTAL_LEAVES_FILE);
     mentalLeavesData = Array.isArray(data?.records) ? data.records : [];
     _mlLastFetchedAt = data?.lastFetchedAt || null;
   } catch(e) { mentalLeavesData = []; }
+  _mentalLeavesSnapshot = _deepClone(mentalLeavesData);
   _syncTodoBadge();
 }
 
@@ -29854,12 +30193,25 @@ function _mlAutoFetchOnLogin() {
   setTimeout(() => window._mlFetch(true), 1500);
 }
 
-async function saveMentalLeaves() {
+async function _saveMentalLeavesFallback() {
   try {
     await driveUpdateJsonFile(MENTAL_LEAVES_FILE, { records: mentalLeavesData });
   } catch(e) {
     if (!e.message.includes('找不到')) throw e;
     await driveCreateJsonFile(MENTAL_LEAVES_FILE, { records: mentalLeavesData }, DRIVE_FOLDER_ID);
+  }
+  _mentalLeavesSnapshot = _deepClone(mentalLeavesData);
+}
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的紀錄，經 listCommit 依 id upsert/remove，
+// 頂層 lastFetchedAt（由後端擷取信件時另行寫入）不受影響——舊整檔覆寫會意外清掉它，新路徑不會。
+async function saveMentalLeaves() {
+  const diff = _diffListById(_mentalLeavesSnapshot, mentalLeavesData);
+  if (!diff) { await _saveMentalLeavesFallback(); return; }
+  const res = await _listCommit(MENTAL_LEAVES_FILE, diff);
+  if (res && res.fallback) { await _saveMentalLeavesFallback(); return; }
+  if (res && res.data && Array.isArray(res.data.records)) {
+    mentalLeavesData = res.data.records;
+    _mentalLeavesSnapshot = _deepClone(mentalLeavesData);
   }
 }
 
@@ -32115,13 +32467,25 @@ async function deletePsychTestDBEntry(sid, sem) {
   } catch(e) { bgJobFail(jobId, e.message); alert('刪除失敗：' + e.message); }
 }
 
-async function saveTransfer() {
+async function _saveTransferFallback() {
   try {
     await driveUpdateJsonFile(TRANSFER_FILE, { records: transferData });
   } catch(e) {
     if (e.message.includes('找不到')) {
       await driveCreateJsonFile(TRANSFER_FILE, { records: transferData }, DRIVE_FOLDER_ID);
     } else throw e;
+  }
+  _transferSnapshot = _deepClone(transferData);
+}
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的轉銜紀錄，經 listCommit 依 id upsert/remove。
+async function saveTransfer() {
+  const diff = _diffListById(_transferSnapshot, transferData);
+  if (!diff) { await _saveTransferFallback(); return; }
+  const res = await _listCommit(TRANSFER_FILE, diff);
+  if (res && res.fallback) { await _saveTransferFallback(); return; }
+  if (res && res.data && Array.isArray(res.data.records)) {
+    transferData = res.data.records;
+    _transferSnapshot = _deepClone(transferData);
   }
 }
 
@@ -34228,7 +34592,7 @@ function _bkAckPersonConflict() {
 
 // #5-1：預約建立成功通知——(a) 建立者本人在待辦頁「重大事件」收到「已預約成功」提示；
 // (b) 若主責／人員含建立者以外的使用者，廣播「XXX 為你建立了一筆空間預約」給那些人。
-// 走既有 MAJOR_EVENT_NOTIF_TYPES 機制（configData.users[email].notifications），
+// 走既有 MAJOR_EVENT_NOTIF_TYPES 機制（notifications.json，v154 起拆自 config.json），
 // 「收到」＝點一下即從畫面消失（見 MAJOR_EVENT_DISMISS_ON_READ），只在此次使用者操作時寫檔一次，
 // 不在每次 render 時重複寫入。
 function _bkNotifyCreated(createdObjs, counselors) {
@@ -34242,15 +34606,12 @@ function _bkNotifyCreated(createdObjs, counselors) {
   const brief = `${roomD}　${timeStr}${countSuffix}${first.counselorName ? '　主責：' + first.counselorName : ''}`;
   const nowIso = new Date().toISOString();
 
-  if (!Array.isArray(me.notifications)) me.notifications = [];
-  me.notifications.unshift({
+  _queueNotifPush(currentUser.email, {
     id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
     type: 'booking_created_self',
     message: `✅ 已預約成功：${brief}`,
     createdAt: nowIso, read: false,
   });
-  _pruneOldReadNotifications(me);
-  if (me.notifications.length > 100) me.notifications = me.notifications.slice(0, 100);
 
   const myName = me.name || currentUser.name || currentUser.given_name || (currentUser.email?.split('@')[0] ?? '') || '';
   const notified = new Set();
@@ -34259,20 +34620,17 @@ function _bkNotifyCreated(createdObjs, counselors) {
     const u = configData.users[c.email];
     if (!u || u.disabled) return;
     notified.add(c.email);
-    if (!Array.isArray(u.notifications)) u.notifications = [];
-    u.notifications.unshift({
+    _queueNotifPush(c.email, {
       id: `notif-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
       type: 'booking_created_broadcast',
       message: `${myName || '同仁'} 為你建立了一筆空間預約：${brief}`,
       createdAt: nowIso, read: false,
     });
-    _pruneOldReadNotifications(u);
-    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
   });
 
   renderNotifBell?.();
   if (document.getElementById('page-todos')?.classList.contains('active')) renderTodosPage();
-  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  _flushNotifOps().catch(() => {});
 }
 
 async function saveBooking() {
@@ -38266,7 +38624,7 @@ window._onDirectAssessorReassign = async function() {
   }
   addNotificationToUser(newEmail, 'transfer_reassign_assessor_notify', caseId || '', caseLbl,
     `${myName} 已將「${caseLbl}」的轉銜評估者直接指派給您，請完成評估`);
-  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  _flushNotifOps().catch(() => {});
   const jobId = bgJobAdd(`直接通知轉派 → ${newName}`);
   try {
     await _appendTodoToUser(newEmail, {
@@ -38332,7 +38690,7 @@ async function _executeAssessorReassign(todoId) {
     const caseLbl = t.caseLabel || '';
     addNotificationToUser(finalEmail, 'transfer_reassign_assessor_notify', t.caseId || '', caseLbl,
       `${myName} 已將「${caseLbl}」的轉銜評估者指派給您，請完成評估`);
-    driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    _flushNotifOps().catch(() => {});
     const jobId = bgJobAdd(`通知轉派 → ${finalName}`);
     try {
       await _appendTodoToUser(finalEmail, {
@@ -39567,7 +39925,9 @@ async function _confirmLinkRecord(recId) {
       try {
         await saveCasesChunks(newId);
         await saveTransfer();
-        if (_newUserKey) { await driveUpdateJsonFile(CONFIG_FILE, configData); renderNotifBell(); }
+        if (_newUserKey) await driveUpdateJsonFile(CONFIG_FILE, configData);
+        await _flushNotifOps();
+        renderNotifBell();
         bgJobDone(jobId);
         auditLog('建立個案並連結轉銜紀錄', newId, null, `recId:${recId}${_newUserKey?` (新建使用者${_newUserKey})`:''}` );
       } catch(e) {
@@ -42740,6 +43100,7 @@ function toggleNavPin(navId) {
 //  錯誤回報/許願池（T10）
 // ══════════════════════════════════════════════
 let issuesData = [];
+let _issuesSnapshot = [];
 
 function _issueNextSerial() {
   return issuesData.reduce((m, x) => Math.max(m, x.serial || 0), 0) + 1;
@@ -42752,6 +43113,7 @@ async function loadIssues() {
   } catch (e) {
     issuesData = [];
   }
+  _issuesSnapshot = _deepClone(issuesData);
   if (typeof renderIssuesBadge === 'function') renderIssuesBadge();
 }
 // 每 30 分鐘自動輪詢一次許願池；分頁隱藏時跳過，回到前景後立即補一次
@@ -42775,11 +43137,24 @@ function scheduleIssuesAutoRefresh() {
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') _tick(); });
 }
 
-async function _saveIssues() {
+async function _saveIssuesFallback() {
   try {
     await proxyCall('updateJson', { path: ISSUES_FILE, content: { issues: issuesData }, rootFolderId: ISSUES_FOLDER_ID });
   } catch (e) {
     await proxyCall('createJson', { name: ISSUES_FILE, content: { issues: issuesData }, parentId: ISSUES_FOLDER_ID, rootFolderId: ISSUES_FOLDER_ID });
+  }
+  _issuesSnapshot = _deepClone(issuesData);
+}
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的問題回報，經 listCommit 依 id upsert/remove。
+// issues.json 跨環境共用（dev/prod 同一份），帶 rootFolderId 比照既有讀寫路徑。
+async function _saveIssues() {
+  const diff = _diffListById(_issuesSnapshot, issuesData);
+  if (!diff) { await _saveIssuesFallback(); return; }
+  const res = await _listCommit(ISSUES_FILE, { ...diff, rootFolderId: ISSUES_FOLDER_ID });
+  if (res && res.fallback) { await _saveIssuesFallback(); return; }
+  if (res && res.data && Array.isArray(res.data.issues)) {
+    issuesData = res.data.issues;
+    _issuesSnapshot = _deepClone(issuesData);
   }
 }
 
@@ -42885,12 +43260,11 @@ async function _notifyIssueEvent(issue, comment, { notifyCreator = false, mentio
   const issueLabel = `#${String(issue.serial).padStart(3, '0')}`;
   const snippet = (comment ? comment.content : issue.description).slice(0, 60);
   const authorName = configData?.users?.[myEmail]?.name || currentUser?.displayName || myEmail;
-  let configChanged = false;
   for (const [email, { isMentioned }] of toNotify) {
     const msg = isMentioned
       ? `${authorName} 在回報 ${issueLabel} 中提及了您：${snippet}`
       : `${authorName} 在回報 ${issueLabel} 留言：${snippet}`;
-    if (addNotificationToUser(email, 'issue_comment', issue.id, issue.serial, msg)) configChanged = true;
+    addNotificationToUser(email, 'issue_comment', issue.id, issue.serial, msg);
     const todo = {
       id: _genTodoId(),
       type: 'issue_notification',
@@ -42909,7 +43283,7 @@ async function _notifyIssueEvent(issue, comment, { notifyCreator = false, mentio
       _appendTodoToUser(email, todo).catch(() => {});
     }
   }
-  if (configChanged) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  _flushNotifOps().catch(() => {});
 }
 
 // ── @提及 自動完成下拉 ──
@@ -43166,13 +43540,12 @@ async function submitIssue() {
     try {
       await _saveIssues();
       // 通知所有系統管理者（主任 or 管理者 extraRole）
-      let notified = false;
       Object.entries(configData?.users || {}).forEach(([email, u]) => {
         if (u.role === '主任' || u.extraRole === '管理者') {
-          notified = addNotificationToUser(email, 'new_issue', issue.id, issue.serial) || notified;
+          addNotificationToUser(email, 'new_issue', issue.id, issue.serial);
         }
       });
-      if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+      _flushNotifOps().catch(() => {});
       // @提及通知（排除已收到 new_issue 通知的管理者，避免重複）
       const _adminEmails = new Set(Object.entries(configData?.users || {})
         .filter(([, u]) => u.role === '主任' || u.extraRole === '管理者').map(([e]) => e));
@@ -43199,11 +43572,11 @@ function _onIssuePendingVerification(issue) {
   if (!issue.submittedBy) return;
   const _serialStr = `#${String(issue.serial).padStart(3,'0')}`;
   if (issue.submittedBy !== currentUser?.email) {
-    const notified = addNotificationToUser(
+    addNotificationToUser(
       issue.submittedBy, 'issue_pending_verification', issue.id, _serialStr,
       `您回報的 ${_serialStr} 已改為「待驗證」，請至錯誤回報/許願池頁面確認是否已解決`
     );
-    if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    _flushNotifOps().catch(() => {});
   }
   _appendTodoToUser(issue.submittedBy, {
     id: 'todo_issue_verify_' + issue.id + '_' + Date.now(),
@@ -43359,15 +43732,14 @@ async function _issueVerifyNotOk(issueId) {
   try {
     await _saveIssues();
     // 通知所有系統管理者（主任 or 管理者 extraRole）：驗證未通過需重新處理
-    let notified = false;
     const _label = `#${String(issue.serial).padStart(3, '0')}`;
     Object.entries(configData?.users || {}).forEach(([email, u]) => {
       if (u.role === '主任' || u.extraRole === '管理者') {
-        notified = addNotificationToUser(email, 'issue_comment', issue.id, issue.serial,
-          `回報 ${_label} 驗證未通過，已退回處理中：${reason.slice(0, 60)}`) || notified;
+        addNotificationToUser(email, 'issue_comment', issue.id, issue.serial,
+          `回報 ${_label} 驗證未通過，已退回處理中：${reason.slice(0, 60)}`);
       }
     });
-    if (notified) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    _flushNotifOps().catch(() => {});
     // 本人已完成驗證動作，收掉待辦提醒卡
     const relatedTodo = todosData.find(t => t.type === 'issue_pending_verification' && t.issueId === issueId && !t.done);
     if (relatedTodo) {
