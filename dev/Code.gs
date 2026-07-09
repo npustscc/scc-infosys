@@ -1634,9 +1634,12 @@ function submitUserApplication_(params) {
   }
 }
 
-// ── cases-hot.json / cases-index.json 併發安全的 upsert（LockService）──
-// 前端傳 { path, upserts:[{id,...完整entry}], removes:[id...] }，GAS 在 lock 內做 RMW。
-// 檔案結構固定：{ updatedAt, cases:[{ id, ... }] }
+// ── cases-hot.json／cases-index.json／個案 chunk 檔（cases/{name}.json）共用的併發安全 upsert（LockService）──
+// 前端傳 { path, upserts:[{id,...完整entry}], removes:[id...] }，GAS 在 lock 內做 RMW，path 可為任意
+// cases/ 底下的 JSON 檔（index、hot、或個別 chunk）。
+// 檔案結構須含 cases:[{ id, ... }] 陣列（頂層可有其他欄位，如 updatedAt——upsert 後一律補上/覆寫
+// updatedAt；chunk 檔原本沒有此欄位也無妨，讀取端只用 cases，多的欄位無害）。
+// 2026-07-09（v155）：saveCasesChunks 個案 chunk 寫入改走本 action，關閉「前端整檔覆寫」的併發覆蓋窗口。
 function casesUpsert_({ path, upserts, removes }, ctx) {
   if (!path) throw new Error('casesUpsert: path required');
   const lock = LockService.getScriptLock();
