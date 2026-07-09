@@ -23782,14 +23782,27 @@ async function _updateCasesIndexEntries(ids) {
     if (!c) { _syslog('warn', `cases-index patch：${id} 不在記憶體，跳過（不移除索引）`); return; }
     upserts.push(_caseToIndexEntry(c));
   });
+  // #36 根因修補：cases-index 是「個案列表」唯一資料來源。過去此處失敗僅記 warn 就吞掉，導致
+  // 個案已寫入 chunk（主資料成功）卻不在列表、使用者也沒收到任何錯誤——看似資料遺失（實則在
+  // chunk／小鈴鐺備份內）。且 _selfHealMissingChunks 只補「整段 chunk 在索引 0 筆」的情況，
+  // 無法救「已有其他個案的 chunk 裡單筆漏索引」，故永遠不會自動回來。改為：重試一次，仍失敗
+  // 則明確提示使用者重新整理／通知管理者重建索引，絕不靜默。
+  const _commitIndex = () => proxyCall('casesUpsert', { path: `cases/${CASES_INDEX_FILE}`, upserts, removes });
   try {
-    await proxyCall('casesUpsert', { path: `cases/${CASES_INDEX_FILE}`, upserts, removes });
-    // Slice 3：patch 成功後同步 _caseChunkMap，讓本 session 後續 getCaseChunkName 立即反映最新歸屬
-    upserts.forEach(e => { if (e?.id && e.chunk) _caseChunkMap.set(e.id, e.chunk); });
-    removes.forEach(id => _caseChunkMap.delete(id));
-  } catch (e) {
-    _syslog('warn', `更新 cases-index 失敗：${e.message}`);
+    await _commitIndex();
+  } catch (e1) {
+    _syslog('warn', `更新 cases-index 失敗，重試一次：${e1.message}`);
+    try {
+      await _commitIndex();
+    } catch (e2) {
+      _syslog('error', `更新 cases-index 失敗（已重試）：${e2.message}`);
+      showToast('個案已儲存，但「個案列表索引」更新失敗；請重新整理頁面，若列表仍未顯示該個案，請通知管理者重建索引（資料本身未遺失）。', 'error', 9000);
+      return;  // 索引未更新，不同步 _caseChunkMap（維持與 Drive 一致）
+    }
   }
+  // Slice 3：patch 成功後同步 _caseChunkMap，讓本 session 後續 getCaseChunkName 立即反映最新歸屬
+  upserts.forEach(e => { if (e?.id && e.chunk) _caseChunkMap.set(e.id, e.chunk); });
+  removes.forEach(id => _caseChunkMap.delete(id));
 }
 
 // patch 指定個案的 hot entry；hot 判定 true 就 upsert 完整資料，false 就 remove
@@ -23815,10 +23828,17 @@ async function _updateCasesHotEntries(ids) {
       removes.push(id); // 有完整資料且判定非 hot（結案/封存/非本學期）→ 移除合理
     }
   });
+  // #36：hot 更新失敗不會讓個案自列表消失（列表看 index），但會拖慢下次啟動的快路徑；重試一次提高可靠度。
+  const _commitHot = () => proxyCall('casesUpsert', { path: `cases/${CASES_HOT_FILE}`, upserts, removes });
   try {
-    await proxyCall('casesUpsert', { path: `cases/${CASES_HOT_FILE}`, upserts, removes });
-  } catch (e) {
-    _syslog('warn', `更新 cases-hot 失敗：${e.message}`);
+    await _commitHot();
+  } catch (e1) {
+    _syslog('warn', `更新 cases-hot 失敗，重試一次：${e1.message}`);
+    try {
+      await _commitHot();
+    } catch (e2) {
+      _syslog('error', `更新 cases-hot 失敗（已重試）：${e2.message}`);
+    }
   }
 }
 
