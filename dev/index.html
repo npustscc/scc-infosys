@@ -5828,20 +5828,28 @@ async function afterLogin() {
       const _prefs = raw?.caseSearchPrefs || {};
       if (_prefs.closureStatus !== undefined) _cnClosureStatus = _prefs.closureStatus;
       if (_prefs.archived !== undefined) _cnArchived = _prefs.archived;
+      // legacy 檔（無 env 後綴）尚未遷移到新檔 → 快照設空陣列，確保下一次 save 把目前全部
+      // todos 當成 upserts 寫入新檔（而非誤判「與快照相同→無需寫入」導致遷移遺漏資料）。
+      _todosSnapshot = batch.isTodoLegacy ? [] : _deepClone(todosData);
       if (batch.isTodoLegacy) saveUserTodos().catch(() => {});
     } else {
       todosData = [];
       _suppressedTodoRecordIds = new Set();
+      _todosSnapshot = [];
     }
     _cleanupOldTodos();
 
     // ── 其他資料 ──
     pendingCasesData       = Array.isArray(batch.pending_cases?.cases)   ? batch.pending_cases.cases   : [];
+    _pendingCasesSnapshot  = _deepClone(pendingCasesData);
     bookingsData           = Array.isArray(batch.bookings?.bookings)      ? batch.bookings.bookings      : [];
     _bkLastLoadAt          = Date.now(); // startupBatch 已一併帶回最新 bookings，視同剛讀取過
     transferData           = Array.isArray(batch.transfer?.records)       ? batch.transfer.records       : [];
+    _transferSnapshot      = _deepClone(transferData);
     unassignedRecordsData  = Array.isArray(batch.unassigned?.records)     ? batch.unassigned.records     : [];
+    _unassignedRecordsSnapshot = _deepClone(unassignedRecordsData);
     issuesData             = Array.isArray(batch.issues?.issues)          ? batch.issues.issues          : [];
+    _issuesSnapshot         = _deepClone(issuesData);
 
     // ── 補充 side effects ──
     // Google 日曆定時同步已改由後端 GAS trigger 執行（runGcSyncTick），此處不再排程前端輪詢。
@@ -6651,14 +6659,21 @@ async function loadAccessLog() {
   _accessLogCache = await driveReadJsonOptional(CASE_ACCESS_LOG_FILE);
   if (!_accessLogCache || !Array.isArray(_accessLogCache.entries)) _accessLogCache = { entries: [] };
 }
-// append 一筆 feed 條目（RMW：讀最新→push→寫回；低頻，容忍極少數 race，auditLog 另有永久留存）
+// append 一筆 feed 條目：併發安全 append（2026-07-09 事故延伸修復）——後端 listCommit append-only
+// 模式（LockService 讀-改-寫，只 push 這一筆）。後端未部署 → fallback 舊 RMW（讀最新→push→整檔寫回）。
 async function _appendAccessLog(entry) {
-  let latest = await driveReadJsonOptional(CASE_ACCESS_LOG_FILE);
-  if (!latest || !Array.isArray(latest.entries)) latest = { entries: [] };
-  latest.entries.push(entry);
-  latest.updatedAt = new Date().toISOString();
-  await driveUpdateJsonFile(CASE_ACCESS_LOG_FILE, latest);
-  _accessLogCache = latest;
+  const res = await _listCommit(CASE_ACCESS_LOG_FILE, { upserts: [entry] });
+  if (res && res.fallback) {
+    let latest = await driveReadJsonOptional(CASE_ACCESS_LOG_FILE);
+    if (!latest || !Array.isArray(latest.entries)) latest = { entries: [] };
+    latest.entries.push(entry);
+    latest.updatedAt = new Date().toISOString();
+    await driveUpdateJsonFile(CASE_ACCESS_LOG_FILE, latest);
+    _accessLogCache = latest;
+    return;
+  }
+  if (res && res.data && Array.isArray(res.data.entries)) { _accessLogCache = res.data; return; }
+  _accessLogCache = { entries: [entry] };
 }
 
 // ══════════════════════════════════════════════
@@ -6747,7 +6762,15 @@ async function loadOffHoursLog() {
   _offHoursLogCache = await driveReadJsonOptional(OFF_HOURS_LOG_FILE);
   if (!_offHoursLogCache || !Array.isArray(_offHoursLogCache.entries)) _offHoursLogCache = { entries: [] };
 }
+// 併發安全 append（2026-07-09 事故延伸修復）：後端 listCommit append-only 模式（LockService 讀-改-寫，
+// 只 push 這一筆）。後端未部署（Unknown action）→ fallback 舊 RMW（讀最新→push→整檔寫回，含建檔分支）；
+// 其他錯誤（如 fail-closed 中止）不吞掉改走整檔覆寫——那正是要避免的整檔覆蓋風險，原樣往上拋。
 async function _appendOffHoursLog(entry) {
+  const res = await _listCommit(OFF_HOURS_LOG_FILE, { upserts: [entry] });
+  if (!res.fallback) {
+    if (res.data && Array.isArray(res.data.entries)) _offHoursLogCache = res.data;
+    return;
+  }
   let latest;
   latest = await driveReadJsonOptional(OFF_HOURS_LOG_FILE);
   if (!latest || !Array.isArray(latest.entries)) latest = { entries: [] };
@@ -8245,6 +8268,8 @@ async function _refreshPendingAppsBtn() {
       return;
     }
   }
+  if (!pendingUsersData || !Array.isArray(pendingUsersData.applications)) pendingUsersData = { applications: [] };
+  _pendingUsersSnapshot = _deepClone(pendingUsersData.applications);
   _updatePendingUsersBadge();
   renderPendingUsersTab();
   const count = (pendingUsersData?.applications || []).filter(a => a.status === 'pending').length;
@@ -20037,6 +20062,7 @@ async function getCasesFolderId() {
 // ══════════════════════════════════════════════
 
 let todosData = [];
+let _todosSnapshot = [];
 let _todoFileId = null;
 let _suppressedTodoRecordIds = new Set(); // recordIds whose todos were explicitly deleted
 let _todosViewUser = null;    // null=自己, '__all__'=全部, email=特定人員
@@ -20094,20 +20120,25 @@ async function loadUserTodos() {
       const _prefs = raw?.caseSearchPrefs || {};
       if (_prefs.closureStatus !== undefined) _cnClosureStatus = _prefs.closureStatus;
       if (_prefs.archived !== undefined) _cnArchived = _prefs.archived;
-      // Loaded from legacy file → clear file ID so saveUserTodos creates a new env-specific file
-      if (isLegacy) { _todoFileId = null; saveUserTodos().catch(() => {}); }
+      // Loaded from legacy file → clear file ID so saveUserTodos creates a new env-specific file。
+      // 快照設空陣列：目標新檔尚無資料，下一次 save 需把目前全部 todos 當成 upserts 寫入新檔，
+      // 否則若快照誤設為「與 todosData 相同」，diff 出的 upserts 會是空的，遷移將遺漏資料。
+      if (isLegacy) { _todoFileId = null; _todosSnapshot = []; saveUserTodos().catch(() => {}); }
+      else { _todosSnapshot = _deepClone(todosData); }
     } else {
       todosData = [];
       _suppressedTodoRecordIds = new Set();
+      _todosSnapshot = [];
     }
     _cleanupOldTodos();
   } catch (e) {
     console.warn('loadUserTodos failed:', e);
     todosData = [];
+    _todosSnapshot = [];
   }
 }
 
-async function saveUserTodos() {
+async function _saveUserTodosFallback() {
   const email = currentUser?.email;
   if (!email) return;
   const envSuffix = DRIVE_FOLDER_ID.slice(-8);
@@ -20143,21 +20174,49 @@ async function saveUserTodos() {
     const nf = await driveCreateJsonFile(fileName, content, usersId);
     if (nf?.id) _todoFileId = nf.id;
   }
+  _todosSnapshot = _deepClone(todosData);
 }
-
-async function _appendTodoToUser(email, newTodo) {
-  const usersId = await getUsersFolderId();
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的待辦事項，經 listCommit 依 id upsert/remove，
+// suppressedRecordIds/caseSearchPrefs/updatedAt 等非清單頂層欄位放 meta 一併送（只有檔案擁有者會帶 meta）。
+// 後端未部署或無法安全 diff → fallback 走舊 updateContentById 整檔覆寫（含既有的 legacy 檔遷移邏輯）。
+async function saveUserTodos() {
+  const email = currentUser?.email;
+  if (!email) return;
   const envSuffix = DRIVE_FOLDER_ID.slice(-8);
   const fileName = `todos_${email}_${envSuffix}.json`;
-  const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
-  const res = await driveQuery(q, 'id');
-  const fileId = res.files?.[0]?.id || null;
-  let todos = [];
-  if (fileId) {
-    try { const raw = await driveReadJsonById(fileId); todos = Array.isArray(raw?.todos) ? raw.todos : []; } catch(_) {}
+  const filePath = `users/${fileName}`;
+  const diff = _diffListById(_todosSnapshot, todosData);
+  if (!diff) { await _saveUserTodosFallback(); return; }
+  const meta = { suppressedRecordIds: [..._suppressedTodoRecordIds], caseSearchPrefs: { closureStatus: _cnClosureStatus, archived: _cnArchived }, updatedAt: new Date().toISOString() };
+  const res = await _listCommit(filePath, { ...diff, meta });
+  if (res && res.fallback) { await _saveUserTodosFallback(); return; }
+  if (res && res.data && Array.isArray(res.data.todos)) {
+    todosData = res.data.todos;
+    _todosSnapshot = _deepClone(todosData);
   }
-  todos.push(newTodo);
-  const content = { todos, updatedAt: new Date().toISOString() };
+}
+
+// 幫另一使用者（非目前登入者）附加一筆待辦——單筆 upsert，不帶 meta（避免覆寫對方的
+// suppressedRecordIds/caseSearchPrefs；那些欄位只由檔案擁有者本人的 saveUserTodos() 維護）。
+async function _appendTodoToUser(email, newTodo) {
+  const envSuffix = DRIVE_FOLDER_ID.slice(-8);
+  const fileName = `todos_${email}_${envSuffix}.json`;
+  const filePath = `users/${fileName}`;
+  const res = await _listCommit(filePath, { upserts: [newTodo] });
+  if (!(res && res.fallback)) return;
+  // 後端未部署（Unknown action）→ fallback 舊 RMW 路徑：讀最新→push→整檔寫回。
+  // 修 bug：舊版 fallback 曾把讀到的 suppressedRecordIds/caseSearchPrefs 等頂層欄位整個丟掉
+  // （content 只留 todos+updatedAt），改為保留原檔所有頂層欄位、只換 todos＋updatedAt。
+  const usersId = await getUsersFolderId();
+  const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
+  const q1 = await driveQuery(q, 'id');
+  const fileId = q1.files?.[0]?.id || null;
+  let raw = null;
+  if (fileId) {
+    try { raw = await driveReadJsonById(fileId); } catch(_) {}
+  }
+  const todos = Array.isArray(raw?.todos) ? [...raw.todos, newTodo] : [newTodo];
+  const content = { ...(raw || {}), todos, updatedAt: new Date().toISOString() };
   if (fileId) {
     await proxyCall('updateContentById', { fileId, content });
   } else {
@@ -23845,6 +23904,76 @@ async function loadAttendance() {
   }
 }
 
+// ══════════════════════════════════════════════
+//  併發安全清單寫入 — 通用 diff + commit helper（2026-07-09 事故延伸修復）
+//  attendance.json／cases 索引之外，還有多個「整份載入→改記憶體→整檔覆寫」的資料檔存在同型
+//  併發覆蓋風險。以下 helper 收斂這些檔案的寫入：呼叫端維護一份「上次載入/寫入成功後的快照」，
+//  save 時 diff 出 upserts/removes，交由後端 listCommit（LockService 讀-改-寫、依 id upsert/remove
+//  或 append-only／map 模式）處理，取代整檔覆寫。後端未部署（Unknown action）或無法安全 diff
+//  （缺 id）時 fallback 回舊整檔覆寫路徑，確保功能不中斷。
+// ══════════════════════════════════════════════
+
+// 純函式：比較「上次快照」與「目前陣列」，算出 { upserts, removes }（依 id）。
+// 任一陣列存在缺 id 的元素 → 回傳 null（無法安全 diff，呼叫端應 fallback 整檔覆寫）。
+function _diffListById(prevArr, currArr) {
+  const prev = Array.isArray(prevArr) ? prevArr : [];
+  const curr = Array.isArray(currArr) ? currArr : [];
+  if (prev.some(x => !x || x.id == null) || curr.some(x => !x || x.id == null)) return null;
+  const prevMap = new Map(prev.map(x => [x.id, x]));
+  const currMap = new Map(curr.map(x => [x.id, x]));
+  const upserts = [];
+  currMap.forEach((item, id) => {
+    const p = prevMap.get(id);
+    if (!p || JSON.stringify(p) !== JSON.stringify(item)) upserts.push(item);
+  });
+  const removes = [];
+  prevMap.forEach((_, id) => { if (!currMap.has(id)) removes.push(id); });
+  return { upserts, removes };
+}
+
+// 純函式：map 版 diff（psych_test_db.json：{ studentId: [...測驗結果] }）。
+// 回傳 { upserts:{key:value,...}, removes:[key,...] }。
+function _diffMapByKey(prevObj, currObj) {
+  const prev = (prevObj && typeof prevObj === 'object' && !Array.isArray(prevObj)) ? prevObj : {};
+  const curr = (currObj && typeof currObj === 'object' && !Array.isArray(currObj)) ? currObj : {};
+  const upserts = {};
+  Object.keys(curr).forEach(k => {
+    if (!(k in prev) || JSON.stringify(prev[k]) !== JSON.stringify(curr[k])) upserts[k] = curr[k];
+  });
+  const removes = Object.keys(prev).filter(k => !(k in curr));
+  return { upserts, removes };
+}
+
+// 深拷貝快照用：save 函式常在呼叫前就地修改陣列元素（如 app.status = 'approved'）。
+// 若快照存的是同一物件參照，事後 diff 會比對到「已被修改的同一份物件」而誤判無異動，
+// 因此快照一律深拷貝，與之後的即地修改脫鉤。
+function _deepClone(x) { return x === undefined ? x : JSON.parse(JSON.stringify(x)); }
+
+// 每個檔案各自的寫入序列化 promise，避免同一分頁對同一檔案的多次 commit 交錯（比對/寫入順序錯亂）。
+const _listCommitChains = {};
+
+// 泛用清單型 JSON 檔併發安全寫入：呼叫後端 listCommit action。
+// 若後端尚未部署（回應含 'Unknown action'）→ 回傳 { fallback:true }，呼叫端自行走舊整檔覆寫路徑
+// （比照 _attendanceCommit 的 fallback 慣例）；其他錯誤（如 fail-closed 中止）原樣拋出。
+function _listCommit(file, { upserts, removes, meta, rootFolderId } = {}) {
+  const prevChain = _listCommitChains[file] || Promise.resolve();
+  const run = prevChain.then(async () => {
+    try {
+      const params = { file, upserts: upserts || [], removes: removes || [] };
+      if (meta) params.meta = meta;
+      if (rootFolderId) params.rootFolderId = rootFolderId;
+      return await proxyCall('listCommit', params);
+    } catch (e) {
+      if (/Unknown action/i.test(e.message || '')) return { fallback: true };
+      throw e;
+    }
+  });
+  // 鏈本身永遠 resolve（即使本次失敗），避免一次失敗卡住後續對同檔案的寫入；
+  // 呼叫端仍從回傳的 run 取得真正結果／例外。
+  _listCommitChains[file] = run.catch(() => {});
+  return run;
+}
+
 // 併發安全的打卡寫入：後端 LockService 讀-改-寫，只 upsert/remove 指定 id 的紀錄，回傳合併後全部 records。
 // 取代舊 saveAttendance() 的「整檔覆寫」——那會在多人同時打卡時後寫者蓋掉先寫者（2026-07-09 事故）。
 async function _attendanceCommit(upserts, removes) {
@@ -23876,6 +24005,7 @@ async function saveAttendance() {
 // ══════════════════════════════════════════════
 //  實習生差勤申請（請假 / 補休）
 // ══════════════════════════════════════════════
+let _leavesSnapshot = [];
 async function loadLeaves() {
   try {
     leavesData = await driveReadJson(LEAVES_FILE);
@@ -23883,11 +24013,21 @@ async function loadLeaves() {
   } catch {
     leavesData = { applications: [] };
   }
+  _leavesSnapshot = _deepClone(leavesData.applications);
   _updateLeaveBadges();
 }
 
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的申請單，經 listCommit 依 id upsert/remove，
+// 取代整檔覆寫（多人同時審核/申請時會互蓋）。後端未部署或無法安全 diff → fallback 整檔覆寫。
 async function saveLeaves() {
-  await driveUpdateJsonFile(LEAVES_FILE, leavesData);
+  const diff = _diffListById(_leavesSnapshot, leavesData.applications);
+  if (!diff) { await driveUpdateJsonFile(LEAVES_FILE, leavesData); _leavesSnapshot = _deepClone(leavesData.applications); return; }
+  const res = await _listCommit(LEAVES_FILE, diff);
+  if (res && res.fallback) { await driveUpdateJsonFile(LEAVES_FILE, leavesData); _leavesSnapshot = _deepClone(leavesData.applications); return; }
+  if (res && res.data && Array.isArray(res.data.applications)) {
+    leavesData.applications = res.data.applications;
+    _leavesSnapshot = _deepClone(leavesData.applications);
+  }
 }
 
 // 預設假別（首次無設定時用）；deductsQuota=是否扣抵額度
@@ -24755,12 +24895,15 @@ async function cancelLeave(id) {
   _updateLeaveBadges();
 }
 
+let _pendingUsersSnapshot = [];
 async function loadPendingUsers() {
   try {
     pendingUsersData = await proxyCall('readJson', { path: PENDING_USERS_FILE });
   } catch {
     pendingUsersData = { applications: [] };
   }
+  if (!pendingUsersData || !Array.isArray(pendingUsersData.applications)) pendingUsersData = { applications: [] };
+  _pendingUsersSnapshot = _deepClone(pendingUsersData.applications);
   _updatePendingUsersBadge();
 }
 
@@ -25650,7 +25793,7 @@ async function _doApproveUser() {
     app.status = 'approved';
     app.approvedAt = new Date().toISOString();
     app.approvedBy = currentUser.email;
-    await driveUpdateJsonFile(PENDING_USERS_FILE, pendingUsersData);
+    await savePendingUsers();
     const _approvedRole = action === 'new' ? document.getElementById('approve-role').value : '（連結現有使用者）';
     auditLog('審核通過帳號申請', null, null, `${app.name}（${app.email}）→ ${_approvedRole}`);
     document.getElementById('approve-modal').remove();
@@ -25668,9 +25811,23 @@ async function rejectUserApp(appId) {
   app.status   = 'rejected';
   app.rejectedAt = new Date().toISOString();
   app.rejectedBy = currentUser.email;
-  await driveUpdateJsonFile(PENDING_USERS_FILE, pendingUsersData);
+  await savePendingUsers();
   auditLog('拒絕帳號申請', null, null, `${app.name}（${app.email}）`);
   _refreshPendingAppsViews();
+}
+
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的申請單，經 listCommit 依 id upsert/remove，
+// 取代整檔覆寫（多位管理者同時審核時會互蓋彼此的審核結果）。
+async function savePendingUsers() {
+  if (!pendingUsersData || !Array.isArray(pendingUsersData.applications)) pendingUsersData = { applications: [] };
+  const diff = _diffListById(_pendingUsersSnapshot, pendingUsersData.applications);
+  if (!diff) { await driveUpdateJsonFile(PENDING_USERS_FILE, pendingUsersData); _pendingUsersSnapshot = _deepClone(pendingUsersData.applications); return; }
+  const res = await _listCommit(PENDING_USERS_FILE, diff);
+  if (res && res.fallback) { await driveUpdateJsonFile(PENDING_USERS_FILE, pendingUsersData); _pendingUsersSnapshot = _deepClone(pendingUsersData.applications); return; }
+  if (res && res.data && Array.isArray(res.data.applications)) {
+    pendingUsersData.applications = res.data.applications;
+    _pendingUsersSnapshot = _deepClone(pendingUsersData.applications);
+  }
 }
 
 // ══════════════════════════════════════════════
@@ -25692,8 +25849,12 @@ function auditLog(action, caseId = null, recordId = null, detail = null, opts = 
   if (!Array.isArray(window._auditLogsCache)) window._auditLogsCache = [];
   window._auditLogsCache.push(entry);
 
+  // 併發安全 append（2026-07-09 事故延伸修復）：後端 listCommit append-only 模式（LockService 讀-改-寫，
+  // 只 push 這一筆，不比對/不覆寫既有 logs）。後端未部署 → fallback 舊 RMW 整檔覆寫（含建檔分支）。
   (async () => {
     try {
+      const res = await _listCommit(AUDIT_LOG_FILE, { upserts: [entry] });
+      if (!(res && res.fallback)) return;
       let raw;
       try { raw = await driveReadJson(AUDIT_LOG_FILE); }
       catch { raw = null; /* 檔案尚未建立 */ }
@@ -26677,6 +26838,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-09', v: 151, title: '重大修復：延伸修補多份清單型資料檔的整檔覆寫併發風險（比照 v149 打卡修復模式）', isProd: false, items: [
+      item('修復', '除打卡紀錄、個案索引外，請假/補休申請、轉銜紀錄、身心調適假、不開案個案、未歸屬輔導服務記錄、心理測驗資料庫、帳號審核清單、待辦事項、問題回報／許願池等資料檔，先前也都是「整份載入→改記憶體→整檔覆寫回 Drive」，多人同時操作時後存檔者可能蓋掉先存檔者的異動。改為與打卡紀錄相同的併發安全寫入模式：後端鎖定讀取最新版本後，只新增/更新/刪除本次異動的項目再寫回，不再整檔覆寫'),
+      item('技術', '新增後端 listCommit action（LockService 讀-改-寫、fail-closed），泛用於清單型 JSON 檔的併發安全寫入，支援依 id upsert/remove（一般清單）、append-only（稽核／存取監督日誌）、map 模式（心理測驗資料庫，依學號 key）三種模式；後端尚未部署或無法安全比對異動時，前端自動退回舊整檔覆寫路徑確保功能不中斷'),
+      item('修復', '帳號申請送出（submitUserApplication）補上併發鎖，避免與管理者審核同時寫入互蓋'),
+      item('修復', '「幫其他同仁補一筆待辦」的舊版寫入邏輯有 bug：整檔覆寫時會把該同仁的其他設定（隱藏清單、查詢偏好等）一併清空，這次一併修正為只更新待辦清單、保留其他設定'),
+    ]},
     { date: '2026-07-09', v: 150, title: 'v148 驗證回饋修正：查閱稽核、學期badge、開案徽章、輪值/學期時段、GC待確認、登入提醒', isProd: false, items: [
       item('修復', '#10 查閱稽核 bug：先前在個案詳細頁展開 BSRS／紀錄／心測／精神科等區塊「沒有被記錄」（程式誤用了錯的變數）。現已修正，展開這些區塊會確實記入稽核'),
       item('新功能', '#9/#10 查閱稽核強化：查閱「非你主責／個管」的個案、或在非上班（含輪值日非輪值者）時段查閱個案時，進入詳細頁即記「查閱基本資料」，且捲動看到哪個敏感區塊就記錄該區塊查閱（不必展開）；一般同仁上班看自己的個案不細記以免灌爆'),
@@ -28771,6 +28938,7 @@ ${records.map((r, i) => renderOne(r, i)).join('\n')}
 // ══════════════════════════════════════════════
 const PENDING_CASES_FILE = 'pending_cases.json';
 let pendingCasesData = [];
+let _pendingCasesSnapshot = [];
 
 async function loadPendingCases() {
   try {
@@ -28779,9 +28947,10 @@ async function loadPendingCases() {
   } catch (e) {
     pendingCasesData = [];
   }
+  _pendingCasesSnapshot = _deepClone(pendingCasesData);
 }
 
-async function savePendingCases() {
+async function _savePendingCasesFallback() {
   try {
     await driveUpdateJsonFile(PENDING_CASES_FILE, { cases: pendingCasesData });
   } catch(e) {
@@ -28789,12 +28958,25 @@ async function savePendingCases() {
       await driveCreateJsonFile(PENDING_CASES_FILE, { cases: pendingCasesData }, DRIVE_FOLDER_ID);
     } else throw e;
   }
+  _pendingCasesSnapshot = _deepClone(pendingCasesData);
+}
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的不開案個案，經 listCommit 依 id upsert/remove。
+async function savePendingCases() {
+  const diff = _diffListById(_pendingCasesSnapshot, pendingCasesData);
+  if (!diff) { await _savePendingCasesFallback(); return; }
+  const res = await _listCommit(PENDING_CASES_FILE, diff);
+  if (res && res.fallback) { await _savePendingCasesFallback(); return; }
+  if (res && res.data && Array.isArray(res.data.cases)) {
+    pendingCasesData = res.data.cases;
+    _pendingCasesSnapshot = _deepClone(pendingCasesData);
+  }
 }
 
 // ══════════════════════════════════════════════
 //  未歸屬輔導服務記錄
 // ══════════════════════════════════════════════
 let unassignedRecordsData = [];
+let _unassignedRecordsSnapshot = [];
 
 async function loadUnassignedRecords() {
   try {
@@ -28803,15 +28985,28 @@ async function loadUnassignedRecords() {
   } catch (e) {
     unassignedRecordsData = [];
   }
+  _unassignedRecordsSnapshot = _deepClone(unassignedRecordsData);
 }
 
-async function saveUnassignedRecords() {
+async function _saveUnassignedRecordsFallback() {
   try {
     await driveUpdateJsonFile(UNASSIGNED_RECORDS_FILE, { records: unassignedRecordsData });
   } catch(e) {
     if (e.message.includes('找不到')) {
       await driveCreateJsonFile(UNASSIGNED_RECORDS_FILE, { records: unassignedRecordsData }, DRIVE_FOLDER_ID);
     } else throw e;
+  }
+  _unassignedRecordsSnapshot = _deepClone(unassignedRecordsData);
+}
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的紀錄，經 listCommit 依 id upsert/remove。
+async function saveUnassignedRecords() {
+  const diff = _diffListById(_unassignedRecordsSnapshot, unassignedRecordsData);
+  if (!diff) { await _saveUnassignedRecordsFallback(); return; }
+  const res = await _listCommit(UNASSIGNED_RECORDS_FILE, diff);
+  if (res && res.fallback) { await _saveUnassignedRecordsFallback(); return; }
+  if (res && res.data && Array.isArray(res.data.records)) {
+    unassignedRecordsData = res.data.records;
+    _unassignedRecordsSnapshot = _deepClone(unassignedRecordsData);
   }
 }
 
@@ -29799,23 +29994,38 @@ async function _bkCommitOne(bk, gcMode, gcParams, jobLabel) {
   }
 }
 
+let _transferSnapshot = [];
 async function loadTransfer() {
   try {
     const data = await driveReadJson(TRANSFER_FILE);
     transferData = Array.isArray(data?.records) ? data.records : [];
   } catch(e) { transferData = []; }
+  _transferSnapshot = _deepClone(transferData);
 }
 
+let _psychTestDBSnapshot = {};
 async function loadPsychTestDB() {
   const data = await driveReadJsonOptional(PSYCH_TEST_DB_FILE);
   psychTestDB = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
+  _psychTestDBSnapshot = _deepClone(psychTestDB);
 }
-async function savePsychTestDB() {
+async function _savePsychTestDBFallback() {
   try {
     await driveUpdateJsonFile(PSYCH_TEST_DB_FILE, psychTestDB);
   } catch(e) {
     if (!e.message.includes('找不到')) throw e;
     await driveCreateJsonFile(PSYCH_TEST_DB_FILE, psychTestDB, DRIVE_FOLDER_ID);
+  }
+  _psychTestDBSnapshot = _deepClone(psychTestDB);
+}
+// 併發安全寫入（2026-07-09 事故延伸修復）：map 模式 diff（依學號 key），經 listCommit upsert/remove。
+async function savePsychTestDB() {
+  const diff = _diffMapByKey(_psychTestDBSnapshot, psychTestDB);
+  const res = await _listCommit(PSYCH_TEST_DB_FILE, diff);
+  if (res && res.fallback) { await _savePsychTestDBFallback(); return; }
+  if (res && res.data && typeof res.data === 'object') {
+    psychTestDB = res.data;
+    _psychTestDBSnapshot = _deepClone(psychTestDB);
   }
 }
 
@@ -29823,12 +30033,14 @@ async function savePsychTestDB() {
 //  身心調適假管理
 // ══════════════════════════════════════════════
 
+let _mentalLeavesSnapshot = [];
 async function loadMentalLeaves() {
   try {
     const data = await driveReadJson(MENTAL_LEAVES_FILE);
     mentalLeavesData = Array.isArray(data?.records) ? data.records : [];
     _mlLastFetchedAt = data?.lastFetchedAt || null;
   } catch(e) { mentalLeavesData = []; }
+  _mentalLeavesSnapshot = _deepClone(mentalLeavesData);
   _syncTodoBadge();
 }
 
@@ -29854,12 +30066,25 @@ function _mlAutoFetchOnLogin() {
   setTimeout(() => window._mlFetch(true), 1500);
 }
 
-async function saveMentalLeaves() {
+async function _saveMentalLeavesFallback() {
   try {
     await driveUpdateJsonFile(MENTAL_LEAVES_FILE, { records: mentalLeavesData });
   } catch(e) {
     if (!e.message.includes('找不到')) throw e;
     await driveCreateJsonFile(MENTAL_LEAVES_FILE, { records: mentalLeavesData }, DRIVE_FOLDER_ID);
+  }
+  _mentalLeavesSnapshot = _deepClone(mentalLeavesData);
+}
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的紀錄，經 listCommit 依 id upsert/remove，
+// 頂層 lastFetchedAt（由後端擷取信件時另行寫入）不受影響——舊整檔覆寫會意外清掉它，新路徑不會。
+async function saveMentalLeaves() {
+  const diff = _diffListById(_mentalLeavesSnapshot, mentalLeavesData);
+  if (!diff) { await _saveMentalLeavesFallback(); return; }
+  const res = await _listCommit(MENTAL_LEAVES_FILE, diff);
+  if (res && res.fallback) { await _saveMentalLeavesFallback(); return; }
+  if (res && res.data && Array.isArray(res.data.records)) {
+    mentalLeavesData = res.data.records;
+    _mentalLeavesSnapshot = _deepClone(mentalLeavesData);
   }
 }
 
@@ -32115,13 +32340,25 @@ async function deletePsychTestDBEntry(sid, sem) {
   } catch(e) { bgJobFail(jobId, e.message); alert('刪除失敗：' + e.message); }
 }
 
-async function saveTransfer() {
+async function _saveTransferFallback() {
   try {
     await driveUpdateJsonFile(TRANSFER_FILE, { records: transferData });
   } catch(e) {
     if (e.message.includes('找不到')) {
       await driveCreateJsonFile(TRANSFER_FILE, { records: transferData }, DRIVE_FOLDER_ID);
     } else throw e;
+  }
+  _transferSnapshot = _deepClone(transferData);
+}
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的轉銜紀錄，經 listCommit 依 id upsert/remove。
+async function saveTransfer() {
+  const diff = _diffListById(_transferSnapshot, transferData);
+  if (!diff) { await _saveTransferFallback(); return; }
+  const res = await _listCommit(TRANSFER_FILE, diff);
+  if (res && res.fallback) { await _saveTransferFallback(); return; }
+  if (res && res.data && Array.isArray(res.data.records)) {
+    transferData = res.data.records;
+    _transferSnapshot = _deepClone(transferData);
   }
 }
 
@@ -42740,6 +42977,7 @@ function toggleNavPin(navId) {
 //  錯誤回報/許願池（T10）
 // ══════════════════════════════════════════════
 let issuesData = [];
+let _issuesSnapshot = [];
 
 function _issueNextSerial() {
   return issuesData.reduce((m, x) => Math.max(m, x.serial || 0), 0) + 1;
@@ -42752,6 +42990,7 @@ async function loadIssues() {
   } catch (e) {
     issuesData = [];
   }
+  _issuesSnapshot = _deepClone(issuesData);
   if (typeof renderIssuesBadge === 'function') renderIssuesBadge();
 }
 // 每 30 分鐘自動輪詢一次許願池；分頁隱藏時跳過，回到前景後立即補一次
@@ -42775,11 +43014,24 @@ function scheduleIssuesAutoRefresh() {
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') _tick(); });
 }
 
-async function _saveIssues() {
+async function _saveIssuesFallback() {
   try {
     await proxyCall('updateJson', { path: ISSUES_FILE, content: { issues: issuesData }, rootFolderId: ISSUES_FOLDER_ID });
   } catch (e) {
     await proxyCall('createJson', { name: ISSUES_FILE, content: { issues: issuesData }, parentId: ISSUES_FOLDER_ID, rootFolderId: ISSUES_FOLDER_ID });
+  }
+  _issuesSnapshot = _deepClone(issuesData);
+}
+// 併發安全寫入（2026-07-09 事故延伸修復）：diff 出異動的問題回報，經 listCommit 依 id upsert/remove。
+// issues.json 跨環境共用（dev/prod 同一份），帶 rootFolderId 比照既有讀寫路徑。
+async function _saveIssues() {
+  const diff = _diffListById(_issuesSnapshot, issuesData);
+  if (!diff) { await _saveIssuesFallback(); return; }
+  const res = await _listCommit(ISSUES_FILE, { ...diff, rootFolderId: ISSUES_FOLDER_ID });
+  if (res && res.fallback) { await _saveIssuesFallback(); return; }
+  if (res && res.data && Array.isArray(res.data.issues)) {
+    issuesData = res.data.issues;
+    _issuesSnapshot = _deepClone(issuesData);
   }
 }
 
