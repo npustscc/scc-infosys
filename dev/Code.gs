@@ -73,6 +73,25 @@ function doPost(e) {
       return jsonResp_({ error: 'Unauthorized user' });
     }
 
+    // ── P0-3：需管理者的破壞性／維運／個資傾印動作（後端硬閘；前端 UI 隱藏不算數，可直呼 API）──
+    // deleteFile/moveFile 前端未使用，一併限 admin 縮小攻擊面。
+    var ADMIN_ONLY_ACTIONS = {
+      shareCalendarWriters: true, clearMentalLeaves: true,
+      dumpNpust5Emails: true, listInboxEmails: true,
+      deleteFile: true, moveFile: true,
+    };
+    if (ADMIN_ONLY_ACTIONS[action] && !isAdminUser_(userEmail)) {
+      return jsonResp_({ error: 'Forbidden: admin only' });
+    }
+
+    // ── P0-2：config.json／pending_users*.json＝授權名單本身，任何泛用寫入一律限管理者，擋自我提權。──
+    // submitUserApplication 有自己的受控寫入路徑（不走這些泛用 action），申請帳號流程不受影響。
+    var WRITE_LIKE_ACTIONS = { updateJson: true, updateContentById: true, createJson: true,
+                               casesUpsert: true, trashFile: true, createFolder: true };
+    if (WRITE_LIKE_ACTIONS[action] && isProtectedConfigTarget_(params, localConfigFileId_()) && !isAdminUser_(userEmail)) {
+      return jsonResp_({ error: 'Forbidden: config is admin-only' });
+    }
+
     let result;
     switch (action) {
       case 'ping':               result = { ok: true, email: userEmail }; break;
@@ -418,6 +437,50 @@ function isAuthorizedUser_(userEmail) {
   if (!userEmail) return false;
   if (BOOTSTRAP_ADMINS.indexOf(userEmail) !== -1) return true;  // 短路：免讀 config
   return authzDecision_(localConfigUsers_(), userEmail, BOOTSTRAP_ADMINS);
+}
+
+// ── P0-2/P0-3：角色分層與皇冠珠寶保護 ─────────────────────────────────────────
+// 純決策（可單元測試，見 test/authz-gate.test.js）：是否為管理者。
+// 判定基準與前端 index.html 一致：role==='主任' 或 isAdmin===true 或 extraRole==='管理者'。
+// users 為 null／停用／查無 → 非管理者（fail-closed）；BOOTSTRAP_ADMINS 不受此限。
+function adminDecision_(users, userEmail, bootstrapAdmins) {
+  if (!userEmail) return false;
+  if (bootstrapAdmins && bootstrapAdmins.indexOf(userEmail) !== -1) return true;
+  if (!users) return false;
+  var u = users[userEmail];
+  if (!u || u.disabled === true) return false;
+  return u.role === '主任' || u.isAdmin === true || u.extraRole === '管理者';
+}
+
+function isAdminUser_(userEmail) {
+  if (!userEmail) return false;
+  if (BOOTSTRAP_ADMINS.indexOf(userEmail) !== -1) return true;
+  return adminDecision_(localConfigUsers_(), userEmail, BOOTSTRAP_ADMINS);
+}
+
+// 本環境 config.json 的 fileId：prod 直接用寫死的 CONFIG_FILE_ID_OVERRIDE（免 Drive 讀），
+// dev 走路徑解析並快取 5 分鐘。供「by fileId」寫入動作的皇冠珠寶比對。
+function localConfigFileId_() {
+  if (CONFIG_FILE_ID_OVERRIDE) return CONFIG_FILE_ID_OVERRIDE;
+  var cache = CacheService.getScriptCache();
+  var CK = 'cfgfid:' + ROOT_FOLDER_ID;
+  try { var hit = cache.get(CK); if (hit) return hit; } catch (_) {}
+  try {
+    var id = resolvePathToId_('config.json', { root: ROOT_FOLDER_ID, configOverride: null });
+    if (id) { try { cache.put(CK, id, 300); } catch (_) {} }
+    return id;
+  } catch (_) { return null; }
+}
+
+// 純決策（可單元測試）：此寫入動作是否指向「授權名單檔」（config.json / pending_users*.json）。
+// by-path 直接比對檔名；by-fileId 命中本環境 config.json 的 fileId。這些檔＝授權來源本身，
+// 一律限管理者寫入，擋「低權限者用泛用寫入把自己改成 admin」的提權。
+function isProtectedConfigTarget_(params, configFileId) {
+  var p = (params && (params.path || params.name)) || '';
+  if (p === 'config.json' || /^pending_users[\w-]*\.json$/.test(p)) return true;
+  var fid = params && params.fileId;
+  if (fid && configFileId && fid === configFileId) return true;
+  return false;
 }
 
 // ── 回應工具 ──────────────────────────────────────────────────────────────────

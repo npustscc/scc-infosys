@@ -78,3 +78,62 @@ test('authz：空 email → 拒絕', () => {
   const S = loadFromCodeGs(['authzDecision_']);
   assert.equal(S.authzDecision_({ '': {} }, '', BOOT), false);
 });
+
+// ── adminDecision_：管理者判定（P0-2/P0-3 角色分層）──
+
+test('admin：role=主任 → 是管理者', () => {
+  const S = loadFromCodeGs(['adminDecision_']);
+  assert.equal(S.adminDecision_({ 'a@x.com': { role: '主任' } }, 'a@x.com', BOOT), true);
+});
+
+test('admin：extraRole=管理者 → 是管理者', () => {
+  const S = loadFromCodeGs(['adminDecision_']);
+  assert.equal(S.adminDecision_({ 'a@x.com': { role: '專任諮商心理師', extraRole: '管理者' } }, 'a@x.com', BOOT), true);
+});
+
+test('admin：isAdmin:true 新格式 → 是管理者', () => {
+  const S = loadFromCodeGs(['adminDecision_']);
+  assert.equal(S.adminDecision_({ 'a@x.com': { role: '專任諮商心理師', isAdmin: true } }, 'a@x.com', BOOT), true);
+});
+
+test('admin：一般諮商師（無管理身分）→ 非管理者', () => {
+  const S = loadFromCodeGs(['adminDecision_']);
+  assert.equal(S.adminDecision_({ 'a@x.com': { role: '專任諮商心理師' } }, 'a@x.com', BOOT), false);
+});
+
+test('admin：主任但已停用 → 非管理者（fail-closed）', () => {
+  const S = loadFromCodeGs(['adminDecision_']);
+  assert.equal(S.adminDecision_({ 'a@x.com': { role: '主任', disabled: true } }, 'a@x.com', BOOT), false);
+});
+
+test('admin：config 讀不到（users=null）→ 非管理者，但 BOOTSTRAP 仍是', () => {
+  const S = loadFromCodeGs(['adminDecision_']);
+  assert.equal(S.adminDecision_(null, 'a@x.com', BOOT), false);
+  assert.equal(S.adminDecision_(null, 'npust.scc@heartnpust.tw', BOOT), true);
+});
+
+// ── isProtectedConfigTarget_：皇冠珠寶檔判定（P0-2）──
+
+const CFG_FID = '1CKXefjjiB-PrIFZa-DBQ7Q2ASs-TQroj';
+
+test('protected：path=config.json → 受保護', () => {
+  const S = loadFromCodeGs(['isProtectedConfigTarget_']);
+  assert.equal(S.isProtectedConfigTarget_({ path: 'config.json' }, CFG_FID), true);
+});
+
+test('protected：path=pending_users.json / 變體 → 受保護', () => {
+  const S = loadFromCodeGs(['isProtectedConfigTarget_']);
+  assert.equal(S.isProtectedConfigTarget_({ path: 'pending_users.json' }, CFG_FID), true);
+  assert.equal(S.isProtectedConfigTarget_({ name: 'pending_users-dev.json' }, CFG_FID), true);
+});
+
+test('protected：fileId 命中本環境 config fileId（想用 updateContentById 提權）→ 受保護', () => {
+  const S = loadFromCodeGs(['isProtectedConfigTarget_']);
+  assert.equal(S.isProtectedConfigTarget_({ fileId: CFG_FID }, CFG_FID), true);
+});
+
+test('protected：一般個案檔（cases/... 或其他 fileId）→ 不受此閘限制', () => {
+  const S = loadFromCodeGs(['isProtectedConfigTarget_']);
+  assert.equal(S.isProtectedConfigTarget_({ path: 'cases/manifest.json' }, CFG_FID), false);
+  assert.equal(S.isProtectedConfigTarget_({ fileId: '1SomeOtherCaseFileId' }, CFG_FID), false);
+});
