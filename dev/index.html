@@ -3680,6 +3680,8 @@ const DEFAULT_WORK_HOURS = {
   holidays: [],                   // ['YYYY-MM-DD']；覆蓋 workDays（假日不上班）
   extraWorkDays: [],              // ['YYYY-MM-DD']；補班日（週末也算上班）
   dutyRoster: [],                 // [{date:'YYYY-MM-DD', email}]；#4 輪值上班：該日僅輪值者算上班
+  semesterPeriods: [],            // [{from:'YYYY-MM-DD', to:'YYYY-MM-DD'}]；#4a 學期時段（此區間內才有晚班）
+  nonSemesterEndHour: 18,         // 非學期（寒暑假等，不在 semesterPeriods 內）的下班時數上限＝無晚班
 };
 // 空間預約使用者顏色（32 色）+ GC 11 色映射
 const BK_USER_COLORS = [
@@ -6692,7 +6694,18 @@ function _isOffHours(isoOrDate) {
   }
   if (!hours) return true;                                             // 非上班日
   const hh = d.getHours();
-  return hh < hours.start || hh >= hours.end;                          // 時區以本機為準
+  // #4a：學期時段外（寒暑假等）無晚班——把下班時數上限降到 nonSemesterEndHour（預設 18），
+  // 使原本設到 21:00 的晚班時段在非學期期間 18:00 後即算非上班。semesterPeriods 為空則不限制（相容）。
+  let endHour = hours.end;
+  const periods = cfg.semesterPeriods || [];
+  if (periods.length) {
+    const inSem = periods.some(p => p && p.from && p.to && ymd >= p.from && ymd <= p.to);
+    if (!inSem) {
+      const cap = Number.isFinite(cfg.nonSemesterEndHour) ? cfg.nonSemesterEndHour : 18;
+      endHour = Math.min(endHour, cap);
+    }
+  }
+  return hh < hours.start || hh >= endHour;                            // 時區以本機為準
 }
 // #4：某人此刻是否「非排班／非上班」——輪值日只有輪值者算上班，其餘人一律 off-duty（列入監督）；
 // 非輪值日則沿用全域 _isOffHours。用於決定「沒排班卻上線/看改個案」是否寫入監督 feed。
@@ -20971,33 +20984,40 @@ function _renderGcErrorsSection() {
     UNKNOWN_ROOM:'未知空間', UNKNOWN_COUNSELOR:'未知輔導人員', UNMATCHED:'無對應學諮資訊系統預約' };
   const kindColor = { MISSING_SERIAL:'#dd6b20', MISSING_CREATOR:'#3182ce', BAD_TITLE:'#e53e3e',
     UNKNOWN_ROOM:'#9333ea', UNKNOWN_COUNSELOR:'#c026d3', UNMATCHED:'#c05621' };
-  // 依 kind 分組
-  const byKind = {};
-  entries.forEach(e => { (byKind[e.kind] = byKind[e.kind] || []).push(e); });
+  // 新1：改以「事件」為主體分組——每個 GC 事件一個區塊，下方列出它的多個缺失標籤
+  const byEvent = {};
+  entries.forEach(e => {
+    if (!byEvent[e.eventId]) byEvent[e.eventId] = { eventId: e.eventId, title: e.title, date: e.date, startTime: e.startTime, endTime: e.endTime, creators: e.creators, kinds: [], t: e.t || '' };
+    const g = byEvent[e.eventId];
+    g.kinds.push({ kind: e.kind, id: e.id });
+    if ((e.t || '') > g.t) g.t = e.t;
+    if (!g.title && e.title) g.title = e.title;
+    if (!g.date && e.date) g.date = e.date;
+  });
+  const events = Object.values(byEvent).sort((a, b) => (b.t || '').localeCompare(a.t || ''));
   const seenAt = localStorage.getItem(_gcErrorsSeenKey()) || '';
   const unread = entries.filter(e => (e.t || '') > seenAt).length;
   const isCollapsed = !!window._gcErrorsCollapsed;
   const fmtT = t => t ? new Date(t).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' }) : '';
-  const rowActions = (e, kind) => `<span style="margin-left:8px;display:inline-flex;gap:4px;white-space:nowrap;">
-      <button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" data-tip="在 Google 日曆開啟此事件" onclick="_gcOpenEvent('${escHtml(e.eventId)}')">🔗</button>
-      ${kind === 'UNMATCHED' ? `<button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" onclick="_gcImportAsBooking('${escHtml(e.id)}')">匯入為預約</button>` : ''}
-      <button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" data-tip="不再於待確認清單顯示此筆" onclick="_gcIgnoreEvent('${escHtml(e.id)}')">忽略</button>
-    </span>`;
-  const kindHtml = kind => `<div style="padding:6px 0;border-top:1px solid #fcd34d;">
-    <div style="font-weight:700;font-size:.85rem;color:${kindColor[kind]||'#c53030'};margin-bottom:4px;">
-      <span style="background:${kindColor[kind]||'#c53030'}22;color:${kindColor[kind]||'#c53030'};border-radius:6px;padding:2px 8px;">${escHtml(kindLabel[kind]||kind)}</span>
-      <span style="font-size:.75rem;color:#718096;font-weight:400;margin-left:6px;">（${byKind[kind].length} 筆）</span>
-    </div>
-    ${byKind[kind].slice(0, 10).map(e => `<div style="font-size:.78rem;color:#4a5568;padding:2px 0 2px 14px;border-left:2px solid ${kindColor[kind]||'#c53030'}44;margin-left:4px;">
-      → <span style="font-weight:600;">${escHtml(e.title || '(無標題)')}</span>
-      <span style="color:#a0aec0;margin-left:6px;">${escHtml(e.date||'')} ${escHtml((e.startTime||'').slice(0,5))}–${escHtml((e.endTime||'').slice(0,5))}</span>
-      ${e.creators?.[0] ? `<span style="color:#718096;margin-left:6px;font-family:monospace;font-size:.72rem;">建立者：${escHtml(e.creators[0])}</span>` : ''}
-      <span style="color:#a0aec0;margin-left:6px;">${fmtT(e.t)}</span>
-      ${rowActions(e, kind)}
-      ${kind === 'UNMATCHED' ? _gcUnmatchedRowExtra(e) : ''}
-    </div>`).join('')}
-    ${byKind[kind].length > 10 ? `<div style="font-size:.72rem;color:#a0aec0;padding-left:14px;">…另 ${byKind[kind].length - 10} 筆</div>` : ''}
-  </div>`;
+  const eventHtml = ev => {
+    const unmatched = ev.kinds.find(k => k.kind === 'UNMATCHED');
+    const tags = ev.kinds.map(k => `<span style="background:${kindColor[k.kind]||'#c53030'}22;color:${kindColor[k.kind]||'#c53030'};border-radius:6px;padding:1px 7px;font-size:.72rem;font-weight:600;margin:1px 4px 1px 0;display:inline-block;">${escHtml(kindLabel[k.kind]||k.kind)}</span>`).join('');
+    return `<div style="padding:8px 0;border-top:1px solid #fcd34d;">
+      <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;">
+        <span style="font-weight:700;font-size:.85rem;color:#4a5568;">${escHtml(ev.title || '(無標題)')}</span>
+        <span style="color:#a0aec0;font-size:.76rem;">${escHtml(ev.date||'')} ${escHtml((ev.startTime||'').slice(0,5))}–${escHtml((ev.endTime||'').slice(0,5))}</span>
+        ${ev.creators?.[0] ? `<span style="color:#718096;font-family:monospace;font-size:.7rem;">建立者：${escHtml(ev.creators[0])}</span>` : ''}
+        <span style="color:#a0aec0;font-size:.72rem;">${fmtT(ev.t)}</span>
+        <span style="margin-left:auto;display:inline-flex;gap:4px;white-space:nowrap;">
+          <button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" data-tip="在 Google 日曆開啟此事件" onclick="_gcOpenEvent('${escHtml(ev.eventId)}')">🔗</button>
+          ${unmatched ? `<button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" onclick="_gcImportAsBooking('${escHtml(unmatched.id)}')">匯入為預約</button>` : ''}
+          <button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" data-tip="不再於待確認清單顯示此事件" onclick="_gcIgnoreEventAll('${escHtml(ev.eventId)}')">忽略</button>
+        </span>
+      </div>
+      <div style="margin-top:4px;padding-left:2px;font-size:.76rem;color:#718096;">缺失（${ev.kinds.length}）：${tags}</div>
+      ${unmatched ? _gcUnmatchedRowExtra({ id: unmatched.id, eventId: ev.eventId, title: ev.title, date: ev.date, startTime: ev.startTime, endTime: ev.endTime }) : ''}
+    </div>`;
+  };
   const isIgnoredCollapsed = window._gcIgnoredCollapsed !== false;
   const ignoredHtml = !ignoredList.length ? '' : `<div style="margin-top:10px;border-top:1px dashed #d69e2e;padding-top:8px;">
       <div style="cursor:pointer;font-size:.8rem;color:#92400e;font-weight:600;" onclick="window._gcIgnoredCollapsed = !window._gcIgnoredCollapsed; _renderGcErrorsSection();">
@@ -21015,13 +21035,13 @@ function _renderGcErrorsSection() {
   section.innerHTML = `
     <div style="background:#fffbeb;border:1px solid #fbbf24;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-        <span style="font-weight:700;font-size:.9rem;color:#92400e;">📋 Google 日曆事件待確認（${entries.length}）${unread > 0 ? ` <span class="badge" style="background:#e53e3e;color:#fff;font-size:.72rem;">${unread} 則新</span>` : ''}</span>
+        <span style="font-weight:700;font-size:.9rem;color:#92400e;">📋 Google 日曆事件待確認（${events.length} 個事件）${unread > 0 ? ` <span class="badge" style="background:#e53e3e;color:#fff;font-size:.72rem;">${unread} 則新</span>` : ''}</span>
         <div style="display:flex;gap:6px;">
           ${unread > 0 ? `<button class="btn btn-sm" style="font-size:.76rem;padding:2px 10px;" onclick="_markGcErrorsSeen()">標示已讀</button>` : ''}
           <button class="btn btn-sm" style="font-size:.76rem;padding:2px 10px;background:#fff;" onclick="_toggleGcErrorsSection()">${isCollapsed ? '展開 ▼' : '收合 ▲'}</button>
         </div>
       </div>
-      ${isCollapsed ? '' : `<div style="margin-top:8px;">${Object.keys(byKind).sort().map(kindHtml).join('')}${ignoredHtml}</div>`}
+      ${isCollapsed ? '' : `<div style="margin-top:8px;">${events.slice(0, 40).map(eventHtml).join('')}${events.length > 40 ? `<div style="font-size:.72rem;color:#a0aec0;padding-top:6px;">…另 ${events.length - 40} 個事件</div>` : ''}${ignoredHtml}</div>`}
     </div>`;
 }
 
@@ -21043,6 +21063,23 @@ async function _gcIgnoreEvent(entryId) {
   const kindLabel = { MISSING_SERIAL:'缺流水號', MISSING_CREATOR:'缺建立者註記', BAD_TITLE:'標題格式錯誤',
     UNKNOWN_ROOM:'未知空間', UNKNOWN_COUNSELOR:'未知輔導人員', UNMATCHED:'無對應學諮資訊系統預約' };
   auditLog('忽略GC待確認事件', null, null, `${kindLabel[e.kind]||e.kind}：${e.title||''}`);
+  _renderGcErrorsSection();
+}
+// 新1：以事件為主體 → 一次忽略某事件的全部缺失標籤
+async function _gcIgnoreEventAll(eventId) {
+  const entries = _gcErrorsCache?.entries || [];
+  const toIgnore = entries.filter(e => e.eventId === eventId);
+  if (!toIgnore.length) return;
+  if (!confirm('確定忽略此事件？此事件的所有缺失都不再於待確認清單顯示。')) return;
+  if (!Array.isArray(_gcErrorsCache.ignored)) _gcErrorsCache.ignored = [];
+  const now = new Date().toISOString();
+  toIgnore.forEach(e => _gcErrorsCache.ignored.push({
+    eventId: e.eventId, kind: e.kind, title: e.title || '',
+    by: currentUser?.email || '', byName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '', at: now,
+  }));
+  _gcErrorsCache.entries = entries.filter(e => e.eventId !== eventId);
+  await _saveGcErrorsCache();
+  auditLog('忽略GC待確認事件', null, null, `${toIgnore[0].title || ''}（${toIgnore.length} 項缺失）`);
   _renderGcErrorsSection();
 }
 async function _gcUnignoreEvent(eventId, kind) {
@@ -26640,6 +26677,16 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-09', v: 150, title: 'v148 驗證回饋修正：查閱稽核、學期badge、開案徽章、輪值/學期時段、GC待確認、登入提醒', isProd: false, items: [
+      item('修復', '#10 查閱稽核 bug：先前在個案詳細頁展開 BSRS／紀錄／心測／精神科等區塊「沒有被記錄」（程式誤用了錯的變數）。現已修正，展開這些區塊會確實記入稽核'),
+      item('新功能', '#9/#10 查閱稽核強化：查閱「非你主責／個管」的個案、或在非上班（含輪值日非輪值者）時段查閱個案時，進入詳細頁即記「查閱基本資料」，且捲動看到哪個敏感區塊就記錄該區塊查閱（不必展開）；一般同仁上班看自己的個案不細記以免灌爆'),
+      item('改善', '#9 察看他人個案：填寫閱讀理由的範例改為非危機用語；點入封存／舊學期個案載入較慢時，改顯示明確「◯◯◯個案資料載入中」視窗、讀取完成自動關閉'),
+      item('改善', '#7 危機個案閱讀搜尋結果的「服務學期」標籤改為依欄寬自動換行（欄位越寬一行放越多），不再固定顯示前幾個'),
+      item('新功能', '#8 完整搜尋（輸入完整姓名／學號／案號）時的本學期狀態徽章新增「本學期開案中」；並把這組徽章（開案中／未開案／已結案／已封存）一併呈現在「危機個案閱讀」與「案號查詢與管理」'),
+      item('新功能', '#4 上班時間設定新增「學期時段」：設定學期起訖後，非學期期間（寒暑假等）下班時間上限自動降為指定時數＝無晚班；輪值人員下拉改依輔導人員列表排序、只列專任與實習生、只顯示姓名並套用身分色'),
+      item('改善', 'Google 日曆事件待確認清單改為「以事件為主體」分類：每個事件一個區塊，下方列出它的多個缺失標籤（原本是以缺失類別為主體分組）；忽略改為一次忽略整個事件'),
+      item('新功能', '登入後提醒「登入通知信可能被分到垃圾郵件」，附操作說明與「不再提醒」按鈕（可永久關閉）'),
+    ]},
     { date: '2026-07-09', v: 149, title: '重大修復：打卡紀錄併發覆蓋（多人同時打卡互相蓋掉）＋管理者手動補登', isProd: true, items: [
       item('修復', '修復打卡紀錄消失問題：先前每次打卡是「把整份打卡檔覆寫回去」，多位同仁幾乎同時打卡時，後存檔者會蓋掉先存檔者的紀錄（造成 A 的打卡不見、B 的還在、舊版本被覆蓋）。改為後端逐筆安全寫入（鎖定＋只新增／更新該筆，不再整檔覆寫），並回傳合併後的最新紀錄，多人同時打卡不會再互相蓋掉'),
       item('新功能', '差勤管理「差勤匯總」新增「管理者手動補登打卡」：可替任一同仁補登一筆打卡（選對象／日期／時間／原因），簽到／簽退依當日時間先後自動判定，紀錄標記「手動 · 由管理者」供稽核'),
@@ -36651,15 +36698,33 @@ function renderAdminWorkHours() {
       </span>`).join('')
     : '<span style="font-size:.83rem;color:#a0aec0;">（尚無）</span>';
   // #4 輪值上班：人員下拉 + 輪值 chips（日期·姓名）
-  const dutyPersonOpts = Object.entries(configData?.users || {})
-    .filter(([, u]) => u && !u.disabled && u.name)
-    .sort((a, b) => (a[1].name || '').localeCompare(b[1].name || '', 'zh-Hant'))
-    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name)}</option>`).join('');
+  // #4b：輪值人員下拉——依輔導人員列表排序，只列「專任」「實習生」，只顯示姓名（不含職稱），套用身分色
+  const dutyPersonOpts = COUNSELOR_ROLE_GROUPS
+    .filter(g => g.label === '專任' || g.label === '實習生')
+    .map(group => {
+      const entries = Object.entries(configData?.users || {})
+        .filter(([, info]) => info && !info.disabled && info.name && group.roles.includes(info.role || ''))
+        .sort(([, ia], [, ib]) => {
+          const oa = group.roles.indexOf(ia.role || ''), ob = group.roles.indexOf(ib.role || '');
+          return oa !== ob ? oa - ob : (ia.name || '').localeCompare(ib.name || '', 'zh');
+        });
+      if (!entries.length) return '';
+      return `<optgroup label="${escHtml(group.label)}">` +
+        entries.map(([email, info]) => `<option value="${escHtml(email)}" style="${roleColorOptionStyle(info.role)}">${escHtml(info.name)}</option>`).join('') +
+        '</optgroup>';
+    }).join('');
   const dutyChips = (arr) => (arr && arr.length)
     ? [...arr].sort((a, b) => (a.date || '').localeCompare(b.date || '')).map(r => `<span style="display:inline-flex;align-items:center;gap:2px;background:#fffaf0;color:#9c4221;border:1px solid #fbd38d;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;">
         ${escHtml(r.date)} · ${escHtml(configData?.users?.[r.email]?.name || r.email)}<button onclick="_adminWhRemoveDuty('${escHtml(r.date)}','${escHtml(r.email)}')" style="background:none;border:none;cursor:pointer;color:#9c4221;font-size:1rem;line-height:1;padding:0 0 0 3px;">×</button>
       </span>`).join('')
     : '<span style="font-size:.83rem;color:#a0aec0;">（尚無）</span>';
+  // #4a：學期時段 chips（from~to）
+  const semPeriodChips = (arr) => (arr && arr.length)
+    ? [...arr].sort((a, b) => (a.from || '').localeCompare(b.from || '')).map((p, i) => `<span style="display:inline-flex;align-items:center;gap:2px;background:#ebf8ff;color:#2b6cb0;border:1px solid #90cdf4;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;">
+        ${escHtml(p.from)} ~ ${escHtml(p.to)}<button onclick="_adminWhRemoveSemester(${i})" style="background:none;border:none;cursor:pointer;color:#2b6cb0;font-size:1rem;line-height:1;padding:0 0 0 3px;">×</button>
+      </span>`).join('')
+    : '<span style="font-size:.83rem;color:#a0aec0;">（尚無；未設定學期時段時，一律沿用每日上班時段，不做學期/非學期區分）</span>';
+  const _nonSemEnd = Number.isFinite(cfg.nonSemesterEndHour) ? cfg.nonSemesterEndHour : 18;
   el.innerHTML = `
     <div style="margin-bottom:16px;">
       <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">
@@ -36698,6 +36763,25 @@ function renderAdminWorkHours() {
         <button class="btn btn-secondary btn-sm" onclick="_adminWhAddDuty()">加入輪值</button>
       </div>
       <div id="wh-duty-chips">${dutyChips(cfg.dutyRoster)}</div>
+    </div>
+    <div style="margin-bottom:16px;">
+      <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">
+        學期時段（此區間內才有晚班）
+        <span style="font-size:.75rem;font-weight:400;color:#718096;">（設定學期起訖；學期期間沿用上方每日上班時段(含晚班)，非學期期間(寒暑假等)下班時間上限降為下方時數＝無晚班）</span>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap;">
+        <input type="date" id="wh-sem-from" class="field-input" style="max-width:170px;">
+        <span style="color:#718096;">~</span>
+        <input type="date" id="wh-sem-to" class="field-input" style="max-width:170px;">
+        <button class="btn btn-secondary btn-sm" onclick="_adminWhAddSemester()">加入學期時段</button>
+      </div>
+      <div id="wh-sem-chips">${semPeriodChips(cfg.semesterPeriods)}</div>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label style="font-size:.82rem;color:#4a5568;">非學期下班時間上限（無晚班）：</label>
+        <select id="wh-nonsem-end" class="field-input" style="width:auto;" onchange="_adminWhSetNonSemEnd(this.value)">
+          ${[16,17,18,19,20].map(h => `<option value="${h}"${_nonSemEnd === h ? ' selected' : ''}>${String(h).padStart(2,'0')}:00</option>`).join('')}
+        </select>
+      </div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;padding-top:12px;border-top:1px solid #e2e8f0;">
       <button class="btn btn-primary" onclick="_adminSaveWorkHours()">儲存上班時間設定</button>
@@ -36753,6 +36837,38 @@ async function _adminWhRemoveDuty(date, email) {
   const arr = (cur.dutyRoster || []).filter(r => !(r.date === date && r.email === email));
   configData.workHoursConfig = { ...cur, dutyRoster: arr };
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminWorkHours(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+// #4a：學期時段 新增/移除／非學期下班上限
+async function _adminWhAddSemester() {
+  const from = (document.getElementById('wh-sem-from')?.value || '').trim();
+  const to   = (document.getElementById('wh-sem-to')?.value   || '').trim();
+  if (!from || !to) { alert('請選擇學期起訖日期。'); return; }
+  if (to < from) { alert('結束日期不可早於開始日期。'); return; }
+  const cur = _getWorkHoursConfig();
+  const arr = [...(cur.semesterPeriods || [])];
+  if (arr.some(p => p.from === from && p.to === to)) { alert('此學期時段已存在。'); return; }
+  arr.push({ from, to });
+  configData.workHoursConfig = { ...cur, semesterPeriods: arr };
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); auditLog('新增學期時段', null, null, `${from} ~ ${to}`, { major: true }); renderAdminWorkHours(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+async function _adminWhRemoveSemester(idx) {
+  const cur = _getWorkHoursConfig();
+  const arr = [...(cur.semesterPeriods || [])];
+  if (idx < 0 || idx >= arr.length) return;
+  if (!confirm(`確認移除學期時段「${arr[idx].from} ~ ${arr[idx].to}」？`)) return;
+  arr.splice(idx, 1);
+  configData.workHoursConfig = { ...cur, semesterPeriods: arr };
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminWorkHours(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+async function _adminWhSetNonSemEnd(val) {
+  const h = parseInt(val, 10);
+  if (!Number.isFinite(h)) return;
+  const cur = _getWorkHoursConfig();
+  configData.workHoursConfig = { ...cur, nonSemesterEndHour: h };
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); }
   catch (e) { alert('儲存失敗：' + e.message); }
 }
 async function _adminSaveWorkHours() {
