@@ -103,6 +103,7 @@ function doPost(e) {
       case 'submitUserApplication': result = submitUserApplication_({ ...params, submittedByEmail: userEmail, ctx }); break;
       case 'startupBatch':         result = startupBatch_(params, ctx); break;
       case 'casesUpsert':          result = casesUpsert_(params, ctx); break;
+      case 'attendanceCommit':     result = attendanceCommit_(params, ctx); break;
       case 'bookingsCommit':       result = bookingsCommit_(params, ctx); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
@@ -1651,6 +1652,56 @@ function casesUpsert_({ path, upserts, removes }, ctx) {
       driveUpload_(pn.fileName, data, pn.parentId);
     }
     return { ok: true, count: data.cases.length, updatedAt: data.updatedAt };
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// ── attendance.json 併發安全的打卡寫入（LockService 讀-改-寫）──
+// 修 2026-07-09 事故：前端 saveAttendance() 整檔覆寫，多人同時打卡時後寫者蓋掉先寫者（A 打卡不見、B 還在）。
+// 改為鎖內讀最新 → 依 id upsert（新增打卡 append、更新定位 replace）／依 id remove → 寫回，回傳合併後全部 records。
+// fail-closed：檔案存在但讀取失敗／內容異常一律中止，絕不以空殼重寫。
+function attendanceCommit_({ upserts, removes }, ctx) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    let fileId = null;
+    let data = { records: [] };
+    try { fileId = resolvePathToId_('attendance.json', ctx); } catch (_) { fileId = null; /* 檔不存在，稍後建立 */ }
+    if (fileId) {
+      const res = UrlFetchApp.fetch(
+        'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+        { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+      );
+      if (res.getResponseCode() >= 400) {
+        throw new Error('attendanceCommit: 讀取 attendance.json 失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
+      }
+      data = JSON.parse(res.getContentText());
+      if (!data || !Array.isArray(data.records)) {
+        throw new Error('attendanceCommit: attendance.json 內容異常（records 非陣列），已中止寫入以保護資料');
+      }
+    }
+
+    const pos = {};
+    data.records.forEach(function (r, i) { if (r && r.id) pos[r.id] = i; });
+    (upserts || []).forEach(function (rec) {
+      if (!rec || !rec.id) return;
+      if (pos[rec.id] !== undefined) data.records[pos[rec.id]] = rec;
+      else { pos[rec.id] = data.records.length; data.records.push(rec); }
+    });
+    const rmSet = {};
+    (removes || []).forEach(function (id) { if (id) rmSet[id] = true; });
+    if (Object.keys(rmSet).length) {
+      data.records = data.records.filter(function (r) { return r && r.id && !rmSet[r.id]; });
+    }
+
+    if (fileId) {
+      driveUpdateContent_(fileId, data);
+    } else {
+      const pn = resolvePathToParentAndName_('attendance.json', ctx);
+      driveUpload_(pn.fileName, data, pn.parentId);
+    }
+    return { ok: true, records: data.records, count: data.records.length };
   } finally {
     try { lock.releaseLock(); } catch (_) {}
   }
