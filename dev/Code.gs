@@ -12,6 +12,12 @@ const ALLOWED_ROOTS = {
   '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx': { configOverride: null, calendarName: '[DEV] SCC 空間預約', gmailLabel: 'ml-processed-dev' },
 };
 
+// issues.json（許願池/錯誤回報）dev/prod 共用同一份、固定存於正式版資料夾。
+// 前端存取它會帶「非本環境」的 rootFolderId，需一條跨環境例外——但只認這一個固定 ID，
+// 絕不接受前端傳入的任意 folderId（否則攻擊者可指向自建資料夾內的假 config.json 洗白授權）。
+// 註：此常數 dev/prod 皆為正式版資料夾 ID（兩環境相同），推正式版時不需修改（非環境專屬常數）。
+const ISSUES_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP';
+
 // 緊急備援名單：即使 config 讀不到或帳號不在名單，這些帳號仍可登入以修復系統（對應前端 BOOTSTRAP_ADMIN_EMAIL）。
 // 註：列出 email 不構成後門——仍須持有該帳號的 Google 憑證（有效 ID token）才通過，攻擊者知道 email 也無法冒充。
 const BOOTSTRAP_ADMINS = ['npust.scc@heartnpust.tw', 'linkinlol528101@gmail.com'];
@@ -48,11 +54,12 @@ function doPost(e) {
         const rootCfg = ALLOWED_ROOTS[rootFolderId];
         ctx = { root: rootFolderId, configOverride: rootCfg.configOverride, calendarName: rootCfg.calendarName || CALENDAR_NAME, gmailLabel: rootCfg.gmailLabel || 'ml-processed-dev' };
       } else {
-        // 例外白名單：issues.json (許願池/錯誤回報) 允許跨環境（dev/prod 共用同一份）
+        // 例外白名單：issues.json (許願池/錯誤回報) 允許跨環境（dev/prod 共用同一份）。
+        // 僅接受固定的 ISSUES_FOLDER_ID，不接受任意 folderId——否則攻擊者可把 ctx.root
+        // 指向自建資料夾內的假 config.json 來洗白授權（見 isAuthorizedUser_ 現改為只讀本環境固定 config）。
         // params.file：listCommit 專用參數名（見 listCommit_）
         const p = params.path || params.name || params.file || '';
-        const isIssuesOp = p === 'issues.json';
-        if (!isIssuesOp) return jsonResp_({ error: 'Unauthorized rootFolderId' });
+        if (!issuesExceptionAllowed_(rootFolderId, p, ISSUES_FOLDER_ID)) return jsonResp_({ error: 'Unauthorized rootFolderId' });
         ctx = { root: rootFolderId, configOverride: null, calendarName: CALENDAR_NAME };
       }
     }
@@ -62,7 +69,7 @@ function doPost(e) {
     // 皆可用公開的 CLIENT_ID / APPS_SCRIPT_URL / rootFolderId 直接撈取或竄改全部個案資料。
     // ping（探測）與 submitUserApplication（尚未獲授權者申請帳號的唯一入口）需在授權前放行。
     var AUTHZ_EXEMPT = { ping: true, submitUserApplication: true };
-    if (!AUTHZ_EXEMPT[action] && !isAuthorizedUser_(userEmail, ctx)) {
+    if (!AUTHZ_EXEMPT[action] && !isAuthorizedUser_(userEmail)) {
       return jsonResp_({ error: 'Unauthorized user' });
     }
 
@@ -363,29 +370,54 @@ function dumpGcEventColors() {
 }
 
 // ── 使用者授權閘 ──────────────────────────────────────────────────────────────
-// email 必須存在於 config.users 且未停用（判定基準與前端 resolveUserRole 一致）。
+// 授權的唯一真實來源＝「本部署自己固定的 config.json」（永遠用本環境 ROOT_FOLDER_ID /
+// CONFIG_FILE_ID_OVERRIDE，絕不看請求帶入的 rootFolderId／ctx）。
+//   ⚠️ 這是修補 F1（授權快取跨 root 汙染）的關鍵：先前 isAuthorizedUser_ 從 ctx.root 讀 config，
+//   而 issues.json 例外允許 ctx.root＝前端傳入的任意資料夾，攻擊者放一份自己名字的假 config.json
+//   即可通過授權並被快取，300 秒內改帶 prod 資料夾 ID 命中快取→全面接管。改為只讀本環境固定 config，
+//   任何請求帶進來的 rootFolderId 都不影響「你是不是被授權的人」判定，攻擊鏈斷。
 // fail-closed：config 讀不到一律拒絕（BOOTSTRAP_ADMINS 例外，避免 config 全毀時管理者被鎖死）。
-// 命中結果以 CacheService 快取 5 分鐘，避免每個請求都多讀一次 config。
-// 副作用：新增/停用使用者後，後端授權狀態最多延遲 5 分鐘生效。
-function isAuthorizedUser_(userEmail, ctx) {
-  if (!userEmail) return false;
-  if (BOOTSTRAP_ADMINS.indexOf(userEmail) !== -1) return true;
+// users 表以 CacheService 快取 5 分鐘（key 綁定本環境 config 來源），避免每個請求都多讀一次 config。
+// 副作用：新增/停用/改角色後，後端授權狀態最多延遲 5 分鐘生效。
+function localConfigUsers_() {
   var cache = CacheService.getScriptCache();
-  var key = 'authz:' + userEmail.slice(0, 240);
-  try { if (cache.get(key) === '1') return true; } catch (_) {}
+  var CK = 'cfgusers:' + (CONFIG_FILE_ID_OVERRIDE || ROOT_FOLDER_ID);
+  try { var hit = cache.get(CK); if (hit) return JSON.parse(hit); } catch (_) {}
   try {
-    var cfgId = ctx.configOverride || resolvePathToId_('config.json', ctx);
+    var cfgId = CONFIG_FILE_ID_OVERRIDE ||
+      resolvePathToId_('config.json', { root: ROOT_FOLDER_ID, configOverride: CONFIG_FILE_ID_OVERRIDE });
     var res = UrlFetchApp.fetch(
       'https://www.googleapis.com/drive/v3/files/' + cfgId + '?alt=media&supportsAllDrives=true',
       { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
     );
-    if (res.getResponseCode() !== 200) return false;
+    if (res.getResponseCode() !== 200) return null;
     var cfg = JSON.parse(res.getContentText());
-    var u = cfg && cfg.users && cfg.users[userEmail];
-    var ok = !!u && u.disabled !== true;
-    if (ok) { try { cache.put(key, '1', 300); } catch (_) {} }
-    return ok;
-  } catch (e) { return false; }
+    var users = (cfg && cfg.users) || {};
+    try { cache.put(CK, JSON.stringify(users), 300); } catch (_) {}
+    return users;
+  } catch (e) { return null; }
+}
+
+// 純決策（可單元測試）：跨環境 rootFolderId 例外——只有「存取固定 ISSUES_FOLDER_ID 內的 issues.json」
+// 才放行，其餘一律拒絕。杜絕「攻擊者帶自建 folderId 讓授權改讀假 config」的 F1 攻擊鏈。
+function issuesExceptionAllowed_(rootFolderId, actionPath, issuesFolderId) {
+  return actionPath === 'issues.json' && rootFolderId === issuesFolderId;
+}
+
+// 純決策（可單元測試，見 test/authz-gate.test.js）：給定 users 表、email、緊急備援名單，是否放行。
+// users 為 null（config 讀不到）＝ fail-closed 拒絕；BOOTSTRAP_ADMINS 不受此限。
+function authzDecision_(users, userEmail, bootstrapAdmins) {
+  if (!userEmail) return false;
+  if (bootstrapAdmins && bootstrapAdmins.indexOf(userEmail) !== -1) return true;
+  if (!users) return false;
+  var u = users[userEmail];
+  return !!u && u.disabled !== true;
+}
+
+function isAuthorizedUser_(userEmail) {
+  if (!userEmail) return false;
+  if (BOOTSTRAP_ADMINS.indexOf(userEmail) !== -1) return true;  // 短路：免讀 config
+  return authzDecision_(localConfigUsers_(), userEmail, BOOTSTRAP_ADMINS);
 }
 
 // ── 回應工具 ──────────────────────────────────────────────────────────────────
