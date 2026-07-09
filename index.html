@@ -23504,6 +23504,27 @@ async function loadAttendance() {
   }
 }
 
+// 併發安全的打卡寫入：後端 LockService 讀-改-寫，只 upsert/remove 指定 id 的紀錄，回傳合併後全部 records。
+// 取代舊 saveAttendance() 的「整檔覆寫」——那會在多人同時打卡時後寫者蓋掉先寫者（2026-07-09 事故）。
+async function _attendanceCommit(upserts, removes) {
+  try {
+    const res = await proxyCall('attendanceCommit', { upserts: upserts || [], removes: removes || [] });
+    if (res && Array.isArray(res.records)) attendanceData = { records: res.records };
+    return res;
+  } catch (e) {
+    if (!/Unknown action/i.test(e.message || '')) throw e;
+    if (!attendanceData || !Array.isArray(attendanceData.records)) attendanceData = { records: [] };
+    (upserts || []).forEach(rec => {
+      if (!rec || !rec.id) return;
+      const i = attendanceData.records.findIndex(r => r && r.id === rec.id);
+      if (i >= 0) attendanceData.records[i] = rec; else attendanceData.records.push(rec);
+    });
+    const rm = new Set(removes || []);
+    if (rm.size) attendanceData.records = attendanceData.records.filter(r => r && !rm.has(r.id));
+    await driveUpdateJsonFile(ATTENDANCE_FILE, attendanceData);
+    return { ok: true, fallback: true, records: attendanceData.records };
+  }
+}
 async function saveAttendance() {
   await driveUpdateJsonFile(ATTENDANCE_FILE, attendanceData);
 }
@@ -24360,10 +24381,9 @@ async function submitManualPunch() {
     ...(reason ? { manualNote: reason } : {}),
   };
   if (!attendanceData || !Array.isArray(attendanceData.records)) attendanceData = { records: [] };
-  attendanceData.records.push(record);
   const jobId = bgJobAdd('手動補登打卡');
   try {
-    await saveAttendance();
+    await _attendanceCommit([record]); // 併發安全：只 append 這筆
     auditLog('手動補登打卡', null, null, `${record.name || currentUser.email} ${date} ${time}${reason ? '（' + reason + '）' : ''}`);
     bgJobDone(jobId);
     _leaveSubmitting = false;
@@ -24371,7 +24391,6 @@ async function submitManualPunch() {
     showToast('✅ 已補登打卡', 'success');
     _laMsg('success', `✅ 已補登打卡：${date} ${time}`);
   } catch (e) {
-    attendanceData.records.pop();
     bgJobFail(jobId, e.message);
     _leaveSubmitting = false;
     if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; btn.textContent = _btnText; }
@@ -24544,16 +24563,14 @@ async function clockAction() {
   };
 
   if (!attendanceData) attendanceData = { records: [] };
-  attendanceData.records.push(record);
   try {
-    await saveAttendance();
+    await _attendanceCommit([record]); // 併發安全：只 append 這筆，回傳合併後 records 更新記憶體
     msgEl.className = 'alert alert-success';
     msgEl.textContent = '✅ 打卡成功！ ' + _fmtTime(record.timestamp);
     msgEl.style.display = '';
     const ns = _clockNs;
     setTimeout(() => renderClockPage(ns), 800);
   } catch (e) {
-    attendanceData.records.pop();
     msgEl.className = 'alert alert-error';
     msgEl.textContent = '打卡失敗：' + e.message;
     msgEl.style.display = '';
@@ -24588,7 +24605,7 @@ async function updateAttendanceLoc(recordId) {
   rec.locationUpdated = true;
   rec.locationUpdatedAt = new Date().toISOString();
   try {
-    await saveAttendance();
+    await _attendanceCommit([rec]); // 併發安全：只 replace 這筆
     if (statusEl) statusEl.textContent = `✅ 定位已更新（誤差約 ${accuracy} 公尺）`;
     renderClockPage(_clockNs);
   } catch (e) {
@@ -24834,6 +24851,41 @@ function _attManualBadgeHtml(rec) {
 //  差勤匯總（分頁）：可依日期／月份＋實習生篩選，並可就地列印月報表
 // ══════════════════════════════════════════════
 let _attSumMode = 'date'; // 'date' | 'month'
+// 管理者手動補登打卡：替選定人員新增一筆打卡（併發安全，走 _attendanceCommit）
+async function submitAdminManualPunch() {
+  const email = document.getElementById('att-adm-email')?.value || '';
+  const date  = document.getElementById('att-adm-date')?.value  || '';
+  const time  = document.getElementById('att-adm-time')?.value  || '';
+  const reason = (document.getElementById('att-adm-reason')?.value || '').trim();
+  const msg = document.getElementById('att-adm-msg');
+  const _m = (type, t) => { if (msg) { msg.style.display = ''; msg.style.color = type === 'error' ? '#c53030' : type === 'success' ? '#276749' : '#718096'; msg.textContent = t; } };
+  if (!email) { _m('error', '請選擇補登對象'); return; }
+  if (!date)  { _m('error', '請選擇日期'); return; }
+  if (!time)  { _m('error', '請選擇時間'); return; }
+  const when = new Date(`${date}T${time}`);
+  if (isNaN(when.getTime())) { _m('error', '時間格式不正確'); return; }
+  if (when.getTime() > Date.now() + 60000) { _m('error', '打卡時間不可為未來時間'); return; }
+  const u = configData?.users?.[email] || {};
+  const record = {
+    id: 'att_' + email + '_' + when.getTime(),
+    email, name: u.name || email, type: 'punch',
+    timestamp: when.toISOString(), date: _fmtDate(when),
+    manual: true, manualBy: currentUser.email,
+    manualByName: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
+    manualByAdmin: true, manualAt: new Date().toISOString(),
+    ...(reason ? { manualNote: reason } : {}),
+  };
+  _m('info', '⏳ 補登中…');
+  try {
+    await _attendanceCommit([record]);
+    auditLog('管理者手動補登打卡', null, null, `${u.name || email} ${date} ${time}${reason ? '（' + reason + '）' : ''}`, { major: true });
+    _m('success', `✅ 已為 ${u.name || email} 補登 ${date} ${time}`);
+    renderAttendanceSummary();
+  } catch (e) {
+    _m('error', '補登失敗：' + e.message);
+  }
+}
+
 function _attSumSetMode(mode) {
   _attSumMode = mode;
   renderAttendanceSummary();
@@ -24860,6 +24912,11 @@ function renderAttendanceSummary() {
     ...(_ig(1).length ? [`<optgroup label="非在任實習生">`, ..._ig(1).map(_opt), `</optgroup>`] : []),
     ...(_ig(2).length ? [`<optgroup label="已停用">`, ..._ig(2).map(_opt), `</optgroup>`] : []),
   ].join('');
+  // 管理者手動補登打卡：對象可為任一未停用且有姓名的使用者
+  const _admPersonOpts = Object.entries(users)
+    .filter(([, u]) => u && !u.disabled && u.name)
+    .sort((a, b) => (a[1].name || '').localeCompare(b[1].name || '', 'zh-Hant'))
+    .map(([email, u]) => `<option value="${escHtml(email)}">${escHtml(u.name)}${u.role ? '（' + escHtml(u.role) + '）' : ''}</option>`).join('');
 
   const filtered = records.filter(r =>
     (!filterEmailVal || r.email === filterEmailVal) &&
@@ -24874,6 +24931,22 @@ function renderAttendanceSummary() {
   const printMonth = _attSumMode === 'month' ? filterMonth : filterDate.slice(0, 7);
 
   body.innerHTML = `
+    <div style="background:#fffaf0;border:1px solid #fbd38d;border-radius:10px;padding:14px 16px;margin-bottom:18px;">
+      <div style="font-weight:600;color:#9c4221;margin-bottom:6px;">🖊️ 管理者手動補登打卡</div>
+      <p style="font-size:.8rem;color:#975a16;margin:0 0 10px;">替同仁補登一筆打卡（如忘記打卡）。簽到／簽退由當日時間先後自動判定；補登紀錄會標記「手動 · 由管理者」供稽核。</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <div><label style="font-size:.78rem;color:#975a16;display:block;margin-bottom:3px;">對象</label>
+          <select id="att-adm-email" class="field-select" style="min-width:170px;"><option value="">選擇人員…</option>${_admPersonOpts}</select></div>
+        <div><label style="font-size:.78rem;color:#975a16;display:block;margin-bottom:3px;">日期</label>
+          <input id="att-adm-date" type="date" class="field-input" value="${today}"></div>
+        <div><label style="font-size:.78rem;color:#975a16;display:block;margin-bottom:3px;">時間</label>
+          <input id="att-adm-time" type="time" class="field-input"></div>
+        <div style="flex:1;min-width:140px;"><label style="font-size:.78rem;color:#975a16;display:block;margin-bottom:3px;">原因（選填）</label>
+          <input id="att-adm-reason" type="text" class="field-input" placeholder="如：忘記打卡" style="width:100%;"></div>
+        <button class="btn btn-primary btn-sm" onclick="submitAdminManualPunch()">補登打卡</button>
+      </div>
+      <div id="att-adm-msg" style="display:none;margin-top:8px;font-size:.82rem;"></div>
+    </div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:20px;">
       <div style="display:flex;gap:6px;">
         <label class="bk-view-chip${_attSumMode === 'date' ? ' bk-view-chip-sel' : ''}" onclick="_attSumSetMode('date')"><span class="bk-view-chip-box">${_attSumMode === 'date' ? '✓' : ''}</span>依日期</label>
@@ -26260,6 +26333,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-09', v: 149, title: '重大修復：打卡紀錄併發覆蓋（多人同時打卡互相蓋掉）＋管理者手動補登', isProd: true, items: [
+      item('修復', '修復打卡紀錄消失問題：先前每次打卡是「把整份打卡檔覆寫回去」，多位同仁幾乎同時打卡時後存檔者會蓋掉先存檔者的紀錄（造成 A 的打卡不見、B 的還在、舊版本被覆蓋）。改為後端逐筆安全寫入（鎖定＋只新增／更新該筆，不再整檔覆寫），多人同時打卡不會再互相蓋掉。先前被覆蓋遺失的打卡已從雲端版本歷史還原'),
+      item('新功能', '差勤管理「差勤匯總」新增「管理者手動補登打卡」：可替任一同仁補登一筆打卡（選對象／日期／時間／原因），簽到／簽退依當日時間先後自動判定，紀錄標記「手動 · 由管理者」供稽核'),
+    ]},
     { date: '2026-07-08', v: 146, title: '登入與 Session 管理：登入紀錄、IP/位置通知、登出所有裝置', isProd: true, items: [
       item('新功能', '登入通知信新增「IP 位址」與「大致位置」（由前端向公開 IP 服務查詢後帶入；查不到則略過，不影響登入）'),
       item('新功能', '偏好設定頁新增「登入紀錄」卡片：列出近期以你的帳號登入的裝置（作業系統／瀏覽器）、IP、大致位置、登入時間與狀態（目前裝置／使用中／已登出／已過期）'),

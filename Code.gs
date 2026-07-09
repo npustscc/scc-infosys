@@ -103,6 +103,7 @@ function doPost(e) {
       case 'submitUserApplication': result = submitUserApplication_({ ...params, submittedByEmail: userEmail, ctx }); break;
       case 'startupBatch':         result = startupBatch_(params, ctx); break;
       case 'casesUpsert':          result = casesUpsert_(params, ctx); break;
+      case 'attendanceCommit':     result = attendanceCommit_(params, ctx); break;
       case 'bookingsCommit':       result = bookingsCommit_(params, ctx); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
@@ -1654,6 +1655,96 @@ function casesUpsert_({ path, upserts, removes }, ctx) {
   } finally {
     try { lock.releaseLock(); } catch (_) {}
   }
+}
+
+// ── attendance.json 併發安全的打卡寫入（LockService 讀-改-寫）──
+// 修 2026-07-09 事故：前端 saveAttendance() 整檔覆寫，多人同時打卡時後寫者蓋掉先寫者。
+// 改為鎖內讀最新 → 依 id upsert／remove → 寫回，回傳合併後全部 records。fail-closed：讀取失敗一律中止。
+function attendanceCommit_({ upserts, removes }, ctx) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    let fileId = null;
+    let data = { records: [] };
+    try { fileId = resolvePathToId_('attendance.json', ctx); } catch (_) { fileId = null; }
+    if (fileId) {
+      const res = UrlFetchApp.fetch(
+        'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+        { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+      );
+      if (res.getResponseCode() >= 400) {
+        throw new Error('attendanceCommit: 讀取 attendance.json 失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
+      }
+      data = JSON.parse(res.getContentText());
+      if (!data || !Array.isArray(data.records)) {
+        throw new Error('attendanceCommit: attendance.json 內容異常（records 非陣列），已中止寫入以保護資料');
+      }
+    }
+    const pos = {};
+    data.records.forEach(function (r, i) { if (r && r.id) pos[r.id] = i; });
+    (upserts || []).forEach(function (rec) {
+      if (!rec || !rec.id) return;
+      if (pos[rec.id] !== undefined) data.records[pos[rec.id]] = rec;
+      else { pos[rec.id] = data.records.length; data.records.push(rec); }
+    });
+    const rmSet = {};
+    (removes || []).forEach(function (id) { if (id) rmSet[id] = true; });
+    if (Object.keys(rmSet).length) {
+      data.records = data.records.filter(function (r) { return r && r.id && !rmSet[r.id]; });
+    }
+    if (fileId) {
+      driveUpdateContent_(fileId, data);
+    } else {
+      const pn = resolvePathToParentAndName_('attendance.json', ctx);
+      driveUpload_(pn.fileName, data, pn.parentId);
+    }
+    return { ok: true, records: data.records, count: data.records.length };
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// ⏳ 一次性還原（2026-07-09 打卡覆蓋事故）：合併 attendance.json 所有 Drive 版本的打卡（依 id 去重）→ 寫回。
+// 於正式版 GAS 編輯器手動執行一次即可；成功後此函式可刪。與併發安全寫入並存不會衝突（本身也在資料層 append/合併）。
+function restoreAttendance20260709() {
+  var ctx = { root: ROOT_FOLDER_ID, configOverride: CONFIG_FILE_ID_OVERRIDE, calendarName: CALENDAR_NAME };
+  var fileId = resolvePathToId_('attendance.json', ctx);
+  var revRes = UrlFetchApp.fetch(
+    'https://www.googleapis.com/drive/v3/files/' + fileId + '/revisions?fields=revisions(id,modifiedTime)&pageSize=1000&supportsAllDrives=true',
+    { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+  );
+  if (revRes.getResponseCode() >= 400) throw new Error('讀取版本清單失敗：' + revRes.getContentText());
+  var revs = (JSON.parse(revRes.getContentText()).revisions) || [];
+  var union = {};
+  var order = [];
+  revs.forEach(function (rv) {
+    var r = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + fileId + '/revisions/' + rv.id + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (r.getResponseCode() >= 400) return; // 個別版本讀不到（403 等）略過
+    try {
+      var d = JSON.parse(r.getContentText());
+      (d && Array.isArray(d.records) ? d.records : []).forEach(function (rec) {
+        if (rec && rec.id && !union[rec.id]) { union[rec.id] = rec; order.push(rec.id); }
+      });
+    } catch (e) {}
+  });
+  // 併入當前檔案（可能比最新 revision 還新）
+  try {
+    var cur = readJson_({ path: 'attendance.json' }, ctx);
+    (cur && Array.isArray(cur.records) ? cur.records : []).forEach(function (rec) {
+      if (rec && rec.id && !union[rec.id]) { union[rec.id] = rec; order.push(rec.id); }
+    });
+  } catch (e) {}
+
+  var merged = { records: order.map(function (id) { return union[id]; }) };
+  var curCount = 0;
+  try { var c2 = readJson_({ path: 'attendance.json' }, ctx); curCount = (c2 && c2.records) ? c2.records.length : 0; } catch (e) {}
+  updateJson_({ path: 'attendance.json', content: merged }, ctx);
+  var msg = '✅ 打卡還原完成：合併 ' + revs.length + ' 個版本 → 共 ' + merged.records.length + ' 筆（還原前檔案 ' + curCount + ' 筆，補回 ' + (merged.records.length - curCount) + ' 筆）。';
+  Logger.log(msg);
+  return msg;
 }
 
 // ── bookings.json 併發安全的批次寫入（LockService）＋寫入當下撞房/撞人檢查 ──
