@@ -5933,6 +5933,7 @@ async function afterLogin() {
 
     // URL routing：?page=clock 等
     _checkInitialPage();
+    _maybeShowSpamReminder(); // 提醒登入通知信可能進垃圾郵件（可永久關閉）
   } catch (err) {
     hideLoading();
     // 未被授權 → 顯示帳號申請畫面
@@ -6870,16 +6871,10 @@ function _crisisToggleSemExpand(caseId) {
 function _crisisSemChipsHtml(c) {
   const sems = Array.isArray(c.semesters) ? [...c.semesters].sort() : [];
   if (!sems.length) return '';
-  const chip = s => `<span style="display:inline-block;background:#f0f4f8;border:1px solid #cbd5e0;color:#4a5568;border-radius:10px;padding:0 6px;font-size:.72rem;margin:1px 2px;">${escHtml(semesterLabel(s))}</span>`;
-  const expanded = _crisisSemExpanded.has(c.id);
-  const visible = expanded ? sems : sems.slice(0, 3);
-  const extra = expanded ? [] : sems.slice(3);
-  const moreBtn = extra.length
-    ? `<span onclick="event.stopPropagation();_crisisToggleSemExpand('${escHtml(c.id)}')" style="display:inline-block;font-size:.72rem;color:#3182ce;cursor:pointer;padding:0 6px;border-radius:10px;background:#ebf8ff;border:1px solid #bee3f8;margin:1px 2px;">+${extra.length} ▾</span>`
-    : (expanded && sems.length > 3
-        ? `<span onclick="event.stopPropagation();_crisisToggleSemExpand('${escHtml(c.id)}')" style="display:inline-block;font-size:.72rem;color:#3182ce;cursor:pointer;padding:0 6px;border-radius:10px;background:#ebf8ff;border:1px solid #bee3f8;margin:1px 2px;">收合 ▴</span>`
-        : '');
-  return `<div style="max-width:220px;">${visible.map(chip).join('')}${moreBtn}</div>`;
+  const chip = s => `<span style="display:inline-block;background:#f0f4f8;border:1px solid #cbd5e0;color:#4a5568;border-radius:10px;padding:0 6px;font-size:.72rem;margin:1px 2px;white-space:nowrap;">${escHtml(semesterLabel(s))}</span>`;
+  // #7：學期 chips 改依欄寬自動換行——容器填滿欄位寬度、flex-wrap，一行放幾個由「服務學期」欄的寬度決定
+  // （該欄可拖曳調整欄寬，越寬一行放越多）。不再固定顯示前 3 個＋展開。
+  return `<div style="display:flex;flex-wrap:wrap;width:100%;">${sems.map(chip).join('')}</div>`;
 }
 function _crisisRenderResults() {
   const el = document.getElementById('crisis-results');
@@ -6922,7 +6917,7 @@ function _crisisRenderResults() {
       const abBadge = _abType === 'A案' ? '<span style="display:inline-block;background:#dbeafe;color:#1e40af;border-radius:4px;padding:0 5px;font-size:.7rem;font-weight:600;margin-left:4px;">A案</span>'
                     : _abType === 'B案' ? '<span style="display:inline-block;background:#fef3c7;color:#92400e;border-radius:4px;padding:0 5px;font-size:.7rem;font-weight:600;margin-left:4px;">B案</span>'
                     : '';
-      return `<tr><td>${escHtml(c.name || '—')}</td><td>${escHtml(c.studentId || '—')}</td><td style="font-family:monospace;">${cid}${abBadge}</td><td>${_crisisStatusBadge(c)}</td><td>${_crisisSemChipsHtml(c)}</td><td>${escHtml(c.counselorName || configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '—')}${_counselorStatusBadge(c.counselorEmail)}</td><td style="text-align:right;">${btn}</td></tr>`;
+      return `<tr><td>${escHtml(c.name || '—')}</td><td>${escHtml(c.studentId || '—')}</td><td style="font-family:monospace;">${cid}${abBadge}</td><td>${_crisisStatusBadge(c)} ${_semStatusBadgeHtml(c)}</td><td>${_crisisSemChipsHtml(c)}</td><td>${escHtml(c.counselorName || configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '—')}${_counselorStatusBadge(c.counselorEmail)}</td><td style="text-align:right;">${btn}</td></tr>`;
     }).join('')}</tbody></table></div>`;
   // #7：搜尋結果欄寬可拖曳調整（套用既有共用機制，偏好存 crisisColWidths）
   _makeTableResizable({ table: document.getElementById('crisis-results-table'), colPrefix: 'crisis-col-', colNums: [1,2,3,4,5,6,7], prefKey: 'crisisColWidths' });
@@ -7134,21 +7129,14 @@ function renderCases() {
   const _exactHintMap = new Map();
   if (q) {
     const _qx = q.trim().toLowerCase();
-    const _cur = currentSemesterPrefix();
     const _isExact = c => (c.name || '').toLowerCase() === _qx || (c.studentId || '').toLowerCase() === _qx
       || (c.id || '').toLowerCase() === _qx || (c.formerIds || []).some(f => (f.id || '').toLowerCase() === _qx);
     const _visIds = new Set(visible.map(c => c.id));
     _searchBaseForHint.forEach(c => {
       if (!c || c.deleted || !_isExact(c)) return;
-      const openedThisSem = _caseHasSem(c, _cur);
-      const semClosed = openedThisSem && ((c.semesterStatus && c.semesterStatus[_cur] === 'closed') || c.status === 'closed');
-      let hint = '';
-      if (!openedThisSem) hint = '本學期未開案';
-      else if (c.archived) hint = '本學期有開案但已封存';
-      else if (semClosed) hint = '本學期有開案但已結案';
-      if (!hint) return;
+      // #8：完整搜尋相符 → 一律顯示本學期開案狀態徽章（含「本學期開案中」），並補回被篩掉者
+      _exactHintMap.set(c.id, _semStatusBadgeHtml(c));
       if (!_visIds.has(c.id)) { visible.push(c); _visIds.add(c.id); }
-      _exactHintMap.set(c.id, hint);
     });
   }
 
@@ -7314,11 +7302,8 @@ function renderCases() {
       const range = dates.length >= 2 ? `${fmt(dates[0])}–${fmt(dates[dates.length-1])}` : dates[0] ? fmt(dates[0]) : '';
       return riskBadges + `<div style="margin-top:3px;"><span style="display:inline-block;background:#e9d8fd;color:#553c9a;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;" title="近30天有身心調適假紀錄">身心調適假 ${escHtml(range)}</span></div>`;
     })();
-    // #8：搜尋完整相符且屬「本學期未開案／有開案但已結案(封存)」→ 於狀態欄加提示徽章
-    const _searchHint = _exactHintMap.get(c.id);
-    const _searchHintBadge = _searchHint
-      ? ` <span style="display:inline-block;background:#feebc8;color:#9c4221;border:1px solid #f6ad55;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:700;" data-tip="依你搜尋的完整姓名/學號/案號比對此個案的本學期開案狀態">${escHtml(_searchHint)}</span>`
-      : '';
+    // #8：搜尋完整相符 → 於狀態欄加「本學期開案狀態」徽章（含開案中）
+    const _searchHintBadge = _exactHintMap.get(c.id) ? ' ' + _exactHintMap.get(c.id) : '';
     const statusCell = c.deleted
       ? `<span class="badge-case-deleted">已刪除</span>`
       : statusBadge(c.status) + _searchHintBadge + archivedBadge + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '') + mlRecentBadge;
@@ -9258,6 +9243,20 @@ function _caseSems(c) {
 // 個案是否已開過某學期（以 base 比對，含 #N 重複開案的學期）
 function _caseHasSem(c, sem) {
   return _caseSems(c).some(k => _semKeyBase(k) === sem);
+}
+// #8：個案相對「本學期」的開案狀態徽章（本學期開案中／有開案但已結案／有開案但已封存／未開案）。
+// 共用於個案列表（完整搜尋時）、危機個案閱讀、案號查詢管理三處。
+function _semStatusBadgeHtml(c) {
+  if (!c) return '';
+  const cur = currentSemesterPrefix();
+  const opened = _caseHasSem(c, cur);
+  const semClosed = opened && ((c.semesterStatus && c.semesterStatus[cur] === 'closed') || c.status === 'closed');
+  let label, bg, color, border;
+  if (!opened)          { label = '本學期未開案';        bg = '#feebc8'; color = '#9c4221'; border = '#f6ad55'; }
+  else if (c.archived)  { label = '本學期有開案但已封存'; bg = '#e2e8f0'; color = '#4a5568'; border = '#cbd5e0'; }
+  else if (semClosed)   { label = '本學期有開案但已結案'; bg = '#e0e7ef'; color = '#3f4f66'; border = '#b8c4d6'; }
+  else                  { label = '本學期開案中';        bg = '#d5f5e3'; color = '#1d6a3a'; border = '#9ae6b4'; }
+  return `<span style="display:inline-block;background:${bg};color:${color};border:1px solid ${border};border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:700;white-space:nowrap;" data-tip="此個案的本學期開案狀態">${label}</span>`;
 }
 // 同一 base 學期若有 2 筆以上開案（#N），依序號給不同醒目底色；單筆開案回傳 null（維持原樣式不受影響）
 function _semDupStyle(caseSems, sem) {
@@ -14854,7 +14853,7 @@ function renderCaseNums(resetPage) {
     <tr class="${_cnRowClass}" style="cursor:${c.deleted?'default':'pointer'};" ${c.deleted?'':` onclick="showCaseDetail('${escHtml(c.id)}')"`}>
       <td style="width:36px;text-align:center;" onclick="event.stopPropagation()">${chk}</td>
       <td><strong style="color:#1a5276;">${escHtml(c.id || '—')}</strong>${formerIdsBadge}</td>
-      <td>${escHtml(c.name || '—')}</td>
+      <td>${escHtml(c.name || '—')} ${_semStatusBadgeHtml(c)}</td>
       <td>${escHtml(c.studentId || '—')}</td>
       <td>${semChips}</td>
       <td>${editBtn}</td>
@@ -19842,6 +19841,39 @@ function signOut() {
   document.getElementById('main-layout').style.display = 'none';
   document.getElementById('init-screen').style.display = 'none';
   document.getElementById('login-screen').style.display = '';
+}
+
+// 登入後提醒：登入通知信可能被 Gmail 分到垃圾郵件（資安提醒）。可按「不再提醒」永久關閉（存本人偏好）。
+// 每次登入顯示一次（除非永久關閉）；不阻擋操作。
+let _spamReminderShownThisSession = false;
+function _maybeShowSpamReminder() {
+  if (_spamReminderShownThisSession) return;
+  const key = 'scc_hide_spam_reminder_' + (currentUser?.email || '');
+  try { if (localStorage.getItem(key) === '1') return; } catch (_) {}
+  _spamReminderShownThisSession = true;
+  document.getElementById('spam-reminder-modal')?.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'spam-reminder-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:460px;">
+      <div class="modal-header"><h3>📬 登入通知信提醒</h3></div>
+      <div class="modal-body" style="padding:12px 2px 8px;font-size:.9rem;color:#4a5568;line-height:1.7;">
+        <p>系統每天首次登入會寄一封「登入通知」信到你的 Gmail（含時間、IP、大致位置），用來保護你的帳號安全。</p>
+        <p style="color:#c05621;">⚠ 這封信常被 Gmail 分到<strong>「垃圾郵件」或「促銷內容」</strong>。建議你去找一下，並把寄件者
+        <span style="font-family:monospace;">npust.scc@heartnpust.tw</span> 標記為「非垃圾郵件」／加入聯絡人，之後就會正常進收件匣。</p>
+        <p style="font-size:.82rem;color:#718096;">若非本人登入，也可在「偏好設定 → 登入紀錄」查看並「登出所有裝置」。</p>
+      </div>
+      <div class="modal-footer" style="gap:8px;">
+        <button class="btn btn-secondary" onclick="_dismissSpamReminder(true)">不再提醒</button>
+        <button class="btn btn-primary" onclick="_dismissSpamReminder(false)">我知道了</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+function _dismissSpamReminder(permanent) {
+  if (permanent) { try { localStorage.setItem('scc_hide_spam_reminder_' + (currentUser?.email || ''), '1'); } catch (_) {} }
+  document.getElementById('spam-reminder-modal')?.remove();
 }
 
 // 使用者主動按「登出」：先請後端註銷該帳號全部裝置的 session（#12），再登出本機。
