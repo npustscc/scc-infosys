@@ -8119,16 +8119,30 @@ function toggleRecordExpand(rid) {
   if (btn) btn.textContent = expanded ? '收合 ▲' : '展開 ▼';
   if (expanded) {
     _loadRecordImages(rid);
-    // #10：展開紀錄卡片 → 依卡片所屬區塊記錄查閱（晤談紀錄／精神科醫師評估／初次晤談表）
+    // B5：展開紀錄卡片 → 逐筆稽核（晤談紀錄／事件處理／精神科醫師評估／初次晤談表；不去重，每次展開都記，
+    // detail 含該筆紀錄的日期時間）。只在「展開」時記，收合不記（見下方 if(expanded)）。
     try {
       const dc = (casesData || []).find(c => c.id === _detailCaseId); // 修正：用模組變數
       if (dc) {
-        const bare = String(rid).replace(/^rec-card-/, '');
-        let label = '個案紀錄';
-        if (/psy/i.test(String(rid)) || (dc.psychiatristRecords || []).some(r => r.id === bare || r.id === rid)) label = '精神科醫師評估';
-        else if (/ii|initial/i.test(String(rid))) label = '初次晤談表';
-        else if ((dc.records || []).some(r => r.id === bare || r.id === rid)) label = '晤談紀錄';
-        _auditCaseSectionView('展開' + label);
+        const ridStr = String(rid);
+        const bare = ridStr.replace(/^rec-card-/, '').replace(/^psy-ded-/, '');
+        const psyRec = (dc.psychiatristRecords || []).find(r => r.id === bare);
+        const talkRec = (dc.records || []).find(r => r.id === bare);
+        let label = '個案紀錄', dateDetail = '';
+        if (/psy/i.test(ridStr) || psyRec) {
+          label = '精神科醫師評估';
+          dateDetail = psyRec?.date || '';
+        } else if (/ii|initial/i.test(ridStr)) {
+          label = '初次晤談表';
+          const ii = _getCaseII(dc, _caseDetailActiveSem);
+          dateDetail = (ii?.createdAt || '').slice(0, 10);
+        } else if (talkRec) {
+          label = talkRec.isEventRecord ? '事件處理記錄' : '晤談紀錄';
+          const t = talkRec.time ? (talkRec.time.startsWith('其他：') ? talkRec.time.slice(3) : talkRec.time) : '';
+          dateDetail = [talkRec.date, t].filter(Boolean).join(' ');
+        }
+        const detail = dateDetail ? `展開${label}（${dateDetail}）` : `展開${label}`;
+        auditLog('查閱個案—展開' + label, dc.id, bare, detail); // 直接寫入，不經 _auditCaseSectionView 去重
       }
     } catch (_) {}
   }
@@ -9750,7 +9764,7 @@ function _renderStudentSemNav(caseId, relatedCases) {
       const border = isCurrent ? '#3182ce' : ls.border;
       const color = isCurrent ? '#1a5276' : ls.color;
       const fw = isCurrent ? '700' : '500';
-      return `<button onclick="showCaseDetail('${escHtml(rc.id)}')"
+      return `<button onclick="_switchDetailSemester('${escHtml(rc.id)}','${escHtml(semLbl)}')"
         style="padding:4px 14px;border-radius:16px;border:1px solid ${border};
                background:${bg};color:${color};
                font-size:.82rem;font-weight:${fw};cursor:pointer;white-space:nowrap;">
@@ -9758,6 +9772,13 @@ function _renderStudentSemNav(caseId, relatedCases) {
       </button>`;
     }).join('')}
   </div>`;
+}
+// B5：個案詳細頁「歷年學期」chip 切換檢視學期 → 稽核（每次切換都記，不去重；detail 含案號與切到的學期）
+function _switchDetailSemester(targetCaseId, semLbl) {
+  if (targetCaseId !== _detailCaseId) {
+    try { auditLog('查閱個案—切換學期檢視', targetCaseId, null, `切換至 ${semLbl}（案號 ${targetCaseId}）`); } catch (_) {}
+  }
+  showCaseDetail(targetCaseId);
 }
 
 function _buildAllSemTimeline(relatedCases, currentCaseId, isAdminUser) {
@@ -19019,6 +19040,8 @@ function _viewCaseReasonSubmit(caseId) {
 async function _grantViewCaseAccess(caseId, reason, isCrisis) {
   const c = (casesData || []).find(x => x.id === caseId) || _casesIndexCache?.cases?.find(x => x.id === caseId);
   if (!c) { alert('找不到個案'); return; }
+  // B4：點擊（是/送出）當下同步立即顯示置中提示，不等 _appendAccessLog 等 await 跑完才出現（原本會晚約 2 秒）
+  showLoading(`「${c.name || caseId}」個案資料載入中…`);
   const entry = {
     id: 'acg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), type: 'grant',
     email: currentUser.email, name: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
@@ -19033,9 +19056,11 @@ async function _grantViewCaseAccess(caseId, reason, isCrisis) {
     renderCases();
     _detailReturnToNewCase = true;
     showToast('✅ 已記錄並取得當日閱讀權限，開啟中…', 'success');
-    showCaseDetail(caseId);
+    await showCaseDetail(caseId);
   } catch (e) {
     alert('記錄失敗：' + e.message);
+  } finally {
+    hideLoading();
   }
 }
 
@@ -26838,6 +26863,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-09', v: 152, title: 'v150 驗證回饋修正：個案資料載入提示改置中、展開紀錄與切換學期補稽核', isProd: false, items: [
+      item('改善', 'B4：「察看個案資料與過去紀錄」點入封存／舊學期個案時的「◯◯◯個案資料載入中」提示，原本走右下角綠色 toast 且要等記錄查閱理由的 Drive 寫入完成（約2秒延遲）才出現；改為點擊當下（任何 await 之前）就同步顯示置中半透明遮罩，讀取完成或失敗都會自動關閉'),
+      item('新功能', 'B5：個案詳細頁展開晤談紀錄／事件處理記錄／精神科醫師評估／初次晤談表時，逐筆記入稽核（不去重，每次展開都記），detail 附上該筆紀錄的日期時間；收合不記錄'),
+      item('新功能', 'B5：個案詳細頁點「歷年學期」chip 切換檢視其他學期的個案紀錄時，記入稽核（detail 含案號與切到的學期）'),
+    ]},
     { date: '2026-07-09', v: 151, title: '重大修復：延伸修補多份清單型資料檔的整檔覆寫併發風險（比照 v149 打卡修復模式）', isProd: false, items: [
       item('修復', '除打卡紀錄、個案索引外，請假/補休申請、轉銜紀錄、身心調適假、不開案個案、未歸屬輔導服務記錄、心理測驗資料庫、帳號審核清單、待辦事項、問題回報／許願池等資料檔，先前也都是「整份載入→改記憶體→整檔覆寫回 Drive」，多人同時操作時後存檔者可能蓋掉先存檔者的異動。改為與打卡紀錄相同的併發安全寫入模式：後端鎖定讀取最新版本後，只新增/更新/刪除本次異動的項目再寫回，不再整檔覆寫'),
       item('技術', '新增後端 listCommit action（LockService 讀-改-寫、fail-closed），泛用於清單型 JSON 檔的併發安全寫入，支援依 id upsert/remove（一般清單）、append-only（稽核／存取監督日誌）、map 模式（心理測驗資料庫，依學號 key）三種模式；後端尚未部署或無法安全比對異動時，前端自動退回舊整檔覆寫路徑確保功能不中斷'),
