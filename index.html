@@ -1589,6 +1589,15 @@
           </div>
         </div>
       </div>
+      <div id="admin-panel-keywords" style="display:none;">
+        <div class="card">
+          <div class="card-header"><h3>身心調適假關鍵字字庫</h3></div>
+          <div style="padding:16px 20px;">
+            <p style="font-size:.88rem;color:#718096;margin-bottom:14px;">維護身心調適假信件比對用的關鍵字與風險燈號（🔴 危機／🟡 醫療／🔵 關注）。此處與「身心調適假」頁的關鍵字字庫為<strong>同一份設定</strong>，任一處異動即時連動。卡片檢視可<strong>跨燈號拖曳</strong>關鍵字改變其風險等級。</p>
+            <div id="admin-keywords-wrap"><p style="font-size:.85rem;color:#a0aec0;">載入中…</p></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 案號管理 -->
@@ -3670,6 +3679,9 @@ const DEFAULT_WORK_HOURS = {
   },
   holidays: [],                   // ['YYYY-MM-DD']；覆蓋 workDays（假日不上班）
   extraWorkDays: [],              // ['YYYY-MM-DD']；補班日（週末也算上班）
+  dutyRoster: [],                 // [{date:'YYYY-MM-DD', email}]；#4 輪值上班：該日僅輪值者算上班
+  semesterPeriods: [],            // [{from:'YYYY-MM-DD', to:'YYYY-MM-DD'}]；#4a 學期時段（此區間內才有晚班）
+  nonSemesterEndHour: 18,         // 非學期（寒暑假等，不在 semesterPeriods 內）的下班時數上限＝無晚班
 };
 // 空間預約使用者顏色（32 色）+ GC 11 色映射
 const BK_USER_COLORS = [
@@ -5905,8 +5917,8 @@ async function afterLogin() {
     loadOffHoursLog().catch(() => {}); // 非上班時間監督 feed（主任/管理者/專任在待辦頁可見）
     loadGcErrorsCache().catch(() => {}); // GC 事件錯誤 feed（同上可見範圍）
 
-    // ── 非上班時間登入：寫入 feed + 首次觸發廣播通知（非 priv 才推）──
-    if (_isOffHours()) {
+    // ── 非上班（含輪值日非輪值者）登入：寫入 feed + 首次觸發廣播通知（非 priv 才推）──
+    if (_isOffDutyNow(currentUser.email)) {
       const _isPriv = currentRole === '主任' || extraRole === '管理者';
       _appendOffHoursLog({
         id:    `oh-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
@@ -5923,6 +5935,7 @@ async function afterLogin() {
 
     // URL routing：?page=clock 等
     _checkInitialPage();
+    _maybeShowSpamReminder(); // 提醒登入通知信可能進垃圾郵件（可永久關閉）
   } catch (err) {
     hideLoading();
     // 未被授權 → 顯示帳號申請畫面
@@ -6681,7 +6694,41 @@ function _isOffHours(isoOrDate) {
   }
   if (!hours) return true;                                             // 非上班日
   const hh = d.getHours();
-  return hh < hours.start || hh >= hours.end;                          // 時區以本機為準
+  // #4a：學期時段外（寒暑假等）無晚班——把下班時數上限降到 nonSemesterEndHour（預設 18），
+  // 使原本設到 21:00 的晚班時段在非學期期間 18:00 後即算非上班。semesterPeriods 為空則不限制（相容）。
+  let endHour = hours.end;
+  const periods = cfg.semesterPeriods || [];
+  if (periods.length) {
+    const inSem = periods.some(p => p && p.from && p.to && ymd >= p.from && ymd <= p.to);
+    if (!inSem) {
+      const cap = Number.isFinite(cfg.nonSemesterEndHour) ? cfg.nonSemesterEndHour : 18;
+      endHour = Math.min(endHour, cap);
+    }
+  }
+  return hh < hours.start || hh >= endHour;                            // 時區以本機為準
+}
+// #4：某人此刻是否「非排班／非上班」——輪值日只有輪值者算上班，其餘人一律 off-duty（列入監督）；
+// 非輪值日則沿用全域 _isOffHours。用於決定「沒排班卻上線/看改個案」是否寫入監督 feed。
+function _isOffDutyNow(email, isoOrDate) {
+  const cfg = _getWorkHoursConfig();
+  const d = isoOrDate ? new Date(isoOrDate) : new Date();
+  if (isNaN(d)) return false;
+  const ymd = _fmtDate(d);
+  const roster = (cfg.dutyRoster || []).filter(r => r && r.date === ymd);
+  if (roster.length) {
+    const onDuty = new Set(roster.map(r => r.email));
+    if (onDuty.has(email)) {
+      // 輪值者：該日視為上班；用該星期時段，無則沿用其他星期第一組，皆無則預設 08–18
+      const dow = d.getDay();
+      const hours = cfg.weeklyHours?.[dow]
+        || Object.values(cfg.weeklyHours || {}).find(h => h && Number.isFinite(h.start) && Number.isFinite(h.end))
+        || { start: 8, end: 18 };
+      const hh = d.getHours();
+      return hh < hours.start || hh >= hours.end;
+    }
+    return true; // 非輪值者 → off-duty
+  }
+  return _isOffHours(isoOrDate);
 }
 // 判斷 auditLog 的 action 是否屬於「看/改個案相關」——排除 PIN 解鎖、偏好設定等純系統事件
 function _isCaseRelatedAction(a) {
@@ -6837,16 +6884,10 @@ function _crisisToggleSemExpand(caseId) {
 function _crisisSemChipsHtml(c) {
   const sems = Array.isArray(c.semesters) ? [...c.semesters].sort() : [];
   if (!sems.length) return '';
-  const chip = s => `<span style="display:inline-block;background:#f0f4f8;border:1px solid #cbd5e0;color:#4a5568;border-radius:10px;padding:0 6px;font-size:.72rem;margin:1px 2px;">${escHtml(semesterLabel(s))}</span>`;
-  const expanded = _crisisSemExpanded.has(c.id);
-  const visible = expanded ? sems : sems.slice(0, 3);
-  const extra = expanded ? [] : sems.slice(3);
-  const moreBtn = extra.length
-    ? `<span onclick="event.stopPropagation();_crisisToggleSemExpand('${escHtml(c.id)}')" style="display:inline-block;font-size:.72rem;color:#3182ce;cursor:pointer;padding:0 6px;border-radius:10px;background:#ebf8ff;border:1px solid #bee3f8;margin:1px 2px;">+${extra.length} ▾</span>`
-    : (expanded && sems.length > 3
-        ? `<span onclick="event.stopPropagation();_crisisToggleSemExpand('${escHtml(c.id)}')" style="display:inline-block;font-size:.72rem;color:#3182ce;cursor:pointer;padding:0 6px;border-radius:10px;background:#ebf8ff;border:1px solid #bee3f8;margin:1px 2px;">收合 ▴</span>`
-        : '');
-  return `<div style="max-width:220px;">${visible.map(chip).join('')}${moreBtn}</div>`;
+  const chip = s => `<span style="display:inline-block;background:#f0f4f8;border:1px solid #cbd5e0;color:#4a5568;border-radius:10px;padding:0 6px;font-size:.72rem;margin:1px 2px;white-space:nowrap;">${escHtml(semesterLabel(s))}</span>`;
+  // #7：學期 chips 改依欄寬自動換行——容器填滿欄位寬度、flex-wrap，一行放幾個由「服務學期」欄的寬度決定
+  // （該欄可拖曳調整欄寬，越寬一行放越多）。不再固定顯示前 3 個＋展開。
+  return `<div style="display:flex;flex-wrap:wrap;width:100%;">${sems.map(chip).join('')}</div>`;
 }
 function _crisisRenderResults() {
   const el = document.getElementById('crisis-results');
@@ -6872,8 +6913,12 @@ function _crisisRenderResults() {
     el.innerHTML = `<div style="color:#a0aec0;font-size:.88rem;">${_priv ? '無符合的個案。' : '無符合的個案（或都已可檢視）。'}</div>`;
     return;
   }
-  el.innerHTML = `<div style="overflow-x:auto;"><table class="data-table" style="min-width:640px;">
-    <thead><tr><th>姓名</th><th>學號</th><th>案號</th><th>狀態</th><th>服務學期</th><th>主責</th><th></th></tr></thead>
+  el.innerHTML = `<div style="display:flex;justify-content:flex-end;margin-bottom:6px;">
+      <button class="btn btn-secondary btn-sm" onclick="_resetCrisisColWidths()" data-tip="清除已儲存的欄寬設定，恢復預設比例" style="font-size:.74rem;">重設欄寬</button>
+    </div>
+    <div style="overflow-x:auto;"><table class="data-table" id="crisis-results-table" style="min-width:640px;">
+    <colgroup>${[1,2,3,4,5,6,7].map(n => `<col id="crisis-col-${n}">`).join('')}</colgroup>
+    <thead><tr><th data-col="1">姓名</th><th data-col="2">學號</th><th data-col="3">案號</th><th data-col="4">狀態</th><th data-col="5">服務學期</th><th data-col="6">主責</th><th data-col="7"></th></tr></thead>
     <tbody>${rows.map(c => {
       const cid = escHtml(c.id);
       // #13-4：主任/管理者一律與其他人一樣走「申請閱讀」流程，不再提供不留紀錄的直接開啟按鈕
@@ -6885,8 +6930,14 @@ function _crisisRenderResults() {
       const abBadge = _abType === 'A案' ? '<span style="display:inline-block;background:#dbeafe;color:#1e40af;border-radius:4px;padding:0 5px;font-size:.7rem;font-weight:600;margin-left:4px;">A案</span>'
                     : _abType === 'B案' ? '<span style="display:inline-block;background:#fef3c7;color:#92400e;border-radius:4px;padding:0 5px;font-size:.7rem;font-weight:600;margin-left:4px;">B案</span>'
                     : '';
-      return `<tr><td>${escHtml(c.name || '—')}</td><td>${escHtml(c.studentId || '—')}</td><td style="font-family:monospace;">${cid}${abBadge}</td><td>${_crisisStatusBadge(c)}</td><td>${_crisisSemChipsHtml(c)}</td><td>${escHtml(c.counselorName || configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '—')}${_counselorStatusBadge(c.counselorEmail)}</td><td style="text-align:right;">${btn}</td></tr>`;
+      return `<tr><td>${escHtml(c.name || '—')}</td><td>${escHtml(c.studentId || '—')}</td><td style="font-family:monospace;">${cid}${abBadge}</td><td>${_crisisStatusBadge(c)} ${_semStatusBadgeHtml(c)}</td><td>${_crisisSemChipsHtml(c)}</td><td>${escHtml(c.counselorName || configData?.users?.[c.counselorEmail]?.name || c.counselorEmail || '—')}${_counselorStatusBadge(c.counselorEmail)}</td><td style="text-align:right;">${btn}</td></tr>`;
     }).join('')}</tbody></table></div>`;
+  // #7：搜尋結果欄寬可拖曳調整（套用既有共用機制，偏好存 crisisColWidths）
+  _makeTableResizable({ table: document.getElementById('crisis-results-table'), colPrefix: 'crisis-col-', colNums: [1,2,3,4,5,6,7], prefKey: 'crisisColWidths' });
+}
+function _resetCrisisColWidths() {
+  _resetTableColWidths({ table: document.getElementById('crisis-results-table'), colPrefix: 'crisis-col-', colNums: [1,2,3,4,5,6,7], prefKey: 'crisisColWidths' });
+  _crisisRenderResults();
 }
 
 function _crisisPickTarget(caseId) {
@@ -7036,6 +7087,8 @@ function renderCases() {
 
   // ── 套用搜尋 / 篩選 ──
   const { q, status, semester, counselor, dateFrom, dateTo, archived } = caseFilters;
+  // #8：搜尋完整姓名/學號/案號時，用來補回被 archived/status/semester 篩掉的相符個案（權限已在此之前套過）
+  const _searchBaseForHint = [...visible];
   if (archived === 'unarchived') {
     visible = visible.filter(c => !c.archived);
   } else if (archived === 'archived') {
@@ -7080,6 +7133,23 @@ function renderCases() {
         if (mlTo   && _lf > mlTo)   return false;
         return true;
       });
+    });
+  }
+
+  // #8：搜尋完整姓名/學號/案號 → 補回被篩掉的相符個案並標記狀態提示
+  //   ・本學期未開案（該生歷來有案但本學期無開案紀錄）
+  //   ・本學期有開案但已結案／已封存
+  const _exactHintMap = new Map();
+  if (q) {
+    const _qx = q.trim().toLowerCase();
+    const _isExact = c => (c.name || '').toLowerCase() === _qx || (c.studentId || '').toLowerCase() === _qx
+      || (c.id || '').toLowerCase() === _qx || (c.formerIds || []).some(f => (f.id || '').toLowerCase() === _qx);
+    const _visIds = new Set(visible.map(c => c.id));
+    _searchBaseForHint.forEach(c => {
+      if (!c || c.deleted || !_isExact(c)) return;
+      // #8：完整搜尋相符 → 一律顯示本學期開案狀態徽章（含「本學期開案中」），並補回被篩掉者
+      _exactHintMap.set(c.id, _semStatusBadgeHtml(c));
+      if (!_visIds.has(c.id)) { visible.push(c); _visIds.add(c.id); }
     });
   }
 
@@ -7245,9 +7315,11 @@ function renderCases() {
       const range = dates.length >= 2 ? `${fmt(dates[0])}–${fmt(dates[dates.length-1])}` : dates[0] ? fmt(dates[0]) : '';
       return riskBadges + `<div style="margin-top:3px;"><span style="display:inline-block;background:#e9d8fd;color:#553c9a;border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:600;" title="近30天有身心調適假紀錄">身心調適假 ${escHtml(range)}</span></div>`;
     })();
+    // #8：搜尋完整相符 → 於狀態欄加「本學期開案狀態」徽章（含開案中）
+    const _searchHintBadge = _exactHintMap.get(c.id) ? ' ' + _exactHintMap.get(c.id) : '';
     const statusCell = c.deleted
       ? `<span class="badge-case-deleted">已刪除</span>`
-      : statusBadge(c.status) + archivedBadge + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '') + mlRecentBadge;
+      : statusBadge(c.status) + _searchHintBadge + archivedBadge + transferBadge + newCounselorBadge + semTag + (pastUnclosedTag ? '<br>' + pastUnclosedTag : '') + mlRecentBadge;
     const rowBg = !c.deleted && !c.archived && c.status !== 'closed' && pastUnclosedSems.length ? 'background:#fffbeb;' : '';
     const canCheckCase = !c.deleted; // 封存個案也可勾選，以便批次解封
     // 底色優先順序：deleted > archived > closed > pastUnclosed(warm) > active(白)
@@ -8022,7 +8094,21 @@ function toggleRecordExpand(rid) {
   const expanded = card.classList.toggle('rec-expanded');
   const btn = card.querySelector('.rec-toggle-btn');
   if (btn) btn.textContent = expanded ? '收合 ▲' : '展開 ▼';
-  if (expanded) _loadRecordImages(rid);
+  if (expanded) {
+    _loadRecordImages(rid);
+    // #10：展開紀錄卡片 → 依卡片所屬區塊記錄查閱（晤談紀錄／精神科醫師評估／初次晤談表）
+    try {
+      const dc = (casesData || []).find(c => c.id === _detailCaseId); // 修正：用模組變數
+      if (dc) {
+        const bare = String(rid).replace(/^rec-card-/, '');
+        let label = '個案紀錄';
+        if (/psy/i.test(String(rid)) || (dc.psychiatristRecords || []).some(r => r.id === bare || r.id === rid)) label = '精神科醫師評估';
+        else if (/ii|initial/i.test(String(rid))) label = '初次晤談表';
+        else if ((dc.records || []).some(r => r.id === bare || r.id === rid)) label = '晤談紀錄';
+        _auditCaseSectionView('展開' + label);
+      }
+    } catch (_) {}
+  }
 }
 
 // 點擊卡片頂端 banner 也可收合/展開；保留拖曳反白選字（有選取範圍或點在按鈕等互動元件上則不觸發）
@@ -8081,12 +8167,15 @@ function renderAdminPage() {
   document.getElementById('admin-panel-workhours').style.display  = tab === 'workhours' ? '' : 'none';
   const gcPanel = document.getElementById('admin-panel-gcsync');
   if (gcPanel) gcPanel.style.display = tab === 'gcsync' ? '' : 'none';
+  const kwPanel = document.getElementById('admin-panel-keywords');
+  if (kwPanel) kwPanel.style.display = tab === 'keywords' ? '' : 'none';
   if (tab === 'users')    { renderAdminUsers(); }
   else if (tab === 'apps')      renderPendingUsersTab();
   else if (tab === 'depts')     { renderAdminDegreeMapping(); renderAdminDeptCollege(); }
   else if (tab === 'presets')   { renderAdminPresets(); renderAdminBReasons(); }
   else if (tab === 'workhours') renderAdminWorkHours();
   else if (tab === 'gcsync')    renderAdminGcSync();
+  else if (tab === 'keywords')  { const kw = document.getElementById('admin-keywords-wrap'); if (kw) _mlRenderKeywordsTab(kw); }
 }
 
 function _renderAdminTabs() {
@@ -8103,7 +8192,7 @@ function _renderAdminTabs() {
   const badge = count > 0
     ? ` <span style="background:#e53e3e;color:#fff;border-radius:10px;padding:0 5px;font-size:.72rem;">${count}</span>`
     : '';
-  bar.innerHTML = _t('users','使用者列表') + _t('apps','帳號申請審核' + badge) + _t('depts','系所與學制') + _t('presets','快速選項') + _t('workhours','上班時間') + _t('gcsync','Google 日曆同步');
+  bar.innerHTML = _t('users','使用者列表') + _t('apps','帳號申請審核' + badge) + _t('depts','系所與學制') + _t('presets','快速選項') + _t('workhours','上班時間') + _t('gcsync','Google 日曆同步') + _t('keywords','關鍵字字庫');
 }
 
 function _adminTab(tab) {
@@ -8927,11 +9016,63 @@ async function clearUserPin(key) {
 // ══════════════════════════════════════════════
 //  個案詳細頁
 // ══════════════════════════════════════════════
+// #10：非上班時間監督細緻化——記錄使用者在個案詳細頁展開了哪些敏感區塊（BSRS/紀錄/心測/精神科評估等）。
+// 每個（個案｜區塊）於同一次詳細頁瀏覽只記一次（避免反覆展開收合灌爆稽核）；auditLog 會自動在非上班時段
+// 轉入「非上班時間監督」共享 feed，並全部進稽核日誌頁（動作含「查閱個案」關鍵字→歸「個案列表」類）。
+let _viewedSectionsThisDetail = new Set();
+function _auditCaseSectionView(label) {
+  const cid = _detailCaseId; // 修正：用模組變數（showCaseDetail 設的是 _detailCaseId，非 window._detailCaseId）
+  if (!cid || !label) return;
+  const key = cid + '|' + label;
+  if (_viewedSectionsThisDetail.has(key)) return;
+  _viewedSectionsThisDetail.add(key);
+  auditLog('查閱個案—' + label, cid);
+}
+// 個案詳細頁的敏感區塊關鍵字（section 標題含其一才記錄，避免基本資料等一般區塊灌爆）
+const _AUDIT_SENSITIVE_SECTIONS = ['BSRS', '心理測驗', '精神科', '結案', '學期評估', '轉銜', '身心調適', '事件處理'];
+
+// #9c/#10：只有「敏感查閱」才做進入＋捲動級細緻稽核——非上班/非排班時段（#10）或查閱非主責/個管個案（#9）。
+// （一般同仁在上班時間看自己的個案不細記，避免稽核灌爆。）
+function _shouldAuditDetailViewing(c) {
+  if (!c) return false;
+  try { if (_isOffDutyNow(currentUser?.email)) return true; } catch (_) {}
+  const allowedSet = new Set(configData?.users?.[currentUser?.email]?.allowedCases || []);
+  return !_caseVisibleToUser(c, currentUser?.email, allowedSet);
+}
+let _detailScrollObserver = null;
+// 進入詳細頁即記「查閱基本資料」；並以 IntersectionObserver 記錄捲動時看到的各敏感區塊（不必展開）。
+function _setupDetailViewAudit(caseId) {
+  if (_detailScrollObserver) { try { _detailScrollObserver.disconnect(); } catch (_) {} _detailScrollObserver = null; }
+  const c = (casesData || []).find(x => x.id === caseId);
+  if (!c || !_shouldAuditDetailViewing(c)) return;
+  _auditCaseSectionView('進入詳細頁·查閱基本資料');
+  if (typeof IntersectionObserver === 'undefined') return;
+  _detailScrollObserver = new IntersectionObserver(entries => {
+    entries.forEach(en => {
+      if (!en.isIntersecting) return;
+      const titleEl = en.target.querySelector('.form-section-title') || en.target.querySelector('.rec-section-label');
+      const label = titleEl ? titleEl.textContent.replace(/[▲▼]/g, '').trim() : '';
+      if (label && _AUDIT_SENSITIVE_SECTIONS.some(k => label.includes(k))) _auditCaseSectionView('捲動查閱·' + label);
+    });
+  }, { threshold: 0.35 });
+  // 詳細頁 DOM 已由 showPage 顯示；稍候觀察各區塊（mkSection 產生的 .form-section）
+  setTimeout(() => {
+    if (!_detailScrollObserver) return;
+    document.querySelectorAll('#page-case-detail .form-section').forEach(el => { try { _detailScrollObserver.observe(el); } catch (_) {} });
+  }, 300);
+}
+
 function toggleSection(id) {
   const el = document.getElementById(id);
   if (!el) return;
   const nowCollapsed = !el.classList.contains('collapsed');
   el.classList.toggle('collapsed', nowCollapsed);
+  // #10：展開（非收合）敏感區塊 → 記錄查閱
+  if (!nowCollapsed && _detailCaseId && id.startsWith('cs-')) {
+    const titleEl = el.querySelector('.form-section-title');
+    const label = titleEl ? titleEl.textContent.replace(/[▲▼]/g, '').trim() : '';
+    if (label && _AUDIT_SENSITIVE_SECTIONS.some(k => label.includes(k))) _auditCaseSectionView('展開' + label);
+  }
   // Persist state per user per case for case-detail sections
   if (_detailCaseId && id.startsWith('cs-')) {
     const key = `scc_sec_${currentUser?.email||''}_${_detailCaseId}`;
@@ -9115,6 +9256,20 @@ function _caseSems(c) {
 // 個案是否已開過某學期（以 base 比對，含 #N 重複開案的學期）
 function _caseHasSem(c, sem) {
   return _caseSems(c).some(k => _semKeyBase(k) === sem);
+}
+// #8：個案相對「本學期」的開案狀態徽章（本學期開案中／有開案但已結案／有開案但已封存／未開案）。
+// 共用於個案列表（完整搜尋時）、危機個案閱讀、案號查詢管理三處。
+function _semStatusBadgeHtml(c) {
+  if (!c) return '';
+  const cur = currentSemesterPrefix();
+  const opened = _caseHasSem(c, cur);
+  const semClosed = opened && ((c.semesterStatus && c.semesterStatus[cur] === 'closed') || c.status === 'closed');
+  let label, bg, color, border;
+  if (!opened)          { label = '本學期未開案';        bg = '#feebc8'; color = '#9c4221'; border = '#f6ad55'; }
+  else if (c.archived)  { label = '本學期有開案但已封存'; bg = '#e2e8f0'; color = '#4a5568'; border = '#cbd5e0'; }
+  else if (semClosed)   { label = '本學期有開案但已結案'; bg = '#e0e7ef'; color = '#3f4f66'; border = '#b8c4d6'; }
+  else                  { label = '本學期開案中';        bg = '#d5f5e3'; color = '#1d6a3a'; border = '#9ae6b4'; }
+  return `<span style="display:inline-block;background:${bg};color:${color};border:1px solid ${border};border-radius:4px;padding:1px 6px;font-size:.72rem;font-weight:700;white-space:nowrap;" data-tip="此個案的本學期開案狀態">${label}</span>`;
 }
 // 同一 base 學期若有 2 筆以上開案（#N），依序號給不同醒目底色；單筆開案回傳 null（維持原樣式不受影響）
 function _semDupStyle(caseSems, sem) {
@@ -9452,6 +9607,9 @@ function _switchCasePsychTest(idx, caseId) {
   const sy = window.scrollY;
   _caseDetailMode = 'psychtest';
   _caseDetailPsychIdx = idx;
+  // #10：檢視心理測驗結果報告 → 記錄查閱（此時 _detailCaseId 已是同一案）
+  _detailCaseId = caseId;
+  _auditCaseSectionView('檢視心理測驗結果報告');
   showCaseDetail(caseId);
   requestAnimationFrame(() => window.scrollTo(0, sy));
 }
@@ -9679,7 +9837,8 @@ async function showCaseDetail(caseId) {
   if (!c) return;
   // Cold case：列表只有 index 摘要，點開時 on-demand 載入完整 chunk
   if (c._indexOnly && !c._fullLoaded) {
-    showToast('此個案已封存，正在讀取資料，請稍候…', 'info');
+    // #9b：封存/舊學期個案 on-demand 載入較慢 → 顯示明確「載入中」遮罩（含個案姓名），讀取完成自動關閉
+    showLoading(`「${c.name || caseId}」個案資料載入中…`);
     const chunkName = getCaseChunkName(caseId);
     try {
       let data = await _ckLoadAny(chunkName).catch(() => null); // 先試 IndexedDB
@@ -9694,9 +9853,11 @@ async function showCaseDetail(caseId) {
       c._fullLoaded = true;
       showToast('讀取完整資料失敗，僅顯示摘要：' + e.message, 'warn');
       _syslog('warn', `cold case 載入失敗（${caseId}）：${e.message}`);
+    } finally {
+      hideLoading();
     }
   }
-  if (_detailCaseId !== caseId) { _recPage = 1; _detailCaseId = caseId; _caseDetailActiveSem = null; _caseDetailMode = 'semester'; _caseDetailPsychIdx = 0; _detailSemFilter = 'current'; }
+  if (_detailCaseId !== caseId) { _recPage = 1; _detailCaseId = caseId; _caseDetailActiveSem = null; _caseDetailMode = 'semester'; _caseDetailPsychIdx = 0; _detailSemFilter = 'current'; _viewedSectionsThisDetail = new Set(); /* #10：換個案時重設區塊查閱去重 */ }
   _recSortDesc = _userPref_('recSortDesc', false);
   // 危機唯讀檢視：非危機途徑本就看不到、但今日有危機授權 → 唯讀 + 記錄閱讀
   const _crisisView = !_caseNormallyAccessible(c) && _hasCrisisGrant(c.id);
@@ -10758,6 +10919,7 @@ async function showCaseDetail(caseId) {
   } catch (_) {}
 
   showPage('page-case-detail', null);
+  _setupDetailViewAudit(caseId); // #9c/#10：敏感查閱時記錄進入＋捲動看到的區塊
 }
 
 function _detailChangeCounselor(caseId) {
@@ -14704,7 +14866,7 @@ function renderCaseNums(resetPage) {
     <tr class="${_cnRowClass}" style="cursor:${c.deleted?'default':'pointer'};" ${c.deleted?'':` onclick="showCaseDetail('${escHtml(c.id)}')"`}>
       <td style="width:36px;text-align:center;" onclick="event.stopPropagation()">${chk}</td>
       <td><strong style="color:#1a5276;">${escHtml(c.id || '—')}</strong>${formerIdsBadge}</td>
-      <td>${escHtml(c.name || '—')}</td>
+      <td>${escHtml(c.name || '—')} ${_semStatusBadgeHtml(c)}</td>
       <td>${escHtml(c.studentId || '—')}</td>
       <td>${semChips}</td>
       <td>${editBtn}</td>
@@ -18731,8 +18893,7 @@ function checkCaseIdDuplicate() {
     html = `<div style="margin-top:6px;padding:10px 14px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:6px;font-size:.875rem;">
       ℹ️ 此學生已有案號 <strong>${escHtml(dup.id)}</strong>，儲存時將自動採用該案號新增本學期開案。
       <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
-        <button class="btn btn-secondary btn-sm" onclick="_useExistingCaseId('${escHtml(dup.id)}')">帶入既有案號</button>
-        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();_detailReturnToNewCase=true;showCaseDetail('${escHtml(dup.id)}')">查看現有案號</button>
+        <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();_ncViewExistingCase('${escHtml(dup.id)}')" data-tip="若此個案非你主責/個管，點選後你在該個案詳細頁的所有操作都會被記錄並通知全體專任，主責與個管會被加強通知。">察看個案資料與過去紀錄</button>
       </div>
     </div>`;
   } else {
@@ -18754,6 +18915,129 @@ function _useExistingCaseId(dupId) {
   el.classList.remove('_nc-id-flash'); void el.offsetWidth; el.classList.add('_nc-id-flash');
   document.getElementById('nc-id-message').style.display = 'none';
   renderCaseIdSuggestions(); checkCaseIdDuplicate(); checkCurrentSemesterDuplicate();
+}
+
+// ── #9：察看個案資料與過去紀錄（自新增個案頁的既有案號提示進入）──
+// 主責/個管/初談/未派案，或今日已授權 → 直接檢視；否則走警語流程（是=危機閱讀／否=填理由）。
+function _ncViewExistingCase(caseId) {
+  const c = (casesData || []).find(x => x.id === caseId) || _casesIndexCache?.cases?.find(x => x.id === caseId);
+  if (!c) { alert('找不到個案'); return; }
+  const allowedSet = new Set(configData?.users?.[currentUser?.email]?.allowedCases || []);
+  const isOwner = _caseVisibleToUser(c, currentUser?.email, allowedSet); // 主責/同學期主責/個管/初談/未派案/督導窗口
+  if (isOwner || _hasCrisisGrant(caseId)) {
+    _crisisEnsureCaseStub(caseId);
+    _detailReturnToNewCase = true;
+    showCaseDetail(caseId);
+    return;
+  }
+  _showViewCaseWarnModal(c);
+}
+
+// 步驟 b：警語 window——提醒「全體專任＋主責/個管會知悉」，詢問是否以危機個案閱讀進行（是/否/取消）
+function _showViewCaseWarnModal(c) {
+  document.getElementById('view-case-warn-modal')?.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'view-case-warn-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:500px;">
+      <div class="modal-header"><h3>⚠ 查閱他人個案</h3></div>
+      <div class="modal-body" style="padding:12px 2px 8px;font-size:.9rem;color:#4a5568;line-height:1.75;">
+        <p>你即將查閱<strong>非你主責／個管</strong>的個案　<strong>${escHtml(c.name || '')}</strong>（${escHtml(c.id)}）的完整資料與過去紀錄。</p>
+        <p style="color:#c53030;">⚠ 進入後，你在此個案詳細頁的<strong>所有操作都會被記錄</strong>，並通知<strong>全體專任</strong>；<strong>主責與個管會被加強通知</strong>。</p>
+        <p>是否以「<strong>危機個案閱讀</strong>」進行？（危機閱讀會取得該案當日唯讀權限並留下正式紀錄）</p>
+      </div>
+      <div class="modal-footer" style="gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-secondary" onclick="document.getElementById('view-case-warn-modal').remove()">取消</button>
+        <button class="btn btn-secondary" onclick="_viewCaseWarnChoose('${escHtml(c.id)}', false)">否，填理由後閱讀</button>
+        <button class="btn btn-danger" onclick="_viewCaseWarnChoose('${escHtml(c.id)}', true)">是，危機個案閱讀</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function _viewCaseWarnChoose(caseId, isCrisis) {
+  document.getElementById('view-case-warn-modal')?.remove();
+  if (isCrisis) _grantViewCaseAccess(caseId, '危機個案閱讀', true);
+  else _showViewCaseReasonModal(caseId); // 步驟 c
+}
+
+// 步驟 c：填寫閱讀理由（必填）→ 送出後授權閱讀
+function _showViewCaseReasonModal(caseId) {
+  document.getElementById('view-case-reason-modal')?.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'view-case-reason-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:480px;">
+      <div class="modal-header"><h3>填寫閱讀理由</h3></div>
+      <div class="modal-body" style="padding:12px 2px 8px;">
+        <label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">閱讀個案資料的理由（必填，將公開於全體監督區並通知主責／個管）</label>
+        <textarea id="view-case-reason" class="field-input" rows="3" style="width:100%;" placeholder="例：原主責離職，個案前來預約，想確認是否是同一個案。"></textarea>
+      </div>
+      <div class="modal-footer" style="gap:8px;">
+        <button class="btn btn-secondary" onclick="document.getElementById('view-case-reason-modal').remove()">取消</button>
+        <button class="btn btn-primary" onclick="_viewCaseReasonSubmit('${escHtml(caseId)}')">送出並閱讀</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  setTimeout(() => document.getElementById('view-case-reason')?.focus(), 50);
+}
+function _viewCaseReasonSubmit(caseId) {
+  const reason = (document.getElementById('view-case-reason')?.value || '').trim();
+  if (!reason) { alert('請填寫閱讀理由'); return; }
+  document.getElementById('view-case-reason-modal')?.remove();
+  _grantViewCaseAccess(caseId, reason, false);
+}
+
+// 授權閱讀 + 記錄 + 加強通知主責/個管 + 開啟詳細頁（返回動線回新增個案頁）
+async function _grantViewCaseAccess(caseId, reason, isCrisis) {
+  const c = (casesData || []).find(x => x.id === caseId) || _casesIndexCache?.cases?.find(x => x.id === caseId);
+  if (!c) { alert('找不到個案'); return; }
+  const entry = {
+    id: 'acg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), type: 'grant',
+    email: currentUser.email, name: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
+    caseId, caseName: c.name || '', caseStudentId: c.studentId || '', reason,
+    viaViewButton: true, isCrisis: !!isCrisis, t: new Date().toISOString(),
+  };
+  try {
+    await _appendAccessLog(entry);
+    auditLog(isCrisis ? '危機案件閱讀申請' : '查閱他人個案資料', caseId, null, reason, { major: true });
+    _notifyCaseOwnersOfView(c, reason, isCrisis);
+    _crisisEnsureCaseStub(caseId);
+    renderCases();
+    _detailReturnToNewCase = true;
+    showToast('✅ 已記錄並取得當日閱讀權限，開啟中…', 'success');
+    showCaseDetail(caseId);
+  } catch (e) {
+    alert('記錄失敗：' + e.message);
+  }
+}
+
+// 加強通知：主責 + 個管 + 初談者（排除本人）鈴鐺通知
+function _notifyCaseOwnersOfView(c, reason, isCrisis) {
+  const owners = new Set();
+  const lat = _getLatestCounselorEmail(c); if (lat) owners.add(lat);
+  _getManagersForCase(c.id).forEach(e => owners.add(e));
+  _getInitialInterviewersForCase(c).forEach(e => owners.add(e));
+  owners.delete(currentUser?.email);
+  if (!owners.size) return;
+  const actorName = configData?.users?.[currentUser.email]?.name || currentUser.name || currentUser.email;
+  const msg = `⚠ ${actorName} 查閱了個案「${c.name || c.id}」（${isCrisis ? '危機個案閱讀' : '一般閱讀'}）的完整資料。理由：${reason}`;
+  const nowIso = new Date().toISOString();
+  let changed = false;
+  owners.forEach(email => {
+    const u = configData?.users?.[email]; if (!u) return;
+    if (!Array.isArray(u.notifications)) u.notifications = [];
+    u.notifications.unshift({
+      id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      type: 'case_viewed_by_other', message: msg, caseId: c.id,
+      actorEmail: currentUser.email, createdAt: nowIso, read: false,
+    });
+    if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
+    changed = true;
+  });
+  if (changed) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
 }
 
 function _showEmgRelChips() { _filterEmgRelChips(document.getElementById('nc-emg-relation')?.value || ''); }
@@ -19570,6 +19854,39 @@ function signOut() {
   document.getElementById('main-layout').style.display = 'none';
   document.getElementById('init-screen').style.display = 'none';
   document.getElementById('login-screen').style.display = '';
+}
+
+// 登入後提醒：登入通知信可能被 Gmail 分到垃圾郵件（資安提醒）。可按「不再提醒」永久關閉（存本人偏好）。
+// 每次登入顯示一次（除非永久關閉）；不阻擋操作。
+let _spamReminderShownThisSession = false;
+function _maybeShowSpamReminder() {
+  if (_spamReminderShownThisSession) return;
+  const key = 'scc_hide_spam_reminder_' + (currentUser?.email || '');
+  try { if (localStorage.getItem(key) === '1') return; } catch (_) {}
+  _spamReminderShownThisSession = true;
+  document.getElementById('spam-reminder-modal')?.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'spam-reminder-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:460px;">
+      <div class="modal-header"><h3>📬 登入通知信提醒</h3></div>
+      <div class="modal-body" style="padding:12px 2px 8px;font-size:.9rem;color:#4a5568;line-height:1.7;">
+        <p>系統每天首次登入會寄一封「登入通知」信到你的 Gmail（含時間、IP、大致位置），用來保護你的帳號安全。</p>
+        <p style="color:#c05621;">⚠ 這封信常被 Gmail 分到<strong>「垃圾郵件」或「促銷內容」</strong>。建議你去找一下，並把寄件者
+        <span style="font-family:monospace;">npust.scc@heartnpust.tw</span> 標記為「非垃圾郵件」／加入聯絡人，之後就會正常進收件匣。</p>
+        <p style="font-size:.82rem;color:#718096;">若非本人登入，也可在「偏好設定 → 登入紀錄」查看並「登出所有裝置」。</p>
+      </div>
+      <div class="modal-footer" style="gap:8px;">
+        <button class="btn btn-secondary" onclick="_dismissSpamReminder(true)">不再提醒</button>
+        <button class="btn btn-primary" onclick="_dismissSpamReminder(false)">我知道了</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+function _dismissSpamReminder(permanent) {
+  if (permanent) { try { localStorage.setItem('scc_hide_spam_reminder_' + (currentUser?.email || ''), '1'); } catch (_) {} }
+  document.getElementById('spam-reminder-modal')?.remove();
 }
 
 // 使用者主動按「登出」：先請後端註銷該帳號全部裝置的 session（#12），再登出本機。
@@ -20667,33 +20984,40 @@ function _renderGcErrorsSection() {
     UNKNOWN_ROOM:'未知空間', UNKNOWN_COUNSELOR:'未知輔導人員', UNMATCHED:'無對應學諮資訊系統預約' };
   const kindColor = { MISSING_SERIAL:'#dd6b20', MISSING_CREATOR:'#3182ce', BAD_TITLE:'#e53e3e',
     UNKNOWN_ROOM:'#9333ea', UNKNOWN_COUNSELOR:'#c026d3', UNMATCHED:'#c05621' };
-  // 依 kind 分組
-  const byKind = {};
-  entries.forEach(e => { (byKind[e.kind] = byKind[e.kind] || []).push(e); });
+  // 新1：改以「事件」為主體分組——每個 GC 事件一個區塊，下方列出它的多個缺失標籤
+  const byEvent = {};
+  entries.forEach(e => {
+    if (!byEvent[e.eventId]) byEvent[e.eventId] = { eventId: e.eventId, title: e.title, date: e.date, startTime: e.startTime, endTime: e.endTime, creators: e.creators, kinds: [], t: e.t || '' };
+    const g = byEvent[e.eventId];
+    g.kinds.push({ kind: e.kind, id: e.id });
+    if ((e.t || '') > g.t) g.t = e.t;
+    if (!g.title && e.title) g.title = e.title;
+    if (!g.date && e.date) g.date = e.date;
+  });
+  const events = Object.values(byEvent).sort((a, b) => (b.t || '').localeCompare(a.t || ''));
   const seenAt = localStorage.getItem(_gcErrorsSeenKey()) || '';
   const unread = entries.filter(e => (e.t || '') > seenAt).length;
   const isCollapsed = !!window._gcErrorsCollapsed;
   const fmtT = t => t ? new Date(t).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' }) : '';
-  const rowActions = (e, kind) => `<span style="margin-left:8px;display:inline-flex;gap:4px;white-space:nowrap;">
-      <button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" data-tip="在 Google 日曆開啟此事件" onclick="_gcOpenEvent('${escHtml(e.eventId)}')">🔗</button>
-      ${kind === 'UNMATCHED' ? `<button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" onclick="_gcImportAsBooking('${escHtml(e.id)}')">匯入為預約</button>` : ''}
-      <button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" data-tip="不再於待確認清單顯示此筆" onclick="_gcIgnoreEvent('${escHtml(e.id)}')">忽略</button>
-    </span>`;
-  const kindHtml = kind => `<div style="padding:6px 0;border-top:1px solid #fcd34d;">
-    <div style="font-weight:700;font-size:.85rem;color:${kindColor[kind]||'#c53030'};margin-bottom:4px;">
-      <span style="background:${kindColor[kind]||'#c53030'}22;color:${kindColor[kind]||'#c53030'};border-radius:6px;padding:2px 8px;">${escHtml(kindLabel[kind]||kind)}</span>
-      <span style="font-size:.75rem;color:#718096;font-weight:400;margin-left:6px;">（${byKind[kind].length} 筆）</span>
-    </div>
-    ${byKind[kind].slice(0, 10).map(e => `<div style="font-size:.78rem;color:#4a5568;padding:2px 0 2px 14px;border-left:2px solid ${kindColor[kind]||'#c53030'}44;margin-left:4px;">
-      → <span style="font-weight:600;">${escHtml(e.title || '(無標題)')}</span>
-      <span style="color:#a0aec0;margin-left:6px;">${escHtml(e.date||'')} ${escHtml((e.startTime||'').slice(0,5))}–${escHtml((e.endTime||'').slice(0,5))}</span>
-      ${e.creators?.[0] ? `<span style="color:#718096;margin-left:6px;font-family:monospace;font-size:.72rem;">建立者：${escHtml(e.creators[0])}</span>` : ''}
-      <span style="color:#a0aec0;margin-left:6px;">${fmtT(e.t)}</span>
-      ${rowActions(e, kind)}
-      ${kind === 'UNMATCHED' ? _gcUnmatchedRowExtra(e) : ''}
-    </div>`).join('')}
-    ${byKind[kind].length > 10 ? `<div style="font-size:.72rem;color:#a0aec0;padding-left:14px;">…另 ${byKind[kind].length - 10} 筆</div>` : ''}
-  </div>`;
+  const eventHtml = ev => {
+    const unmatched = ev.kinds.find(k => k.kind === 'UNMATCHED');
+    const tags = ev.kinds.map(k => `<span style="background:${kindColor[k.kind]||'#c53030'}22;color:${kindColor[k.kind]||'#c53030'};border-radius:6px;padding:1px 7px;font-size:.72rem;font-weight:600;margin:1px 4px 1px 0;display:inline-block;">${escHtml(kindLabel[k.kind]||k.kind)}</span>`).join('');
+    return `<div style="padding:8px 0;border-top:1px solid #fcd34d;">
+      <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;">
+        <span style="font-weight:700;font-size:.85rem;color:#4a5568;">${escHtml(ev.title || '(無標題)')}</span>
+        <span style="color:#a0aec0;font-size:.76rem;">${escHtml(ev.date||'')} ${escHtml((ev.startTime||'').slice(0,5))}–${escHtml((ev.endTime||'').slice(0,5))}</span>
+        ${ev.creators?.[0] ? `<span style="color:#718096;font-family:monospace;font-size:.7rem;">建立者：${escHtml(ev.creators[0])}</span>` : ''}
+        <span style="color:#a0aec0;font-size:.72rem;">${fmtT(ev.t)}</span>
+        <span style="margin-left:auto;display:inline-flex;gap:4px;white-space:nowrap;">
+          <button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" data-tip="在 Google 日曆開啟此事件" onclick="_gcOpenEvent('${escHtml(ev.eventId)}')">🔗</button>
+          ${unmatched ? `<button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" onclick="_gcImportAsBooking('${escHtml(unmatched.id)}')">匯入為預約</button>` : ''}
+          <button class="btn btn-sm" style="font-size:.68rem;padding:1px 6px;" data-tip="不再於待確認清單顯示此事件" onclick="_gcIgnoreEventAll('${escHtml(ev.eventId)}')">忽略</button>
+        </span>
+      </div>
+      <div style="margin-top:4px;padding-left:2px;font-size:.76rem;color:#718096;">缺失（${ev.kinds.length}）：${tags}</div>
+      ${unmatched ? _gcUnmatchedRowExtra({ id: unmatched.id, eventId: ev.eventId, title: ev.title, date: ev.date, startTime: ev.startTime, endTime: ev.endTime }) : ''}
+    </div>`;
+  };
   const isIgnoredCollapsed = window._gcIgnoredCollapsed !== false;
   const ignoredHtml = !ignoredList.length ? '' : `<div style="margin-top:10px;border-top:1px dashed #d69e2e;padding-top:8px;">
       <div style="cursor:pointer;font-size:.8rem;color:#92400e;font-weight:600;" onclick="window._gcIgnoredCollapsed = !window._gcIgnoredCollapsed; _renderGcErrorsSection();">
@@ -20711,13 +21035,13 @@ function _renderGcErrorsSection() {
   section.innerHTML = `
     <div style="background:#fffbeb;border:1px solid #fbbf24;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
-        <span style="font-weight:700;font-size:.9rem;color:#92400e;">📋 Google 日曆事件待確認（${entries.length}）${unread > 0 ? ` <span class="badge" style="background:#e53e3e;color:#fff;font-size:.72rem;">${unread} 則新</span>` : ''}</span>
+        <span style="font-weight:700;font-size:.9rem;color:#92400e;">📋 Google 日曆事件待確認（${events.length} 個事件）${unread > 0 ? ` <span class="badge" style="background:#e53e3e;color:#fff;font-size:.72rem;">${unread} 則新</span>` : ''}</span>
         <div style="display:flex;gap:6px;">
           ${unread > 0 ? `<button class="btn btn-sm" style="font-size:.76rem;padding:2px 10px;" onclick="_markGcErrorsSeen()">標示已讀</button>` : ''}
           <button class="btn btn-sm" style="font-size:.76rem;padding:2px 10px;background:#fff;" onclick="_toggleGcErrorsSection()">${isCollapsed ? '展開 ▼' : '收合 ▲'}</button>
         </div>
       </div>
-      ${isCollapsed ? '' : `<div style="margin-top:8px;">${Object.keys(byKind).sort().map(kindHtml).join('')}${ignoredHtml}</div>`}
+      ${isCollapsed ? '' : `<div style="margin-top:8px;">${events.slice(0, 40).map(eventHtml).join('')}${events.length > 40 ? `<div style="font-size:.72rem;color:#a0aec0;padding-top:6px;">…另 ${events.length - 40} 個事件</div>` : ''}${ignoredHtml}</div>`}
     </div>`;
 }
 
@@ -20739,6 +21063,23 @@ async function _gcIgnoreEvent(entryId) {
   const kindLabel = { MISSING_SERIAL:'缺流水號', MISSING_CREATOR:'缺建立者註記', BAD_TITLE:'標題格式錯誤',
     UNKNOWN_ROOM:'未知空間', UNKNOWN_COUNSELOR:'未知輔導人員', UNMATCHED:'無對應學諮資訊系統預約' };
   auditLog('忽略GC待確認事件', null, null, `${kindLabel[e.kind]||e.kind}：${e.title||''}`);
+  _renderGcErrorsSection();
+}
+// 新1：以事件為主體 → 一次忽略某事件的全部缺失標籤
+async function _gcIgnoreEventAll(eventId) {
+  const entries = _gcErrorsCache?.entries || [];
+  const toIgnore = entries.filter(e => e.eventId === eventId);
+  if (!toIgnore.length) return;
+  if (!confirm('確定忽略此事件？此事件的所有缺失都不再於待確認清單顯示。')) return;
+  if (!Array.isArray(_gcErrorsCache.ignored)) _gcErrorsCache.ignored = [];
+  const now = new Date().toISOString();
+  toIgnore.forEach(e => _gcErrorsCache.ignored.push({
+    eventId: e.eventId, kind: e.kind, title: e.title || '',
+    by: currentUser?.email || '', byName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '', at: now,
+  }));
+  _gcErrorsCache.entries = entries.filter(e => e.eventId !== eventId);
+  await _saveGcErrorsCache();
+  auditLog('忽略GC待確認事件', null, null, `${toIgnore[0].title || ''}（${toIgnore.length} 項缺失）`);
   _renderGcErrorsSection();
 }
 async function _gcUnignoreEvent(eventId, kind) {
@@ -23509,9 +23850,11 @@ async function loadAttendance() {
 async function _attendanceCommit(upserts, removes) {
   try {
     const res = await proxyCall('attendanceCommit', { upserts: upserts || [], removes: removes || [] });
-    if (res && Array.isArray(res.records)) attendanceData = { records: res.records };
+    if (res && Array.isArray(res.records)) attendanceData = { records: res.records }; // 以伺服器合併結果為準
     return res;
   } catch (e) {
+    // 後端尚未部署 attendanceCommit（Unknown action）→ 暫時退回舊路徑（整檔覆寫，非併發安全），確保打卡仍可用。
+    // 後端一旦部署，主路徑即生效、此 fallback 不再觸發。
     if (!/Unknown action/i.test(e.message || '')) throw e;
     if (!attendanceData || !Array.isArray(attendanceData.records)) attendanceData = { records: [] };
     (upserts || []).forEach(rec => {
@@ -23525,6 +23868,7 @@ async function _attendanceCommit(upserts, removes) {
     return { ok: true, fallback: true, records: attendanceData.records };
   }
 }
+// 舊介面保留為相容包裝，但改走併發安全路徑（呼叫端應盡量改用 _attendanceCommit 傳入異動紀錄）
 async function saveAttendance() {
   await driveUpdateJsonFile(ATTENDANCE_FILE, attendanceData);
 }
@@ -25369,8 +25713,8 @@ function auditLog(action, caseId = null, recordId = null, detail = null, opts = 
     } catch (e) { console.warn('audit log failed:', e); }
   })();
 
-  // 非上班時間 + 看/改個案相關 → 追加到 off_hours_log 共享 feed，並於首次觸發廣播通知
-  if (_isCaseRelatedAction(action) && _isOffHours(entry.t)) {
+  // 非上班（含輪值日非輪值者）+ 看/改個案相關 → 追加到 off_hours_log 共享 feed，並於首次觸發廣播通知
+  if (_isCaseRelatedAction(action) && _isOffDutyNow(currentUser.email, entry.t)) {
     const _isPriv = currentRole === '主任' || extraRole === '管理者';
     _appendOffHoursLog({
       id:      `oh-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
@@ -26333,9 +26677,36 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-09', v: 150, title: 'v148 驗證回饋修正：查閱稽核、學期badge、開案徽章、輪值/學期時段、GC待確認、登入提醒', isProd: true, items: [
+      item('修復', '#10 查閱稽核 bug：先前在個案詳細頁展開 BSRS／紀錄／心測／精神科等區塊「沒有被記錄」（程式誤用了錯的變數）。現已修正，展開這些區塊會確實記入稽核'),
+      item('新功能', '#9/#10 查閱稽核強化：查閱「非你主責／個管」的個案、或在非上班（含輪值日非輪值者）時段查閱個案時，進入詳細頁即記「查閱基本資料」，且捲動看到哪個敏感區塊就記錄該區塊查閱（不必展開）；一般同仁上班看自己的個案不細記以免灌爆'),
+      item('改善', '#9 察看他人個案：填寫閱讀理由的範例改為非危機用語；點入封存／舊學期個案載入較慢時，改顯示明確「◯◯◯個案資料載入中」視窗、讀取完成自動關閉'),
+      item('改善', '#7 危機個案閱讀搜尋結果的「服務學期」標籤改為依欄寬自動換行（欄位越寬一行放越多），不再固定顯示前幾個'),
+      item('新功能', '#8 完整搜尋（輸入完整姓名／學號／案號）時的本學期狀態徽章新增「本學期開案中」；並把這組徽章（開案中／未開案／已結案／已封存）一併呈現在「危機個案閱讀」與「案號查詢與管理」'),
+      item('新功能', '#4 上班時間設定新增「學期時段」：設定學期起訖後，非學期期間（寒暑假等）下班時間上限自動降為指定時數＝無晚班；輪值人員下拉改依輔導人員列表排序、只列專任與實習生、只顯示姓名並套用身分色'),
+      item('改善', 'Google 日曆事件待確認清單改為「以事件為主體」分類：每個事件一個區塊，下方列出它的多個缺失標籤（原本是以缺失類別為主體分組）；忽略改為一次忽略整個事件'),
+      item('新功能', '登入後提醒「登入通知信可能被分到垃圾郵件」，附操作說明與「不再提醒」按鈕（可永久關閉）'),
+    ]},
     { date: '2026-07-09', v: 149, title: '重大修復：打卡紀錄併發覆蓋（多人同時打卡互相蓋掉）＋管理者手動補登', isProd: true, items: [
-      item('修復', '修復打卡紀錄消失問題：先前每次打卡是「把整份打卡檔覆寫回去」，多位同仁幾乎同時打卡時後存檔者會蓋掉先存檔者的紀錄（造成 A 的打卡不見、B 的還在、舊版本被覆蓋）。改為後端逐筆安全寫入（鎖定＋只新增／更新該筆，不再整檔覆寫），多人同時打卡不會再互相蓋掉。先前被覆蓋遺失的打卡已從雲端版本歷史還原'),
+      item('修復', '修復打卡紀錄消失問題：先前每次打卡是「把整份打卡檔覆寫回去」，多位同仁幾乎同時打卡時，後存檔者會蓋掉先存檔者的紀錄（造成 A 的打卡不見、B 的還在、舊版本被覆蓋）。改為後端逐筆安全寫入（鎖定＋只新增／更新該筆，不再整檔覆寫），並回傳合併後的最新紀錄，多人同時打卡不會再互相蓋掉'),
       item('新功能', '差勤管理「差勤匯總」新增「管理者手動補登打卡」：可替任一同仁補登一筆打卡（選對象／日期／時間／原因），簽到／簽退依當日時間先後自動判定，紀錄標記「手動 · 由管理者」供稽核'),
+      item('技術', '新增後端 attendanceCommit action（LockService 讀-改-寫、fail-closed）；打卡、更新定位、手動補登三個寫入路徑全改走此併發安全通道；後端尚未部署時前端自動退回舊路徑確保打卡不中斷'),
+    ]},
+    { date: '2026-07-09', v: 148, title: '批次功能：危機欄寬、搜尋提示、察看個案警語、監督細緻化、輪值上班、關鍵字字庫', isProd: true, items: [
+      item('新功能', '#7 危機個案閱讀的搜尋結果表格欄寬可拖曳調整（套用與其他表格一致的欄寬記憶機制，附「重設欄寬」）'),
+      item('新功能', '#8 個案列表搜尋輸入完整姓名／學號／案號時，即使該個案本學期未開案、或已結案／封存被篩掉，也會出現在結果中並標示狀態（「本學期未開案」／「本學期有開案但已結案／已封存」）'),
+      item('改善', '#9 新增個案偵測到既有案號時的提示改版：移除「帶入既有案號」按鈕（頂端「再次開案」已自動帶入）；「查看現有案號」改名「察看個案資料與過去紀錄」並加註警語'),
+      item('新功能', '#9 若查閱的個案非你主責／個管，點「察看個案資料與過去紀錄」會先跳出警語視窗（提醒全體專任與主責／個管都會知悉），詢問是否以「危機個案閱讀」進行；選「是」開啟危機閱讀權限，選「否」則需填寫閱讀理由（必填）後才可閱讀，皆可取消；閱讀行為會記錄並加強通知主責／個管'),
+      item('新功能', '#10 非上班時間監督更細緻：在個案詳細頁展開 BSRS、晤談紀錄、心理測驗、精神科醫師評估等敏感區塊都會記錄查閱，並納入稽核紀錄與「非上班時間監督」通知'),
+      item('新功能', '#4 上班時間設定新增「輪值上班」：可指定某日的輪值人員（寒暑假等僅一人上班）；該日僅輪值者算上班，其他人若上線或看／改個案會列入「非上班時間監督」通知'),
+      item('新功能', '#1 使用者管理新增「關鍵字字庫」頁籤，與「身心調適假」頁的關鍵字庫為同一份設定、即時連動'),
+      item('新功能', '#2 關鍵字字庫卡片檢視可跨燈號拖曳關鍵字（🔴 危機／🟡 醫療／🔵 關注）直接改變其風險等級'),
+      item('說明', '#3「額外上班日（彈性週六）」原「上班時間設定」的「補班日」功能即可達成，無需另做；#13 GC 顏色維持 11 色（Google 事件顏色 API 上限，UI 的 24 色為日曆色盤非事件色）'),
+    ]},
+    { date: '2026-07-08', v: 147, title: 'Google 日曆雙向同步修正：修改反映、新增自動匯入', isProd: true, items: [
+      item('修復', '在 Google 日曆修改預約（時間／空間／人員／說明）後，系統同步時會確實把變更拉進來（先前的「系統較新就推回日曆」時間戳判斷會把你在日曆的修改覆蓋回去，導致修改看似無效）。日曆端有差異一律以日曆現況為準；系統內的修改仍在儲存當下即時推到日曆，雙向一致'),
+      item('新功能', '在 Google 日曆直接新增的事件，若標題可解析為「已知空間．人員」（如「玉.王小明」），系統同步時會自動匯入為對應的空間預約（配流水號、回寫建立者與流水號至日曆事件）；解析不出已知空間的事件仍列入待辦頁「Google 日曆事件待確認」清單供人工「匯入為預約」'),
+      item('技術', '前端手動同步與後端每 5 分鐘自動同步採同一套規則；匯入以 calendarEventId 做唯一性檢查（bookingsCommit 內鎖定），避免前後端同時匯入同一新事件而重複建立'),
     ]},
     { date: '2026-07-08', v: 146, title: '登入與 Session 管理：登入紀錄、IP/位置通知、登出所有裝置', isProd: true, items: [
       item('新功能', '登入通知信新增「IP 位址」與「大致位置」（由前端向公開 IP 服務查詢後帶入；查不到則略過，不影響登入）'),
@@ -28824,6 +29195,72 @@ function _parseBkGcTitle(title) {
   };
 }
 
+// 2026-07-08：判斷 GC 標題是否解析得出「已知空間．人員」——只認內建 ROOMS（排除「其他」）的首字。
+// 未知/自訂空間一律回 null（→ 留待確認清單人工匯入，不自動建立）。純檢查、無副作用（不呼叫會註冊自訂空間的 _parseBkGcTitle）。
+function _gcKnownRoomOfTitle(title) {
+  const m = (title || '').match(/^([^.]+)\.(.+)$/);
+  if (!m) return null;
+  const roomChar = m[1];
+  const person = (m[2] || '').trim();
+  if (!person) return null;
+  return ROOMS.filter(r => r !== '其他').find(r => r.charAt(0) === roomChar) || null;
+}
+
+// GC 上「無對應 INFOSYS 預約」且標題可解析為已知空間的新事件 → 自動匯入為系統預約（配流水號、回寫 GC serial/creator）。
+// 解析不出已知空間者不在此處理，留給 _runGcValidationAndBackfill 列入待確認清單供人工「匯入為預約」。回傳匯入筆數。
+async function _gcAutoImportKnownRoomEvents(gcEvents, startDate, endDate) {
+  const matched = new Set((bookingsData || []).map(b => b.calendarEventId).filter(Boolean));
+  const toImport = (gcEvents || []).filter(ev =>
+    ev && ev.id && !matched.has(ev.id) &&
+    ev.date >= startDate && ev.date <= endDate &&
+    _gcKnownRoomOfTitle(ev.title));
+  if (!toImport.length) return 0;
+  const myName = configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '';
+  const baseSerial = _bkNextSerial();
+  const newBks = toImport.map((ev, idx) => {
+    const parsed = _parseBkGcTitle(ev.title) || { room: '', counselors: [], counselorName: '', counselorEmail: '' };
+    const raw = ev.description || '';
+    let notes = '';
+    const sm = raw.match(/\n#(\d+)\s*$/);
+    if (sm) { let body = raw.slice(0, raw.length - sm[0].length); const si = body.lastIndexOf('\n---\n'); if (si >= 0) body = body.slice(0, si); notes = body.trim(); }
+    else { const si = raw.lastIndexOf('\n---\n'); notes = (si >= 0 ? raw.slice(0, si) : raw).trim(); }
+    const now = new Date().toISOString();
+    return {
+      id: 'bk_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      bkSerial: baseSerial + idx,
+      room: parsed.room || '', customRoom: '',
+      date: ev.date, startTime: ev.startTime, endTime: ev.endTime,
+      counselors: parsed.counselors || [], counselorEmail: parsed.counselorEmail || '', counselorName: parsed.counselorName || '',
+      caseId: '', caseName: '', notes,
+      createdAt: now, updatedAt: now, creatorName: myName,
+      calendarEventId: ev.id,
+    };
+  });
+  const ops = newBks.map(bk => ({ op: 'upsert', booking: { ...bk }, gc: { mode: 'none' } }));
+  const res = await bkCommit(ops, { checkConflicts: false });
+  // 只認伺服器確認寫入的預約（後端可能因 calendarEventId 已被占用而略過重複匯入）
+  let confirmed = newBks;
+  if (res.fallback) { newBks.forEach(bk => bookingsData.push(bk)); await saveBookings(); }
+  else if (!res.error) {
+    const byId = new Map((res.bookings || []).map(x => [x.id, x]));
+    confirmed = newBks.filter(bk => byId.has(bk.id));
+    confirmed.forEach(bk => bookingsData.push(byId.get(bk.id)));
+  } else { confirmed = []; }
+  for (const bk of confirmed) {
+    try {
+      await proxyCall('updateCalendarEvent', {
+        eventId: bk.calendarEventId, room: bk.room, customRoom: '',
+        date: bk.date, startTime: bk.startTime, endTime: bk.endTime,
+        counselorName: bk.counselorName || '', notes: bk.notes || '',
+        creatorName: bk.creatorName || bk.counselorName || '',
+        createdAt: bk.createdAt, updatedAt: bk.updatedAt, isEdit: false, bkSerial: bk.bkSerial,
+        colorId: _bkGcColorId(bk) });
+    } catch (_) {}
+    auditLog('因同步日曆自動匯入預約', null, null, `${bk.room}　${bk.date}　${(bk.startTime || '').slice(0, 5)}–${(bk.endTime || '').slice(0, 5)}${bk.counselorName ? '　' + bk.counselorName : ''}`);
+  }
+  return confirmed.length;
+}
+
 async function syncFromCalendar(silent = false) {
   const jobId = silent ? null : bgJobAdd('Google 日曆同步', '取得事件中…');
   try {
@@ -28900,15 +29337,9 @@ async function syncFromCalendar(silent = false) {
 
       if (titleChanged || timeChanged || notesChanged) {
         const rd = b.room === '其他' ? (b.customRoom || '其他') : (b.room || '');
-        // 交叉驗證：比較 GC lastModified 與系統 updatedAt / createdAt
-        const gcIsNewer = !gcE.lastModified || gcE.lastModified > (b.updatedAt || b.createdAt || '');
-
-        if (!gcIsNewer) {
-          // 系統較新 → 推回 GC，不更新本機
-          gcPushBackQueue.push(b.id);
-          return b;
-        }
-
+        // 2026-07-08：GC 端有差異一律拉進 INFOSYS（以 GC 現況為準）。先前的「系統較新就推回 GC」時間戳
+        // 仲裁會把使用者在 GC 的修改覆蓋回去（使用者回報「GC 修改不反映」根因）→ 已移除。
+        // INFOSYS 端自己的修改仍在儲存當下即時推到 GC（bookingsCommit），雙向一致不依賴本同步的推回。
         const diffs = [];
         const update = {};
 
@@ -28991,9 +29422,13 @@ async function syncFromCalendar(silent = false) {
         } catch (_) {}
       }
     }
+    // 自動匯入 GC 新增、可解析為已知空間的事件（解析不出的留給下方驗證列入待確認清單）
+    let _autoImported = 0;
+    try { _autoImported = await _gcAutoImportKnownRoomEvents(gcEvents, startDate, endDate); } catch (e) { console.warn('gc auto-import failed', e); }
+    if (_autoImported > 0) { try { renderBookingsPage?.(); } catch (_) {} }
     // GC 事件驗證 + 自動補註 + 廣播（背景，不阻擋 sync 完成回報）
     try { await _runGcValidationAndBackfill(gcEvents); } catch (e) { console.warn('gc validation failed', e); }
-    if (jobId) bgJobDone(jobId);
+    if (jobId) bgJobDone(jobId, _autoImported > 0 ? `已自動匯入 ${_autoImported} 筆 GC 新增事件` : undefined);
   } catch (e) {
     if (jobId) bgJobFail(jobId, e.message);
     if (!silent) setAlert('bookings-alert', 'warn', '同步失敗：' + e.message);
@@ -31218,7 +31653,14 @@ function _mlOpenAuthPopup(authUrl) {
 
 // ── 關鍵字設定 Tab ─────────────────────────────────────
 let _mlKwView = 'cards'; // 'cards' | 'table'
+let _mlKwHostEl = null;  // 目前渲染關鍵字庫的容器（身心調適假頁 or 使用者管理頁），供異動後就地重繪
+// 就地重繪目前顯示中的關鍵字庫（不論身在哪一頁）；容器已不在畫面上則退回整頁重繪
+function _mlRerenderKw() {
+  if (_mlKwHostEl && _mlKwHostEl.isConnected) _mlRenderKeywordsTab(_mlKwHostEl);
+  else if (typeof renderMentalLeavePage === 'function') renderMentalLeavePage();
+}
 function _mlRenderKeywordsTab(el) {
+  _mlKwHostEl = el;
   const kws = _mlKeywords();
   const usingDefault = !Array.isArray(configData?.mentalLeaveKeywords) || !configData.mentalLeaveKeywords.length;
   const levelLabel = { 3: '🔴 紅燈（危機）', 2: '🟡 黃燈（醫療）', 1: '🔵 關注' };
@@ -31238,14 +31680,14 @@ function _mlRenderKeywordsTab(el) {
   const cardsHtml = [3, 2, 1].map(lv => {
     const group = kws.map((k, i) => ({ ...k, _i: i })).filter(k => k.level === lv);
     const chips = group.map(k => `
-      <span style="display:inline-flex;align-items:center;gap:4px;background:${levelBg[lv]};color:${levelColor[lv]};border:1px solid ${levelBorder[lv]};border-radius:20px;padding:4px 10px 4px 12px;font-size:.82rem;font-weight:600;margin:3px;">
+      <span draggable="true" ondragstart="_mlKwDragStart(event, ${k._i})" style="display:inline-flex;align-items:center;gap:4px;background:${levelBg[lv]};color:${levelColor[lv]};border:1px solid ${levelBorder[lv]};border-radius:20px;padding:4px 10px 4px 12px;font-size:.82rem;font-weight:600;margin:3px;cursor:grab;" title="可拖曳到其他燈號改變風險等級">
         ${escHtml(k.kw)}
         <button onclick="window._mlDeleteKw(${k._i})" style="background:none;border:none;cursor:pointer;color:${levelColor[lv]};font-size:.8rem;line-height:1;padding:0 0 0 2px;opacity:.7;" title="刪除">✕</button>
       </span>`).join('');
-    return `<div style="border:1.5px solid ${levelBorder[lv]};border-radius:10px;padding:14px 16px;background:${levelBg[lv]};margin-bottom:12px;">
-      <div style="font-weight:700;color:${levelColor[lv]};font-size:.92rem;margin-bottom:10px;">${levelLabel[lv]}</div>
-      <div style="display:flex;flex-wrap:wrap;gap:0;">
-        ${chips || `<span style="color:#a0aec0;font-size:.82rem;">（無關鍵字）</span>`}
+    return `<div ondragover="event.preventDefault();this.style.outline='2px dashed ${levelColor[lv]}';this.style.outlineOffset='-2px';" ondragleave="this.style.outline='';" ondrop="this.style.outline='';_mlKwDrop(event, ${lv})" style="border:1.5px solid ${levelBorder[lv]};border-radius:10px;padding:14px 16px;background:${levelBg[lv]};margin-bottom:12px;">
+      <div style="font-weight:700;color:${levelColor[lv]};font-size:.92rem;margin-bottom:10px;">${levelLabel[lv]} <span style="font-size:.72rem;font-weight:400;color:#718096;">（可將關鍵字拖曳至此改為此燈號）</span></div>
+      <div style="display:flex;flex-wrap:wrap;gap:0;min-height:24px;">
+        ${chips || `<span style="color:#a0aec0;font-size:.82rem;">（無關鍵字，可從其他燈號拖曳至此）</span>`}
       </div>
     </div>`;
   }).join('');
@@ -31275,8 +31717,8 @@ function _mlRenderKeywordsTab(el) {
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
       <span style="font-size:.88rem;color:#4a5568;font-weight:600;">關鍵字庫（共 ${kws.length} 筆）</span>
       <div style="display:flex;gap:6px;">
-        <button onclick="_mlKwView='cards';renderMentalLeavePage();" style="padding:4px 12px;border:1px solid #cbd5e0;border-radius:6px 0 0 6px;background:${_mlKwView==='cards'?'#2d6a4f':'#fff'};color:${_mlKwView==='cards'?'#fff':'#4a5568'};cursor:pointer;font-size:.82rem;">🃏 卡片</button>
-        <button onclick="_mlKwView='table';renderMentalLeavePage();" style="padding:4px 12px;border:1px solid #cbd5e0;border-left:none;border-radius:0 6px 6px 0;background:${_mlKwView==='table'?'#2d6a4f':'#fff'};color:${_mlKwView==='table'?'#fff':'#4a5568'};cursor:pointer;font-size:.82rem;">☰ 列表</button>
+        <button onclick="_mlKwView='cards';_mlRerenderKw();" style="padding:4px 12px;border:1px solid #cbd5e0;border-radius:6px 0 0 6px;background:${_mlKwView==='cards'?'#2d6a4f':'#fff'};color:${_mlKwView==='cards'?'#fff':'#4a5568'};cursor:pointer;font-size:.82rem;">🃏 卡片</button>
+        <button onclick="_mlKwView='table';_mlRerenderKw();" style="padding:4px 12px;border:1px solid #cbd5e0;border-left:none;border-radius:0 6px 6px 0;background:${_mlKwView==='table'?'#2d6a4f':'#fff'};color:${_mlKwView==='table'?'#fff':'#4a5568'};cursor:pointer;font-size:.82rem;">☰ 列表</button>
       </div>
     </div>
     ${_mlKwView === 'cards'
@@ -31322,7 +31764,7 @@ window._mlAddKw = async () => {
   if (!configData) configData = {};
   configData.mentalLeaveKeywords = kws;
   if (kwEl) kwEl.value = '';
-  renderMentalLeavePage();
+  _mlRerenderKw();
   const levelLabel = { 3: '紅燈', 2: '黃燈', 1: '藍燈' };
   const jobId = bgJobAdd(`新增關鍵字：${kw}`);
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); auditLog('新增身心調適假關鍵字', null, null, `${kw}（${levelLabel[level] || level}）`); }
@@ -31336,7 +31778,7 @@ window._mlDeleteKw = async (i) => {
   kws.splice(i, 1);
   if (!configData) configData = {};
   configData.mentalLeaveKeywords = kws;
-  renderMentalLeavePage();
+  _mlRerenderKw();
   const jobId = bgJobAdd(`刪除關鍵字：${deleted.kw}`);
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); auditLog('刪除身心調適假關鍵字', null, null, deleted.kw); }
   catch(e) { bgJobFail(jobId, e.message); }
@@ -31345,10 +31787,34 @@ window._mlDeleteKw = async (i) => {
 window._mlResetKw = async () => {
   if (!confirm('確定還原為系統預設關鍵字庫？目前自訂設定將被清除。')) return;
   if (configData) delete configData.mentalLeaveKeywords;
-  renderMentalLeavePage();
+  _mlRerenderKw();
   const jobId = bgJobAdd('還原預設關鍵字庫');
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); auditLog('還原身心調適假預設關鍵字庫'); }
   catch(e) { bgJobFail(jobId, e.message); }
+};
+
+// #2：跨燈號拖曳——把關鍵字拖到另一個燈號卡片即改變其風險等級（連動同一份 configData.mentalLeaveKeywords）
+let _mlKwDragIdx = null;
+window._mlKwDragStart = (e, idx) => {
+  _mlKwDragIdx = idx;
+  try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(idx)); } catch (_) {}
+};
+window._mlKwDrop = async (e, level) => {
+  if (e && e.preventDefault) e.preventDefault();
+  let idx = _mlKwDragIdx;
+  if (idx == null) { try { idx = parseInt(e.dataTransfer.getData('text/plain'), 10); } catch (_) {} }
+  _mlKwDragIdx = null;
+  const kws = [..._mlKeywords()];
+  if (idx == null || isNaN(idx) || !kws[idx] || kws[idx].level === level) return;
+  const kw = kws[idx].kw;
+  kws[idx] = { ...kws[idx], level };
+  if (!configData) configData = {};
+  configData.mentalLeaveKeywords = kws;
+  _mlRerenderKw();
+  const levelLabel = { 3: '紅燈', 2: '黃燈', 1: '藍燈' };
+  const jobId = bgJobAdd(`調整關鍵字燈號：${kw}`);
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); auditLog('調整身心調適假關鍵字燈號', null, null, `${kw}→${levelLabel[level] || level}`); }
+  catch (e2) { bgJobFail(jobId, e2.message); }
 };
 
 window._mlSaveAnalysisLog = async () => {
@@ -31358,7 +31824,7 @@ window._mlSaveAnalysisLog = async () => {
   if (!configData) configData = {};
   if (!Array.isArray(configData.mlAnalysisLogs)) configData.mlAnalysisLogs = [];
   configData.mlAnalysisLogs.unshift({ date, analyst: currentUser?.email || '未知', note, savedAt: new Date().toISOString() });
-  renderMentalLeavePage();
+  _mlRerenderKw();
   const jobId = bgJobAdd('儲存分析備忘');
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); auditLog('新增身心調適假分析備忘', null, null, date); }
   catch(e) { bgJobFail(jobId, e.message); }
@@ -31368,7 +31834,7 @@ window._mlDeleteAnalysisLog = async (i) => {
   if (!confirm('確定刪除此筆分析備忘？')) return;
   if (!Array.isArray(configData?.mlAnalysisLogs)) return;
   configData.mlAnalysisLogs.splice(i, 1);
-  renderMentalLeavePage();
+  _mlRerenderKw();
   const jobId = bgJobAdd('刪除分析備忘');
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); bgJobDone(jobId); }
   catch(e) { bgJobFail(jobId, e.message); }
@@ -36231,6 +36697,34 @@ function renderAdminWorkHours() {
         ${escHtml(d)}<button onclick="_adminWhRemoveDate('${id}','${escHtml(d)}')" style="background:none;border:none;cursor:pointer;color:#553c9a;font-size:1rem;line-height:1;padding:0 0 0 3px;">×</button>
       </span>`).join('')
     : '<span style="font-size:.83rem;color:#a0aec0;">（尚無）</span>';
+  // #4 輪值上班：人員下拉 + 輪值 chips（日期·姓名）
+  // #4b：輪值人員下拉——依輔導人員列表排序，只列「專任」「實習生」，只顯示姓名（不含職稱），套用身分色
+  const dutyPersonOpts = COUNSELOR_ROLE_GROUPS
+    .filter(g => g.label === '專任' || g.label === '實習生')
+    .map(group => {
+      const entries = Object.entries(configData?.users || {})
+        .filter(([, info]) => info && !info.disabled && info.name && group.roles.includes(info.role || ''))
+        .sort(([, ia], [, ib]) => {
+          const oa = group.roles.indexOf(ia.role || ''), ob = group.roles.indexOf(ib.role || '');
+          return oa !== ob ? oa - ob : (ia.name || '').localeCompare(ib.name || '', 'zh');
+        });
+      if (!entries.length) return '';
+      return `<optgroup label="${escHtml(group.label)}">` +
+        entries.map(([email, info]) => `<option value="${escHtml(email)}" style="${roleColorOptionStyle(info.role)}">${escHtml(info.name)}</option>`).join('') +
+        '</optgroup>';
+    }).join('');
+  const dutyChips = (arr) => (arr && arr.length)
+    ? [...arr].sort((a, b) => (a.date || '').localeCompare(b.date || '')).map(r => `<span style="display:inline-flex;align-items:center;gap:2px;background:#fffaf0;color:#9c4221;border:1px solid #fbd38d;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;">
+        ${escHtml(r.date)} · ${escHtml(configData?.users?.[r.email]?.name || r.email)}<button onclick="_adminWhRemoveDuty('${escHtml(r.date)}','${escHtml(r.email)}')" style="background:none;border:none;cursor:pointer;color:#9c4221;font-size:1rem;line-height:1;padding:0 0 0 3px;">×</button>
+      </span>`).join('')
+    : '<span style="font-size:.83rem;color:#a0aec0;">（尚無）</span>';
+  // #4a：學期時段 chips（from~to）
+  const semPeriodChips = (arr) => (arr && arr.length)
+    ? [...arr].sort((a, b) => (a.from || '').localeCompare(b.from || '')).map((p, i) => `<span style="display:inline-flex;align-items:center;gap:2px;background:#ebf8ff;color:#2b6cb0;border:1px solid #90cdf4;border-radius:12px;padding:3px 10px;margin:2px;font-size:.85rem;">
+        ${escHtml(p.from)} ~ ${escHtml(p.to)}<button onclick="_adminWhRemoveSemester(${i})" style="background:none;border:none;cursor:pointer;color:#2b6cb0;font-size:1rem;line-height:1;padding:0 0 0 3px;">×</button>
+      </span>`).join('')
+    : '<span style="font-size:.83rem;color:#a0aec0;">（尚無；未設定學期時段時，一律沿用每日上班時段，不做學期/非學期區分）</span>';
+  const _nonSemEnd = Number.isFinite(cfg.nonSemesterEndHour) ? cfg.nonSemesterEndHour : 18;
   el.innerHTML = `
     <div style="margin-bottom:16px;">
       <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">
@@ -36257,6 +36751,37 @@ function renderAdminWorkHours() {
         <button class="btn btn-secondary btn-sm" onclick="_adminWhAddDate('extraWorkDays','wh-extra-input')">加入補班日</button>
       </div>
       <div id="wh-extras-chips">${dateChips(cfg.extraWorkDays, 'extraWorkDays')}</div>
+    </div>
+    <div style="margin-bottom:16px;">
+      <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">
+        輪值上班（寒暑假等僅一人上班的排班）
+        <span style="font-size:.75rem;font-weight:400;color:#718096;">（指定某日的輪值人員；該日僅輪值者視為上班，其他人若上線／看改個案會列入「非上班時間監督」通知）</span>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap;">
+        <input type="date" id="wh-duty-date" class="field-input" style="max-width:180px;">
+        <select id="wh-duty-person" class="field-input" style="max-width:220px;"><option value="">選擇輪值人員…</option>${dutyPersonOpts}</select>
+        <button class="btn btn-secondary btn-sm" onclick="_adminWhAddDuty()">加入輪值</button>
+      </div>
+      <div id="wh-duty-chips">${dutyChips(cfg.dutyRoster)}</div>
+    </div>
+    <div style="margin-bottom:16px;">
+      <div style="font-size:.88rem;font-weight:600;color:#4a5568;margin-bottom:6px;">
+        學期時段（此區間內才有晚班）
+        <span style="font-size:.75rem;font-weight:400;color:#718096;">（設定學期起訖；學期期間沿用上方每日上班時段(含晚班)，非學期期間(寒暑假等)下班時間上限降為下方時數＝無晚班）</span>
+      </div>
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;flex-wrap:wrap;">
+        <input type="date" id="wh-sem-from" class="field-input" style="max-width:170px;">
+        <span style="color:#718096;">~</span>
+        <input type="date" id="wh-sem-to" class="field-input" style="max-width:170px;">
+        <button class="btn btn-secondary btn-sm" onclick="_adminWhAddSemester()">加入學期時段</button>
+      </div>
+      <div id="wh-sem-chips">${semPeriodChips(cfg.semesterPeriods)}</div>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <label style="font-size:.82rem;color:#4a5568;">非學期下班時間上限（無晚班）：</label>
+        <select id="wh-nonsem-end" class="field-input" style="width:auto;" onchange="_adminWhSetNonSemEnd(this.value)">
+          ${[16,17,18,19,20].map(h => `<option value="${h}"${_nonSemEnd === h ? ' selected' : ''}>${String(h).padStart(2,'0')}:00</option>`).join('')}
+        </select>
+      </div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;padding-top:12px;border-top:1px solid #e2e8f0;">
       <button class="btn btn-primary" onclick="_adminSaveWorkHours()">儲存上班時間設定</button>
@@ -36288,6 +36813,62 @@ async function _adminWhRemoveDate(field, val) {
   const next = { ...cur, [field]: arr };
   configData.workHoursConfig = next;
   try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminWorkHours(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+// #4：輪值上班——新增/移除某日的輪值人員（dutyRoster: [{date,email}]）
+async function _adminWhAddDuty() {
+  const date  = (document.getElementById('wh-duty-date')?.value || '').trim();
+  const email = (document.getElementById('wh-duty-person')?.value || '').trim();
+  if (!date || !email) { alert('請選擇日期與輪值人員。'); return; }
+  const cur = _getWorkHoursConfig();
+  const arr = [...(cur.dutyRoster || [])];
+  if (arr.some(r => r.date === date && r.email === email)) { alert('此輪值已存在。'); return; }
+  arr.push({ date, email });
+  configData.workHoursConfig = { ...cur, dutyRoster: arr };
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('新增輪值上班', null, null, `${date}　${configData?.users?.[email]?.name || email}`, { major: true });
+    renderAdminWorkHours();
+  } catch (e) { alert('儲存失敗：' + e.message); }
+}
+async function _adminWhRemoveDuty(date, email) {
+  if (!confirm(`確認移除輪值「${date} · ${configData?.users?.[email]?.name || email}」？`)) return;
+  const cur = _getWorkHoursConfig();
+  const arr = (cur.dutyRoster || []).filter(r => !(r.date === date && r.email === email));
+  configData.workHoursConfig = { ...cur, dutyRoster: arr };
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminWorkHours(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+// #4a：學期時段 新增/移除／非學期下班上限
+async function _adminWhAddSemester() {
+  const from = (document.getElementById('wh-sem-from')?.value || '').trim();
+  const to   = (document.getElementById('wh-sem-to')?.value   || '').trim();
+  if (!from || !to) { alert('請選擇學期起訖日期。'); return; }
+  if (to < from) { alert('結束日期不可早於開始日期。'); return; }
+  const cur = _getWorkHoursConfig();
+  const arr = [...(cur.semesterPeriods || [])];
+  if (arr.some(p => p.from === from && p.to === to)) { alert('此學期時段已存在。'); return; }
+  arr.push({ from, to });
+  configData.workHoursConfig = { ...cur, semesterPeriods: arr };
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); auditLog('新增學期時段', null, null, `${from} ~ ${to}`, { major: true }); renderAdminWorkHours(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+async function _adminWhRemoveSemester(idx) {
+  const cur = _getWorkHoursConfig();
+  const arr = [...(cur.semesterPeriods || [])];
+  if (idx < 0 || idx >= arr.length) return;
+  if (!confirm(`確認移除學期時段「${arr[idx].from} ~ ${arr[idx].to}」？`)) return;
+  arr.splice(idx, 1);
+  configData.workHoursConfig = { ...cur, semesterPeriods: arr };
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); renderAdminWorkHours(); }
+  catch (e) { alert('儲存失敗：' + e.message); }
+}
+async function _adminWhSetNonSemEnd(val) {
+  const h = parseInt(val, 10);
+  if (!Number.isFinite(h)) return;
+  const cur = _getWorkHoursConfig();
+  configData.workHoursConfig = { ...cur, nonSemesterEndHour: h };
+  try { await driveUpdateJsonFile(CONFIG_FILE, configData); }
   catch (e) { alert('儲存失敗：' + e.message); }
 }
 async function _adminSaveWorkHours() {
