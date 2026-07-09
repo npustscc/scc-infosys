@@ -4140,6 +4140,10 @@ let casesData    = [];
 let casesManifest = { chunks: [] };
 let _casesIndexCache = null; // cases-index.json 記憶體快取 { updatedAt, cases:[] }
 let _casesHotCache   = null; // cases-hot.json 記憶體快取 { updatedAt, cases:[完整] }
+// 個案架構重構 Slice 3：chunk 歸屬與案號脫鉤。caseId → chunk 名稱（如 'active-01'／'cold-113-1'）；
+// 只記錄「已知歸屬」（來自 cases-index.json 各 entry 的 chunk 欄位或本 session 新指派），沒有記錄的
+// caseId 由 getCaseChunkName 落回現行案號推導公式（legacy fallback，重新分塊前系統行為完全不變）。
+let _caseChunkMap = new Map();
 // 本次載入是否持有「全體完整資料」；非管理者 scoped 載入時為 false，用來擋掉全量重建共享檔（否則會用少量本地資料覆蓋全體 index/hot）
 let _loadedFullDataset = false;
 let _clockOnlyMode = false;  // ?page=clock 快速啟動時為 true；使用者離開打卡頁時觸發完整載入
@@ -6299,6 +6303,12 @@ async function loadCases() {
     }
     // 特權身份（主任/管理者）載入全部；其餘走 scoped，只載自己有權檢視的個案（資料最小化）
     const isPriv = currentRole === '主任' || extraRole === '管理者';
+
+    // 個案架構重構 Slice 3：有 index 就同步 _caseChunkMap（cases-index.json 是全域完整索引，
+    // scoped 使用者也持有），讓下面不論走哪個分支，getCaseChunkName／_getHotChunks／_getMyChunks
+    // 都能立即反映重新分塊後的最新歸屬；沒有 index 的分支（首次部署／index 遺失）維持 map 空白，
+    // 自然落回 legacy 推導。
+    if (hasIndex) _syncCaseChunkMapFromIndex(indexData.cases);
 
     if (isPriv && hasManifest && hasIndex && hasHot) {
       // ── 分支 0（最快，管理者）：index + hot 都有 → 只讀 2 個檔就能完整運作本學期 ──
@@ -12058,6 +12068,7 @@ async function quickOpenCoupleCase() {
     createdAt: now, updatedAt: now, records: [],
   };
   casesData.push(newCase);
+  _assignChunkForNewCase(newCaseId); // Slice 3：已重新分塊時分配 active chunk，否則不動作（legacy fallback）
 
   const jobId = bgJobAdd('快速開案（伴侶諮商）', name);
   try {
@@ -15216,7 +15227,7 @@ function renderCaseNums(resetPage) {
         </table>
       </div>
       <div id="cn-pagination-bot">${paginationHtml}</div>
-    </div>` + (isAdminUser ? _migCardHtml() : '');
+    </div>` + (isAdminUser ? _migCardHtml() + _rechunkCardHtml() : '');
   document.getElementById('cn-select-all').indeterminate = !allChecked && someChecked;
   _syncCnBatchBar();
   _makeCnTableResizable();
@@ -15635,6 +15646,85 @@ async function _migExecute() {
     if (btnRun) btnRun.disabled = false;
     showToast('合併失敗：' + e.message, 'error');
     if (statusEl) statusEl.textContent = '❌ 合併失敗：' + e.message;
+  }
+}
+
+// ══════════════════════════════════════════════
+// ── 個案架構重構 Slice 3：chunk 與案號脫鉤（重新分塊 UI／執行；僅系統管理者可見）──
+// ══════════════════════════════════════════════
+let _rechunkRunning = false;
+
+function _rechunkCardHtml() {
+  const done = _rechunkHasRun();
+  return `
+    <div class="card" id="rechunk-card" style="margin-top:16px;">
+      <div class="card-header"><h3>🗂️ 個案重新分塊（Slice 3）</h3></div>
+      <div style="padding:16px;">
+        <div style="font-size:.85rem;color:#718096;margin-bottom:10px;">
+          chunk 檔目前依案號（首次開案學期，永久不變）分組，活躍個案會散落在各學年 chunk，啟動時要下載的
+          「使用中」chunk 壓不下來。本操作把 chunk 歸屬與案號脫鉤：本學期開案中（活躍）個案集中到少數
+          <code>active-NN</code> chunk，其餘依「最後活動學年」歸檔為 <code>cold-{學年}-N</code>，兩者每塊 ≤20 案。
+          舊 chunk 檔會留在 Drive（不刪除，manifest 不再列出即不會被讀取），資料安全；結案／封存不會即時搬 chunk，
+          <strong>建議每學期初執行一次</strong>讓分塊重新貼合當下的使用狀況。執行前建議先完成上方「①
+          備份＋Dry-run 分析」做一次全量備份。
+        </div>
+        <div style="font-size:.85rem;color:${done ? '#276749' : '#a0aec0'};margin-bottom:10px;">
+          目前狀態：${done ? '✓ 已執行過重新分塊（新開案將自動分配到 active chunk）' : '尚未執行過（目前仍是案號推導的舊式分塊，新開案沿用舊式命名）'}
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+          <button class="btn btn-danger" id="rechunk-btn" onclick="_manualRechunk()">執行重新分塊</button>
+        </div>
+        <div id="rechunk-status" style="font-size:.85rem;color:#4a5568;"></div>
+      </div>
+    </div>`;
+}
+
+// 管理者手動觸發「重新分塊」：前置條件與①一學生一案號遷移相同（需全量載入完整資料）；
+// 與合併遷移引擎尾端全量重建共用同一套核心（_rebuildChunksCore／migrateToChunks），
+// 差別只在強制 scheme='active-cold'。fail-closed：任一 chunk 寫入失敗即中止，
+// 中止當下 manifest／index 尚未變動，系統仍使用原本的分塊。
+async function _manualRechunk() {
+  if (_rechunkRunning) return;
+  if (!_loadedFullDataset) {
+    alert('尚未持有全體個案完整資料，無法重新分塊（僅系統管理者可執行；請重新整理頁面後再試）。');
+    return;
+  }
+  const statusEl = document.getElementById('rechunk-status');
+  const btn = document.getElementById('rechunk-btn');
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = '載入全量個案完整資料中…';
+  try {
+    await _ensureAllFullyLoaded('個案重新分塊');
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '❌ 全量載入失敗：' + e.message;
+    if (btn) btn.disabled = false;
+    return;
+  }
+  if (!confirm(
+    '即將重新分塊：本學期開案中的活躍個案集中到少數 active chunk，其餘依最後活動學年歸檔為 cold chunk。\n\n' +
+    '這是全量重建操作；舊 chunk 檔會留在 Drive 不會刪除，但建議先完成「① 備份＋Dry-run 分析」做一次全量備份再繼續。\n\n' +
+    '確定要開始重新分塊嗎？'
+  )) { if (btn) btn.disabled = false; if (statusEl) statusEl.textContent = ''; return; }
+  const beforeChunks = (casesManifest?.chunks || []).length;
+  _rechunkRunning = true;
+  if (statusEl) statusEl.textContent = '重新分塊中…';
+  try {
+    await migrateToChunks({ scheme: 'active-cold' });
+    await _saveCasesIndex();
+    await _saveCasesHot();
+    const afterChunks = (casesManifest?.chunks || []).length;
+    auditLog('個案重新分塊', null, null, `chunk 數：${beforeChunks} → ${afterChunks}`, { major: true });
+    if (statusEl) statusEl.textContent =
+      `✓ 重新分塊完成：chunk 數 ${beforeChunks} → ${afterChunks}。舊 chunk 檔仍保留在 Drive（未刪除，僅 manifest 不再列出，不影響資料安全）。`;
+    renderCaseNums();
+    renderCases();
+    showToast('重新分塊完成', 'success');
+  } catch (e) {
+    if (statusEl) statusEl.textContent = '❌ 重新分塊失敗：' + e.message + '（manifest／index 尚未變動，系統仍使用原本的分塊）';
+    showToast('重新分塊失敗：' + e.message, 'error');
+  } finally {
+    _rechunkRunning = false;
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -16907,6 +16997,7 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
       if (toAdd.length) c.psychTestResults = [...(c.psychTestResults || []), ...toAdd];
     }
     casesData.push(c);
+    _assignChunkForNewCase(c.id); // Slice 3：已重新分塊時分配 active chunk，否則不動作（legacy fallback）
   });
 
   // 去重：同一 ID 可能出現在多個 Excel（跨學期繼續個案），合併 semesters 後只保留第一筆
@@ -19899,6 +19990,7 @@ async function saveCase() {
         }
       }
       casesData.push(newCase);
+      _assignChunkForNewCase(newCase.id); // Slice 3：已重新分塊時分配 active chunk，否則不動作（legacy fallback）
       await saveCasesChunks(newCase.id);
       let cfgChanged = syncManagersFromForm(newCase.id, null);
       if (counselorEmail && counselorEmail !== currentUser.email)
@@ -20280,6 +20372,11 @@ async function _logoutAllDevices() {
 // ── 分塊儲存 ──────────────────────────────────
 function getCaseChunkName(caseId) {
   if (!caseId || caseId.length !== 7) return 'misc';
+  // 個案架構重構 Slice 3：已重新分塊的個案，歸屬記錄於 _caseChunkMap（來自 index 的 chunk 欄位）優先採用；
+  // 沒有記錄（尚未重新分塊，或 caseId 從未出現在 index 中）→ 落回下方現行案號推導公式，行為與重構前完全相同。
+  if (typeof _caseChunkMap !== 'undefined' && _caseChunkMap && _caseChunkMap.has(caseId)) {
+    return _caseChunkMap.get(caseId);
+  }
   const yearPrefix = caseId.slice(0, 3); // 學年 e.g. 114
   const prefix = caseId.slice(0, 4);     // 學期 prefix e.g. 1141
   const seq    = parseInt(caseId.slice(4), 10);
@@ -23390,7 +23487,9 @@ async function _batchWriteChunks(affectedIds, onProgress) {
     const name = getCaseChunkName(c.id);
     if (!affChunks.has(name) || deletedSet.has(c.id)) return;
     if (!chunkMap[name]) chunkMap[name] = [];
-    chunkMap[name].push(c);
+    // chunk 欄位（Slice 3 歸屬記錄）只存 index，不可落地進 chunk 檔本體（case 物件可能因從 index entry 展開而帶有）
+    const { chunk, ...cleanC } = c;
+    chunkMap[name].push(cleanC);
   });
   const chunks = Object.keys(chunkMap).sort();
   let manifestChanged = false;
@@ -23463,6 +23562,8 @@ function _caseToIndexEntry(c) {
     semesters: (Array.isArray(c.semesters) && c.semesters.length)
       ? [...c.semesters]
       : [openDateToSemPrefix(c.openDate)].filter(Boolean),
+    // 個案架構重構 Slice 3：chunk 歸屬持久化（僅存於 index；getCaseChunkName 經 _caseChunkMap 讀回）
+    chunk: getCaseChunkName(c.id),
   };
 }
 
@@ -23491,6 +23592,107 @@ function _isHotCase(c) {
   return true;
 }
 
+// ── 個案架構重構 Slice 3：chunk 與案號脫鉤（active/cold 分塊）──────────────
+// 是否已執行過重新分塊：以 manifest.chunks 有無 'active-' 開頭項判定。
+// 尚未執行過 → 新開案／全量重建一律沿用現行案號推導（legacy）；執行過一次後 → 之後都採新制。
+function _rechunkHasRun() {
+  return (casesManifest?.chunks || []).some(n => typeof n === 'string' && n.startsWith('active-'));
+}
+
+// 推算個案「最後活動學年」（民國 3 碼）：優先 lastActivityAt（可能為完整 ISO 或 YYYY-MM-DD，只取日期部分換算）；
+// 缺值則退回 semesters 最大值（去除 #N 後綴）的前 3 碼；再缺則退回案號前 3 碼；理論上不會發生的極端狀況回傳 '000'。
+function _lastActivityYearOf(c) {
+  const raw = c?.lastActivityAt ? String(c.lastActivityAt).slice(0, 10) : '';
+  const sem = raw ? openDateToSemPrefix(raw) : '';
+  if (sem) return sem.slice(0, 3);
+  const sems = Array.isArray(c?.semesters) ? c.semesters.filter(Boolean) : [];
+  if (sems.length) {
+    const maxBase = sems.map(s => _semKeyBase(s)).sort().pop();
+    if (maxBase && maxBase.length >= 3) return maxBase.slice(0, 3);
+  }
+  if (c?.id && c.id.length >= 3) return c.id.slice(0, 3);
+  return '000';
+}
+
+// 純函式（供測試）：計算全體個案的新 chunk 歸屬。
+// isActiveFn 預設 _isHotCase；活躍個案依 id 排序、每 CHUNK_SIZE 筆一塊分入 active-01, active-02…；
+// 其餘依 _lastActivityYearOf 分組後，各年內再依 id 排序、每 CHUNK_SIZE 筆一塊分入 cold-{學年}-1, cold-{學年}-2…
+// 回傳 Map(caseId -> chunkName)。輸入相同順序恆得到相同結果（穩定排序），供測試斷言與重跑 idempotent。
+function _rechunkAssignments(cases, isActiveFn) {
+  const isActive = isActiveFn || _isHotCase;
+  const activeIds = [];
+  const coldByYear = new Map();
+  (cases || []).forEach(c => {
+    if (!c || !c.id) return;
+    if (isActive(c)) { activeIds.push(c.id); return; }
+    const year = _lastActivityYearOf(c);
+    if (!coldByYear.has(year)) coldByYear.set(year, []);
+    coldByYear.get(year).push(c.id);
+  });
+  const map = new Map();
+  activeIds.sort();
+  for (let i = 0; i < activeIds.length; i += CHUNK_SIZE) {
+    const n = Math.floor(i / CHUNK_SIZE) + 1;
+    const name = `active-${String(n).padStart(2, '0')}`;
+    activeIds.slice(i, i + CHUNK_SIZE).forEach(id => map.set(id, name));
+  }
+  [...coldByYear.keys()].sort().forEach(year => {
+    const ids = coldByYear.get(year).sort();
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+      const n = Math.floor(i / CHUNK_SIZE) + 1;
+      const name = `cold-${year}-${n}`;
+      ids.slice(i, i + CHUNK_SIZE).forEach(id => map.set(id, name));
+    }
+  });
+  return map;
+}
+
+// 純函式（供測試）：統計目前各 active-NN chunk 已知筆數（key=chunk 名稱）。
+function _activeChunkCounts(indexCases) {
+  const counts = {};
+  (indexCases || []).forEach(c => {
+    const name = c?.chunk;
+    if (typeof name === 'string' && name.startsWith('active-')) counts[name] = (counts[name] || 0) + 1;
+  });
+  return counts;
+}
+
+// 純函式（供測試）：依現有 active-NN 各自筆數，挑一個未滿 CHUNK_SIZE 的既有 chunk（依名稱排序取第一個）；
+// 皆滿或尚無任何 active chunk → 配置下一號（active-01 起算）。
+function _pickActiveChunkForNew(chunkCounts) {
+  const names = Object.keys(chunkCounts || {}).sort();
+  for (const n of names) {
+    if ((chunkCounts[n] || 0) < CHUNK_SIZE) return n;
+  }
+  let maxN = 0;
+  names.forEach(n => {
+    const m = /^active-(\d+)$/.exec(n);
+    if (m) maxN = Math.max(maxN, parseInt(m[1], 10));
+  });
+  return `active-${String(maxN + 1).padStart(2, '0')}`;
+}
+
+// 新開案的 chunk 歸屬指派：僅在「已執行過重新分塊」時介入，寫入 _caseChunkMap；
+// 尚未執行過 → 不動作，getCaseChunkName 自然落回 legacy 推導（維持現狀）。
+// 呼叫時機：casesData.push(新案) 之後、saveCasesChunks 之前（每個「開新案」流程呼叫點）。
+// 用全域 _casesIndexCache（而非本機 casesData）統計現有 active chunk 筆數，非管理者 scoped session 也能正確判斷
+// （cases-index.json 是全域完整索引，scoped 載入的使用者也持有它，只是沒有完整 case 內容）。
+function _assignChunkForNewCase(caseId) {
+  if (!caseId || _caseChunkMap.has(caseId)) return;
+  if (!_rechunkHasRun()) return;
+  const counts = _activeChunkCounts(_casesIndexCache?.cases);
+  const chunkName = _pickActiveChunkForNew(counts);
+  _caseChunkMap.set(caseId, chunkName);
+}
+
+// 從 cases-index.json 的 cases 陣列重建 _caseChunkMap（載入 / 全量重建 index 後呼叫，讓 getCaseChunkName
+// 立即反映最新歸屬）。缺 chunk 欄位的 entry（尚未重新分塊過的舊資料）不寫入，交由 legacy fallback 處理。
+function _syncCaseChunkMapFromIndex(indexCases) {
+  const map = new Map();
+  (indexCases || []).forEach(c => { if (c?.id && c.chunk) map.set(c.id, c.chunk); });
+  _caseChunkMap = map;
+}
+
 // 從目前 casesData 全量重建並寫入 cases-index.json（遷移／首建時用）
 async function _saveCasesIndex() {
   // 🔴 紅線：只有持有全體完整資料時才可全量重建；scoped 載入（非管理者）只有自己幾筆，重建會覆蓋掉全體索引
@@ -23509,6 +23711,7 @@ async function _saveCasesIndex() {
     return;
   }
   _casesIndexCache = { updatedAt: new Date().toISOString(), cases };
+  _syncCaseChunkMapFromIndex(cases); // Slice 3：全量重建後同步 _caseChunkMap，讓 getCaseChunkName 立即反映最新歸屬
   await driveSaveJsonInCases(CASES_INDEX_FILE, _casesIndexCache);
   _syslog('info', `cases-index 已建立：${cases.length} 筆`);
 }
@@ -23520,7 +23723,8 @@ async function _saveCasesHot() {
   if (!_loadedFullDataset) { _syslog('warn', '跳過 cases-hot 全量重建（scoped 載入，未持有全體資料）'); return; }
   const cases = casesData
     .filter(c => c?.id && !c._indexOnly && _isHotCase(c))
-    .map(c => { const { _indexOnly, _fullLoaded, ...rest } = c; return rest; });
+    // chunk 欄位（Slice 3 歸屬記錄）只存 index，不可落地進 cases-hot（比照 _indexOnly/_fullLoaded 剝離）
+    .map(c => { const { _indexOnly, _fullLoaded, chunk, ...rest } = c; return rest; });
   _casesHotCache = { updatedAt: new Date().toISOString(), cases };
   await driveSaveJsonInCases(CASES_HOT_FILE, _casesHotCache);
   _syslog('info', `cases-hot 已建立：${cases.length} 筆`);
@@ -23544,6 +23748,9 @@ async function _updateCasesIndexEntries(ids) {
   });
   try {
     await proxyCall('casesUpsert', { path: `cases/${CASES_INDEX_FILE}`, upserts, removes });
+    // Slice 3：patch 成功後同步 _caseChunkMap，讓本 session 後續 getCaseChunkName 立即反映最新歸屬
+    upserts.forEach(e => { if (e?.id && e.chunk) _caseChunkMap.set(e.id, e.chunk); });
+    removes.forEach(id => _caseChunkMap.delete(id));
   } catch (e) {
     _syslog('warn', `更新 cases-index 失敗：${e.message}`);
   }
@@ -23565,7 +23772,8 @@ async function _updateCasesHotEntries(ids) {
     if (!c) { _syslog('warn', `cases-hot patch：${id} 不在記憶體，跳過（不移除）`); return; }
     if (c._indexOnly) { _syslog('warn', `cases-hot patch：${id} 僅索引資料，跳過（不上傳、不移除）`); return; }
     if (_isHotCase(c)) {
-      const { _indexOnly, _fullLoaded, ...rest } = c;
+      // chunk 欄位（Slice 3 歸屬記錄）只存 index，不可落地進 cases-hot（比照 _indexOnly/_fullLoaded 剝離）
+      const { _indexOnly, _fullLoaded, chunk, ...rest } = c;
       upserts.push(rest);
     } else {
       removes.push(id); // 有完整資料且判定非 hot（結案/封存/非本學期）→ 移除合理
@@ -23599,6 +23807,9 @@ async function _selfHealMissingChunks() {
     if (!restore.length) { _syslog('info', `自我修復：${name} 無可補回個案（chunk 為空或全數為墓碑）`); continue; }
     restore.forEach(c => casesData.push({ ...c, _fullLoaded: !c._indexOnly, _indexOnly: !!c._indexOnly }));
     const ids = restore.map(c => c.id);
+    // Slice 3：補回的個案來自「已知 chunk 名稱 name」，直接記錄歸屬，讓補回的 index entry 帶正確 chunk 欄位
+    // （這些案子原本就不在 index 裡，getCaseChunkName 對它們沒有 legacy 依據可言，此處是唯一可靠的來源）
+    ids.forEach(id => _caseChunkMap.set(id, name));
     await _updateCasesIndexEntries(ids);
     await _updateCasesHotEntries(ids);
     healedTotal += ids.length;
@@ -23689,7 +23900,14 @@ async function _ensureFullCases(caseIds) {
 
 // 計算 hot chunks：含有「未封存且未刪除」個案的 chunk 名單（與 manifest 取交集）
 function _getHotChunks(indexData, manifest, deletedSet) {
-  const manifestSet = new Set(manifest?.chunks || []);
+  const manifestChunks = manifest?.chunks || [];
+  const manifestSet = new Set(manifestChunks);
+  // 個案架構重構 Slice 3：已重新分塊時，chunk 命名本身就是 hot/cold 判定（active-* 恆為 hot，
+  // cold-* 恆不是），不需逐案掃描——這正是本次重構要解決的問題：舊制下 cold chunk 常混有大量
+  // 「未封存但非本學期」的舊案，導致下面逐案掃描把幾乎每個 chunk 都判成 hot（實測 66/109 壓不下來）。
+  if (manifestChunks.some(n => typeof n === 'string' && n.startsWith('active-'))) {
+    return manifestChunks.filter(n => typeof n === 'string' && n.startsWith('active-'));
+  }
   const hot = new Set();
   (indexData?.cases || []).forEach(c => {
     if (!c?.id || c.archived || c.deleted) return;
@@ -23832,7 +24050,8 @@ function _chunkCommitPayload(chunkName, modifiedIds, removeIds, deletedIds, getC
     const c = getCase(id);
     if (!c) return; // 理論上不會發生：modifiedIds 來自呼叫端傳入的 caseIds，應存在於記憶體
     if (c._indexOnly) throw new Error(`個案 ${id} 完整資料未載入，已中止儲存以避免覆寫 Drive 上的完整資料`);
-    const { _indexOnly, _fullLoaded, ...clean } = c;
+    // chunk 欄位（Slice 3 歸屬記錄）只存 index，不可落地進 chunk 檔本體（比照 _indexOnly/_fullLoaded 剝離）
+    const { _indexOnly, _fullLoaded, chunk, ...clean } = c;
     upserts.push(clean);
   });
   const removes = [...new Set([
@@ -23937,7 +24156,14 @@ async function _renameCaseId(oldId, newId) {
   if (Array.isArray(casesManifest?.deletedIds) && casesManifest.deletedIds.includes(newId)) {
     casesManifest.deletedIds = casesManifest.deletedIds.filter(id => id !== newId);
   }
+  // Slice 3：若 oldId 已有重新分塊後的權威歸屬，newId 就地沿用同一 chunk（純改名，資料不搬家）——
+  // 絕不可讓 newId 落回 legacy 推導（可能算出一個 manifest 早已不再列出的舊式 chunk 名稱，
+  // 誤把該 legacy chunk 檔重新掛回 manifest）。oldId 暫留同一筆對照，讓 saveCasesChunks 內
+  // getCaseChunkName(oldId)（用於 removeIds 分流）也解析到同一個檔案；呼叫結束後才清除 oldId。
+  const _renameChunk = _caseChunkMap.has(oldId) ? _caseChunkMap.get(oldId) : null;
+  if (_renameChunk) _caseChunkMap.set(newId, _renameChunk);
   await saveCasesChunks(newId, { removeIds: [oldId] });
+  if (_renameChunk) _caseChunkMap.delete(oldId);
   if (cfgChanged) await driveUpdateJsonFile(CONFIG_FILE, configData);
   if (transferChanged) await saveTransfer();
 }
@@ -23951,26 +24177,56 @@ async function _swapMainCaseId(caseId, formerId) {
   auditLog('主案號對調', newId, null, `由 ${oldId} 對調為 ${newId}`);
 }
 
-async function migrateToChunks() {
+// 個案架構重構 Slice 3：算出全量重建時每個個案的新 chunk 名稱（Map caseId -> chunkName）。
+// scheme='legacy' → 現行案號推導公式（getCaseChunkName；重新分塊前 _caseChunkMap 為空，等同純公式，行為不變）；
+// scheme='active-cold' → _rechunkAssignments（活躍集中 active-NN／其餘依最後活動學年歸檔 cold-{學年}-N）。
+function _fullRebuildAssignments(cases, scheme) {
+  if (scheme === 'active-cold') return _rechunkAssignments(cases, _isHotCase);
+  const map = new Map();
+  (cases || []).forEach(c => { if (c?.id) map.set(c.id, getCaseChunkName(c.id)); });
+  return map;
+}
+
+// 共用「計算歸屬＋寫入 chunk 檔＋更新 manifest」核心，供 migrateToChunks（合併遷移引擎尾端／首次升級資料
+// 結構等既有呼叫點）與管理者手動「重新分塊」（_manualRechunk）共用——沿用原本 migrateToChunks 既有的
+// 分批寫入順序（這條路徑經過實戰）。
+// fail-closed：任一批 chunk 寫入失敗，Promise.all 直接向上拋出例外中止，尚未寫入的批次不會執行，
+// casesManifest／_caseChunkMap 也都還沒被本次結果覆寫——中止當下系統仍讀舊 manifest.chunks，沿用既有 chunk 檔。
+async function _rebuildChunksCore(scheme) {
+  const assignMap = _fullRebuildAssignments(casesData.filter(c => c?.id), scheme);
   const chunkMap = {};
   casesData.forEach(c => {
     if (!c.id) return;
-    const chunk = getCaseChunkName(c.id);
-    if (!chunkMap[chunk]) chunkMap[chunk] = [];
-    chunkMap[chunk].push(c);
+    const chunkName = assignMap.get(c.id) || getCaseChunkName(c.id);
+    if (!chunkMap[chunkName]) chunkMap[chunkName] = [];
+    // chunk 欄位（Slice 3 歸屬記錄）只存 index，不可落地進 chunk 檔本體（case 物件可能因從 index entry 展開而帶有）
+    const { chunk, ...cleanC } = c;
+    chunkMap[chunkName].push(cleanC);
   });
   const chunks = Object.keys(chunkMap).sort();
   // 逐批儲存（每批 3 個），避免並發過多導致 Apps Script CORS/rate-limit 錯誤
   const BATCH = 3;
   for (let i = 0; i < chunks.length; i += BATCH) {
-    await Promise.all(chunks.slice(i, i + BATCH).map(chunk =>
-      driveSaveJsonInCases(`${chunk}.json`, { cases: chunkMap[chunk] })
+    await Promise.all(chunks.slice(i, i + BATCH).map(name =>
+      driveSaveJsonInCases(`${name}.json`, { cases: chunkMap[name] })
     ));
   }
+  // 全部 chunk 寫入成功才更新歸屬與 manifest（上面任一批失敗會直接拋出，不會執行到這裡）
+  assignMap.forEach((name, id) => _caseChunkMap.set(id, name));
   // 保留既有墓碑（避免被遺忘的永久刪除復活）
   const prevDeletedIds = Array.isArray(casesManifest?.deletedIds) ? casesManifest.deletedIds : [];
   casesManifest = { chunks, deletedIds: prevDeletedIds };
   await driveSaveJsonInCases('manifest.json', casesManifest);
+  return { chunks, scheme };
+}
+
+// 全量重建 chunk 檔＋manifest。不帶 opts 時自動偵測現行 scheme：已執行過重新分塊（manifest.chunks
+// 有 active- 開頭項）→ 'active-cold'，否則 → 'legacy'——與重新分塊功能上線前完全相同行為，
+// 既有呼叫點（合併遷移引擎尾端、首次升級資料結構等）不需個別修改即自動沿用現行 scheme。
+// opts.scheme 可強制指定 'active-cold'，供管理者「重新分塊」操作使用（見 _manualRechunk）。
+async function migrateToChunks(opts) {
+  const scheme = (opts && opts.scheme) || (_rechunkHasRun() ? 'active-cold' : 'legacy');
+  return _rebuildChunksCore(scheme);
 }
 
 async function driveFindFile(path) {
@@ -27147,6 +27403,13 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-10', v: 157, title: '個案架構重構 Slice 3：chunk 與案號脫鉤（active/cold 分塊）', isProd: false, items: [
+      item('新功能', 'chunk 歸屬與案號（首次開案學期）脫鉤：新增「案號查詢與管理」管理卡「個案重新分塊」——手動觸發後，本學期開案中的活躍個案集中到少數 active-NN chunk，其餘依最後活動學年歸檔為 cold-{學年}-N chunk（每塊 ≤20 案），解決舊制下活躍個案散落各學年 chunk、啟動要下載的「使用中」chunk 壓不下來的問題（實測 66/109）'),
+      item('改善', 'cases-index.json 每筆新增 chunk 欄位記錄歸屬；getCaseChunkName 優先讀取歸屬記錄，沒有記錄（尚未重新分塊）則完全沿用現行案號推導公式，重新分塊前系統行為不變'),
+      item('改善', '合併遷移引擎（Slice 2）尾端全量重建與「重新分塊」共用同一套核心，自動沿用現行 scheme（已重新分塊過 → 新制；否則 → 舊制）；新開案在已重新分塊後自動分配到未滿的 active chunk'),
+      item('改善', 'hot chunk 判定：已重新分塊時直接以 chunk 命名判斷（active-* 為 hot），不再逐案掃描，是壓低啟動載入量的關鍵；重新分塊為手動操作（不自動執行），建議每學期初執行一次；舊 chunk 檔留在 Drive 不刪除，僅 manifest 不再列出'),
+      item('技術', '啟動載入待實際執行重新分塊後可再進一步驗證加速效果；結案／封存不即時搬 chunk，留待下次重新分塊時歸位'),
+    ]},
     { date: '2026-07-09', v: 156, title: '個案合併遷移 dry-run 驗證強化：學號/身分證比對、案內混人偵測、同名同姓提示', isProd: false, items: [
       item('改善', '一學生一案號遷移（Slice 2）dry-run 報告：每組每個成員案號旁顯示學號與身分證字號（身分證僅前1碼＋後3碼，中間遮罩），缺漏顯示「（無）」，供人工核對是否真為同一人'),
       item('重大修復', '組內識別衝突偵測：同組成員間學號或身分證不一致（皆非空才比對）時標紅「⚠ 識別衝突」，該組預設取消勾選「納入本次合併」，避免同名不同人被誤合併（空值不算衝突，僅標記「識別資料不全」）'),
@@ -40116,6 +40379,7 @@ async function _confirmLinkRecord(recId) {
     if (withdrawNote) rec.withdrawalNote = withdrawNote;
     document.getElementById('link-case-modal')?.remove();
     casesData.push(newCase);
+    _assignChunkForNewCase(newId); // Slice 3：已重新分塊時分配 active chunk，否則不動作（legacy fallback）
     _checkTransferGradTodos(); renderTransferPage();
     const jobId = bgJobAdd('建立新個案並連結轉銜紀錄');
     (async () => {
