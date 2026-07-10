@@ -100,3 +100,96 @@ test('_bkSeriesDiffAnalyze：少於 2 筆回傳空結果', () => {
   assert.equal(r.items.size, 0);
   assert.deepEqual(r.missingDates, []);
 });
+
+// v165：新建系列／整系列重排會落地 seriesPlan（{dates,startTime,endTime,room,customRoom,stampedAt}，
+// 同代成員共用同一份內容）與各自的 planDate（自己那筆的原規劃日期），供之後精確比對／刪除偵測，
+// 取代 v163 的多數值反推。以下三例覆蓋：全員同代（精確模式）、代別混雜或部分缺（逐筆精確＋刪除退回推算）、
+// 完全無快照（fallback＝v163 行為不變，已由上方既有 6 例涵蓋，此處另補一個混合情境）。
+function _plan(dates, extra) {
+  return Object.assign({ dates, startTime: '09:10', endTime: '10:00', room: 'A101', customRoom: '', stampedAt: 'g1' }, extra || {});
+}
+
+test('_bkSeriesDiffAnalyze：精確模式（全員同代快照）— 逐筆比對 date/planDate 與 seriesPlan，不靠多數值', () => {
+  const S = load_();
+  const dates = ['2026-07-01', '2026-07-08', '2026-07-15', '2026-07-22'];
+  const plan = _plan(dates);
+  const list = [
+    { id: 'b1', date: '2026-07-01', planDate: '2026-07-01', startTime: '09:10', endTime: '10:00', room: 'A101', customRoom: '', seriesPlan: plan },
+    { id: 'b2', date: '2026-07-08', planDate: '2026-07-08', startTime: '09:10', endTime: '10:00', room: 'A101', customRoom: '', seriesPlan: plan },
+    // b3：日期／節次／空間三個欄位都被個別改動，但仍是同一代快照（自己那筆的 planDate/seriesPlan 不變）
+    { id: 'b3', date: '2026-07-16', planDate: '2026-07-15', startTime: '10:15', endTime: '11:05', room: 'B202', customRoom: '', seriesPlan: plan },
+  ];
+  const r = S._bkSeriesDiffAnalyze(list);
+  assert.equal(r.baseline.exact, true);
+  const d1 = r.items.get('b1');
+  assert.equal(d1.dateChanged, false); assert.equal(d1.roomChanged, false); assert.equal(d1.periodChanged, false);
+  const d3 = r.items.get('b3');
+  assert.equal(d3.dateChanged, true); assert.equal(d3.roomChanged, true); assert.equal(d3.periodChanged, true);
+  assert.equal(d3.origDate, '2026-07-15');
+  // 07-22 那筆在 seriesPlan.dates 中，但現存成員沒有任何一筆 planDate === 07-22 → 精確判定為已刪除
+  assert.deepEqual(r.missingDates, ['2026-07-22']);
+  assert.equal(r.deletionMode, 'exact');
+});
+
+test('_bkSeriesDiffAnalyze：僅此筆單筆編輯不動快照 — 該筆快照與其他成員仍同代，維持精確模式', () => {
+  const S = load_();
+  // 模拟「僅此筆」編輯：只改了 b2 的 date/room（欄位本身），但 seriesPlan/planDate 完全沒被觸碰
+  // （saveBooking 的 scope='this' 分支不寫入 seriesPlan/planDate，見程式碼），其餘成員也原封不動。
+  const dates = ['2026-07-01', '2026-07-08', '2026-07-15'];
+  const plan = _plan(dates);
+  const list = [
+    { id: 'b1', date: '2026-07-01', planDate: '2026-07-01', startTime: '09:10', endTime: '10:00', room: 'A101', customRoom: '', seriesPlan: plan },
+    { id: 'b2', date: '2026-07-09', planDate: '2026-07-08', startTime: '09:10', endTime: '10:00', room: 'B202', customRoom: '', seriesPlan: plan },
+    { id: 'b3', date: '2026-07-15', planDate: '2026-07-15', startTime: '09:10', endTime: '10:00', room: 'A101', customRoom: '', seriesPlan: plan },
+  ];
+  const r = S._bkSeriesDiffAnalyze(list);
+  assert.equal(r.deletionMode, 'exact');
+  assert.deepEqual(r.missingDates, []); // 三筆的 planDate 恰好覆蓋 seriesPlan.dates 全部三個日期
+  const d2 = r.items.get('b2');
+  assert.equal(d2.dateChanged, true);
+  assert.equal(d2.roomChanged, true);
+  assert.equal(d2.origDate, '2026-07-08');
+  assert.equal(d2.origRoom, 'A101');
+});
+
+test('_bkSeriesDiffAnalyze：快照混代（部分筆「此筆之後」重排過，代別不同）— 逐筆仍精確比對，刪除退回 v163 推算', () => {
+  const S = load_();
+  const oldPlan = _plan(['2026-07-01', '2026-07-08', '2026-07-15', '2026-07-22'], { stampedAt: 'g1' });
+  const newPlan = _plan(['2026-07-15', '2026-07-22'], { stampedAt: 'g2', room: 'B202' });
+  const list = [
+    // b1/b2：舊代快照未被本次「此筆之後」編輯觸碰，維持原樣
+    { id: 'b1', date: '2026-07-01', planDate: '2026-07-01', startTime: '09:10', endTime: '10:00', room: 'A101', customRoom: '', seriesPlan: oldPlan },
+    { id: 'b2', date: '2026-07-08', planDate: '2026-07-08', startTime: '09:10', endTime: '10:00', room: 'A101', customRoom: '', seriesPlan: oldPlan },
+    // b3/b4：此筆之後範圍重排，換了新代快照與新空間
+    { id: 'b3', date: '2026-07-15', planDate: '2026-07-15', startTime: '09:10', endTime: '10:00', room: 'B202', customRoom: '', seriesPlan: newPlan },
+    { id: 'b4', date: '2026-07-22', planDate: '2026-07-22', startTime: '09:10', endTime: '10:00', room: 'B202', customRoom: '', seriesPlan: newPlan },
+  ];
+  const r = S._bkSeriesDiffAnalyze(list);
+  // 代別混雜（stampedAt 不只一種）→ 非精確模式；但每筆仍各自帶自己那代的快照，逐筆比對仍精確（皆無變更）
+  for (const x of list) {
+    const d = r.items.get(x.id);
+    assert.equal(d.exact, true);
+    assert.equal(d.dateChanged, false);
+    assert.equal(d.roomChanged, false);
+    assert.equal(d.periodChanged, false);
+  }
+  // 刪除偵測退回 v163 推算法（不使用 seriesPlan.dates 聯集，避免把被合法取代的舊日期誤報成刪除）
+  assert.equal(r.deletionMode, 'inferred');
+});
+
+test('_bkSeriesDiffAnalyze：部分成員完全無快照（舊系列事後手動加新筆）— 缺快照的筆退回多數值比對', () => {
+  const S = load_();
+  const plan = _plan(['2026-07-01', '2026-07-08', '2026-07-15']);
+  const list = [
+    { id: 'b1', date: '2026-07-01', planDate: '2026-07-01', startTime: '09:10', endTime: '10:00', room: 'A101', customRoom: '', seriesPlan: plan },
+    { id: 'b2', date: '2026-07-08', planDate: '2026-07-08', startTime: '09:10', endTime: '10:00', room: 'A101', customRoom: '', seriesPlan: plan },
+    { id: 'b3', date: '2026-07-15', planDate: '2026-07-15', startTime: '09:10', endTime: '10:00', room: 'A101', customRoom: '', seriesPlan: plan },
+    // b4：完全沒有 seriesPlan/planDate（例如舊系列後來手動加的一筆），但欄位與多數值一致
+    { id: 'b4', date: '2026-07-22', startTime: '09:10', endTime: '10:00', room: 'A101', customRoom: '' },
+  ];
+  const r = S._bkSeriesDiffAnalyze(list);
+  const d4 = r.items.get('b4');
+  assert.equal(d4.exact, false);
+  assert.equal(d4.roomChanged, false); // 多數值仍是 A101，b4 未偏離
+  assert.equal(r.deletionMode, 'inferred'); // 非全員同代 → 退回推算
+});
