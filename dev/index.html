@@ -27643,6 +27643,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-10', v: 163, title: '檢視系列預約：與原規劃差異醒目標示', isProd: false, items: [
+      item('新功能', '「檢視此系列預約」清單中，若某筆的日期、節次（時間）或空間與系列原規劃不同，該欄位以底色標黃醒目呈現，滑過可看到原規劃的值'),
+      item('新功能', '系列中疑似被刪除的原規劃場次（依既有規律推算出應有但目前不存在的日期），會以灰階＋刪除線列呈現在清單對應位置，標示「已刪除（推算）」'),
+      item('技術', '系列預約未保存建立當下的原始規則，且刪除為直接移除、不留記錄；改以系列現存筆數的多數值反推「原規劃」基準（日期比對星期幾或每月同一天何者較符合多數、節次與空間各自取多數值，未過半不判斷），刪除偵測限相鄰日期差有明確固定天數規律時才推算，避免誤判'),
+    ]},
     { date: '2026-07-10', v: 162, title: 'v160 驗證回饋修正：系列預約檢視動線——單筆編輯提示與返回', isProd: true, items: [
       item('改善', '從「檢視此系列預約」清單點選某一筆後，直接進入該筆的單筆編輯畫面（不再跳出「僅此筆／此筆之後／全部系列」的範圍選擇），且畫面頂部會明顯提示「僅修改此筆：本次儲存只會影響這一筆預約，不影響系列其他預約」'),
       item('改善', '該筆編輯儲存成功後，自動回到「檢視此系列預約」清單（同一系列、資料重新整理），立即看到清單中呈現的最新結果；取消或關閉編輯畫面時也會回到同一清單，不會跳到一般預約列表'),
@@ -30085,34 +30090,168 @@ function _bkConfirmSeriesScope(scope) {
   _checkBkConflict();
 }
 
+// v163：「檢視此系列預約」清單與「原規劃」比對——系列預約未存建立當下的原始規則或逐筆快照
+// （新增/系列重排時只落地最終欄位值，見 saveBooking），且刪除為直接從 bookingsData 移除、無墓碑欄位，
+// 故無法採方案 A／B（無原始規則可查、無法回溯已刪除筆的快照）。改採方案 C：以系列「現存筆數」的多數值
+// 反推基準——日期比對「星期幾」或「每月同一天」兩種規律何者較符合多數（皆未過半則不判斷日期）；
+// 節次（起訖時間）、空間各自獨立取多數值，未過半（如剛好各半）不判斷、不誤標。
+// 刪除偵測：僅在相鄰日期差存在明確多數（固定天數頻率，如每週/每兩週）時，以該頻率從最早一筆推算到
+// 最晚一筆之間「應有但目前不存在」的日期，視為疑似被刪除的原規劃筆；頻率不固定（如每月，日差不固定）
+// 或資料點過少則不推算，只做偏離醒目標示。純函式（無 DOM／無日期以外的外部依賴），供
+// _bkRenderSeriesListModal 呼叫，亦供單元測試（test/booking-series-diff.test.js）。
+// list：同一 seriesId 的預約物件陣列（不要求已排序），至少含 id/date/startTime/endTime/room/customRoom。
+function _bkSeriesDiffAnalyze(list) {
+  const mode = (arr) => {
+    const cnt = new Map();
+    arr.forEach(v => cnt.set(v, (cnt.get(v) || 0) + 1));
+    let best = null, bestN = 0;
+    cnt.forEach((n, v) => { if (n > bestN) { bestN = n; best = v; } });
+    return { value: best, count: bestN };
+  };
+  const roomKeyOf = x => x.room === '其他' ? `其他::${x.customRoom || ''}` : (x.room || '');
+  const periodKeyOf = x => `${(x.startTime || '').slice(0, 5)}|${(x.endTime || '').slice(0, 5)}`;
+  const weekdayOf = x => x.date ? new Date(x.date + 'T00:00:00').getDay() : null;
+  const domOf = x => x.date ? parseInt(x.date.slice(8, 10), 10) : null;
+  const daysBetween = (a, b) => {
+    const [ay, am, ad] = a.split('-').map(Number), [by, bm, bd] = b.split('-').map(Number);
+    return Math.round((new Date(by, bm - 1, bd) - new Date(ay, am - 1, ad)) / 86400000);
+  };
+  const addDays = (d, n) => {
+    const [y, m, dd] = d.split('-').map(Number);
+    const nd = new Date(y, m - 1, dd + n);
+    return `${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, '0')}-${String(nd.getDate()).padStart(2, '0')}`;
+  };
+
+  const total = list.length;
+  if (total < 2) return { baseline: null, items: new Map(), missingDates: [] };
+
+  const roomMode = mode(list.map(roomKeyOf));
+  const periodMode = mode(list.map(periodKeyOf));
+  const dated = list.filter(x => x.date);
+  const wdMode = mode(dated.map(weekdayOf));
+  const domMode = mode(dated.map(domOf));
+
+  const roomConfident = roomMode.count / total > 0.5;
+  const periodConfident = periodMode.count / total > 0.5;
+  const wdRatio = dated.length ? wdMode.count / dated.length : 0;
+  const domRatio = dated.length ? domMode.count / dated.length : 0;
+  let dateRule = null;
+  if (dated.length && Math.max(wdRatio, domRatio) > 0.5) {
+    dateRule = domRatio > wdRatio ? { type: 'dom', value: domMode.value } : { type: 'weekday', value: wdMode.value };
+  }
+  const roomSample = list.find(x => roomKeyOf(x) === roomMode.value);
+  const periodSample = list.find(x => periodKeyOf(x) === periodMode.value);
+
+  const baseline = {
+    room: roomConfident ? (roomSample?.room || '') : null,
+    customRoom: roomConfident ? (roomSample?.customRoom || '') : null,
+    roomConfident,
+    startTime: periodConfident ? (periodSample?.startTime || '') : null,
+    endTime: periodConfident ? (periodSample?.endTime || '') : null,
+    periodConfident,
+    dateRule,
+  };
+
+  const items = new Map();
+  list.forEach(x => {
+    const roomChanged = roomConfident && roomKeyOf(x) !== roomMode.value;
+    const periodChanged = periodConfident && periodKeyOf(x) !== periodMode.value;
+    let dateChanged = false;
+    if (dateRule && x.date) {
+      dateChanged = dateRule.type === 'weekday' ? weekdayOf(x) !== dateRule.value : domOf(x) !== dateRule.value;
+    }
+    items.set(x.id, { roomChanged, periodChanged, dateChanged });
+  });
+
+  // 疑似被刪除的原規劃日期：至少 3 筆且相鄰日期差存在明確多數（>半數區間同一天數差）才推算，
+  // 避免資料點過少、或頻率本就不固定（如逐筆手動調整過）時誤判。日期規則若判為「每月同一天」
+  // （dom）則不用固定天數推算——月份長短不一（28~31 天），用單一天數差步進會算錯，故略過。
+  let missingDates = [];
+  const dates = dated.map(x => x.date).sort();
+  if (dates.length >= 3 && (!dateRule || dateRule.type !== 'dom')) {
+    const diffs = [];
+    for (let i = 1; i < dates.length; i++) diffs.push(daysBetween(dates[i - 1], dates[i]));
+    const diffMode = mode(diffs);
+    if (diffMode.value > 0 && diffMode.count / diffs.length > 0.5) {
+      const set = new Set(dates);
+      let cur = dates[0];
+      const last = dates[dates.length - 1];
+      let guard = 0;
+      while (guard++ < 500) {
+        cur = addDays(cur, diffMode.value);
+        if (cur > last) break;
+        if (!set.has(cur)) missingDates.push(cur);
+      }
+    }
+  }
+
+  return { baseline, items, missingDates };
+}
+
 // 共用：依 seriesId 重繪「系列預約清單」內容並開窗；highlightId 標示「目前這筆」。
 // 供 _bkViewSeriesList()（從編輯範圍選擇跳出）與 _bkReopenSeriesView()（v162：單筆編輯結束後返回）共用。
+// v163：與 _bkSeriesDiffAnalyze() 反推的「原規劃」基準比對——偏離的日期／節次／空間以底色醒目標示，
+// hover 顯示原規劃值；推算出的疑似被刪除原規劃日期以灰階＋刪除線列呈現（按日期插入清單中正確位置）。
 function _bkRenderSeriesListModal(seriesId, highlightId) {
   const today = new Date().toISOString().slice(0, 10);
   const list = [...bookingsData.filter(x => x.seriesId === seriesId)]
     .sort((x, y) => `${x.date || ''}${x.startTime || ''}`.localeCompare(`${y.date || ''}${y.startTime || ''}`));
-  const _periodLabel = x => {
-    const p = BK_PERIODS.find(pp => pp.start === (x.startTime || '').slice(0, 5) && pp.end === (x.endTime || '').slice(0, 5));
-    return p ? p.label : `${(x.startTime || '').slice(0, 5)}–${(x.endTime || '').slice(0, 5)}`;
+  const _periodLabel = (start, end) => {
+    const p = BK_PERIODS.find(pp => pp.start === (start || '').slice(0, 5) && pp.end === (end || '').slice(0, 5));
+    return p ? p.label : `${(start || '').slice(0, 5)}–${(end || '').slice(0, 5)}`;
   };
-  const bodyEl = document.getElementById('bk-series-list-body');
-  bodyEl.innerHTML = list.map(x => {
+  const { baseline, items, missingDates } = _bkSeriesDiffAnalyze(list);
+  const _weekdayNames = ['日', '一', '二', '三', '四', '五', '六'];
+  const _dateRuleHint = baseline?.dateRule
+    ? (baseline.dateRule.type === 'weekday' ? `原規劃：每週${_weekdayNames[baseline.dateRule.value]}` : `原規劃：每月 ${baseline.dateRule.value} 日`)
+    : '';
+  const HL = 'background:#fefcbf;border-radius:3px;padding:0 2px;'; // 偏離基準的欄位醒目樣式
+
+  const rows = list.map(x => {
     const room = x.room === '其他' ? (x.customRoom || '其他') : x.room;
     const isCur = x.id === highlightId;
+    const diff = items.get(x.id) || {};
     const statusParts = [];
     if (isCur) statusParts.push('目前編輯這筆');
     else if ((x.date || '') < today) statusParts.push('已過期');
     if (!x.caseId) statusParts.push('未連結個案');
-    return `<div onclick="_bkViewSeriesJumpTo('${escHtml(x.id)}')"
+    const dateHtml = diff.dateChanged
+      ? `<span style="${HL}" data-tip="${escHtml(_dateRuleHint)}">${escHtml(x.date || '—')}</span>`
+      : escHtml(x.date || '—');
+    const periodHtml = diff.periodChanged
+      ? `<span style="${HL}" data-tip="${escHtml('原規劃：' + _periodLabel(baseline.startTime, baseline.endTime))}">${escHtml(_periodLabel(x.startTime, x.endTime))}</span>`
+      : escHtml(_periodLabel(x.startTime, x.endTime));
+    const baseRoomTxt = baseline?.roomConfident ? (baseline.room === '其他' ? (baseline.customRoom || '其他') : baseline.room) : '';
+    const roomHtml = diff.roomChanged
+      ? `<span style="${HL}" data-tip="${escHtml('原規劃：' + (baseRoomTxt || '—'))}">${escHtml(room || '—')}</span>`
+      : escHtml(room || '—');
+    return { date: x.date, html: `<div onclick="_bkViewSeriesJumpTo('${escHtml(x.id)}')"
         style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border:1px solid ${isCur ? '#1a5276' : '#e2e8f0'};border-radius:8px;margin-bottom:8px;cursor:pointer;background:${isCur ? '#ebf8ff' : '#fff'};"
         onmouseenter="this.style.background='#f7fafc'" onmouseleave="this.style.background='${isCur ? '#ebf8ff' : '#fff'}'">
       <div>
-        <div style="font-size:.9rem;font-weight:600;color:#2d3748;">${escHtml(x.date || '—')}　${escHtml(_periodLabel(x))}</div>
-        <div style="font-size:.8rem;color:#718096;margin-top:2px;">${escHtml(room || '—')}${x.caseName ? '　｜　' + escHtml(x.caseName) : ''}</div>
+        <div style="font-size:.9rem;font-weight:600;color:#2d3748;">${dateHtml}　${periodHtml}</div>
+        <div style="font-size:.8rem;color:#718096;margin-top:2px;">${roomHtml}${x.caseName ? '　｜　' + escHtml(x.caseName) : ''}</div>
       </div>
       ${statusParts.length ? `<span style="font-size:.75rem;color:${isCur ? '#1a5276' : '#a0aec0'};white-space:nowrap;">${escHtml(statusParts.join('・'))}</span>` : ''}
-    </div>`;
-  }).join('') || '<div style="padding:16px;text-align:center;color:#a0aec0;font-size:.85rem;">找不到系列預約資料。</div>';
+    </div>` };
+  });
+
+  // 疑似被刪除的原規劃列——不可點擊、灰階＋刪除線，仍顯示推算出的原規劃日期／節次／空間
+  const deletedRows = missingDates.map(d => {
+    const roomTxt = baseline?.roomConfident ? (baseline.room === '其他' ? (baseline.customRoom || '其他') : baseline.room) : '—';
+    const periodTxt = baseline?.periodConfident ? _periodLabel(baseline.startTime, baseline.endTime) : '—';
+    return { date: d, html: `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border:1px dashed #cbd5e0;border-radius:8px;margin-bottom:8px;background:#f7fafc;opacity:.6;">
+      <div style="text-decoration:line-through;">
+        <div style="font-size:.9rem;font-weight:600;color:#718096;">${escHtml(d)}　${escHtml(periodTxt)}</div>
+        <div style="font-size:.8rem;color:#a0aec0;margin-top:2px;">${escHtml(roomTxt)}</div>
+      </div>
+      <span style="font-size:.75rem;color:#a0aec0;white-space:nowrap;text-decoration:none;">已刪除（推算）</span>
+    </div>` };
+  });
+
+  const combined = [...rows, ...deletedRows].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  const bodyEl = document.getElementById('bk-series-list-body');
+  bodyEl.innerHTML = combined.map(c => c.html).join('') || '<div style="padding:16px;text-align:center;color:#a0aec0;font-size:.85rem;">找不到系列預約資料。</div>';
   document.getElementById('bk-series-list-modal').style.display = 'flex';
 }
 
