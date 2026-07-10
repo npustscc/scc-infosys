@@ -73,15 +73,24 @@ function doPost(e) {
       return jsonResp_({ error: 'Unauthorized user' });
     }
 
-    // ── P0-3：需管理者的破壞性／維運／個資傾印動作（後端硬閘；前端 UI 隱藏不算數，可直呼 API）──
-    // deleteFile/moveFile 前端未使用，一併限 admin 縮小攻擊面。
-    var ADMIN_ONLY_ACTIONS = {
-      shareCalendarWriters: true, clearMentalLeaves: true,
-      dumpNpust5Emails: true, listInboxEmails: true,
-      deleteFile: true, moveFile: true,
-    };
+    // ── P0-3：敏感動作後端硬閘（前端 UI 隱藏不算數，攻擊者可直呼公開 API）──
+    // (a) 純攻擊面：前端從未使用（deleteFile/moveFile）或僅維運/除錯用（信件傾印），一律限 admin。
+    var ADMIN_ONLY_ACTIONS = { dumpNpust5Emails: true, listInboxEmails: true, deleteFile: true, moveFile: true };
     if (ADMIN_ONLY_ACTIONS[action] && !isAdminUser_(userEmail)) {
       return jsonResp_({ error: 'Forbidden: admin only' });
+    }
+    // (b) shareCalendarWriters：管理者可授權/撤銷任何人；非管理者僅能對「自己」（自助日曆連結，
+    //     專任諮商師亦適用，非僅管理者），杜絕非管理者把日曆編輯權授予任意 email。
+    if (action === 'shareCalendarWriters' && !isAdminUser_(userEmail)
+        && !shareToSelfOnly_(params.emails, userEmail)) {
+      return jsonResp_({ error: 'Forbidden: non-admin may only share to self' });
+    }
+    // (c) clearMentalLeaves：清空 mental_leaves.json（破壞性）；限 admin 或身心調適假窗口。
+    if (action === 'clearMentalLeaves' && !isAdminUser_(userEmail)) {
+      var _mlEntry = (localConfigUsers_() || {})[userEmail];
+      if (!_mlEntry || _mlEntry.isMentalLeaveContact !== true) {
+        return jsonResp_({ error: 'Forbidden: admin or mental-leave contact only' });
+      }
     }
 
     // ── P0-2（皇冠珠寶檔保護）改列 P1，尚未在此啟用 ──
@@ -455,6 +464,11 @@ function isAdminUser_(userEmail) {
   if (!userEmail) return false;
   if (BOOTSTRAP_ADMINS.indexOf(userEmail) !== -1) return true;
   return adminDecision_(localConfigUsers_(), userEmail, BOOTSTRAP_ADMINS);
+}
+
+// 純決策（可單元測試）：shareCalendarWriters 的非管理者路徑——emails 必須恰為「自己一人」。
+function shareToSelfOnly_(emails, userEmail) {
+  return Array.isArray(emails) && emails.length === 1 && !!userEmail && emails[0] === userEmail;
 }
 
 // ── 回應工具 ──────────────────────────────────────────────────────────────────
