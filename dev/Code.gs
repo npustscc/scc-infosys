@@ -105,6 +105,18 @@ function doPost(e) {
       }
     }
 
+    // ── F3：fileId/parentId 類動作限制在本次 ctx.root 子樹（杜絕以任意 fileId 越界讀寫/刪除 Drive 檔案）──
+    // 只保護「目標必在本地 root」的 JSON 資料/破壞性/資料夾動作；downloadFileBase64（附件，含跨環境
+    // issue 附件）與 query（枚舉）另設計，暫不納入（見 P1）。fileId 類動作不會走 issues.json 例外，
+    // 故此處 ctx.root 恆為本地 root。
+    var ROOT_GUARDED = { readJsonById: 'fileId', updateContentById: 'fileId', deleteFile: 'fileId',
+      moveFile: 'fileId', trashFile: 'fileId', getMetadata: 'fileId', createFolder: 'parentId',
+      createJson: 'parentId', uploadFile: 'parentFolderId', listFolder: 'folderId' };
+    var _rgKey = ROOT_GUARDED[action];
+    if (_rgKey && params[_rgKey] && !isUnderRoot_(params[_rgKey], ctx.root)) {
+      return jsonResp_({ error: 'Forbidden: target outside root' });
+    }
+
     let result;
     switch (action) {
       case 'ping':               result = { ok: true, email: userEmail }; break;
@@ -511,6 +523,45 @@ function isConfigWrite_(action, params, cfgFileId) {
   if (action === 'createJson')        return params.name === 'config.json';
   if (action === 'updateContentById') return !!cfgFileId && params.fileId === cfgFileId;
   return false;
+}
+
+// ── F3：fileId/parentId 類動作限制在本次 ctx.root 子樹 ──
+// 純函式（getParents 注入，可單元測試）：沿 parents 鏈自 fileId 往上找，能到 rootId 即為 root 子孫。
+function _ancestorContains_(getParents, fileId, rootId, maxHops) {
+  if (!fileId || !rootId) return false;
+  var seen = {};
+  var frontier = [fileId];
+  var hops = 0;
+  var limit = maxHops || 25;
+  while (frontier.length && hops < limit) {
+    var next = [];
+    for (var i = 0; i < frontier.length; i++) {
+      var id = frontier[i];
+      if (id === rootId) return true;
+      if (seen[id]) continue;
+      seen[id] = true;
+      var parents = getParents(id) || [];
+      for (var j = 0; j < parents.length; j++) next.push(parents[j]);
+    }
+    frontier = next;
+    hops++;
+  }
+  return false;
+}
+
+// fileId 是否為 rootId 的子孫（含自身）；正向結果快取 30 分鐘（fileId 的 parents 幾乎不變）。
+function isUnderRoot_(fileId, rootId) {
+  if (!fileId || !rootId) return false;
+  if (fileId === rootId) return true;
+  var cache = CacheService.getScriptCache();
+  var CK = 'inroot:' + String(rootId).slice(-24) + ':' + String(fileId).slice(-40);
+  try { if (cache.get(CK) === '1') return true; } catch (_) {}
+  var ok = _ancestorContains_(function(id) {
+    try { return (driveGet_('files/' + id, { fields: 'parents' }) || {}).parents || []; }
+    catch (e) { return []; }
+  }, fileId, rootId, 25);
+  if (ok) { try { cache.put(CK, '1', 1800); } catch (_) {} }
+  return ok;
 }
 
 // 深度相等（純函式；供授權欄位比對）。

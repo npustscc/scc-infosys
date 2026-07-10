@@ -235,3 +235,49 @@ test('cfgWrite：oldCfg 為 null（讀不到當前 config）→ fail-closed 擋'
   const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
   assert.equal(S.configWriteAllowedForNonAdmin_(null, mkCfg({ 'a@x.com': {} }), 'a@x.com', PRIV), false);
 });
+
+// ── _ancestorContains_：fileId 祖先鏈是否含 root（F3）──
+// parentsMap: { fileId: [parentIds...] }；getParents = id => parentsMap[id] || []
+const mkGetParents = (map) => (id) => map[id] || [];
+
+test('ancestor：檔案直接在 root 下 → true', () => {
+  const S = loadFromCodeGs(['_ancestorContains_']);
+  const gp = mkGetParents({ 'f1': ['ROOT'] });
+  assert.equal(S._ancestorContains_(gp, 'f1', 'ROOT', 25), true);
+});
+
+test('ancestor：檔案在 root 的子資料夾下（多層）→ true', () => {
+  const S = loadFromCodeGs(['_ancestorContains_']);
+  const gp = mkGetParents({ 'f1': ['cases'], 'cases': ['ROOT'] });
+  assert.equal(S._ancestorContains_(gp, 'f1', 'ROOT', 25), true);
+});
+
+test('ancestor：檔案在別的資料夾（不在 root 下）→ false（擋越界）', () => {
+  const S = loadFromCodeGs(['_ancestorContains_']);
+  const gp = mkGetParents({ 'evil': ['otherRoot'], 'otherRoot': [] });
+  assert.equal(S._ancestorContains_(gp, 'evil', 'ROOT', 25), false);
+});
+
+test('ancestor：fileId 就是 root 本身 → true', () => {
+  const S = loadFromCodeGs(['_ancestorContains_']);
+  assert.equal(S._ancestorContains_(mkGetParents({}), 'ROOT', 'ROOT', 25), true);
+});
+
+test('ancestor：parents 自我循環不無限迴圈 → false', () => {
+  const S = loadFromCodeGs(['_ancestorContains_']);
+  const gp = mkGetParents({ 'f1': ['f1'] });
+  assert.equal(S._ancestorContains_(gp, 'f1', 'ROOT', 25), false);
+});
+
+test('ancestor：超過 maxHops 未達 root → false（防過深遍歷）', () => {
+  const S = loadFromCodeGs(['_ancestorContains_']);
+  const gp = mkGetParents({ 'a': ['b'], 'b': ['c'], 'c': ['ROOT'] });
+  assert.equal(S._ancestorContains_(gp, 'a', 'ROOT', 2), false);  // a→b→c 需 3 跳，限 2 跳搆不到
+  assert.equal(S._ancestorContains_(gp, 'a', 'ROOT', 25), true);
+});
+
+test('ancestor：空 fileId/rootId → false', () => {
+  const S = loadFromCodeGs(['_ancestorContains_']);
+  assert.equal(S._ancestorContains_(mkGetParents({}), '', 'ROOT', 25), false);
+  assert.equal(S._ancestorContains_(mkGetParents({}), 'f1', '', 25), false);
+});
