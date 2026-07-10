@@ -3,12 +3,20 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <!-- CSP：只管 connect-src（fetch/XHR 目的地白名單）——就算 XSS 得逞，也無法把 localStorage 的
+  <!-- CSP：connect-src（fetch/XHR 目的地白名單）——就算 XSS 得逞，也無法把 localStorage 的
        session token fetch 外傳到白名單以外的網域（縱深防禦的出口層；入口層為 DOMPurify）。
-       不宣告其他指令 → script/img/style 載入不受影響（CDN 動態載入、OSM 圖磚照常）。
+       不宣告 script/style/default 等指令 → 不受影響（單檔架構需 inline script、CDN 動態載入
+       SheetJS/pdf.js、GSI iframe，動這些會壞）。
        ⚠ script.googleusercontent.com 是 GAS /exec 的 302 轉址目的地，與 script.google.com 必須成對存在，
-         缺一則所有 proxyCall 失敗＝全系統癱瘓。新增對外 fetch 時記得回來補這份白名單。 -->
-  <meta http-equiv="Content-Security-Policy" content="connect-src 'self' https://npustscc.github.io https://script.google.com https://script.googleusercontent.com https://accounts.google.com https://ipapi.co;" />
+         缺一則所有 proxyCall 失敗＝全系統癱瘓。新增對外 fetch 時記得回來補這份白名單。
+       img-src（v166 新增）：白名單依實際盤點——data:/blob:（附件縮圖、家系圖匯出、PDF 轉圖片、
+       canvas 匯出，皆為前端產生，不接受外部網域夾帶）、unpkg.com（Leaflet 預設 marker 圖示，
+       跟隨 leaflet.js 的載入位置）、*.tile.openstreetmap.org（地圖圖磚）、*.googleusercontent.com
+       （Google 帳號大頭貼 currentUser.picture）。⚠ 新增外部圖片來源時必須同步補這份 img-src，
+       否則圖片會無聲不顯示（不會跳錯誤視窗，只會是破圖或空白，排查時容易忽略是 CSP 擋的）。
+       object-src 'none'：系統不用 <object>/<embed>，零風險關閉。
+       base-uri 'self'：防 <base> 標籤注入劫持全頁相對路徑，零風險關閉。 -->
+  <meta http-equiv="Content-Security-Policy" content="connect-src 'self' https://npustscc.github.io https://script.google.com https://script.googleusercontent.com https://accounts.google.com https://ipapi.co; img-src 'self' data: blob: https://unpkg.com https://*.tile.openstreetmap.org https://*.googleusercontent.com; object-src 'none'; base-uri 'self';" />
   <title>NPUST 諮商中心資訊系統</title>
   <script>(function(){var p=window.location.pathname;if(p.includes('/dev/')){document.title='【測試版】NPUST 諮商中心資訊系統';}})()</script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='14' fill='%23c05621'/><text y='.9em' font-size='80' x='10'>🧪</text></svg>" />
@@ -20497,7 +20505,7 @@ function _maybeShowSpamReminder() {
     <div class="modal-box" style="max-width:460px;">
       <div class="modal-header"><h3>📬 登入通知信提醒</h3></div>
       <div class="modal-body" style="padding:12px 2px 8px;font-size:.9rem;color:#4a5568;line-height:1.7;">
-        <p>系統每天首次登入會寄一封「登入通知」信到你的 Gmail（含時間、IP、大致位置），用來保護你的帳號安全。</p>
+        <p>系統在你用「新裝置」或「新位置」登入時、或每隔幾天會寄一封「登入通知」信到你的 Gmail（含時間、IP、大致位置），用來保護你的帳號安全；平常在熟悉的裝置與地點登入則不會每次都寄信，減少信箱干擾。</p>
         <p style="color:#c05621;">⚠ 這封信常被 Gmail 分到<strong>「垃圾郵件」或「促銷內容」</strong>。建議你去找一下，並把寄件者
         <span style="font-family:monospace;">npust.scc@heartnpust.tw</span> 標記為「非垃圾郵件」／加入聯絡人，之後就會正常進收件匣。</p>
         <p style="font-size:.82rem;color:#718096;">若非本人登入，也可在「偏好設定 → 登入紀錄」查看並「登出所有裝置」。</p>
@@ -20550,9 +20558,12 @@ async function _renderMySessions() {
         : s.revoked
           ? '<span style="font-size:.72rem;color:#822727;background:#fff5f5;border:1px solid #feb2b2;border-radius:4px;padding:1px 6px;">已登出</span>'
           : '<span style="font-size:.72rem;color:#718096;background:#f7fafc;border:1px solid #e2e8f0;border-radius:4px;padding:1px 6px;">已過期</span>';
+    const mailBadge = s.mailSent
+      ? `<span title="此次登入已寄出通知信${s.mailReason ? '（' + escHtml(s.mailReason) + '）' : ''}" style="font-size:.78rem;color:#3182ce;">✉</span>`
+      : '';
     return `<div style="padding:8px 0;border-bottom:1px solid #edf2f7;display:flex;flex-direction:column;gap:2px;">
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <strong>${escHtml(uaShort(s.ua))}</strong>${statusBadge}
+        <strong>${escHtml(uaShort(s.ua))}</strong>${statusBadge}${mailBadge}
       </div>
       <div style="color:#718096;font-size:.8rem;">登入時間：${escHtml(fmt(s.issuedAt))}</div>
       <div style="color:#718096;font-size:.8rem;">IP：${escHtml(s.ip || '（未取得）')}${s.geo ? '　位置：' + escHtml(s.geo) : ''}</div>
@@ -27735,6 +27746,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-11', v: 166, title: '資安強化：圖片來源白名單＋登入通知改新裝置/新位置警示', isProd: false, items: [
+      item('資安', '新增 Content Security Policy 圖片來源白名單（img-src）：頁面只能顯示既定來源的圖片（系統本身的附件/家系圖/PDF轉圖片、地圖圖磚、Google 帳號大頭貼），防止萬一被注入惡意內容時，利用圖片網址將資料偷偷外傳到未知網域'),
+      item('改善', '登入通知信改為「異常偵測」邏輯：只在新裝置或新位置登入時才寄出警示信，熟悉的裝置與地點每隔幾天仍會收到一次保底通知，減少每天都收到信的干擾；「登入紀錄」頁照常記錄每一次登入，可隨時查看全部裝置並一鍵登出所有裝置'),
+      item('技術', '後端新增純函式 loginMailDecision_：無歷史紀錄、新裝置（UA 不同）、新位置（地理位置非空且不同）→ 寄信；地理位置查詢失敗（空值）不誤判為新位置；皆熟識時，距上次實際寄信 ≥7 天才保底寄一次；IP 位址刻意不參與判斷（浮動 IP 天天變動會造成誤報，換位置訊號已由地理位置涵蓋）'),
+    ]},
     { date: '2026-07-11', v: 165, title: '檢視系列預約：新建/重排系列會記住原規劃，差異比對與刪除偵測更精確', isProd: true, items: [
       item('改善', '新建立系列預約、或以「全部系列」／「此筆之後」範圍重新調整系列時，系統會記住這次規劃的完整日期、節次與空間，之後在「檢視此系列預約」清單中，只要有哪一筆偏離這份原規劃就能精確標示，不再只是用現存筆數猜測規律'),
       item('改善', '同理，被刪除的原規劃場次現在能精確標示「已刪除」（不再是「已刪除（推算）」），且不會再有推算法本身的誤判空間'),

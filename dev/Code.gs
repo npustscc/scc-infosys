@@ -327,7 +327,44 @@ function verifySessionToken_(token) {
   } catch (e) { return null; }
 }
 
-// 簽發 session＋寄登入通知信＋寫入登入紀錄。IP／大致位置由前端取得後傳入（GAS 拿不到來源 IP）。
+// 登入通知「異常偵測」純決策函式（v166）：熟識裝置/位置降噪，但保底 7 天必寄一次。
+//   history：該帳號在 sessions.json 的既有紀錄陣列（新舊不拘，函式內部不假設排序）。
+//   回傳 { mail: true|false, reason: 'first_login'|'new_ua'|'new_geo'|'periodic'|'' }。
+// 判斷順序：①無任何歷史→first_login ②本次 ua 與歷史任一筆完全相同才算熟識 UA，否則 new_ua
+//   ③geo 非空且與歷史任何一筆都不同→new_geo（geo 空值不觸發，查詢失敗很常見，靠 periodic 保底）
+//   ④以上都熟識→查歷史中「上次實際寄過信」（mailSent:true）的 issuedAtMs，距今 ≥7 天→periodic，否則不寄。
+// 安全註記（務必保留）：ua/geo 都是前端自報，攻擊者可任意假冒——熟識判斷只用來「降噪」（減少通知疲勞），
+//   不是安全邊界；7 天保底信＋登入紀錄頁（本人隨時可查全部裝置、可一鍵登出所有裝置）才是不可靜默的底線。
+// 設計決策：ip 刻意不參與異常判斷。行動網路/校網浮動 IP 天天在變，納入判斷會天天誤報「新裝置」
+//   造成通知疲勞、反而讓使用者對警示信免疫；「換地區」訊號已由 geo 涵蓋，ip 只留在登入紀錄頁供人工比對。
+function loginMailDecision_(history, ua, ip, geo, nowSec) {
+  var hist = Array.isArray(history) ? history : [];
+  if (hist.length === 0) return { mail: true, reason: 'first_login' };
+
+  var knownUa = hist.some(function (s) { return s && s.ua === ua; });
+  if (!knownUa) return { mail: true, reason: 'new_ua' };
+
+  if (geo) {
+    var knownGeo = hist.some(function (s) { return s && s.geo === geo; });
+    if (!knownGeo) return { mail: true, reason: 'new_geo' };
+  }
+
+  var lastMailedMs = null;
+  hist.forEach(function (s) {
+    if (s && s.mailSent) {
+      var t = Number(s.issuedAtMs || 0);
+      if (lastMailedMs === null || t > lastMailedMs) lastMailedMs = t;
+    }
+  });
+  var SEVEN_DAYS_MS = 7 * 24 * 3600 * 1000;
+  var nowMs = Number(nowSec) * 1000;
+  if (lastMailedMs === null || (nowMs - lastMailedMs) >= SEVEN_DAYS_MS) {
+    return { mail: true, reason: 'periodic' };
+  }
+  return { mail: false, reason: '' };
+}
+
+// 簽發 session＋依異常偵測決定是否寄登入通知信＋寫入登入紀錄。IP／大致位置由前端取得後傳入（GAS 拿不到來源 IP）。
 // 寄信、記錄失敗都不阻斷登入。
 function sessionStart_(userEmail, params, ctx) {
   var issued = issueSessionToken_(userEmail);
@@ -336,28 +373,13 @@ function sessionStart_(userEmail, params, ctx) {
   var geo = String((params && params.geo) || '').slice(0, 120);
   var mailSent = false;
   try {
-    var loginTime = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy/MM/dd HH:mm:ss');
-    var lines = [
-      '有人以此帳號登入屏科大學諮資訊系統。', '',
-      '登入時間：' + loginTime + '（台北時間）',
-      '瀏覽器資訊：' + ua,
-    ];
-    if (ip)  lines.push('IP 位址：' + ip);
-    if (geo) lines.push('大致位置：' + geo);
-    lines.push('', '此登入憑證將於今日 24:00（台北時間）自動失效。',
-      '若非本人操作，請立即聯繫系統管理者停用帳號，並可於系統「登入紀錄」頁按「登出所有裝置」使所有憑證即時失效。');
-    MailApp.sendEmail(userEmail, '【屏科大學諮資訊系統】登入通知', lines.join('\n'));
-    mailSent = true;
-  } catch (mailErr) {
-    Logger.log('sessionStart 通知信寄送失敗：' + mailErr.message);
-  }
-  try {
-    sessionsAppendRecord_({
+    var result = sessionsAppendRecordWithMailDecision_({
       jti: issued.jti, email: userEmail, ua: ua, ip: ip, geo: geo,
       iat: issued.iat, exp: issued.exp, issuedAtMs: Date.now(), issuedAt: new Date().toISOString(),
     }, ctx);
+    mailSent = !!(result && result.mailSent);
   } catch (recErr) {
-    Logger.log('sessionStart 登入紀錄寫入失敗：' + recErr.message);
+    Logger.log('sessionStart 登入紀錄寫入／通知信處理失敗：' + recErr.message);
   }
   return { sessionToken: issued.token, exp: issued.exp, email: userEmail, mailSent: mailSent };
 }
@@ -368,10 +390,17 @@ function sessionLogout_(userEmail) {
   return { ok: true };
 }
 
-// ── 登入紀錄（sessions.json）：供「登入紀錄」頁顯示（#6）與登入通知（#5/#11）──
-// 每筆 { jti, email, ua, ip, geo, iat, exp, issuedAtMs, issuedAt }；寫入時 prune（>45 天丟棄、每人最多留 15 筆）。
-function sessionsAppendRecord_(rec, ctx) {
-  if (!ctx) return;  // 無 ctx（不知寫哪個資料夾）則略過記錄，不阻斷登入
+// ── 登入紀錄（sessions.json）：供「登入紀錄」頁顯示（#6）與登入通知（#5/#11/v166 異常偵測）──
+// 每筆 { jti, email, ua, ip, geo, iat, exp, issuedAtMs, issuedAt, mailSent, mailReason }；
+// 寫入時 prune（>45 天丟棄、每人最多留 15 筆）。
+//
+// 讀檔取捨：history（判斷是否寄信要用的該帳號既有紀錄）與「寫入本次紀錄」共用同一次讀檔、
+// 同一把鎖，讀一次、判斷、寄信、append、寫回全部在鎖內完成——避免兩次獨立讀檔在鎖外各自
+// 判斷時，並發登入之間互相看不到彼此剛寫入的紀錄而誤判（例如同時兩次登入都判定 first_login）。
+// 代價：MailApp.sendEmail 也在鎖內執行，會拉長鎖持有時間；但寄信頻率低（多數登入因熟識而不寄）、
+// 且原本寄信本來就在 doPost 回應之前同步執行（前端本就要等），對整體延遲無額外影響。
+function sessionsAppendRecordWithMailDecision_(rec, ctx) {
+  if (!ctx) return { mailSent: false, mailReason: '' };  // 無 ctx（不知寫哪個資料夾）則略過記錄，不阻斷登入
   var lock = LockService.getScriptLock();
   try { lock.waitLock(10000); } catch (_) {}
   try {
@@ -388,6 +417,35 @@ function sessionsAppendRecord_(rec, ctx) {
         if (!data || !Array.isArray(data.sessions)) data = { sessions: [] };
       }
     } catch (_) { /* 檔不存在，稍後建立 */ }
+
+    var history = data.sessions.filter(function (s) { return s && s.email === rec.email; });
+    var nowSec = Math.floor(Date.now() / 1000);
+    var decision = loginMailDecision_(history, rec.ua, rec.ip, rec.geo, nowSec);
+
+    var mailSent = false;
+    if (decision.mail) {
+      try {
+        var loginTime = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy/MM/dd HH:mm:ss');
+        var isAnomaly = decision.reason === 'new_ua' || decision.reason === 'new_geo';
+        var subject = isAnomaly ? '【屏科大學諮資訊系統】⚠ 新裝置或新位置登入' : '【屏科大學諮資訊系統】登入通知';
+        var lines = [
+          isAnomaly ? '偵測到此帳號在「不熟識的裝置或位置」登入屏科大學諮資訊系統，請確認是否為本人操作：'
+                    : '有人以此帳號登入屏科大學諮資訊系統。', '',
+          '登入時間：' + loginTime + '（台北時間）',
+          '瀏覽器資訊：' + rec.ua,
+        ];
+        if (rec.ip)  lines.push('IP 位址：' + rec.ip);
+        if (rec.geo) lines.push('大致位置：' + rec.geo);
+        lines.push('', '此登入憑證將於今日 24:00（台北時間）自動失效。',
+          '若非本人操作，請立即聯繫系統管理者停用帳號，並可於系統「登入紀錄」頁按「登出所有裝置」使所有憑證即時失效。');
+        MailApp.sendEmail(rec.email, subject, lines.join('\n'));
+        mailSent = true;
+      } catch (mailErr) {
+        Logger.log('sessionStart 通知信寄送失敗：' + mailErr.message);
+      }
+    }
+    rec.mailSent = mailSent;
+    rec.mailReason = decision.reason || '';
 
     data.sessions.push(rec);
     var cutoff = Date.now() - 45 * 24 * 3600 * 1000;
@@ -408,6 +466,7 @@ function sessionsAppendRecord_(rec, ctx) {
       var pn = resolvePathToParentAndName_('sessions.json', ctx);
       driveUpload_(pn.fileName, data, pn.parentId);
     }
+    return { mailSent: mailSent, mailReason: decision.reason || '' };
   } finally {
     try { lock.releaseLock(); } catch (_) {}
   }
