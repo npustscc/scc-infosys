@@ -855,9 +855,10 @@
     .bsrs-opt.active:not([data-val=""]) { background:#2b6cb0; color:#fff; border-color:#2b6cb0; }
 
     /* ── Collapsible sections ── */
+    /* #6：banner 標題列可反白選字複製，故不設 user-select:none；改由 toggleSection() 內判斷
+       是否有選取文字，避免選字時誤觸收合（點擊未選字才觸發收合/展開）。*/
     .section-collapsible .form-section-title {
       cursor: pointer;
-      user-select: none;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -2163,7 +2164,7 @@
       </div>
 
       <div class="form-section" id="te-section-dims">
-        <div class="form-section-title" style="cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between;" onclick="_teToggleSection('dims')">
+        <div class="form-section-title" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;" onclick="_teToggleSection('dims')">
           <span>轉銜類型 <span id="te-dims-req-star" class="req" style="display:none;">*</span></span>
           <span id="te-dims-chevron" style="font-size:.82rem;color:#718096;font-weight:400;">▶ 已收束</span>
         </div>
@@ -2175,7 +2176,7 @@
       <div id="te-service-history" style="margin-bottom:14px;"></div>
 
       <div class="form-section" id="te-section-qual">
-        <div class="form-section-title" style="cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between;" onclick="_teToggleSection('qual')">
+        <div class="form-section-title" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;" onclick="_teToggleSection('qual')">
           <span>質性描述 <span id="te-qual-req-star" class="req" style="display:none;">*</span></span>
           <span id="te-qual-chevron" style="font-size:.82rem;color:#718096;font-weight:400;">▶ 已收束</span>
         </div>
@@ -7630,7 +7631,7 @@ async function dismissNewCounselorAlert(caseId) {
 let _bgJobs = [];
 let _notifTab = 'notifs';
 window.addEventListener('beforeunload', function(e) {
-  if (_bgJobs.some(j => j.state === 'running') || _userPref_('confirmBeforeLeave', true)) {
+  if (_bgJobs.some(j => j.state === 'running') || _saveFailSnapshot || _userPref_('confirmBeforeLeave', true)) {
     e.preventDefault(); e.returnValue = '';
   }
 });
@@ -7668,6 +7669,109 @@ function bgJobFail(id, err) {
   _bgBannerUpsert(j);
   _bgBannerScheduleRemoval(j.id);
   if (document.getElementById('notif-panel')?.style.display !== 'none') renderJobList();
+}
+
+// ── #036：儲存失敗記憶體快照＋還原（不落地 localStorage，個資僅存於本次頁面的記憶體變數）──
+// 涵蓋七類表單（個案基本資料／晤談紀錄／事件處理記錄／精神科醫師紀錄／初談表／轉銜評估／結案評估表）。
+// 這些表單的儲存多半採「樂觀更新＋背景寫入 Drive」：畫面已先跳轉離開表單，若背景寫入失敗
+// （如網路中斷 Failed to fetch），使用者原本只能靠小鈴鐺「自動備援」分頁或背景工作失敗通知得知，
+// 容易誤以為輸入內容已遺失（回應 #036）。現改為：儲存前先把表單目前內容存一份記憶體快照，
+// 背景寫入失敗時除保留既有小鈴鐺／背景工作失敗通知（第二道防線）外，另外立刻彈出還原視窗。
+let _saveFailSnapshot = null; // { label, containerId, fields, reopenFn, saveFn, jobId }
+
+// 通用：擷取容器內所有具 id 的欄位目前的值（含核取方塊／單選鈕／富文字區塊），僅存於記憶體變數
+function _snapshotFormFields(containerId) {
+  const root = document.getElementById(containerId);
+  const fields = {};
+  if (!root) return fields;
+  root.querySelectorAll('input[id], textarea[id], select[id]').forEach(el => {
+    fields['id:' + el.id] = (el.type === 'checkbox' || el.type === 'radio') ? el.checked : el.value;
+  });
+  // 具名成組但無 id 的核取方塊／單選鈕（如 nc-topic、rec-service-main），以 name+value 為鍵
+  root.querySelectorAll('input[name]:not([id])').forEach(el => {
+    if (el.type === 'checkbox' || el.type === 'radio') fields[`nv:${el.name}:${el.value}`] = el.checked;
+  });
+  root.querySelectorAll('[contenteditable="true"][id]').forEach(el => {
+    fields['rt:' + el.id] = getRichTextValue(el.id);
+  });
+  return fields;
+}
+
+// 通用：把快照還原回容器內對應欄位（找不到對應元素的欄位略過，不報錯；屬盡力還原）
+function _restoreFormFields(containerId, fields) {
+  const root = document.getElementById(containerId);
+  if (!root || !fields) return;
+  root.querySelectorAll('input[id], textarea[id], select[id]').forEach(el => {
+    const key = 'id:' + el.id;
+    if (!(key in fields)) return;
+    if (el.type === 'checkbox' || el.type === 'radio') el.checked = !!fields[key];
+    else el.value = fields[key];
+  });
+  root.querySelectorAll('input[name]:not([id])').forEach(el => {
+    const key = `nv:${el.name}:${el.value}`;
+    if (key in fields) el.checked = !!fields[key];
+  });
+  root.querySelectorAll('[contenteditable="true"][id]').forEach(el => {
+    const key = 'rt:' + el.id;
+    if (key in fields) setRichTextValue(el.id, fields[key]);
+  });
+}
+
+// 儲存前呼叫：記錄本次儲存的快照與失敗時的還原方式。
+// reopenFn 可為 null（該表單儲存失敗時原本就不會離開頁面，欄位仍在，不需重開）。
+// jobId 若提供，僅在快照仍對應「同一次」儲存時才會彈出視窗，避免被使用者之後另一次儲存覆蓋後誤跳出。
+// precomputedFields 可選：若呼叫當下欄位容器即將被移除（如 modal 儲存後立即 remove()），
+// 呼叫端可提前用 _snapshotFormFields() 擷取好再傳入，避免此處才擷取時容器已消失。
+function _armSaveFailSnapshot(label, containerId, reopenFn, saveFn, jobId, precomputedFields) {
+  _saveFailSnapshot = { label, containerId, fields: precomputedFields || _snapshotFormFields(containerId), reopenFn, saveFn, jobId: jobId || null };
+}
+function _clearSaveFailSnapshot(jobId) {
+  if (!_saveFailSnapshot) return;
+  if (jobId && _saveFailSnapshot.jobId !== jobId) return; // 已被之後另一次儲存覆蓋，非同一筆快照
+  _saveFailSnapshot = null;
+}
+
+// 儲存失敗時彈出的還原視窗
+function _showSaveFailModal(errMsg, jobId) {
+  const s = _saveFailSnapshot;
+  if (!s || (jobId && s.jobId !== jobId)) return; // 快照已被後續操作覆蓋，改用既有背景工作失敗通知即可
+  document.getElementById('save-fail-modal-overlay')?.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'save-fail-modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:440px;">
+      <div class="modal-header"><h3 style="margin:0;color:#c0392b;">⚠️ 儲存失敗</h3></div>
+      <div class="modal-body" style="padding:6px 0 4px;">
+        <p style="font-size:.9rem;color:#4a5568;line-height:1.7;">「${escHtml(s.label)}」儲存失敗（${escHtml(errMsg || '網路中斷')}）。<br>
+        您剛才輸入的內容已保留在系統記憶體中，尚未遺失，請選擇下一步：</p>
+      </div>
+      <div class="modal-footer" style="justify-content:center;gap:12px;flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="_saveFailRetry()">🔄 重新儲存</button>
+        <button class="btn btn-secondary" onclick="_saveFailBackToEdit()">↩ 回到編輯頁</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+function _closeSaveFailModal() {
+  document.getElementById('save-fail-modal-overlay')?.remove();
+}
+async function _saveFailRetry() {
+  const s = _saveFailSnapshot;
+  _closeSaveFailModal();
+  if (!s) return;
+  if (typeof s.reopenFn === 'function') await s.reopenFn();
+  setTimeout(() => {
+    _restoreFormFields(s.containerId, s.fields);
+    if (typeof s.saveFn === 'function') s.saveFn();
+  }, s.reopenFn ? 200 : 0);
+}
+async function _saveFailBackToEdit() {
+  const s = _saveFailSnapshot;
+  _closeSaveFailModal();
+  if (!s) return;
+  if (typeof s.reopenFn === 'function') await s.reopenFn();
+  setTimeout(() => _restoreFormFields(s.containerId, s.fields), s.reopenFn ? 200 : 0);
 }
 
 // ── #28：頂部背景工作進度 banner（僅視覺呈現，資料仍以 _bgJobs 為準）──
@@ -9204,6 +9308,8 @@ function _setupDetailViewAudit(caseId) {
 }
 
 function toggleSection(id) {
+  // #6：banner 標題列可反白選字複製；使用者正在選取文字時不觸發收合/展開
+  if (window.getSelection && String(window.getSelection()) !== '') return;
   const el = document.getElementById(id);
   if (!el) return;
   const nowCollapsed = !el.classList.contains('collapsed');
@@ -13327,6 +13433,7 @@ async function saveRecord() {
     showCaseDetail(_recordCaseId);
     _flashRecordCard('rec-card-' + editedId);
     const jobId = bgJobAdd('更新晤談紀錄', _caseLabel);
+    _armSaveFailSnapshot('晤談紀錄', 'page-new-record', () => openNewRecordPage(_recordCaseId, editedId, _recordKind), saveRecord, jobId);
     (async () => {
       try {
         bgJobProgress(jobId, 40);
@@ -13386,6 +13493,7 @@ async function saveRecord() {
           (date ? `${date}（${semesterLabel(openDateToSemPrefix(date))}）` : '') + _auditBkNote + _coupleEditNote +
           (_recDidMerge ? '；覆蓋同時段紀錄' : ''));
         bgJobDone(jobId);
+        _clearSaveFailSnapshot(jobId);
       } catch(err) {
         casesData[cidx].records[ridx] = prev;
         if (_prevPartnerRec && _partnerCaseIdx >= 0 && _partnerRecIdx >= 0) {
@@ -13396,6 +13504,7 @@ async function saveRecord() {
           if (_npIdx >= 0) casesData[_partnerCaseIdx].records.splice(_npIdx, 1);
         }
         bgJobFail(jobId, err.message);
+        _showSaveFailModal(err.message, jobId);
       }
     })();
   } else {
@@ -13463,6 +13572,7 @@ async function saveRecord() {
     showCaseDetail(_recordCaseId);
     _flashRecordCard('rec-card-' + newRecord.id);
     const jobId = bgJobAdd('新增晤談紀錄', _caseLabel);
+    _armSaveFailSnapshot('晤談紀錄', 'page-new-record', () => openNewRecordPage(_recordCaseId, null, _recordKind), saveRecord, jobId);
     (async () => {
       try {
         bgJobProgress(jobId, 40);
@@ -13488,6 +13598,7 @@ async function saveRecord() {
         auditLog('新增晤談紀錄', _recordCaseId, newRecord.id,
           (newRecord.date ? `${newRecord.date}（${semesterLabel(openDateToSemPrefix(newRecord.date))}）` : '') + _coupleNote);
         bgJobDone(jobId);
+        _clearSaveFailSnapshot(jobId);
       } catch(err) {
         const failIdx = casesData[cidx]?.records.findIndex(r => r.id === newRecord.id);
         if (failIdx >= 0) casesData[cidx].records.splice(failIdx, 1);
@@ -13502,6 +13613,7 @@ async function saveRecord() {
           if (_bkIdx >= 0) bookingsData.splice(_bkIdx, 1);
         }
         bgJobFail(jobId, err.message);
+        _showSaveFailModal(err.message, jobId);
       }
     })();
   }
@@ -13529,6 +13641,8 @@ function _getLatestActiveEval(c, sem, type) {
   return arr.length ? arr[arr.length - 1] : null;
 }
 function toggleEvalCard(safeId) {
+  // #6：banner 標題列可反白選字複製；使用者正在選取文字時不觸發收合/展開
+  if (window.getSelection && String(window.getSelection()) !== '') return;
   const bodyEl = document.getElementById('evalcard-body-' + safeId);
   const iconEl = document.getElementById('evalcard-icon-' + safeId);
   if (!bodyEl) return;
@@ -14328,10 +14442,13 @@ async function saveClosureEval() {
 
   // 背景儲存
   const jobId = bgJobAdd(isClosure ? '儲存結案評估' : '儲存學期評估', caseName);
+  _armSaveFailSnapshot(isClosure ? '結案評估表' : '學期評估表', 'page-closure-eval',
+    () => openClosureEvalPage(caseId, evalType, editingId), saveClosureEval, jobId);
   (async () => {
     try {
       await saveCasesChunks(caseId);
       bgJobDone(jobId);
+      _clearSaveFailSnapshot(jobId);
       auditLog(isClosure ? '執行結案' : '儲存學期評估', caseId, null, semesterLabel(evalSem) + '學期');
       // 4-12: 原主責續接 → 同案號新增下學期
       if (followup === 'self') {
@@ -14382,6 +14499,7 @@ async function saveClosureEval() {
         casesData[ri].closureEvaluation = prev.closureEvaluation;
         casesData[ri].semesterEvaluations = prev.semesterEvaluations;
       }
+      _showSaveFailModal(err.message, jobId);
     }
   })();
 }
@@ -14699,6 +14817,8 @@ function _dismissUnclosedReminder() {
   renderTodosPage();
 }
 function _toggleUnclosedSummary() {
+  // #6：banner 標題列可反白選字複製；使用者正在選取文字時不觸發收合/展開
+  if (window.getSelection && String(window.getSelection()) !== '') return;
   const cur = _userPref_('todosUnclosedCollapsed', false);
   syncUserPref_({ todosUnclosedCollapsed: !cur });
   renderTodosPage();
@@ -16338,6 +16458,8 @@ function _classifyIgnore(btn) {
   _saveDeptAbbrev(raw, '', btn);
 }
 function _toggleClassifyHelp() {
+  // #6：banner 標題列可反白選字複製；使用者正在選取文字時不觸發收合/展開
+  if (window.getSelection && String(window.getSelection()) !== '') return;
   window._classifyHelpCollapsed = !window._classifyHelpCollapsed;
   _renderClassifyHelpSection();
 }
@@ -16370,7 +16492,7 @@ function _renderClassifyHelpSection() {
   }).join('');
   section.innerHTML = `
     <div style="background:#fffaf0;border:1px solid #fbd38d;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
-      <div onclick="_toggleClassifyHelp()" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;cursor:pointer;user-select:none;margin-bottom:${collapsed ? '0' : '8px'};" data-tip="點選整列可收起/展開">
+      <div onclick="_toggleClassifyHelp()" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;cursor:pointer;margin-bottom:${collapsed ? '0' : '8px'};" data-tip="點選整列可收起/展開">
         <span style="font-weight:600;font-size:.9rem;color:#975a16;">
           <span style="display:inline-block;width:14px;">${collapsed ? '▶' : '▼'}</span>
           🧩 協助系統歸類（${items.length} 項待協助）
@@ -18785,6 +18907,8 @@ async function saveInitialInterview() {
   }
 
   const jobId = bgJobAdd('儲存初次晤談表…');
+  // 此表單失敗時不會離開頁面（欄位仍在），故不需重開頁面（reopenFn 給 null）
+  _armSaveFailSnapshot('初談表', 'page-initial-interview', null, saveInitialInterview, jobId);
   try {
     await saveCasesChunks(_initialInterviewCaseId);
     // #18：稽核日誌的學期標籤改以「初談日期推得的實際歸屬學期」為準（原本固定顯示個案開案學期，
@@ -18792,6 +18916,7 @@ async function saveInitialInterview() {
     const _iiSemLabel = semesterLabel(_iiSemKey || openDateToSemPrefix(casesData[cidx]?.openDate));
     auditLog('儲存初次晤談表', `案號 ${_initialInterviewCaseId}（${_iiSemLabel} 學期）` + (_iiDidMerge ? '；覆蓋同時段紀錄' : ''));
     bgJobDone(jobId, '初次晤談表已儲存');
+    _clearSaveFailSnapshot(jobId);
     clearIIDraft();
     _switchDetailSemTo(casesData[cidx], _iiSemKey);
     showCaseDetail(_initialInterviewCaseId);
@@ -18800,6 +18925,7 @@ async function saveInitialInterview() {
     casesData[cidx].initialInterview = prev;
     bgJobFail(jobId, '儲存失敗：' + err.message);
     setAlert('initial-interview-alert', 'error', '儲存失敗：' + err.message);
+    _showSaveFailModal(err.message, jobId);
   }
 
   } finally {
@@ -19908,6 +20034,8 @@ async function saveCase() {
     abType, bCaseReasons, status, isTransferCase, createdAt: now, updatedAt: now,
   };
 
+  // 儲存前記憶體快照：此表單失敗時不會離開頁面（欄位仍在），故不需重開頁面（reopenFn 給 null）
+  _armSaveFailSnapshot('個案基本資料', 'page-new-case', null, saveCase);
   try {
     if (_editingCaseId) {
       const idx = casesData.findIndex(x => x.id === _editingCaseId);
@@ -19935,6 +20063,7 @@ async function saveCase() {
       hideLoading();
       renderCases();
       showCaseDetail(newCase.id);
+      _clearSaveFailSnapshot();
     } else if (_reopenTarget) {
       // ── 再次開案：一學生一案號，同案號新增本學期開案紀錄（回應 2026-07-06 個案架構重構 Slice 1）──
       const target = _reopenTarget;
@@ -20030,6 +20159,7 @@ async function saveCase() {
       renderCases();
       showToast(`已以案號 ${target.id} 新增 ${semesterLabel(semKey)} 學期開案紀錄`, 'success');
       showCaseDetailAtSem(target.id, semKey);
+      _clearSaveFailSnapshot();
     } else {
       // Auto-attach psych test results from psychTestDB
       if (studentId && Array.isArray(psychTestDB[studentId]) && psychTestDB[studentId].length) {
@@ -20064,6 +20194,7 @@ async function saveCase() {
       showPage('page-cases', document.querySelector('[data-nav-id="page-cases"]'));
       renderCases();
       setAlert('cases-alert', 'info', `個案「${escHtml(name)}」（${escHtml(id)}）已建立。`);
+      _clearSaveFailSnapshot();
     }
   } catch (err) {
     if (_reopenTarget) {
@@ -20077,6 +20208,7 @@ async function saveCase() {
     hideLoading();
     document.getElementById('btn-save-case').disabled = false;
     _caseAlert('儲存失敗：' + err.message);
+    _showSaveFailModal(err.message);
   }
 }
 
@@ -21884,7 +22016,7 @@ function _renderMajorEventNotifs() {
     : `重大事件通知（${notifs.length} 筆，皆已讀）`;
   const majorCard = notifs.length ? `
     <div style="background:#faf5ff;border:1px solid #d6bcfa;border-radius:8px;padding:14px 16px;margin-bottom:16px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${!isCollapsed && notifs.length ? '4px' : '0'};cursor:pointer;user-select:none;" onclick="_majorEventsToggle()" data-tip="${isCollapsed?'展開':'收起'}重大事件區塊">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${!isCollapsed && notifs.length ? '4px' : '0'};cursor:pointer;" onclick="_majorEventsToggle()" data-tip="${isCollapsed?'展開':'收起'}重大事件區塊">
         <div style="font-weight:700;color:#553c9a;font-size:.95rem;">${titleText}</div>
         <div style="display:flex;gap:6px;align-items:center;">
           ${!isCollapsed && pending.length ? `<button onclick="event.stopPropagation();_majorEventMarkAllRead()" style="padding:2px 10px;font-size:.78rem;background:#fff;border:1px solid #b794f4;border-radius:4px;color:#553c9a;cursor:pointer;">全部標為已讀</button>` : ''}
@@ -21903,7 +22035,7 @@ function _renderMajorEventNotifs() {
   const isBkCollapsed = !!window._bookingNotifsCollapsed;
   const bkCard = bkNotifs.length ? `
     <div style="background:#ebf8ff;border:1px solid #bee3f8;border-radius:8px;padding:14px 16px;margin-bottom:16px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${!isBkCollapsed ? '4px' : '0'};cursor:pointer;user-select:none;" onclick="_bookingNotifsToggle()" data-tip="${isBkCollapsed?'展開':'收起'}空間預約通知區塊">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${!isBkCollapsed ? '4px' : '0'};cursor:pointer;" onclick="_bookingNotifsToggle()" data-tip="${isBkCollapsed?'展開':'收起'}空間預約通知區塊">
         <div style="font-weight:700;color:#2b6cb0;font-size:.95rem;">📅 空間預約通知（${bkNotifs.length} 筆）</div>
         <button style="background:none;border:none;cursor:pointer;font-size:.88rem;color:#2b6cb0;padding:0 2px;">${isBkCollapsed?'▶':'▼'}</button>
       </div>
@@ -21912,10 +22044,14 @@ function _renderMajorEventNotifs() {
   section.innerHTML = majorCard + bkCard;
 }
 window._bookingNotifsToggle = function() {
+  // #6：banner 標題列可反白選字複製；使用者正在選取文字時不觸發收合/展開
+  if (window.getSelection && String(window.getSelection()) !== '') return;
   window._bookingNotifsCollapsed = !window._bookingNotifsCollapsed;
   _renderMajorEventNotifs();
 };
 window._majorEventsToggle = function() {
+  // #6：banner 標題列可反白選字複製；使用者正在選取文字時不觸發收合/展開
+  if (window.getSelection && String(window.getSelection()) !== '') return;
   window._majorEventsCollapsed = !window._majorEventsCollapsed;
   _renderMajorEventNotifs();
 };
@@ -22159,7 +22295,7 @@ function renderTodosPage() {
         caseRows.sort((a, b) => a.sem.localeCompare(b.sem) || a.c.name.localeCompare(b.c.name, 'zh'));
         const collapsed = _userPref_('todosUnclosedCollapsed', false);
         summaryHtml = `<div style="background:#fffbeb;border:1px solid #f6ad55;border-radius:8px;padding:12px 16px;margin-bottom:14px;">
-          <div onclick="_toggleUnclosedSummary()" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${collapsed?'0':'10px'};gap:8px;flex-wrap:wrap;cursor:pointer;user-select:none;" data-tip="點選整列可收起/展開明細">
+          <div onclick="_toggleUnclosedSummary()" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:${collapsed?'0':'10px'};gap:8px;flex-wrap:wrap;cursor:pointer;" data-tip="點選整列可收起/展開明細">
             <span style="font-weight:600;font-size:.9rem;color:#9c4221;">
               <span style="display:inline-block;width:14px;">${collapsed?'▶':'▼'}</span>
               ⚠ 過去學期未結案（${caseRows.length} 筆）
@@ -23368,8 +23504,11 @@ async function saveEventRecords() {
     catch(e) { showToast('第' + (idx+1) + '筆附件上傳失敗：' + e.message, 'error'); return; }
   }
   const _evrNewIds = [];
+  const _evrPushedNewIds = []; // 僅記錄本次真正新增（非同時段合併覆蓋）的紀錄 id，供儲存失敗回滾用
   const _evrMergedCount = { n: 0 }; // 供稽核日誌統計整合筆數用（forEach 內為區塊作用域，故用物件承接）
   const _evrFirstDate = _evrRecords[0]?.date || '';
+  // 儲存前記憶體快照：待會 _evrRecords 會被清空並跳轉離開表單，先深拷貝供還原用
+  const _evrSnapForRestore = { records: JSON.parse(JSON.stringify(_evrRecords)), todoId: _evrTodoId, origin: _evrOrigin };
   _evrRecords.forEach((r, idx) => {
     const _evrRecObj = {
       isEventRecord: true, recordKind: '晤談記錄',
@@ -23400,6 +23539,7 @@ async function saveEventRecords() {
     }
     const _evrNewId = `REC_${Date.now()}_E${idx}_${rand()}`;
     _evrNewIds.push(_evrNewId);
+    _evrPushedNewIds.push(_evrNewId);
     casesData[cidx].records.push({ id: _evrNewId, creatorEmail: currentUser?.email, createdAt: now, ..._evrRecObj });
   });
   if (_evrTodoId) {
@@ -23417,13 +23557,26 @@ async function saveEventRecords() {
   _evrNewIds.forEach((id, i) => _flashRecordCard('rec-card-' + id, i === 0));
   showToast('事件處理記錄已儲存', 'success');
   const jobId = bgJobAdd('儲存事件處理記錄…');
+  _armSaveFailSnapshot('事件處理記錄', 'page-event-records',
+    () => openEventRecordForm(savedCaseId, { records: _evrSnapForRestore.records, todoId: _evrSnapForRestore.todoId }, _evrSnapForRestore.origin),
+    saveEventRecords, jobId);
   try {
     await saveCasesChunks(savedCaseId);
     bgJobDone(jobId, '已儲存');
+    _clearSaveFailSnapshot(jobId);
     auditLog('新增事件處理記錄', savedCaseId, null, _evrMergedCount.n ? `覆蓋 ${_evrMergedCount.n} 筆同時段紀錄` : '');
     if (savedTodoId) saveUserTodos().catch(() => {});
   } catch (e) {
+    // 尚未持久化成功，回滾本次真正新增的紀錄（同時段合併覆蓋的既有紀錄不動），避免「重新儲存」造成重複資料
+    const _ci = casesData.findIndex(x => x.id === savedCaseId);
+    if (_ci >= 0) {
+      _evrPushedNewIds.forEach(id => {
+        const _ri = casesData[_ci].records.findIndex(r => r.id === id);
+        if (_ri >= 0) casesData[_ci].records.splice(_ri, 1);
+      });
+    }
     bgJobFail(jobId, e.message);
+    _showSaveFailModal(e.message, jobId);
   }
 }
 
@@ -27482,6 +27635,13 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-10', v: 160, title: '儲存失敗防護：內容快照與一鍵還原＋檢視系列預約＋卡片文字可複製', isProd: false, items: [
+      item('新功能', '七類表單（個案基本資料、晤談紀錄、事件處理記錄、精神科醫師紀錄、初談表、轉銜評估、結案評估表）儲存失敗時，跳出明顯視窗提供「重新儲存」與「回到編輯頁（還原剛才輸入的內容）」，輸入內容以記憶體快照保存不落地、不再因網路中斷而消失（回應 #036）；快照未儲存成功前關閉分頁會先跳確認'),
+      item('修正', '事件處理記錄與轉銜評估儲存失敗時，畫面上的紀錄未回復造成重試可能重複——已補上失敗回復（#036 延伸巡檢）'),
+      item('新功能', '編輯重複（系列）預約時新增第四選項「檢視此系列預約」：清單列出同系列全部預約（日期、節次、空間、狀態），點任一筆直接進入該筆單筆編輯'),
+      item('改善', '全系統可收合卡片（個案紀錄卡、待辦摘要、通知橫幅、轉銜評估區塊等）的標題與內文文字可反白選取複製，選字時不會誤觸收合'),
+      item('資安', '後端加固（測試版）：檔案下載跨環境僅限錯誤回報附件白名單、Drive 查詢限定系統資料夾範圍並阻擋條件稀釋、檔案搬移目的地檢查；並修正上一批授權欄位保護誤擋主責新增個管員、初談自動列管、本人 Gmail 遷移等合法操作的問題'),
+    ]},
     { date: '2026-07-10', v: 159, title: '前端資安強化：DOMPurify 富文本過濾＋CSP 連線白名單', isProd: true, items: [
       item('改善', '富文本欄位（個案紀錄、結案評估等）的 HTML 過濾改用業界標準 DOMPurify（白名單式），取代自製過濾邏輯，可防禦變形攻擊手法；編輯器全部格式功能（粗斜底線、對齊、清單樣式、家系圖內嵌圖片）不受影響'),
       item('改善', '新增 Content Security Policy 連線白名單：頁面內任何程式（含萬一被注入的惡意腳本）只能對系統後端、Google 登入、IP 查詢等既定服務發出網路請求，無法將資料外傳到其他網域'),
@@ -29904,6 +30064,44 @@ function _bkConfirmSeriesScope(scope) {
   _checkBkConflict();
 }
 
+// #2-4：編輯系列預約第四選項「檢視此系列預約」——列出同系列所有預約（日期、節次/時間、空間、狀態），
+// 點任一筆直接進入該筆的單筆編輯（沿用既有 editBooking，該筆若也屬系列會再次跳出範圍選擇，行為一致）。
+function _bkViewSeriesList() {
+  const b = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
+  if (!b?.seriesId) return;
+  document.getElementById('bk-series-scope-modal').style.display = 'none';
+  const today = new Date().toISOString().slice(0, 10);
+  const list = [...bookingsData.filter(x => x.seriesId === b.seriesId)]
+    .sort((x, y) => `${x.date || ''}${x.startTime || ''}`.localeCompare(`${y.date || ''}${y.startTime || ''}`));
+  const _periodLabel = x => {
+    const p = BK_PERIODS.find(pp => pp.start === (x.startTime || '').slice(0, 5) && pp.end === (x.endTime || '').slice(0, 5));
+    return p ? p.label : `${(x.startTime || '').slice(0, 5)}–${(x.endTime || '').slice(0, 5)}`;
+  };
+  const bodyEl = document.getElementById('bk-series-list-body');
+  bodyEl.innerHTML = list.map(x => {
+    const room = x.room === '其他' ? (x.customRoom || '其他') : x.room;
+    const isCur = x.id === b.id;
+    const statusParts = [];
+    if (isCur) statusParts.push('目前編輯這筆');
+    else if ((x.date || '') < today) statusParts.push('已過期');
+    if (!x.caseId) statusParts.push('未連結個案');
+    return `<div onclick="_bkViewSeriesJumpTo('${escHtml(x.id)}')"
+        style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 12px;border:1px solid ${isCur ? '#1a5276' : '#e2e8f0'};border-radius:8px;margin-bottom:8px;cursor:pointer;background:${isCur ? '#ebf8ff' : '#fff'};"
+        onmouseenter="this.style.background='#f7fafc'" onmouseleave="this.style.background='${isCur ? '#ebf8ff' : '#fff'}'">
+      <div>
+        <div style="font-size:.9rem;font-weight:600;color:#2d3748;">${escHtml(x.date || '—')}　${escHtml(_periodLabel(x))}</div>
+        <div style="font-size:.8rem;color:#718096;margin-top:2px;">${escHtml(room || '—')}${x.caseName ? '　｜　' + escHtml(x.caseName) : ''}</div>
+      </div>
+      ${statusParts.length ? `<span style="font-size:.75rem;color:${isCur ? '#1a5276' : '#a0aec0'};white-space:nowrap;">${escHtml(statusParts.join('・'))}</span>` : ''}
+    </div>`;
+  }).join('') || '<div style="padding:16px;text-align:center;color:#a0aec0;font-size:.85rem;">找不到系列預約資料。</div>';
+  document.getElementById('bk-series-list-modal').style.display = 'flex';
+}
+function _bkViewSeriesJumpTo(id) {
+  document.getElementById('bk-series-list-modal').style.display = 'none';
+  editBooking(id);
+}
+
 // 範圍透明化：於預約 Modal 標題下方顯示目前套用範圍（含筆數）與系列 badge；非系列編輯時隱藏。
 function _bkUpdateScopeInfo() {
   const el = document.getElementById('bk-scope-info');
@@ -30948,6 +31146,8 @@ window._mlToggleCourse = (id) => {
 };
 
 window._toggleDisplay = (bodyId, iconId) => {
+  // #6：banner 標題列可反白選字複製；使用者正在選取文字時不觸發收合/展開
+  if (window.getSelection && String(window.getSelection()) !== '') return;
   const el = document.getElementById(bodyId);
   if (!el) return;
   const hidden = el.style.display === 'none';
@@ -38720,6 +38920,8 @@ function _teClientConsentChange() {
   _teUpdateSections();
 }
 function _teToggleSection(key) {
+  // #6：banner 標題列可反白選字複製；使用者正在選取文字時不觸發收合/展開
+  if (window.getSelection && String(window.getSelection()) !== '') return;
   const body    = document.getElementById(`te-${key}-body`);
   const chevron = document.getElementById(`te-${key}-chevron`);
   if (!body) return;
@@ -39010,11 +39212,32 @@ async function saveTransferEval() {
     }
   }
   c.updatedAt = now;
+  const _teOrigId = teIdOrNew === '__new__' ? null : teIdOrNew; // 供儲存失敗還原時重開同一筆
   showCaseDetail(caseId);
   const jobId = bgJobAdd(`儲存轉銜評估：${c.name}`);
+  _armSaveFailSnapshot('轉銜評估', 'page-transfer-eval', () => openTransferEvalForm(caseId, _teOrigId), saveTransferEval, jobId);
   (async () => {
-    try { await saveCasesChunks(caseId); _checkTransferGradTodos(); auditLog('儲存轉銜評估', caseId); bgJobDone(jobId); }
-    catch (e) { bgJobFail(jobId, e.message); }
+    try {
+      await saveCasesChunks(caseId);
+      _checkTransferGradTodos();
+      auditLog('儲存轉銜評估', caseId);
+      bgJobDone(jobId);
+      _clearSaveFailSnapshot(jobId);
+    } catch (e) {
+      // 尚未持久化成功，回滾本次寫入（含編輯時標記舊筆 replacedBy），避免「重新儲存」造成重複資料
+      const _ci = casesData.findIndex(x => x.id === caseId);
+      if (_ci >= 0) {
+        const cc = casesData[_ci];
+        const _newIdx = (cc.transferEvaluations || []).findIndex(x => x.teId === evalData.teId);
+        if (_newIdx >= 0) cc.transferEvaluations.splice(_newIdx, 1);
+        if (_teOrigId) {
+          const _old = (cc.transferEvaluations || []).find(x => x.teId === _teOrigId);
+          if (_old && _old.replacedBy === evalData.teId) { delete _old.replacedBy; delete _old.replacedAt; }
+        }
+      }
+      bgJobFail(jobId, e.message);
+      _showSaveFailModal(e.message, jobId);
+    }
   })();
 }
 
@@ -42302,6 +42525,7 @@ function _checkPRDuplicate(caseId, recordId) {
 async function savePsychiatristRecord(caseId, recordId) {
   const c = casesData.find(x => x.id === caseId);
   if (!c) return;
+  const _origRecordId = recordId; // 供儲存失敗還原時重開同一筆（避免與 dup-merge 改指向的 recordId 混淆）
   const gV = id => document.getElementById(id)?.value?.trim()||'';
   const gR = n => { const el=document.querySelector(`[name="${n}"]:checked`); return el?el.value:''; };
   const required = [
@@ -42378,6 +42602,8 @@ async function savePsychiatristRecord(caseId, recordId) {
   const _savedRecId = recordId !== '__new__' ? recordId : data.id;
   const _psyTodo = todosData.find(t => t.recordId === _savedRecId && t.type === 'psychiatrist' && !t.done);
   if (_psyTodo) { _psyTodo.done = true; _psyTodo.doneAt = now; saveUserTodos().catch(()=>{}); _syncTodoBadge(); }
+  // 儲存前記憶體快照：modal 即將被移除，須在移除前擷取欄位內容（jobId 稍後才產生，先擷取欄位備用）
+  const _psySnapFields = _snapshotFormFields('psychiatrist-modal');
   clearPsyDraft();
   document.getElementById('psychiatrist-modal')?.remove();
   // 避免 showCaseDetail 的 cold-load 分支用舊資料覆蓋剛寫入的紀錄
@@ -42388,6 +42614,9 @@ async function savePsychiatristRecord(caseId, recordId) {
   _flashRecordCard('rec-card-' + _savedRecId);
   const _psyJobLabel = recordId === '__new__' ? '新增精神科評估' : '更新精神科評估';
   const jobId = bgJobAdd(_psyJobLabel, `${c.name} ${data.date}`);
+  _armSaveFailSnapshot('精神科醫師紀錄', 'psychiatrist-modal',
+    () => openPsychiatristModal(caseId, _origRecordId === '__new__' ? null : _origRecordId),
+    () => savePsychiatristRecord(caseId, _origRecordId), jobId, _psySnapFields);
   (async () => {
     try {
       bgJobProgress(jobId, 40);
@@ -42395,12 +42624,14 @@ async function savePsychiatristRecord(caseId, recordId) {
       bgJobProgress(jobId, 90);
       auditLog('儲存精神科評估', `${c.name} ${data.date}` + (_psyDidMerge ? '；覆蓋同時段紀錄' : ''));
       bgJobDone(jobId);
+      _clearSaveFailSnapshot(jobId);
     } catch(e) {
       if (recordId === '__new__') {
         const failIdx = c.psychiatristRecords.findIndex(r => r.id === data.id);
         if (failIdx >= 0) c.psychiatristRecords.splice(failIdx, 1);
       }
       bgJobFail(jobId, e.message);
+      _showSaveFailModal(e.message, jobId);
     }
   })();
 }
@@ -43568,9 +43799,22 @@ function toggleNavPin(navId) {
       <button class="btn btn-secondary" onclick="_bkConfirmSeriesScope('this')">僅修改此筆</button>
       <button class="btn btn-secondary" onclick="_bkConfirmSeriesScope('future')">此筆及之後的所有預約</button>
       <button class="btn btn-secondary" onclick="_bkConfirmSeriesScope('all')">全部系列預約</button>
+      <button class="btn btn-secondary" onclick="_bkViewSeriesList()">📋 檢視此系列預約</button>
     </div>
     <div style="margin-top:14px;text-align:right;">
       <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bk-series-scope-modal').style.display='none'">取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- #2-4：系列預約清單 Modal（編輯系列預約時「檢視此系列預約」）-->
+<div id="bk-series-list-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10002;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:12px;max-width:520px;width:100%;max-height:80vh;overflow-y:auto;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+    <h3 style="margin:0 0 8px;font-size:1rem;color:#2d3748;">系列預約清單</h3>
+    <p style="font-size:.82rem;color:#718096;margin-bottom:14px;">點選任一筆可直接進入該筆的編輯畫面。</p>
+    <div id="bk-series-list-body"></div>
+    <div style="margin-top:14px;text-align:right;">
+      <button class="btn btn-secondary btn-sm" onclick="document.getElementById('bk-series-list-modal').style.display='none'">關閉</button>
     </div>
   </div>
 </div>
