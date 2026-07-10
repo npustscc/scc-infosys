@@ -12,6 +12,12 @@ const ALLOWED_ROOTS = {
   '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP': { configOverride: '1CKXefjjiB-PrIFZa-DBQ7Q2ASs-TQroj', calendarName: 'SCC 空間預約', gmailLabel: 'ml-processed' },
 };
 
+// issues.json（許願池/錯誤回報）dev/prod 共用同一份、固定存於正式版資料夾。
+// 前端存取它會帶「非本環境」的 rootFolderId，需一條跨環境例外——但只認這一個固定 ID，
+// 絕不接受前端傳入的任意 folderId（否則攻擊者可指向自建資料夾內的假 config.json 洗白授權）。
+// 註：此常數 dev/prod 皆為正式版資料夾 ID（兩環境相同），推正式版時不需修改（非環境專屬常數）。
+const ISSUES_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP';
+
 // 緊急備援名單：即使 config 讀不到或帳號不在名單，這些帳號仍可登入以修復系統（對應前端 BOOTSTRAP_ADMIN_EMAIL）。
 // 註：列出 email 不構成後門——仍須持有該帳號的 Google 憑證（有效 ID token）才通過，攻擊者知道 email 也無法冒充。
 const BOOTSTRAP_ADMINS = ['npust.scc@heartnpust.tw', 'linkinlol528101@gmail.com'];
@@ -48,11 +54,12 @@ function doPost(e) {
         const rootCfg = ALLOWED_ROOTS[rootFolderId];
         ctx = { root: rootFolderId, configOverride: rootCfg.configOverride, calendarName: rootCfg.calendarName || CALENDAR_NAME, gmailLabel: rootCfg.gmailLabel || 'ml-processed-dev' };
       } else {
-        // 例外白名單：issues.json (許願池/錯誤回報) 允許跨環境（dev/prod 共用同一份）
+        // 例外白名單：issues.json (許願池/錯誤回報) 允許跨環境（dev/prod 共用同一份）。
+        // 僅接受固定的 ISSUES_FOLDER_ID，不接受任意 folderId——否則攻擊者可把 ctx.root
+        // 指向自建資料夾內的假 config.json 來洗白授權（見 isAuthorizedUser_ 現改為只讀本環境固定 config）。
         // params.file：listCommit 專用參數名（見 listCommit_）
         const p = params.path || params.name || params.file || '';
-        const isIssuesOp = p === 'issues.json';
-        if (!isIssuesOp) return jsonResp_({ error: 'Unauthorized rootFolderId' });
+        if (!issuesExceptionAllowed_(rootFolderId, p, ISSUES_FOLDER_ID)) return jsonResp_({ error: 'Unauthorized rootFolderId' });
         ctx = { root: rootFolderId, configOverride: null, calendarName: CALENDAR_NAME };
       }
     }
@@ -62,8 +69,80 @@ function doPost(e) {
     // 皆可用公開的 CLIENT_ID / APPS_SCRIPT_URL / rootFolderId 直接撈取或竄改全部個案資料。
     // ping（探測）與 submitUserApplication（尚未獲授權者申請帳號的唯一入口）需在授權前放行。
     var AUTHZ_EXEMPT = { ping: true, submitUserApplication: true };
-    if (!AUTHZ_EXEMPT[action] && !isAuthorizedUser_(userEmail, ctx)) {
+    if (!AUTHZ_EXEMPT[action] && !isAuthorizedUser_(userEmail)) {
       return jsonResp_({ error: 'Unauthorized user' });
+    }
+
+    // ── P0-3：敏感動作後端硬閘（前端 UI 隱藏不算數，攻擊者可直呼公開 API）──
+    // (a) 純攻擊面：前端從未使用（deleteFile/moveFile）或僅維運/除錯用（信件傾印），一律限 admin。
+    var ADMIN_ONLY_ACTIONS = { dumpNpust5Emails: true, listInboxEmails: true, deleteFile: true, moveFile: true };
+    if (ADMIN_ONLY_ACTIONS[action] && !isAdminUser_(userEmail)) {
+      return jsonResp_({ error: 'Forbidden: admin only' });
+    }
+    // (b) shareCalendarWriters：管理者可授權/撤銷任何人；非管理者僅能對「自己」（自助日曆連結，
+    //     專任諮商師亦適用，非僅管理者），杜絕非管理者把日曆編輯權授予任意 email。
+    if (action === 'shareCalendarWriters' && !isAdminUser_(userEmail)
+        && !shareToSelfOnly_(params.emails, userEmail)) {
+      return jsonResp_({ error: 'Forbidden: non-admin may only share to self' });
+    }
+    // (c) clearMentalLeaves：清空 mental_leaves.json（破壞性）；限 admin 或身心調適假窗口。
+    if (action === 'clearMentalLeaves' && !isAdminUser_(userEmail)) {
+      var _mlEntry = (localConfigUsers_() || {})[userEmail];
+      if (!_mlEntry || _mlEntry.isMentalLeaveContact !== true) {
+        return jsonResp_({ error: 'Forbidden: admin or mental-leave contact only' });
+      }
+    }
+
+    // ── P0-2：config.json 寫入的授權面保護（非管理者不得改任何使用者的授權欄位／增刪使用者）──
+    // config.json 同時裝自助欄位（PIN/偏好，非管理者自己寫）與授權欄位，故不能整檔限 admin。
+    // 因前端每次整檔覆寫 config，字面「白名單只准改 6 欄」會在多人併發時誤拒；改為只鎖授權欄位，
+    // 既擋提權又不誤殺 PIN/偏好。字面全白名單需前端改為部分更新後才安全（P1）。
+    var CONFIG_PRIV_FIELDS = ['role', 'extraRole', 'isAdmin', 'disabled', 'allowedCases',
+      'allowedCasesSems', 'isTransferContact', 'isMentalLeaveContact', 'leaveQuota', 'name'];
+    if (!isAdminUser_(userEmail) && isConfigWrite_(action, params, localConfigFileId_())) {
+      if (!configWriteAllowedForNonAdmin_(readConfigFresh_(), params.content, userEmail, CONFIG_PRIV_FIELDS)) {
+        return jsonResp_({ error: 'Forbidden: config authorization fields are admin-only' });
+      }
+    }
+
+    // ── F3：fileId/parentId 類動作限制在本次 ctx.root 子樹（杜絕以任意 fileId 越界讀寫/刪除 Drive 檔案）──
+    // 只保護「目標必在本地 root」的 JSON 資料/破壞性/資料夾動作；downloadFileBase64（附件，含跨環境
+    // issue 附件）與 query（枚舉）另設計如下（P1）。fileId 類動作不會走 issues.json 例外，
+    // 故此處 ctx.root 恆為本地 root。
+    var ROOT_GUARDED = { readJsonById: 'fileId', updateContentById: 'fileId', deleteFile: 'fileId',
+      moveFile: 'fileId', trashFile: 'fileId', getMetadata: 'fileId', createFolder: 'parentId',
+      createJson: 'parentId', uploadFile: 'parentFolderId', listFolder: 'folderId' };
+    var _rgKey = ROOT_GUARDED[action];
+    if (_rgKey && params[_rgKey] && !isUnderRoot_(params[_rgKey], ctx.root)) {
+      return jsonResp_({ error: 'Forbidden: target outside root' });
+    }
+
+    // ── P1：moveFile 目的地（addParents）也須在 root 子樹 ──
+    // 上面 ROOT_GUARDED 已限制來源 fileId，但目的地資料夾未檢查，攻擊者可把檔案移出 root 子樹
+    // （即使 moveFile 目前限 admin，仍應 defense-in-depth：管理者帳號被盜用時降低災害範圍）。
+    if (action === 'moveFile' &&
+        !moveFileDestAllowed_(params.addParents, function (id) { return isUnderRoot_(id, ctx.root); })) {
+      return jsonResp_({ error: 'Forbidden: destination outside root' });
+    }
+
+    // ── P1：downloadFileBase64 跨 root 附件白名單 ──
+    // 目標在本地 root 之下 → 直接放行；否則附件可能是「在其他環境上傳、記錄於跨環境共用的
+    // issues.json」——只有當此 fileId 確實出現在某筆 issue 或其留言的 attachments 清單中才放行，
+    // 其餘一律拒絕。issues.json 用固定 ISSUES_FOLDER_ID 定位（不信任請求參數），讀取失敗 fail-closed。
+    if (action === 'downloadFileBase64' && params.fileId && !isUnderRoot_(params.fileId, ctx.root)) {
+      if (!issuesHasAttachment_(readIssuesJsonForAttachCheck_(), params.fileId)) {
+        return jsonResp_({ error: 'Forbidden: target outside root and not a known issue attachment' });
+      }
+    }
+
+    // ── P1：query action 限根 ──
+    // 前端 q 字串多為 "'<folderId>' in parents and ..." 形式，folderId 是 root 的子資料夾
+    // （如 cases/users）或 root 本身，故不能整體 wrap 'root' in parents（會誤殺）。改為解析 q 中
+    // 所有 "'ID' in parents" 引用的 ID，逐一驗證都在 root 子樹下（root 本身亦合法——in parents
+    // 語意是列出該資料夾的子項）；不含 parents 條件的 q 一律拒絕（防枚舉任意資料夾）。
+    if (action === 'query' &&
+        !queryParentsAllowed_(params.q, function (id) { return isUnderRoot_(id, ctx.root); })) {
+      return jsonResp_({ error: 'Forbidden: query must be scoped under root' });
     }
 
     let result;
@@ -108,6 +187,7 @@ function doPost(e) {
       case 'bookingsCommit':       result = bookingsCommit_(params, ctx); break;
       case 'listCommit':           result = listCommit_(params, ctx); break;
       case 'notifCommit':          result = notifCommit_(params, ctx); break;
+      case 'configSelfPatch':      result = configSelfPatch_(params, ctx, userEmail); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
     return jsonResp_(result);
@@ -363,29 +443,361 @@ function dumpGcEventColors() {
 }
 
 // ── 使用者授權閘 ──────────────────────────────────────────────────────────────
-// email 必須存在於 config.users 且未停用（判定基準與前端 resolveUserRole 一致）。
+// 授權的唯一真實來源＝「本部署自己固定的 config.json」（永遠用本環境 ROOT_FOLDER_ID /
+// CONFIG_FILE_ID_OVERRIDE，絕不看請求帶入的 rootFolderId／ctx）。
+//   ⚠️ 這是修補 F1（授權快取跨 root 汙染）的關鍵：先前 isAuthorizedUser_ 從 ctx.root 讀 config，
+//   而 issues.json 例外允許 ctx.root＝前端傳入的任意資料夾，攻擊者放一份自己名字的假 config.json
+//   即可通過授權並被快取，300 秒內改帶 prod 資料夾 ID 命中快取→全面接管。改為只讀本環境固定 config，
+//   任何請求帶進來的 rootFolderId 都不影響「你是不是被授權的人」判定，攻擊鏈斷。
 // fail-closed：config 讀不到一律拒絕（BOOTSTRAP_ADMINS 例外，避免 config 全毀時管理者被鎖死）。
-// 命中結果以 CacheService 快取 5 分鐘，避免每個請求都多讀一次 config。
-// 副作用：新增/停用使用者後，後端授權狀態最多延遲 5 分鐘生效。
-function isAuthorizedUser_(userEmail, ctx) {
-  if (!userEmail) return false;
-  if (BOOTSTRAP_ADMINS.indexOf(userEmail) !== -1) return true;
+// users 表以 CacheService 快取 5 分鐘（key 綁定本環境 config 來源），避免每個請求都多讀一次 config。
+// 副作用：新增/停用/改角色後，後端授權狀態最多延遲 5 分鐘生效。
+function localConfigUsers_() {
   var cache = CacheService.getScriptCache();
-  var key = 'authz:' + userEmail.slice(0, 240);
-  try { if (cache.get(key) === '1') return true; } catch (_) {}
+  var CK = 'cfgusers:' + (CONFIG_FILE_ID_OVERRIDE || ROOT_FOLDER_ID);
+  try { var hit = cache.get(CK); if (hit) return JSON.parse(hit); } catch (_) {}
   try {
-    var cfgId = ctx.configOverride || resolvePathToId_('config.json', ctx);
+    var cfgId = CONFIG_FILE_ID_OVERRIDE ||
+      resolvePathToId_('config.json', { root: ROOT_FOLDER_ID, configOverride: CONFIG_FILE_ID_OVERRIDE });
     var res = UrlFetchApp.fetch(
       'https://www.googleapis.com/drive/v3/files/' + cfgId + '?alt=media&supportsAllDrives=true',
       { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
     );
-    if (res.getResponseCode() !== 200) return false;
+    if (res.getResponseCode() !== 200) return null;
     var cfg = JSON.parse(res.getContentText());
-    var u = cfg && cfg.users && cfg.users[userEmail];
-    var ok = !!u && u.disabled !== true;
-    if (ok) { try { cache.put(key, '1', 300); } catch (_) {} }
-    return ok;
-  } catch (e) { return false; }
+    var users = (cfg && cfg.users) || {};
+    try { cache.put(CK, JSON.stringify(users), 300); } catch (_) {}
+    return users;
+  } catch (e) { return null; }
+}
+
+// 純決策（可單元測試）：跨環境 rootFolderId 例外——只有「存取固定 ISSUES_FOLDER_ID 內的 issues.json」
+// 才放行，其餘一律拒絕。杜絕「攻擊者帶自建 folderId 讓授權改讀假 config」的 F1 攻擊鏈。
+function issuesExceptionAllowed_(rootFolderId, actionPath, issuesFolderId) {
+  return actionPath === 'issues.json' && rootFolderId === issuesFolderId;
+}
+
+// 純決策（可單元測試，見 test/authz-gate.test.js）：給定 users 表、email、緊急備援名單，是否放行。
+// users 為 null（config 讀不到）＝ fail-closed 拒絕；BOOTSTRAP_ADMINS 不受此限。
+function authzDecision_(users, userEmail, bootstrapAdmins) {
+  if (!userEmail) return false;
+  if (bootstrapAdmins && bootstrapAdmins.indexOf(userEmail) !== -1) return true;
+  if (!users) return false;
+  var u = users[userEmail];
+  return !!u && u.disabled !== true;
+}
+
+function isAuthorizedUser_(userEmail) {
+  if (!userEmail) return false;
+  if (BOOTSTRAP_ADMINS.indexOf(userEmail) !== -1) return true;  // 短路：免讀 config
+  return authzDecision_(localConfigUsers_(), userEmail, BOOTSTRAP_ADMINS);
+}
+
+// ── P0-2/P0-3：角色分層與皇冠珠寶保護 ─────────────────────────────────────────
+// 純決策（可單元測試，見 test/authz-gate.test.js）：是否為管理者。
+// 判定基準與前端 index.html 一致：role==='主任' 或 isAdmin===true 或 extraRole==='管理者'。
+// users 為 null／停用／查無 → 非管理者（fail-closed）；BOOTSTRAP_ADMINS 不受此限。
+function adminDecision_(users, userEmail, bootstrapAdmins) {
+  if (!userEmail) return false;
+  if (bootstrapAdmins && bootstrapAdmins.indexOf(userEmail) !== -1) return true;
+  if (!users) return false;
+  var u = users[userEmail];
+  if (!u || u.disabled === true) return false;
+  return u.role === '主任' || u.isAdmin === true || u.extraRole === '管理者';
+}
+
+function isAdminUser_(userEmail) {
+  if (!userEmail) return false;
+  if (BOOTSTRAP_ADMINS.indexOf(userEmail) !== -1) return true;
+  return adminDecision_(localConfigUsers_(), userEmail, BOOTSTRAP_ADMINS);
+}
+
+// 純決策（可單元測試）：shareCalendarWriters 的非管理者路徑——emails 必須恰為「自己一人」。
+function shareToSelfOnly_(emails, userEmail) {
+  return Array.isArray(emails) && emails.length === 1 && !!userEmail && emails[0] === userEmail;
+}
+
+// 本環境 config.json 的 fileId：prod 用寫死的 CONFIG_FILE_ID_OVERRIDE，dev 走路徑解析並快取 5 分鐘。
+function localConfigFileId_() {
+  if (CONFIG_FILE_ID_OVERRIDE) return CONFIG_FILE_ID_OVERRIDE;
+  var cache = CacheService.getScriptCache();
+  var CK = 'cfgfid:' + ROOT_FOLDER_ID;
+  try { var hit = cache.get(CK); if (hit) return hit; } catch (_) {}
+  try {
+    var id = resolvePathToId_('config.json', { root: ROOT_FOLDER_ID, configOverride: null });
+    if (id) { try { cache.put(CK, id, 300); } catch (_) {} }
+    return id;
+  } catch (_) { return null; }
+}
+
+// 讀「當前」config.json 全文（不走快取，確保 P0-2 寫入前 diff 用的是最新版）。
+function readConfigFresh_() {
+  try {
+    var id = localConfigFileId_();
+    if (!id) return null;
+    var res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + id + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() !== 200) return null;
+    return JSON.parse(res.getContentText());
+  } catch (e) { return null; }
+}
+
+// ── P0-2：config.json 寫入的授權面保護 ──
+// 純決策（可單元測試）：此動作是否為「寫 config.json」。
+function isConfigWrite_(action, params, cfgFileId) {
+  if (!params) return false;
+  if (action === 'updateJson')        return params.path === 'config.json';
+  if (action === 'createJson')        return params.name === 'config.json';
+  if (action === 'updateContentById') return !!cfgFileId && params.fileId === cfgFileId;
+  return false;
+}
+
+// ── F3：fileId/parentId 類動作限制在本次 ctx.root 子樹 ──
+// 純函式（getParents 注入，可單元測試）：沿 parents 鏈自 fileId 往上找，能到 rootId 即為 root 子孫。
+function _ancestorContains_(getParents, fileId, rootId, maxHops) {
+  if (!fileId || !rootId) return false;
+  var seen = {};
+  var frontier = [fileId];
+  var hops = 0;
+  var limit = maxHops || 25;
+  while (frontier.length && hops < limit) {
+    var next = [];
+    for (var i = 0; i < frontier.length; i++) {
+      var id = frontier[i];
+      if (id === rootId) return true;
+      if (seen[id]) continue;
+      seen[id] = true;
+      var parents = getParents(id) || [];
+      for (var j = 0; j < parents.length; j++) next.push(parents[j]);
+    }
+    frontier = next;
+    hops++;
+  }
+  return false;
+}
+
+// fileId 是否為 rootId 的子孫（含自身）；正向結果快取 30 分鐘（fileId 的 parents 幾乎不變）。
+function isUnderRoot_(fileId, rootId) {
+  if (!fileId || !rootId) return false;
+  if (fileId === rootId) return true;
+  var cache = CacheService.getScriptCache();
+  var CK = 'inroot:' + String(rootId).slice(-24) + ':' + String(fileId).slice(-40);
+  try { if (cache.get(CK) === '1') return true; } catch (_) {}
+  var ok = _ancestorContains_(function(id) {
+    try { return (driveGet_('files/' + id, { fields: 'parents' }) || {}).parents || []; }
+    catch (e) { return []; }
+  }, fileId, rootId, 25);
+  if (ok) { try { cache.put(CK, '1', 1800); } catch (_) {} }
+  return ok;
+}
+
+// ── P1：downloadFileBase64 跨 root 附件白名單（issue/留言附件跨環境合法情境）──
+// 純函式（可單元測試）：附件清單（issue.attachments 或 comment.attachments）內是否含此 fileId。
+function _attachListHasFileId_(list, fileId) {
+  if (!Array.isArray(list) || !fileId) return false;
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].fileId === fileId) return true;
+  }
+  return false;
+}
+
+// 純函式（可單元測試）：issues.json 內容（{issues:[...]}）是否記錄了此 fileId 為某筆 issue
+// 本身或其留言（comments）的附件。issuesJson 為 null／格式不符 → false（fail-closed 由呼叫端處理）。
+function issuesHasAttachment_(issuesJson, fileId) {
+  if (!fileId || !issuesJson || !Array.isArray(issuesJson.issues)) return false;
+  for (var i = 0; i < issuesJson.issues.length; i++) {
+    var iss = issuesJson.issues[i];
+    if (!iss) continue;
+    if (_attachListHasFileId_(iss.attachments, fileId)) return true;
+    var comments = Array.isArray(iss.comments) ? iss.comments : [];
+    for (var j = 0; j < comments.length; j++) {
+      if (_attachListHasFileId_(comments[j] && comments[j].attachments, fileId)) return true;
+    }
+  }
+  return false;
+}
+
+// ── P1：query action 限根 ──
+// 純函式（可單元測試）：從 Drive q 字串中抽出所有 "'ID' in parents" 引用的 ID。
+// 前端 q 皆由固定樣板字串拼接而成，ID 段本身不含引號（既有 _escQ_ 已跳脫 name 段的單引號/反斜線），
+// 故用簡單字串比對即可，不需處理跳脫。
+// 不用 regex 字面值（同 _escQ_ 的理由：regex 內含單引號會被 test/harness.js 的 matchBrace
+// 誤判為字串邊界，破壞括號配對抽取），改以字串掃描實作。
+function _extractParentsIds_(q) {
+  var out = [];
+  if (typeof q !== 'string' || !q) return out;
+  var marker = 'in parents';
+  var searchFrom = 0;
+  while (true) {
+    var idx = q.indexOf(marker, searchFrom);
+    if (idx === -1) break;
+    // 往前跳過空白，緊接著應是右引號，再往前找對應左引號，中間即為 ID
+    var j = idx - 1;
+    while (j >= 0 && q.charAt(j) === ' ') j--;
+    if (j >= 0 && q.charAt(j) === "'") {
+      var closeQuote = j;
+      var k = closeQuote - 1;
+      while (k >= 0 && q.charAt(k) !== "'") k--;
+      if (k >= 0) out.push(q.slice(k + 1, closeQuote));
+    }
+    searchFrom = idx + marker.length;
+  }
+  return out;
+}
+
+// 純函式（可單元測試）：q 字串剝除單引號字串段後，是否含 or／not 運算子。
+// 若放行 or，攻擊者可用「'合法ID' in parents or trashed=false」讓 parents 條件失去約束力；
+// not 同理可反轉範圍。前端所有 q 樣板只用 and 串接，擋掉 or/not 不影響既有功能。
+// 引號內容（name 值，經 _escQ_ 以 \' 跳脫）先剝除，避免檔名含 "or" 字樣被誤殺。
+// 同 _extractParentsIds_ 的理由不用 regex 字面值，逐字元掃描。
+function _qHasForbiddenOp_(q) {
+  var word = '';
+  var inStr = false;
+  for (var i = 0; i <= q.length; i++) {
+    var ch = i < q.length ? q.charAt(i) : ' ';
+    if (inStr) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === "'") inStr = false;
+      continue;
+    }
+    if (ch === "'") { inStr = true; word = ''; continue; }
+    var lc = ch.toLowerCase();
+    var isWordCh = (lc >= 'a' && lc <= 'z') || (lc >= '0' && lc <= '9') || lc === '_';
+    if (isWordCh) { word += lc; continue; }
+    if (word === 'or' || word === 'not') return true;
+    word = '';
+  }
+  return false;
+}
+
+// 純函式（checkUnderRoot 注入，可單元測試，仿 _ancestorContains_ 的注入手法）：
+// q 字串是否只查詢 root 子樹內的資料夾——至少要有一個 parents 條件、不得含 or/not
+// 運算子（僅准 and 串接，否則 parents 條件會被 or 稀釋而失去約束力），且每一個 ID 都須通過
+// checkUnderRoot（root 本身亦合法：'root' in parents 語意為列出 root 的子項）。
+// 不含任何 parents 條件的 q 一律拒絕（防止枚舉任意資料夾/檔案）。
+function queryParentsAllowed_(q, checkUnderRoot) {
+  var ids = _extractParentsIds_(q);
+  if (!ids.length) return false;
+  if (_qHasForbiddenOp_(q)) return false;
+  for (var i = 0; i < ids.length; i++) {
+    if (!checkUnderRoot(ids[i])) return false;
+  }
+  return true;
+}
+
+// ── P1：moveFile 目的地檢查 ──
+// 純函式（checkUnderRoot 注入，可單元測試）：moveFile 的 addParents（目的地資料夾）是否都在
+// root 子樹下。addParents 可能是逗號分隔的多個 parent ID（Drive API 支援一次掛多個父層），
+// 每一個都須通過檢查；空值／全部無效 → 拒絕。
+function moveFileDestAllowed_(addParents, checkUnderRoot) {
+  if (!addParents) return false;
+  var ids = String(addParents).split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  if (!ids.length) return false;
+  for (var i = 0; i < ids.length; i++) {
+    if (!checkUnderRoot(ids[i])) return false;
+  }
+  return true;
+}
+
+// 深度相等（純函式；供授權欄位比對）。
+function _deepEq_(a, b) {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (!a || !b || typeof a !== 'object') return false;
+  var ak = Object.keys(a), bk = Object.keys(b);
+  if (ak.length !== bk.length) return false;
+  for (var i = 0; i < ak.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(b, ak[i])) return false;
+    if (!_deepEq_(a[ak[i]], b[ak[i]])) return false;
+  }
+  return true;
+}
+
+// 個管派任可用的 extraRole 值：非管理者流程只准在「空 ↔ 個案管理員」之間轉換，
+// 不得授予/剝奪 管理者、督導、其他特權 extraRole。
+function _extraRoleTransitionOk_(oldV, newV) {
+  var ok = function (v) { return v === undefined || v === null || v === '' || v === '個案管理員'; };
+  return ok(oldV) && ok(newV);
+}
+
+// 非管理者新增使用者 key 的唯一合法情境：轉銜窗口「自填新增輔導人員」建立 nomail_ 佔位帳號
+// （無 Gmail、無法登入，僅作主責標記）。條目不得夾帶任何特權：role 不得為主任/系統管理者、
+// 不得帶 isAdmin/extraRole/窗口旗標/leaveQuota，disabled 只能是 false/未設。
+function _nomailAddOk_(key, entry) {
+  if (typeof key !== 'string' || key.indexOf('nomail_') !== 0) return false;
+  if (!entry || typeof entry !== 'object') return false;
+  if (entry.role === '主任' || entry.role === '系統管理者') return false;
+  if (entry.isAdmin || entry.extraRole || entry.isTransferContact ||
+      entry.isMentalLeaveContact || entry.leaveQuota !== undefined) return false;
+  if (entry.disabled !== undefined && entry.disabled !== false) return false;
+  return true;
+}
+
+// 純決策（可單元測試，見 test/authz-gate.test.js）：非管理者寫 config.json 是否放行。
+// 規則：
+// ①使用者 key 原則不得增刪；例外兩種——(a) 新增 nomail_ 佔位帳號（_nomailAddOk_，轉銜窗口
+//   自填新增輔導人員）；(b)「本人 Gmail 遷移」＝恰好刪自己 key＋新增一個 key，且新條目的
+//   全部授權欄位與舊條目 deep-eq（搬家不變權限，防夾帶提權）。
+// ②任何存續條目（含自己與他人）的授權欄位不得變動；例外兩種——(a) allowedCases/
+//   allowedCasesSems 放行（主責新增/移除個管員、初談自動列管、saveCase 個管員同步、
+//   新學期繼承、案號改名 remap 等合法業務流程都會改它；自授個案存取的物件級授權
+//   屬 P1/#35，維持修補前現狀）；(b) extraRole 僅准「空 ↔ 個案管理員」轉換。
+// 只比對授權欄位（不比 pin/偏好等自助欄位），因此非管理者存 PIN／偏好不會因他人資料併發變動而誤拒；
+// 仍完全擋住「把自己或共犯改成 admin／主任／開停用旗標／改額度/姓名」等提權。
+// oldCfg 為 null（讀不到當前 config）→ fail-closed 拒絕（無法驗證即不放行）。
+function configWriteAllowedForNonAdmin_(oldCfg, newCfg, callerEmail, privFields) {
+  if (!oldCfg || !newCfg || typeof oldCfg !== 'object' || typeof newCfg !== 'object') return false;
+  var oldUsers = oldCfg.users || {};
+  var newUsers = newCfg.users || {};
+  var oldKeys = Object.keys(oldUsers);
+  var newKeys = Object.keys(newUsers);
+
+  // key 差集
+  var removed = [], added = [], kept = [];
+  for (var a = 0; a < oldKeys.length; a++) {
+    if (Object.prototype.hasOwnProperty.call(newUsers, oldKeys[a])) kept.push(oldKeys[a]);
+    else removed.push(oldKeys[a]);
+  }
+  for (var b = 0; b < newKeys.length; b++) {
+    if (!Object.prototype.hasOwnProperty.call(oldUsers, newKeys[b])) added.push(newKeys[b]);
+  }
+
+  // 「本人 Gmail 遷移」：恰刪自己＋恰增一個，新條目授權欄位須與舊條目完全一致
+  var selfRename = null; // {fromEntry, toKey}
+  if (removed.length === 1 && added.length === 1 && removed[0] === callerEmail) {
+    var fromE = oldUsers[removed[0]] || {};
+    var toE = newUsers[added[0]] || {};
+    var same = true;
+    for (var p = 0; p < privFields.length; p++) {
+      if (!_deepEq_(fromE[privFields[p]], toE[privFields[p]])) { same = false; break; }
+    }
+    if (same) selfRename = { toKey: added[0] };
+  }
+  if (!selfRename) {
+    if (removed.length) return false;                                   // 不得刪除使用者
+    for (var c = 0; c < added.length; c++) {
+      if (!_nomailAddOk_(added[c], newUsers[added[c]])) return false;   // 新增僅准 nomail_ 佔位
+    }
+  }
+
+  // 存續條目逐一比對授權欄位
+  for (var j = 0; j < kept.length; j++) {
+    var oe = oldUsers[kept[j]] || {};
+    var ne = newUsers[kept[j]] || {};
+    for (var k = 0; k < privFields.length; k++) {
+      var f = privFields[k];
+      if (f === 'allowedCases' || f === 'allowedCasesSems') continue;   // 個管派任流程放行（P1/#35 收物件級）
+      if (f === 'extraRole') {
+        if (_deepEq_(oe[f], ne[f])) continue;
+        if (!_extraRoleTransitionOk_(oe[f], ne[f])) return false;       // 僅准 空↔個案管理員
+        continue;
+      }
+      if (!_deepEq_(oe[f], ne[f])) return false;                        // 其餘授權欄位不得變動
+    }
+  }
+  return true;
 }
 
 // ── 回應工具 ──────────────────────────────────────────────────────────────────
@@ -483,20 +895,28 @@ function driveUpdateContent_(fileId, jsonContent) {
   return data;
 }
 
+// Drive query 字串跳脫（F4）：path/name 元件內的反斜線與單引號可注入或破壞 Drive 查詢子句，一律跳脫。
+// 之後所有以字串拼接進 Drive `q` 的使用者可控 name 元件都須包這層。
+function _escQ_(s) {
+  // 先跳脫反斜線再跳脫單引號（順序重要）。用 split/join 而非 regex 字面值，
+  // 以相容 test/harness.js 的就地抽取（其 matchBrace 不解析 regex literal）。
+  return String(s == null ? '' : s).split('\\').join('\\\\').split("'").join("\\'");
+}
+
 // 路徑解析：把 "cases/manifest.json" 轉成 fileId
 function resolvePathToId_(path, ctx) {
   if (path === 'config.json' && ctx.configOverride) return ctx.configOverride;
   const parts = path.split('/');
   let curId = ctx.root;
   for (let i = 0; i < parts.length - 1; i++) {
-    const q = "name='" + parts[i] + "' and mimeType='application/vnd.google-apps.folder'" +
+    const q = "name='" + _escQ_(parts[i]) + "' and mimeType='application/vnd.google-apps.folder'" +
               " and '" + curId + "' in parents and trashed=false";
     const res = driveGet_('files', { q: q, fields: 'files(id)', pageSize: '1' });
     if (!res.files || res.files.length === 0) throw new Error('Folder not found: ' + parts[i]);
     curId = res.files[0].id;
   }
   const fileName = parts[parts.length - 1];
-  const q2 = "name='" + fileName + "' and '" + curId + "' in parents and trashed=false";
+  const q2 = "name='" + _escQ_(fileName) + "' and '" + curId + "' in parents and trashed=false";
   const res2 = driveGet_('files', { q: q2, fields: 'files(id)', orderBy: 'modifiedTime desc', pageSize: '5' });
   if (!res2.files || res2.files.length === 0) throw new Error('File not found: ' + path);
   if (res2.files.length > 1) {
@@ -510,7 +930,7 @@ function resolvePathToParentAndName_(path, ctx) {
   const fileName = parts[parts.length - 1];
   let parentId = ctx.root;
   for (let i = 0; i < parts.length - 1; i++) {
-    const q = "name='" + parts[i] + "' and mimeType='application/vnd.google-apps.folder'" +
+    const q = "name='" + _escQ_(parts[i]) + "' and mimeType='application/vnd.google-apps.folder'" +
               " and '" + parentId + "' in parents and trashed=false";
     const res = driveGet_('files', { q: q, fields: 'files(id)', pageSize: '1' });
     if (!res.files || res.files.length === 0) throw new Error('Folder not found: ' + parts[i]);
@@ -559,7 +979,7 @@ function updateJson_({ path, content }, ctx) {
   } catch (notFound) {
     const { parentId, fileName } = resolvePathToParentAndName_(path, ctx);
     const verify = driveGet_('files', {
-      q: "name='" + fileName + "' and '" + parentId + "' in parents and trashed=false",
+      q: "name='" + _escQ_(fileName) + "' and '" + parentId + "' in parents and trashed=false",
       fields: 'files(id)', orderBy: 'modifiedTime desc', pageSize: '5'
     });
     if (verify.files && verify.files.length > 0) {
@@ -638,7 +1058,7 @@ function resolveDir_({ path }, ctx) {
   const parts = path.split('/');
   let curId = ctx.root;
   for (let i = 0; i < parts.length; i++) {
-    const q = "name='" + parts[i] + "' and mimeType='application/vnd.google-apps.folder'" +
+    const q = "name='" + _escQ_(parts[i]) + "' and mimeType='application/vnd.google-apps.folder'" +
               " and '" + curId + "' in parents and trashed=false";
     const res = driveGet_('files', { q: q, fields: 'files(id)', pageSize: '1' });
     if (!res.files || res.files.length === 0) throw new Error('Folder not found: ' + parts[i]);
@@ -734,6 +1154,39 @@ function uploadFile_({ parentFolderId, fileName, mimeType, base64Data }) {
   const folder = DriveApp.getFolderById(parentFolderId);
   const file  = folder.createFile(blob);
   return { fileId: file.getId(), fileName: file.getName() };
+}
+
+// issues.json 的 fileId：固定用 ISSUES_FOLDER_ID 定位（不信任請求參數），快取 5 分鐘。
+// 供 doPost 的 downloadFileBase64 附件白名單檢查使用。
+function issuesFileId_() {
+  var cache = CacheService.getScriptCache();
+  var CK = 'issuesFid';
+  try { var hit = cache.get(CK); if (hit) return hit; } catch (_) {}
+  try {
+    var id = resolvePathToId_('issues.json', { root: ISSUES_FOLDER_ID, configOverride: null });
+    if (id) { try { cache.put(CK, id, 300); } catch (_) {} }
+    return id;
+  } catch (_) { return null; }
+}
+
+// 讀 issues.json 全文，供 downloadFileBase64 附件白名單比對（見 issuesHasAttachment_）；
+// 短快取 60 秒降低成本。fail-closed：讀不到／解析失敗一律回 null（呼叫端視為「查無此附件」而拒絕）。
+function readIssuesJsonForAttachCheck_() {
+  var cache = CacheService.getScriptCache();
+  var CK = 'issuesJsonAttach';
+  try { var hit = cache.get(CK); if (hit) return JSON.parse(hit); } catch (_) {}
+  try {
+    var id = issuesFileId_();
+    if (!id) return null;
+    var res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + id + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() !== 200) return null;
+    var data = JSON.parse(res.getContentText());
+    try { cache.put(CK, JSON.stringify(data), 60); } catch (_) {}
+    return data;
+  } catch (e) { return null; }
 }
 
 function downloadFileBase64_({ fileId }) {
@@ -1475,7 +1928,7 @@ function startupBatch_(params, ctx) {
   var p1Keys = [];
 
   function addQuery(key, parentId, name, mime) {
-    var q = "name='" + name + "' and '" + parentId + "' in parents and trashed=false";
+    var q = "name='" + _escQ_(name) + "' and '" + parentId + "' in parents and trashed=false";
     if (mime) q += " and mimeType='" + mime + "'";
     p1Reqs.push({ url: qBase + encodeURIComponent(q), headers: authHeader, muteHttpExceptions: true });
     p1Keys.push(key);
@@ -1521,8 +1974,8 @@ function startupBatch_(params, ctx) {
 
   if (!fileIds['todos_new'] && !fileIds['todos_legacy'] && usersFolderId && !usersFolderIdHint) {
     var todoPhase = [
-      { url: qBase + encodeURIComponent("name='" + todoFileName   + "' and '" + usersFolderId + "' in parents and trashed=false"), headers: authHeader, muteHttpExceptions: true },
-      { url: qBase + encodeURIComponent("name='" + legacyTodoName + "' and '" + usersFolderId + "' in parents and trashed=false"), headers: authHeader, muteHttpExceptions: true },
+      { url: qBase + encodeURIComponent("name='" + _escQ_(todoFileName)   + "' and '" + usersFolderId + "' in parents and trashed=false"), headers: authHeader, muteHttpExceptions: true },
+      { url: qBase + encodeURIComponent("name='" + _escQ_(legacyTodoName) + "' and '" + usersFolderId + "' in parents and trashed=false"), headers: authHeader, muteHttpExceptions: true },
     ];
     var tpRes = UrlFetchApp.fetchAll(todoPhase);
     var newTodo = JSON.parse(tpRes[0].getContentText());
@@ -1963,6 +2416,121 @@ function notifCommit_(params, ctx) {
   } finally {
     try { lock.releaseLock(); } catch (_) {}
   }
+}
+
+// ── config.json「SELF 類」使用者自助欄位併發安全 PATCH（P1 延伸修復）──
+// 沿革：偏好設定／PIN／欄寬／個人顯示色等只影響呼叫者本人的欄位，原本走前端整檔覆寫
+// config.json（configSelfPatch 部署前的舊路徑）；config.json 同時裝全部使用者的授權欄位，
+// 覆寫面最大，任何人同時改權限或另一人寫偏好就會互蓋。比照 notifCommit_/listCommit_收斂為
+// LockService 鎖內讀最新 config → 只 PATCH 呼叫者本人條目的白名單欄位 → 寫回，
+// 回傳更新後的本人條目；呼叫者條目不存在一律拒絕、絕不新建（防未授權帳號夾帶寫入）。
+//
+// 白名單只放行使用者可自行寫入的偏好/PIN/顯示設定；授權欄位（role/extraRole/isAdmin/…）
+// 一律拒絕——見 selfPatchKeyAllowed_ 的 deny-list（雙重保險，即使呼叫端漏檢查也不會被放行）。
+function configSelfPatch_(params, ctx, userEmail) {
+  var updates = (params && params.updates) || null;
+  if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
+    throw new Error('configSelfPatch: updates required');
+  }
+  var keys = Object.keys(updates);
+  if (!keys.length) throw new Error('configSelfPatch: updates 不可為空');
+  // 型別上限防護：序列化後過大一律拒絕，防塞爆 config.json（所有使用者共用同一份檔案）。
+  if (JSON.stringify(updates).length > 200 * 1024) {
+    throw new Error('configSelfPatch: updates 過大（上限 200KB）');
+  }
+  for (var i = 0; i < keys.length; i++) {
+    if (!selfPatchKeyAllowed_(keys[i])) {
+      throw new Error('configSelfPatch: 欄位不在白名單（' + keys[i] + '）');
+    }
+  }
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var fileId = localConfigFileId_();
+    if (!fileId) throw new Error('configSelfPatch: 找不到 config.json');
+    var res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() >= 400) {
+      throw new Error('configSelfPatch: 讀取 config.json 失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
+    }
+    var cfg = JSON.parse(res.getContentText());
+    if (!cfg || typeof cfg.users !== 'object' || cfg.users === null || Array.isArray(cfg.users)) {
+      throw new Error('configSelfPatch: config.json 內容異常（users 非物件），已中止寫入以保護資料');
+    }
+    var me = cfg.users[userEmail];
+    if (!me) throw new Error('configSelfPatch: 呼叫者條目不存在，拒絕建立新條目');
+
+    keys.forEach(function (k) {
+      var v = updates[k];
+      if (v === null) delete me[k];
+      else me[k] = v;
+    });
+
+    // 懶清理：v154 已遷移到 notifications.json 的舊欄位，順手在本次寫入一併清除（全部使用者）。
+    stripLegacyNotifications_(cfg);
+
+    driveUpdateContent_(fileId, cfg);
+    return { user: me };
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// 純函式（可單元測試）：SELF PATCH 欄位白名單。固定 key 集合 ＋ 動態前綴/後綴規則；
+// 白名單外一律拒絕整個請求（不是靜默略過該 key）。DENY 為雙重保險——即使外層 CONFIG_PRIV_FIELDS
+// 漏檢查，此處仍明確擋下授權欄位，確保 SELF PATCH 永遠無法用來提權或改動他人授權狀態。
+function selfPatchKeyAllowed_(key) {
+  if (!key || typeof key !== 'string') return false;
+  var DENY = { role: 1, extraRole: 1, isAdmin: 1, disabled: 1, allowedCases: 1,
+    allowedCasesSems: 1, isTransferContact: 1, isMentalLeaveContact: 1, leaveQuota: 1, name: 1 };
+  if (DENY[key]) return false;
+
+  var FIXED = {
+    semesterPref: 1, counselorFreqs: 1, sortStatusLocked: 1, recPageSize: 1, recSortDesc: 1,
+    todosUnclosedCollapsed: 1, myAttTab: 1, auditColsHidden: 1, pin: 1, pinTmo: 1, pinSkipped: 1,
+    confirmBeforeLeave: 1, bkFreqs: 1, counselorFreqMode: 1, unassignedScanDate: 1, mlTab: 1,
+    bkViewMode: 1, bkDaySpan: 1, bkPageTab: 1, bkCustomRooms: 1, bkCustomOpts: 1,
+    sidebarCollapsed: 1, sidebarPinned: 1, bkColor: 1, bkColorGc: 1, dismissedAlerts: 1, gcAclSynced: 1,
+  };
+  if (FIXED[key]) return true;
+
+  // 側邊欄自訂排序：每個分區各自一個 key（navOrder_<sectionId>）。
+  if (key.indexOf('navOrder_') === 0) return true;
+
+  // 表格欄寬記憶：key 以 ColWidths 結尾，或 ColWidths 後接純數字（如既有的 mlColWidths2）。
+  // 不用 regex 比對——harness 的括號配對器不解析 regex 字面值，含引號/斜線的正則會壞抽取，
+  // 此函式需要被單元測試就地抽出，故改用字串方法。
+  var idx = key.indexOf('ColWidths');
+  if (idx > 0 && _selfPatchAllDigits_(key.slice(idx + 'ColWidths'.length))) return true;
+
+  return false;
+}
+function _selfPatchAllDigits_(s) {
+  if (s === '') return true;
+  for (var i = 0; i < s.length; i++) {
+    var c = s.charCodeAt(i);
+    if (c < 48 || c > 57) return false;
+  }
+  return true;
+}
+
+// 純函式（可單元測試）：懶清理 v154 已遷移到 notifications.json 的舊欄位
+// （users[*].notifications，殘留屬無害死資料但會不必要地增大 config.json）。就地刪除，
+// 回傳是否清理到任何欄位。
+function stripLegacyNotifications_(cfg) {
+  if (!cfg || typeof cfg.users !== 'object' || cfg.users === null || Array.isArray(cfg.users)) return false;
+  var cleaned = false;
+  Object.keys(cfg.users).forEach(function (email) {
+    var u = cfg.users[email];
+    if (u && typeof u === 'object' && Object.prototype.hasOwnProperty.call(u, 'notifications')) {
+      delete u.notifications;
+      cleaned = true;
+    }
+  });
+  return cleaned;
 }
 
 // ── bookings.json 併發安全的批次寫入（LockService）＋寫入當下撞房/撞人檢查 ──
