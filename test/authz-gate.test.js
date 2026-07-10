@@ -190,49 +190,87 @@ const PRIV = ['role', 'extraRole', 'isAdmin', 'disabled', 'allowedCases',
 const mkCfg = (users) => ({ users });
 
 test('cfgWrite：只改自己 pin（授權欄位不變）→ 放行', () => {
-  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_', '_extraRoleTransitionOk_', '_nomailAddOk_']);
   const old = mkCfg({ 'a@x.com': { role: '專任諮商心理師', pin: '1111' }, 'b@x.com': { role: '主任' } });
   const nw  = mkCfg({ 'a@x.com': { role: '專任諮商心理師', pin: '2222' }, 'b@x.com': { role: '主任' } });
   assert.equal(S.configWriteAllowedForNonAdmin_(old, nw, 'a@x.com', PRIV), true);
 });
 
 test('cfgWrite：把自己 isAdmin 改成 true → 擋（自我提權）', () => {
-  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_', '_extraRoleTransitionOk_', '_nomailAddOk_']);
   const old = mkCfg({ 'a@x.com': { role: '專任諮商心理師' } });
   const nw  = mkCfg({ 'a@x.com': { role: '專任諮商心理師', isAdmin: true } });
   assert.equal(S.configWriteAllowedForNonAdmin_(old, nw, 'a@x.com', PRIV), false);
 });
 
-test('cfgWrite：把自己 role 改成主任 / 動 allowedCases → 擋', () => {
-  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+test('cfgWrite：把自己 role 改成主任 → 擋；只動 allowedCases（個管派任流程）→ 放行', () => {
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_', '_extraRoleTransitionOk_', '_nomailAddOk_']);
   const old = mkCfg({ 'a@x.com': { role: '實習諮商心理師', allowedCases: ['1'] } });
   assert.equal(S.configWriteAllowedForNonAdmin_(old, mkCfg({ 'a@x.com': { role: '主任', allowedCases: ['1'] } }), 'a@x.com', PRIV), false);
-  assert.equal(S.configWriteAllowedForNonAdmin_(old, mkCfg({ 'a@x.com': { role: '實習諮商心理師', allowedCases: ['1', '2'] } }), 'a@x.com', PRIV), false);
+  // allowedCases/allowedCasesSems 是主責新增個管員、初談自動列管、saveCase 個管員同步等
+  // 合法流程會動的欄位；物件級授權屬 P1/#35，此處放行（維持 P0-2 前現狀，避免功能回歸）
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, mkCfg({ 'a@x.com': { role: '實習諮商心理師', allowedCases: ['1', '2'] } }), 'a@x.com', PRIV), true);
+});
+
+test('cfgWrite：extraRole 空↔個案管理員（個管派任）→ 放行；升管理者/剝奪督導 → 擋', () => {
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_', '_extraRoleTransitionOk_', '_nomailAddOk_']);
+  const old = mkCfg({ 'a@x.com': { role: '專任諮商心理師' }, 'b@x.com': { role: '兼任諮商心理師' }, 'c@x.com': { role: '實習諮商心理師', extraRole: '實習生行政督導' } });
+  const withMgr = mkCfg({ 'a@x.com': { role: '專任諮商心理師' }, 'b@x.com': { role: '兼任諮商心理師', extraRole: '個案管理員' }, 'c@x.com': { role: '實習諮商心理師', extraRole: '實習生行政督導' } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, withMgr, 'a@x.com', PRIV), true);      // 派任個管
+  assert.equal(S.configWriteAllowedForNonAdmin_(withMgr, old, 'a@x.com', PRIV), true);      // 移除個管
+  const selfAdmin = mkCfg({ 'a@x.com': { role: '專任諮商心理師', extraRole: '管理者' }, 'b@x.com': { role: '兼任諮商心理師' }, 'c@x.com': { role: '實習諮商心理師', extraRole: '實習生行政督導' } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, selfAdmin, 'a@x.com', PRIV), false);   // 自升管理者
+  const stripSup = mkCfg({ 'a@x.com': { role: '專任諮商心理師' }, 'b@x.com': { role: '兼任諮商心理師' }, 'c@x.com': { role: '實習諮商心理師' } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, stripSup, 'a@x.com', PRIV), false);    // 剝奪督導
+});
+
+test('cfgWrite：新增 nomail_ 佔位帳號（轉銜自填輔導人員）→ 放行；夾帶特權 → 擋', () => {
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_', '_extraRoleTransitionOk_', '_nomailAddOk_']);
+  const old = mkCfg({ 'a@x.com': { role: '專任諮商心理師', isTransferContact: true } });
+  const okAdd = mkCfg({ 'a@x.com': { role: '專任諮商心理師', isTransferContact: true }, 'nomail_123_ab': { name: '王老師', role: '義務輔導老師', disabled: false } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, okAdd, 'a@x.com', PRIV), true);
+  const evilRole = mkCfg({ 'a@x.com': { role: '專任諮商心理師', isTransferContact: true }, 'nomail_123_ab': { name: 'x', role: '主任' } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, evilRole, 'a@x.com', PRIV), false);
+  const evilFlag = mkCfg({ 'a@x.com': { role: '專任諮商心理師', isTransferContact: true }, 'nomail_123_ab': { name: 'x', role: '義務輔導老師', isAdmin: true } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, evilFlag, 'a@x.com', PRIV), false);
+});
+
+test('cfgWrite：本人 Gmail 遷移（刪自己 key＋同權限新 key）→ 放行；夾帶提權/刪別人 → 擋', () => {
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_', '_extraRoleTransitionOk_', '_nomailAddOk_']);
+  const old = mkCfg({ 'a@x.com': { role: '專任諮商心理師', pin: '1111' }, 'b@x.com': { role: '主任' } });
+  const moved = mkCfg({ 'a2@x.com': { role: '專任諮商心理師', pin: '1111', previousEmails: [{ email: 'a@x.com' }] }, 'b@x.com': { role: '主任' } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, moved, 'a@x.com', PRIV), true);
+  // 遷移途中順手把自己升 admin → 擋
+  const movedEvil = mkCfg({ 'a2@x.com': { role: '專任諮商心理師', pin: '1111', isAdmin: true }, 'b@x.com': { role: '主任' } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, movedEvil, 'a@x.com', PRIV), false);
+  // 刪的是別人的 key（非本人遷移）→ 擋
+  const movedOther = mkCfg({ 'a@x.com': { role: '專任諮商心理師', pin: '1111' }, 'b2@x.com': { role: '主任' } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, movedOther, 'a@x.com', PRIV), false);
 });
 
 test('cfgWrite：把別人（共犯）改成 admin → 擋', () => {
-  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_', '_extraRoleTransitionOk_', '_nomailAddOk_']);
   const old = mkCfg({ 'a@x.com': { role: '專任諮商心理師' }, 'b@x.com': { role: '實習諮商心理師' } });
   const nw  = mkCfg({ 'a@x.com': { role: '專任諮商心理師' }, 'b@x.com': { role: '實習諮商心理師', isAdmin: true } });
   assert.equal(S.configWriteAllowedForNonAdmin_(old, nw, 'a@x.com', PRIV), false);
 });
 
 test('cfgWrite：新增/刪除使用者 → 擋', () => {
-  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_', '_extraRoleTransitionOk_', '_nomailAddOk_']);
   const old = mkCfg({ 'a@x.com': { role: '專任諮商心理師' } });
   assert.equal(S.configWriteAllowedForNonAdmin_(old, mkCfg({ 'a@x.com': { role: '專任諮商心理師' }, 'evil@x.com': { role: '主任' } }), 'a@x.com', PRIV), false);
   assert.equal(S.configWriteAllowedForNonAdmin_(mkCfg({ 'a@x.com': {}, 'b@x.com': {} }), mkCfg({ 'a@x.com': {} }), 'a@x.com', PRIV), false);
 });
 
 test('cfgWrite：他人自助欄位（pin）併發變動、但授權欄位不變 → 放行（不誤拒）', () => {
-  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_', '_extraRoleTransitionOk_', '_nomailAddOk_']);
   const old = mkCfg({ 'a@x.com': { role: '專任諮商心理師', pin: '0000' }, 'b@x.com': { role: '主任', pin: 'AAAA' } });
   const nw  = mkCfg({ 'a@x.com': { role: '專任諮商心理師', pin: '9999' }, 'b@x.com': { role: '主任', pin: 'BBBB' } });
   assert.equal(S.configWriteAllowedForNonAdmin_(old, nw, 'a@x.com', PRIV), true);
 });
 
 test('cfgWrite：oldCfg 為 null（讀不到當前 config）→ fail-closed 擋', () => {
-  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_', '_extraRoleTransitionOk_', '_nomailAddOk_']);
   assert.equal(S.configWriteAllowedForNonAdmin_(null, mkCfg({ 'a@x.com': {} }), 'a@x.com', PRIV), false);
 });
 

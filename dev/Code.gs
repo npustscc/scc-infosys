@@ -714,24 +714,86 @@ function _deepEq_(a, b) {
   return true;
 }
 
+// 個管派任可用的 extraRole 值：非管理者流程只准在「空 ↔ 個案管理員」之間轉換，
+// 不得授予/剝奪 管理者、督導、其他特權 extraRole。
+function _extraRoleTransitionOk_(oldV, newV) {
+  var ok = function (v) { return v === undefined || v === null || v === '' || v === '個案管理員'; };
+  return ok(oldV) && ok(newV);
+}
+
+// 非管理者新增使用者 key 的唯一合法情境：轉銜窗口「自填新增輔導人員」建立 nomail_ 佔位帳號
+// （無 Gmail、無法登入，僅作主責標記）。條目不得夾帶任何特權：role 不得為主任/系統管理者、
+// 不得帶 isAdmin/extraRole/窗口旗標/leaveQuota，disabled 只能是 false/未設。
+function _nomailAddOk_(key, entry) {
+  if (typeof key !== 'string' || key.indexOf('nomail_') !== 0) return false;
+  if (!entry || typeof entry !== 'object') return false;
+  if (entry.role === '主任' || entry.role === '系統管理者') return false;
+  if (entry.isAdmin || entry.extraRole || entry.isTransferContact ||
+      entry.isMentalLeaveContact || entry.leaveQuota !== undefined) return false;
+  if (entry.disabled !== undefined && entry.disabled !== false) return false;
+  return true;
+}
+
 // 純決策（可單元測試，見 test/authz-gate.test.js）：非管理者寫 config.json 是否放行。
-// 規則：①不得新增/刪除使用者 key；②任何使用者條目（含自己與他人）的「授權欄位」都不得變動。
+// 規則：
+// ①使用者 key 原則不得增刪；例外兩種——(a) 新增 nomail_ 佔位帳號（_nomailAddOk_，轉銜窗口
+//   自填新增輔導人員）；(b)「本人 Gmail 遷移」＝恰好刪自己 key＋新增一個 key，且新條目的
+//   全部授權欄位與舊條目 deep-eq（搬家不變權限，防夾帶提權）。
+// ②任何存續條目（含自己與他人）的授權欄位不得變動；例外兩種——(a) allowedCases/
+//   allowedCasesSems 放行（主責新增/移除個管員、初談自動列管、saveCase 個管員同步、
+//   新學期繼承、案號改名 remap 等合法業務流程都會改它；自授個案存取的物件級授權
+//   屬 P1/#35，維持修補前現狀）；(b) extraRole 僅准「空 ↔ 個案管理員」轉換。
 // 只比對授權欄位（不比 pin/偏好等自助欄位），因此非管理者存 PIN／偏好不會因他人資料併發變動而誤拒；
-// 同時完全擋住「把自己或共犯改成 admin／改 allowedCases／開停用旗標」等提權。
+// 仍完全擋住「把自己或共犯改成 admin／主任／開停用旗標／改額度/姓名」等提權。
 // oldCfg 為 null（讀不到當前 config）→ fail-closed 拒絕（無法驗證即不放行）。
 function configWriteAllowedForNonAdmin_(oldCfg, newCfg, callerEmail, privFields) {
   if (!oldCfg || !newCfg || typeof oldCfg !== 'object' || typeof newCfg !== 'object') return false;
   var oldUsers = oldCfg.users || {};
   var newUsers = newCfg.users || {};
-  var oldKeys = Object.keys(oldUsers).sort();
-  var newKeys = Object.keys(newUsers).sort();
-  if (oldKeys.length !== newKeys.length) return false;                 // 不得增刪使用者
-  for (var i = 0; i < oldKeys.length; i++) if (oldKeys[i] !== newKeys[i]) return false;
-  for (var j = 0; j < oldKeys.length; j++) {
-    var oe = oldUsers[oldKeys[j]] || {};
-    var ne = newUsers[oldKeys[j]] || {};
+  var oldKeys = Object.keys(oldUsers);
+  var newKeys = Object.keys(newUsers);
+
+  // key 差集
+  var removed = [], added = [], kept = [];
+  for (var a = 0; a < oldKeys.length; a++) {
+    if (Object.prototype.hasOwnProperty.call(newUsers, oldKeys[a])) kept.push(oldKeys[a]);
+    else removed.push(oldKeys[a]);
+  }
+  for (var b = 0; b < newKeys.length; b++) {
+    if (!Object.prototype.hasOwnProperty.call(oldUsers, newKeys[b])) added.push(newKeys[b]);
+  }
+
+  // 「本人 Gmail 遷移」：恰刪自己＋恰增一個，新條目授權欄位須與舊條目完全一致
+  var selfRename = null; // {fromEntry, toKey}
+  if (removed.length === 1 && added.length === 1 && removed[0] === callerEmail) {
+    var fromE = oldUsers[removed[0]] || {};
+    var toE = newUsers[added[0]] || {};
+    var same = true;
+    for (var p = 0; p < privFields.length; p++) {
+      if (!_deepEq_(fromE[privFields[p]], toE[privFields[p]])) { same = false; break; }
+    }
+    if (same) selfRename = { toKey: added[0] };
+  }
+  if (!selfRename) {
+    if (removed.length) return false;                                   // 不得刪除使用者
+    for (var c = 0; c < added.length; c++) {
+      if (!_nomailAddOk_(added[c], newUsers[added[c]])) return false;   // 新增僅准 nomail_ 佔位
+    }
+  }
+
+  // 存續條目逐一比對授權欄位
+  for (var j = 0; j < kept.length; j++) {
+    var oe = oldUsers[kept[j]] || {};
+    var ne = newUsers[kept[j]] || {};
     for (var k = 0; k < privFields.length; k++) {
-      if (!_deepEq_(oe[privFields[k]], ne[privFields[k]])) return false; // 授權欄位不得變動
+      var f = privFields[k];
+      if (f === 'allowedCases' || f === 'allowedCasesSems') continue;   // 個管派任流程放行（P1/#35 收物件級）
+      if (f === 'extraRole') {
+        if (_deepEq_(oe[f], ne[f])) continue;
+        if (!_extraRoleTransitionOk_(oe[f], ne[f])) return false;       // 僅准 空↔個案管理員
+        continue;
+      }
+      if (!_deepEq_(oe[f], ne[f])) return false;                        // 其餘授權欄位不得變動
     }
   }
   return true;
