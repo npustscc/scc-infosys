@@ -27643,6 +27643,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-10', v: 162, title: 'v160 驗證回饋修正：系列預約檢視動線——單筆編輯提示與返回', isProd: true, items: [
+      item('改善', '從「檢視此系列預約」清單點選某一筆後，直接進入該筆的單筆編輯畫面（不再跳出「僅此筆／此筆之後／全部系列」的範圍選擇），且畫面頂部會明顯提示「僅修改此筆：本次儲存只會影響這一筆預約，不影響系列其他預約」'),
+      item('改善', '該筆編輯儲存成功後，自動回到「檢視此系列預約」清單（同一系列、資料重新整理），立即看到清單中呈現的最新結果；取消或關閉編輯畫面時也會回到同一清單，不會跳到一般預約列表'),
+      item('技術', '上述提示與返回行為只限「從系列檢視清單進入的單筆編輯」這個入口才會套用；一般編輯、新增、複製預約及既有的範圍選擇（僅此筆／此筆之後／全部系列）流程不受影響'),
+    ]},
     { date: '2026-07-10', v: 161, title: '個人設定寫入併發安全化：PIN／偏好／顯示色改走後端鎖內部分更新', isProd: true, items: [
       item('改善', '個人自助設定（PIN、介面偏好、表格欄寬、側欄排序、預約顯示色、新主責提醒關閉等）改為只送出實際變動的欄位、由後端在鎖內合併寫入 config.json，不再整檔覆寫——關閉「有人改權限設定的同時另一人存偏好」互相覆蓋的最後常用窗口（2026-07-09 事故系列延伸修復）'),
       item('技術', '後端新增 configSelfPatch（LockService 讀-改-寫，只准 PATCH 呼叫者本人條目的白名單欄位，授權欄位明確 deny-list 雙重保險）；寫入時順帶清除通知系統搬遷（v154）後殘留的舊通知欄位；前端移除已不會觸發的通知舊路徑整檔備援寫入；後端未部署時自動退回舊路徑不中斷'),
@@ -30065,6 +30070,10 @@ async function skipUnassignedRecord(recId) {
 let bookingsData = [];
 let _editingBookingId = null;
 let _bkEditScope = 'this'; // 'this' | 'future' | 'all'
+// v162：從「檢視此系列預約」清單點選某筆進入編輯時記錄來源（{ seriesId }），
+// 供 editBooking 略過範圍選擇、直接進入單筆編輯並鎖定僅此筆；離開編輯（儲存成功／取消關閉）
+// 由 closeBookingModal() 據此自動返回本清單。只有此入口會設定；一般編輯／新增／複製一律為 null。
+let _bkSeriesViewReturn = null;
 
 // T3：系列編輯範圍確認
 function _bkConfirmSeriesScope(scope) {
@@ -30076,14 +30085,11 @@ function _bkConfirmSeriesScope(scope) {
   _checkBkConflict();
 }
 
-// #2-4：編輯系列預約第四選項「檢視此系列預約」——列出同系列所有預約（日期、節次/時間、空間、狀態），
-// 點任一筆直接進入該筆的單筆編輯（沿用既有 editBooking，該筆若也屬系列會再次跳出範圍選擇，行為一致）。
-function _bkViewSeriesList() {
-  const b = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
-  if (!b?.seriesId) return;
-  document.getElementById('bk-series-scope-modal').style.display = 'none';
+// 共用：依 seriesId 重繪「系列預約清單」內容並開窗；highlightId 標示「目前這筆」。
+// 供 _bkViewSeriesList()（從編輯範圍選擇跳出）與 _bkReopenSeriesView()（v162：單筆編輯結束後返回）共用。
+function _bkRenderSeriesListModal(seriesId, highlightId) {
   const today = new Date().toISOString().slice(0, 10);
-  const list = [...bookingsData.filter(x => x.seriesId === b.seriesId)]
+  const list = [...bookingsData.filter(x => x.seriesId === seriesId)]
     .sort((x, y) => `${x.date || ''}${x.startTime || ''}`.localeCompare(`${y.date || ''}${y.startTime || ''}`));
   const _periodLabel = x => {
     const p = BK_PERIODS.find(pp => pp.start === (x.startTime || '').slice(0, 5) && pp.end === (x.endTime || '').slice(0, 5));
@@ -30092,7 +30098,7 @@ function _bkViewSeriesList() {
   const bodyEl = document.getElementById('bk-series-list-body');
   bodyEl.innerHTML = list.map(x => {
     const room = x.room === '其他' ? (x.customRoom || '其他') : x.room;
-    const isCur = x.id === b.id;
+    const isCur = x.id === highlightId;
     const statusParts = [];
     if (isCur) statusParts.push('目前編輯這筆');
     else if ((x.date || '') < today) statusParts.push('已過期');
@@ -30109,9 +30115,34 @@ function _bkViewSeriesList() {
   }).join('') || '<div style="padding:16px;text-align:center;color:#a0aec0;font-size:.85rem;">找不到系列預約資料。</div>';
   document.getElementById('bk-series-list-modal').style.display = 'flex';
 }
+
+// #2-4：編輯系列預約第四選項「檢視此系列預約」——列出同系列所有預約（日期、節次/時間、空間、狀態），
+// 點任一筆直接進入該筆的單筆編輯（見 _bkViewSeriesJumpTo／editBooking：v162 起會略過範圍選擇、
+// 標示「僅修改此筆」，儲存成功或取消／關閉後自動返回本清單）。
+function _bkViewSeriesList() {
+  const b = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
+  if (!b?.seriesId) return;
+  document.getElementById('bk-series-scope-modal').style.display = 'none';
+  _bkRenderSeriesListModal(b.seriesId, b.id);
+}
 function _bkViewSeriesJumpTo(id) {
+  const target = bookingsData.find(x => x.id === id);
   document.getElementById('bk-series-list-modal').style.display = 'none';
+  // v162：記錄「來自系列檢視清單」，供 editBooking 略過範圍選擇並鎖定僅此筆；
+  // 離開編輯（儲存成功或取消／關閉）時 closeBookingModal() 會據此自動返回本清單。
+  _bkSeriesViewReturn = target?.seriesId ? { seriesId: target.seriesId } : null;
   editBooking(id);
+}
+// v162：單筆編輯結束（儲存成功／取消關閉）後，回到來源系列的檢視清單（見 closeBookingModal）。
+function _bkReopenSeriesView(seriesId, highlightId) {
+  if (!seriesId) return;
+  _bkRenderSeriesListModal(seriesId, highlightId);
+}
+// v162：「僅修改此筆」提示列——只在從系列檢視清單進入的單筆編輯顯示，說明本次修改只影響這一筆、
+// 不影響系列其他預約；一般編輯（含系列範圍選擇後的僅此筆／此筆之後／全部系列）不顯示。
+function _bkUpdateSeriesViewBanner(show) {
+  const el = document.getElementById('bk-series-view-banner');
+  if (el) el.style.display = show ? '' : 'none';
 }
 
 // 範圍透明化：於預約 Modal 標題下方顯示目前套用範圍（含筆數）與系列 badge；非系列編輯時隱藏。
@@ -34902,6 +34933,8 @@ function openBookingModal(prefillCaseId, prefill) {
   _editingBookingId = null;
   _bkSkipPersonConflict = false;
   _bkSelectedOpts = [];
+  _bkSeriesViewReturn = null; // v162：新增預約與系列檢視清單無關，防呆清除
+  _bkUpdateSeriesViewBanner(false);
   document.getElementById('booking-modal-title').textContent = '新增預約';
   _bkSelectedRoom = '';
   _populateBookingRoomChips(prefill?.room || '');
@@ -34978,8 +35011,10 @@ function editBooking(id) {
   }
   _resetBkOverrideUi(b.bkOverrideColor || '');
   _bkEditScope = 'this';
-  // 若屬系列，先選範圍
-  if (b.seriesId) {
+  // 若屬系列，先選範圍；v162：若是從「檢視此系列預約」清單點選進入（_bkSeriesViewReturn 記錄同一
+  // 系列），代表使用者已明確選定這一筆，略過範圍選擇、直接進入編輯畫面（範圍鎖定為僅此筆）。
+  const _fromSeriesView = !!(b.seriesId && _bkSeriesViewReturn && _bkSeriesViewReturn.seriesId === b.seriesId);
+  if (b.seriesId && !_fromSeriesView) {
     document.getElementById('bk-series-scope-modal').style.display = 'flex';
   } else {
     document.getElementById('booking-modal').style.display = 'flex';
@@ -34987,6 +35022,7 @@ function editBooking(id) {
     _bkUpdateScopeInfo();
     _checkBkConflict();
   }
+  _bkUpdateSeriesViewBanner(_fromSeriesView);
   // 背景重讀最新預約：若此筆已被他人刪除則提示並關窗，否則（仍停在此筆編輯）重跑衝突檢查。
   loadBookings().then(() => {
     if (_editingBookingId !== id) return; // 使用者已切到別筆或關窗
@@ -35239,6 +35275,8 @@ function _bkCopyOpenModal() {
   if (!b) return;
   _bkSkipPersonConflict = false;
   _editingBookingId = null;
+  _bkSeriesViewReturn = null; // v162：複製預約與系列檢視清單無關，防呆清除
+  _bkUpdateSeriesViewBanner(false);
   document.getElementById('booking-modal-title').textContent = '複製預約';
   _populateBookingCounselorSelect(_bkNormalizeCounselors(b));
   _populateBookingCaseDatalist();
@@ -35329,6 +35367,17 @@ async function _bkCopyToNextWeekConfirm() {
 
 function closeBookingModal() {
   document.getElementById('booking-modal').style.display = 'none';
+  // v162：若本次編輯是從「檢視此系列預約」清單進入，離開編輯畫面（無論儲存成功或取消／關閉）
+  // 一律回到該系列的檢視清單。用 setTimeout(0) 讓呼叫端接下來對 bookingsData 的樂觀更新（若有，
+  // 例如儲存成功後才更新該筆內容）先跑完，清單才會顯示最新結果。只有此入口會設定
+  // _bkSeriesViewReturn；改走刪除或拖曳衝突修正等其他流程的呼叫點會自行先清除，避免視窗互疊。
+  if (_bkSeriesViewReturn) {
+    const seriesId = _bkSeriesViewReturn.seriesId;
+    const highlightId = _editingBookingId;
+    _bkSeriesViewReturn = null;
+    _bkUpdateSeriesViewBanner(false);
+    setTimeout(() => _bkReopenSeriesView(seriesId, highlightId), 0);
+  }
 }
 
 // 需求（2026-07-08）：預約視窗寬度可拖曳調整（CSS resize:horizontal，見 booking-modal-box），
@@ -35359,6 +35408,9 @@ function _bkModalResizeSetup() {
 function _bkDeleteFromModal() {
   const id = _editingBookingId;
   if (!id) return;
+  // v162：刪除走獨立確認流程（可能另跳系列刪除範圍選擇視窗），不觸發返回系列檢視清單，
+  // 避免與刪除確認視窗互疊。
+  _bkSeriesViewReturn = null;
   closeBookingModal();
   deleteBooking(id);
 }
@@ -35711,6 +35763,8 @@ async function saveBooking() {
       if (localConflicts.length) {
         // 有衝突：不套用任何變更，關閉預約 modal，改開拖曳衝突修正視窗逐筆調整
         // （含將被刪除的筆，預先加入 deletedIds；_bkDragFixApply 迭代 proposals 時會自然歸入 delete ops）
+        // v162：改走拖曳衝突修正流程，不觸發返回系列檢視清單，避免與該視窗互疊。
+        _bkSeriesViewReturn = null;
         closeBookingModal();
         if (saveBtn) saveBtn.disabled = false;
         _bkOpenDragFixModal(originalSeries, [...seriesProposalsAll, ...createdProposals],
@@ -43643,6 +43697,10 @@ function toggleNavPin(navId) {
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
       <h3 id="booking-modal-title" style="font-size:1.1rem;color:#1a202c;">新增預約</h3>
       <button onclick="closeBookingModal()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+    </div>
+    <!-- v162：僅從「檢視此系列預約」清單進入的單筆編輯才顯示，說明本次修改只影響這一筆 -->
+    <div id="bk-series-view-banner" style="display:none;margin-bottom:12px;padding:8px 12px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:8px;font-size:.85rem;color:#1a5276;">
+      📌 僅修改此筆：本次儲存只會影響這一筆預約，不影響系列其他預約；儲存後將自動返回系列檢視清單。
     </div>
     <div id="bk-scope-info" style="display:none;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
