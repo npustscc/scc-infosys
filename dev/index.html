@@ -34757,13 +34757,12 @@ function editBooking(id) {
   document.getElementById('bk-person-conflict-warn').style.display = 'none';
   const sb2 = document.getElementById('btn-save-booking'); if (sb2) sb2.disabled = false;
   const dbBtn2 = document.getElementById('btn-delete-booking'); if (dbBtn2) dbBtn2.style.display = ''; // 編輯既有預約才可刪除
-  // 重複預約區塊：系列預約唯讀呈現當初的重複設定；非系列直接隱藏（現況顯示但存檔會被忽略，是誤導）
+  // 重複預約區塊：系列預約帶入當初設定並開放調整頻率／次數；
+  // #34：非系列預約也開放「重複預約」（可互動預設值），讓使用者事後把單筆改為系列，免刪除重建。
   if (b.seriesId) {
     _bkShowSeriesRepeatEditable(b);
   } else {
-    _bkSeriesRepeatBaseline = null;
-    const _erw = document.getElementById('bk-repeat-wrap');
-    if (_erw) _erw.style.display = 'none';
+    _bkResetRepeatUi();
   }
   _resetBkOverrideUi(b.bkOverrideColor || '');
   _bkEditScope = 'this';
@@ -35281,7 +35280,11 @@ async function saveBooking() {
   const creatorName = configData?.users?.[currentUser?.email]?.name || currentUser?.name || currentUser?.given_name || (currentUser?.email?.split('@')[0] ?? '') || '';
 
   // T2：重複預約設定（#24：頻率除固定天數 7/14/21 外，新增 'monthly' 每月同一天，見 _bkAddFreq）
-  const isRepeat = !_editingBookingId && !!(document.getElementById('bk-repeat-toggle')?.checked);
+  // #34：編輯一筆「非系列」預約時若勾選重複預約 → 就地把它轉為系列的第一筆並依頻率／次數新增其餘筆。
+  const _bkEditingObj = _editingBookingId ? bookingsData.find(x => x.id === _editingBookingId) : null;
+  const _repeatToggled = !!(document.getElementById('bk-repeat-toggle')?.checked);
+  const _convertToSeries = !!_editingBookingId && !_bkEditingObj?.seriesId && _repeatToggled;
+  const isRepeat = (!_editingBookingId || _convertToSeries) && _repeatToggled;
   const _repeatFreqVal = document.querySelector('input[name="bk-repeat-freq"]:checked')?.value || '7';
   const repeatFreq = isRepeat ? (_repeatFreqVal === 'monthly' ? 'monthly' : parseInt(_repeatFreqVal, 10)) : 0;
   const repeatCount = isRepeat ? Math.max(2, Math.min(16, parseInt(document.getElementById('bk-repeat-count')?.value || '4'))) : 1;
@@ -35397,7 +35400,34 @@ async function saveBooking() {
   // 立即更新本機資料（樂觀更新）
   if (_editingBookingId) {
     const _editedB = bookingsData.find(x => x.id === _editingBookingId);
-    if (_editedB?.seriesId && _seriesReplanTriggered) {
+    if (_convertToSeries) {
+      // #34：把原本非系列的單筆預約就地轉為系列 —— 第 0 筆＝更新既有這筆（沿用 id／GC 事件）掛上 seriesId，
+      // 其餘 (repeatCount-1) 筆依頻率新增（比照新增系列的建立路徑；共用下方 bkCommit 收尾）。
+      const idx0 = bookingsData.findIndex(x => x.id === _editingBookingId);
+      if (idx0 >= 0) {
+        bookingsData[idx0] = { ...bookingsData[idx0],
+          room, customRoom, date, startTime: start, endTime: end,
+          counselors, counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
+          notes, updatedAt: now, seriesId };
+        if (_bkOverride) bookingsData[idx0].bkOverrideColor = _bkOverride; else delete bookingsData[idx0].bkOverrideColor;
+        _pushOp(bookingsData[idx0], existingCalEventId ? 'update' : 'create', calParams);
+        _createdObjs.push(bookingsData[idx0]);
+      }
+      const _convSerialBase = _bkNextSerial();
+      for (let _ci = 1; _ci < repeatCount; _ci++) {
+        const _cDate = _bkAddFreq(date, repeatFreq, _ci);
+        const _cObj = {
+          id: `bk_${Date.now() + _ci}`, bkSerial: _convSerialBase + _ci - 1,
+          room, customRoom, date: _cDate, startTime: start, endTime: end,
+          counselors, counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
+          notes, createdAt: now, updatedAt: now, creatorName, seriesId,
+        };
+        if (_bkOverride) _cObj.bkOverrideColor = _bkOverride;
+        bookingsData.push(_cObj);
+        _pushOp(_cObj, 'create', { ...calParams, date: _cDate, bkSerial: _cObj.bkSerial });
+        _createdObjs.push(_cObj);
+      }
+    } else if (_editedB?.seriesId && _seriesReplanTriggered) {
       // v100：頻率或次數被改動 — 系列重排／增刪；自成一個流程，處理完直接 return（不落入下方共用的
       // bgJob／bkCommit 收尾，因為 ops 形狀與衝突處理路線都不同：可能需要改開拖曳衝突修正視窗）。
       // v101：originalSeries/scope/effFreq/replan 沿用預覽階段（_srPlan）算好的同一份結果，
