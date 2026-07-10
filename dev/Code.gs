@@ -84,13 +84,12 @@ function doPost(e) {
       return jsonResp_({ error: 'Forbidden: admin only' });
     }
 
-    // ── P0-2：config.json／pending_users*.json＝授權名單本身，任何泛用寫入一律限管理者，擋自我提權。──
-    // submitUserApplication 有自己的受控寫入路徑（不走這些泛用 action），申請帳號流程不受影響。
-    var WRITE_LIKE_ACTIONS = { updateJson: true, updateContentById: true, createJson: true,
-                               casesUpsert: true, trashFile: true, createFolder: true };
-    if (WRITE_LIKE_ACTIONS[action] && isProtectedConfigTarget_(params, localConfigFileId_()) && !isAdminUser_(userEmail)) {
-      return jsonResp_({ error: 'Forbidden: config is admin-only' });
-    }
+    // ── P0-2（皇冠珠寶檔保護）改列 P1，尚未在此啟用 ──
+    // 原打算「config.json／pending_users*.json 的泛用寫入一律限 admin」，但 config.json 同時裝了
+    // 自助欄位（每位使用者自己的 PIN／pinTmo／個人偏好，見前端 syncPinToConfig），一律限 admin 會
+    // 打爛所有非管理者的 PIN／偏好儲存。正確作法是「欄位級」授權（非管理者僅能改自己條目的白名單
+    // 欄位，禁止動 role／extraRole／isAdmin／disabled／allowedCases 等授權欄位與他人條目），需先
+    // 盤點完整自助欄位白名單再實作，故延後至 P1。
 
     let result;
     switch (action) {
@@ -456,31 +455,6 @@ function isAdminUser_(userEmail) {
   if (!userEmail) return false;
   if (BOOTSTRAP_ADMINS.indexOf(userEmail) !== -1) return true;
   return adminDecision_(localConfigUsers_(), userEmail, BOOTSTRAP_ADMINS);
-}
-
-// 本環境 config.json 的 fileId：prod 直接用寫死的 CONFIG_FILE_ID_OVERRIDE（免 Drive 讀），
-// dev 走路徑解析並快取 5 分鐘。供「by fileId」寫入動作的皇冠珠寶比對。
-function localConfigFileId_() {
-  if (CONFIG_FILE_ID_OVERRIDE) return CONFIG_FILE_ID_OVERRIDE;
-  var cache = CacheService.getScriptCache();
-  var CK = 'cfgfid:' + ROOT_FOLDER_ID;
-  try { var hit = cache.get(CK); if (hit) return hit; } catch (_) {}
-  try {
-    var id = resolvePathToId_('config.json', { root: ROOT_FOLDER_ID, configOverride: null });
-    if (id) { try { cache.put(CK, id, 300); } catch (_) {} }
-    return id;
-  } catch (_) { return null; }
-}
-
-// 純決策（可單元測試）：此寫入動作是否指向「授權名單檔」（config.json / pending_users*.json）。
-// by-path 直接比對檔名；by-fileId 命中本環境 config.json 的 fileId。這些檔＝授權來源本身，
-// 一律限管理者寫入，擋「低權限者用泛用寫入把自己改成 admin」的提權。
-function isProtectedConfigTarget_(params, configFileId) {
-  var p = (params && (params.path || params.name)) || '';
-  if (p === 'config.json' || /^pending_users[\w-]*\.json$/.test(p)) return true;
-  var fid = params && params.fileId;
-  if (fid && configFileId && fid === configFileId) return true;
-  return false;
 }
 
 // ── 回應工具 ──────────────────────────────────────────────────────────────────
