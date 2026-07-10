@@ -107,7 +107,7 @@ function doPost(e) {
 
     // ── F3：fileId/parentId 類動作限制在本次 ctx.root 子樹（杜絕以任意 fileId 越界讀寫/刪除 Drive 檔案）──
     // 只保護「目標必在本地 root」的 JSON 資料/破壞性/資料夾動作；downloadFileBase64（附件，含跨環境
-    // issue 附件）與 query（枚舉）另設計，暫不納入（見 P1）。fileId 類動作不會走 issues.json 例外，
+    // issue 附件）與 query（枚舉）另設計如下（P1）。fileId 類動作不會走 issues.json 例外，
     // 故此處 ctx.root 恆為本地 root。
     var ROOT_GUARDED = { readJsonById: 'fileId', updateContentById: 'fileId', deleteFile: 'fileId',
       moveFile: 'fileId', trashFile: 'fileId', getMetadata: 'fileId', createFolder: 'parentId',
@@ -115,6 +115,34 @@ function doPost(e) {
     var _rgKey = ROOT_GUARDED[action];
     if (_rgKey && params[_rgKey] && !isUnderRoot_(params[_rgKey], ctx.root)) {
       return jsonResp_({ error: 'Forbidden: target outside root' });
+    }
+
+    // ── P1：moveFile 目的地（addParents）也須在 root 子樹 ──
+    // 上面 ROOT_GUARDED 已限制來源 fileId，但目的地資料夾未檢查，攻擊者可把檔案移出 root 子樹
+    // （即使 moveFile 目前限 admin，仍應 defense-in-depth：管理者帳號被盜用時降低災害範圍）。
+    if (action === 'moveFile' &&
+        !moveFileDestAllowed_(params.addParents, function (id) { return isUnderRoot_(id, ctx.root); })) {
+      return jsonResp_({ error: 'Forbidden: destination outside root' });
+    }
+
+    // ── P1：downloadFileBase64 跨 root 附件白名單 ──
+    // 目標在本地 root 之下 → 直接放行；否則附件可能是「在其他環境上傳、記錄於跨環境共用的
+    // issues.json」——只有當此 fileId 確實出現在某筆 issue 或其留言的 attachments 清單中才放行，
+    // 其餘一律拒絕。issues.json 用固定 ISSUES_FOLDER_ID 定位（不信任請求參數），讀取失敗 fail-closed。
+    if (action === 'downloadFileBase64' && params.fileId && !isUnderRoot_(params.fileId, ctx.root)) {
+      if (!issuesHasAttachment_(readIssuesJsonForAttachCheck_(), params.fileId)) {
+        return jsonResp_({ error: 'Forbidden: target outside root and not a known issue attachment' });
+      }
+    }
+
+    // ── P1：query action 限根 ──
+    // 前端 q 字串多為 "'<folderId>' in parents and ..." 形式，folderId 是 root 的子資料夾
+    // （如 cases/users）或 root 本身，故不能整體 wrap 'root' in parents（會誤殺）。改為解析 q 中
+    // 所有 "'ID' in parents" 引用的 ID，逐一驗證都在 root 子樹下（root 本身亦合法——in parents
+    // 語意是列出該資料夾的子項）；不含 parents 條件的 q 一律拒絕（防枚舉任意資料夾）。
+    if (action === 'query' &&
+        !queryParentsAllowed_(params.q, function (id) { return isUnderRoot_(id, ctx.root); })) {
+      return jsonResp_({ error: 'Forbidden: query must be scoped under root' });
     }
 
     let result;
@@ -564,6 +592,114 @@ function isUnderRoot_(fileId, rootId) {
   return ok;
 }
 
+// ── P1：downloadFileBase64 跨 root 附件白名單（issue/留言附件跨環境合法情境）──
+// 純函式（可單元測試）：附件清單（issue.attachments 或 comment.attachments）內是否含此 fileId。
+function _attachListHasFileId_(list, fileId) {
+  if (!Array.isArray(list) || !fileId) return false;
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].fileId === fileId) return true;
+  }
+  return false;
+}
+
+// 純函式（可單元測試）：issues.json 內容（{issues:[...]}）是否記錄了此 fileId 為某筆 issue
+// 本身或其留言（comments）的附件。issuesJson 為 null／格式不符 → false（fail-closed 由呼叫端處理）。
+function issuesHasAttachment_(issuesJson, fileId) {
+  if (!fileId || !issuesJson || !Array.isArray(issuesJson.issues)) return false;
+  for (var i = 0; i < issuesJson.issues.length; i++) {
+    var iss = issuesJson.issues[i];
+    if (!iss) continue;
+    if (_attachListHasFileId_(iss.attachments, fileId)) return true;
+    var comments = Array.isArray(iss.comments) ? iss.comments : [];
+    for (var j = 0; j < comments.length; j++) {
+      if (_attachListHasFileId_(comments[j] && comments[j].attachments, fileId)) return true;
+    }
+  }
+  return false;
+}
+
+// ── P1：query action 限根 ──
+// 純函式（可單元測試）：從 Drive q 字串中抽出所有 "'ID' in parents" 引用的 ID。
+// 前端 q 皆由固定樣板字串拼接而成，ID 段本身不含引號（既有 _escQ_ 已跳脫 name 段的單引號/反斜線），
+// 故用簡單字串比對即可，不需處理跳脫。
+// 不用 regex 字面值（同 _escQ_ 的理由：regex 內含單引號會被 test/harness.js 的 matchBrace
+// 誤判為字串邊界，破壞括號配對抽取），改以字串掃描實作。
+function _extractParentsIds_(q) {
+  var out = [];
+  if (typeof q !== 'string' || !q) return out;
+  var marker = 'in parents';
+  var searchFrom = 0;
+  while (true) {
+    var idx = q.indexOf(marker, searchFrom);
+    if (idx === -1) break;
+    // 往前跳過空白，緊接著應是右引號，再往前找對應左引號，中間即為 ID
+    var j = idx - 1;
+    while (j >= 0 && q.charAt(j) === ' ') j--;
+    if (j >= 0 && q.charAt(j) === "'") {
+      var closeQuote = j;
+      var k = closeQuote - 1;
+      while (k >= 0 && q.charAt(k) !== "'") k--;
+      if (k >= 0) out.push(q.slice(k + 1, closeQuote));
+    }
+    searchFrom = idx + marker.length;
+  }
+  return out;
+}
+
+// 純函式（可單元測試）：q 字串剝除單引號字串段後，是否含 or／not 運算子。
+// 若放行 or，攻擊者可用「'合法ID' in parents or trashed=false」讓 parents 條件失去約束力；
+// not 同理可反轉範圍。前端所有 q 樣板只用 and 串接，擋掉 or/not 不影響既有功能。
+// 引號內容（name 值，經 _escQ_ 以 \' 跳脫）先剝除，避免檔名含 "or" 字樣被誤殺。
+// 同 _extractParentsIds_ 的理由不用 regex 字面值，逐字元掃描。
+function _qHasForbiddenOp_(q) {
+  var word = '';
+  var inStr = false;
+  for (var i = 0; i <= q.length; i++) {
+    var ch = i < q.length ? q.charAt(i) : ' ';
+    if (inStr) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === "'") inStr = false;
+      continue;
+    }
+    if (ch === "'") { inStr = true; word = ''; continue; }
+    var lc = ch.toLowerCase();
+    var isWordCh = (lc >= 'a' && lc <= 'z') || (lc >= '0' && lc <= '9') || lc === '_';
+    if (isWordCh) { word += lc; continue; }
+    if (word === 'or' || word === 'not') return true;
+    word = '';
+  }
+  return false;
+}
+
+// 純函式（checkUnderRoot 注入，可單元測試，仿 _ancestorContains_ 的注入手法）：
+// q 字串是否只查詢 root 子樹內的資料夾——至少要有一個 parents 條件、不得含 or/not
+// 運算子（僅准 and 串接，否則 parents 條件會被 or 稀釋而失去約束力），且每一個 ID 都須通過
+// checkUnderRoot（root 本身亦合法：'root' in parents 語意為列出 root 的子項）。
+// 不含任何 parents 條件的 q 一律拒絕（防止枚舉任意資料夾/檔案）。
+function queryParentsAllowed_(q, checkUnderRoot) {
+  var ids = _extractParentsIds_(q);
+  if (!ids.length) return false;
+  if (_qHasForbiddenOp_(q)) return false;
+  for (var i = 0; i < ids.length; i++) {
+    if (!checkUnderRoot(ids[i])) return false;
+  }
+  return true;
+}
+
+// ── P1：moveFile 目的地檢查 ──
+// 純函式（checkUnderRoot 注入，可單元測試）：moveFile 的 addParents（目的地資料夾）是否都在
+// root 子樹下。addParents 可能是逗號分隔的多個 parent ID（Drive API 支援一次掛多個父層），
+// 每一個都須通過檢查；空值／全部無效 → 拒絕。
+function moveFileDestAllowed_(addParents, checkUnderRoot) {
+  if (!addParents) return false;
+  var ids = String(addParents).split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+  if (!ids.length) return false;
+  for (var i = 0; i < ids.length; i++) {
+    if (!checkUnderRoot(ids[i])) return false;
+  }
+  return true;
+}
+
 // 深度相等（純函式；供授權欄位比對）。
 function _deepEq_(a, b) {
   if (a === b) return true;
@@ -955,6 +1091,39 @@ function uploadFile_({ parentFolderId, fileName, mimeType, base64Data }) {
   const folder = DriveApp.getFolderById(parentFolderId);
   const file  = folder.createFile(blob);
   return { fileId: file.getId(), fileName: file.getName() };
+}
+
+// issues.json 的 fileId：固定用 ISSUES_FOLDER_ID 定位（不信任請求參數），快取 5 分鐘。
+// 供 doPost 的 downloadFileBase64 附件白名單檢查使用。
+function issuesFileId_() {
+  var cache = CacheService.getScriptCache();
+  var CK = 'issuesFid';
+  try { var hit = cache.get(CK); if (hit) return hit; } catch (_) {}
+  try {
+    var id = resolvePathToId_('issues.json', { root: ISSUES_FOLDER_ID, configOverride: null });
+    if (id) { try { cache.put(CK, id, 300); } catch (_) {} }
+    return id;
+  } catch (_) { return null; }
+}
+
+// 讀 issues.json 全文，供 downloadFileBase64 附件白名單比對（見 issuesHasAttachment_）；
+// 短快取 60 秒降低成本。fail-closed：讀不到／解析失敗一律回 null（呼叫端視為「查無此附件」而拒絕）。
+function readIssuesJsonForAttachCheck_() {
+  var cache = CacheService.getScriptCache();
+  var CK = 'issuesJsonAttach';
+  try { var hit = cache.get(CK); if (hit) return JSON.parse(hit); } catch (_) {}
+  try {
+    var id = issuesFileId_();
+    if (!id) return null;
+    var res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + id + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() !== 200) return null;
+    var data = JSON.parse(res.getContentText());
+    try { cache.put(CK, JSON.stringify(data), 60); } catch (_) {}
+    return data;
+  } catch (e) { return null; }
 }
 
 function downloadFileBase64_({ fileId }) {
