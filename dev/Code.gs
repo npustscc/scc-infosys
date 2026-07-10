@@ -566,20 +566,28 @@ function driveUpdateContent_(fileId, jsonContent) {
   return data;
 }
 
+// Drive query 字串跳脫（F4）：path/name 元件內的反斜線與單引號可注入或破壞 Drive 查詢子句，一律跳脫。
+// 之後所有以字串拼接進 Drive `q` 的使用者可控 name 元件都須包這層。
+function _escQ_(s) {
+  // 先跳脫反斜線再跳脫單引號（順序重要）。用 split/join 而非 regex 字面值，
+  // 以相容 test/harness.js 的就地抽取（其 matchBrace 不解析 regex literal）。
+  return String(s == null ? '' : s).split('\\').join('\\\\').split("'").join("\\'");
+}
+
 // 路徑解析：把 "cases/manifest.json" 轉成 fileId
 function resolvePathToId_(path, ctx) {
   if (path === 'config.json' && ctx.configOverride) return ctx.configOverride;
   const parts = path.split('/');
   let curId = ctx.root;
   for (let i = 0; i < parts.length - 1; i++) {
-    const q = "name='" + parts[i] + "' and mimeType='application/vnd.google-apps.folder'" +
+    const q = "name='" + _escQ_(parts[i]) + "' and mimeType='application/vnd.google-apps.folder'" +
               " and '" + curId + "' in parents and trashed=false";
     const res = driveGet_('files', { q: q, fields: 'files(id)', pageSize: '1' });
     if (!res.files || res.files.length === 0) throw new Error('Folder not found: ' + parts[i]);
     curId = res.files[0].id;
   }
   const fileName = parts[parts.length - 1];
-  const q2 = "name='" + fileName + "' and '" + curId + "' in parents and trashed=false";
+  const q2 = "name='" + _escQ_(fileName) + "' and '" + curId + "' in parents and trashed=false";
   const res2 = driveGet_('files', { q: q2, fields: 'files(id)', orderBy: 'modifiedTime desc', pageSize: '5' });
   if (!res2.files || res2.files.length === 0) throw new Error('File not found: ' + path);
   if (res2.files.length > 1) {
@@ -593,7 +601,7 @@ function resolvePathToParentAndName_(path, ctx) {
   const fileName = parts[parts.length - 1];
   let parentId = ctx.root;
   for (let i = 0; i < parts.length - 1; i++) {
-    const q = "name='" + parts[i] + "' and mimeType='application/vnd.google-apps.folder'" +
+    const q = "name='" + _escQ_(parts[i]) + "' and mimeType='application/vnd.google-apps.folder'" +
               " and '" + parentId + "' in parents and trashed=false";
     const res = driveGet_('files', { q: q, fields: 'files(id)', pageSize: '1' });
     if (!res.files || res.files.length === 0) throw new Error('Folder not found: ' + parts[i]);
@@ -642,7 +650,7 @@ function updateJson_({ path, content }, ctx) {
   } catch (notFound) {
     const { parentId, fileName } = resolvePathToParentAndName_(path, ctx);
     const verify = driveGet_('files', {
-      q: "name='" + fileName + "' and '" + parentId + "' in parents and trashed=false",
+      q: "name='" + _escQ_(fileName) + "' and '" + parentId + "' in parents and trashed=false",
       fields: 'files(id)', orderBy: 'modifiedTime desc', pageSize: '5'
     });
     if (verify.files && verify.files.length > 0) {
@@ -721,7 +729,7 @@ function resolveDir_({ path }, ctx) {
   const parts = path.split('/');
   let curId = ctx.root;
   for (let i = 0; i < parts.length; i++) {
-    const q = "name='" + parts[i] + "' and mimeType='application/vnd.google-apps.folder'" +
+    const q = "name='" + _escQ_(parts[i]) + "' and mimeType='application/vnd.google-apps.folder'" +
               " and '" + curId + "' in parents and trashed=false";
     const res = driveGet_('files', { q: q, fields: 'files(id)', pageSize: '1' });
     if (!res.files || res.files.length === 0) throw new Error('Folder not found: ' + parts[i]);
@@ -1558,7 +1566,7 @@ function startupBatch_(params, ctx) {
   var p1Keys = [];
 
   function addQuery(key, parentId, name, mime) {
-    var q = "name='" + name + "' and '" + parentId + "' in parents and trashed=false";
+    var q = "name='" + _escQ_(name) + "' and '" + parentId + "' in parents and trashed=false";
     if (mime) q += " and mimeType='" + mime + "'";
     p1Reqs.push({ url: qBase + encodeURIComponent(q), headers: authHeader, muteHttpExceptions: true });
     p1Keys.push(key);
@@ -1604,8 +1612,8 @@ function startupBatch_(params, ctx) {
 
   if (!fileIds['todos_new'] && !fileIds['todos_legacy'] && usersFolderId && !usersFolderIdHint) {
     var todoPhase = [
-      { url: qBase + encodeURIComponent("name='" + todoFileName   + "' and '" + usersFolderId + "' in parents and trashed=false"), headers: authHeader, muteHttpExceptions: true },
-      { url: qBase + encodeURIComponent("name='" + legacyTodoName + "' and '" + usersFolderId + "' in parents and trashed=false"), headers: authHeader, muteHttpExceptions: true },
+      { url: qBase + encodeURIComponent("name='" + _escQ_(todoFileName)   + "' and '" + usersFolderId + "' in parents and trashed=false"), headers: authHeader, muteHttpExceptions: true },
+      { url: qBase + encodeURIComponent("name='" + _escQ_(legacyTodoName) + "' and '" + usersFolderId + "' in parents and trashed=false"), headers: authHeader, muteHttpExceptions: true },
     ];
     var tpRes = UrlFetchApp.fetchAll(todoPhase);
     var newTodo = JSON.parse(tpRes[0].getContentText());

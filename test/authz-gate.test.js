@@ -134,3 +134,29 @@ test('shareSelf：空陣列／非陣列 → 擋', () => {
   assert.equal(S.shareToSelfOnly_([], 'a@x.com'), false);
   assert.equal(S.shareToSelfOnly_(undefined, 'a@x.com'), false);
 });
+
+// ── _escQ_：Drive query 單引號/反斜線跳脫（F4）──
+
+test('escQ：單引號被跳脫（擋 query injection）', () => {
+  const S = loadFromCodeGs(['_escQ_']);
+  assert.equal(S._escQ_("a'b"), "a\\'b");
+  // 注入嘗試：' or name!=' → 跳脫後單引號不再閉合子句
+  assert.equal(S._escQ_("x' or name!='"), "x\\' or name!=\\'");
+});
+
+test('escQ：反斜線先跳脫（避免 \\\' 被拆解）', () => {
+  const S = loadFromCodeGs(['_escQ_']);
+  assert.equal(S._escQ_('a\\b'), 'a\\\\b');
+});
+
+test('escQ：一般檔名/中文姓名不受影響', () => {
+  const S = loadFromCodeGs(['_escQ_']);
+  assert.equal(S._escQ_('manifest.json'), 'manifest.json');
+  assert.equal(S._escQ_('王'), '王');
+});
+
+test('escQ：null/undefined → 空字串（不炸）', () => {
+  const S = loadFromCodeGs(['_escQ_']);
+  assert.equal(S._escQ_(null), '');
+  assert.equal(S._escQ_(undefined), '');
+});
