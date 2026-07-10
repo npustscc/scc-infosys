@@ -1377,7 +1377,7 @@
         <div class="card-header">
           <h3>個案列表</h3>
           <div style="display:flex;gap:8px;">
-            <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" data-tip="封存後，個案在列表中預設隱藏，適用於不再需要主動服務但仍需保存紀錄的個案。可透過篩選「已封存」查閱，統計分析仍會計入所有個案（含封存）。&#10;&#10;封存 ≠ 刪除：資料完整保留，隨時可解除封存。">？</button>
+            <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" onclick="event.stopPropagation();_showDataTip(this)" data-tip="封存後，個案在列表中預設隱藏，適用於不再需要主動服務但仍需保存紀錄的個案。可透過篩選「已封存」查閱，統計分析仍會計入所有個案（含封存）。&#10;&#10;封存 ≠ 刪除：資料完整保留，隨時可解除封存。">？</button>
             <button class="btn btn-secondary" onclick="exportCasesCSV()">⬇ 匯出 CSV</button>
             <button class="btn btn-secondary" onclick="_bgRefreshClick('個案列表重新整理', () => loadCases())" data-tip="從 Drive 重新讀取最新個案資料。">🔄 重新整理</button>
             <button class="btn btn-primary" id="btn-new-case" onclick="openNewCasePage()" data-tip="開立本學期新個案，填寫姓名、學號等基本資料後儲存。">＋ 新增個案</button>
@@ -10144,6 +10144,22 @@ async function showCaseDetail(caseId) {
   const _crisisRead = _hasCrisisGrant(c.id);
   const _crisisView = !_caseNormallyAccessible(c) && _crisisRead;
   _detailReadOnly = _crisisView;
+  // #33-2：主責／個管開啟自己個案的詳情，即視為已閱其身心調適假紀錄。
+  // 將本人 email 併入 acknowledgedBy → 管理頁「主責已讀」同步、鈴鐺待確認清單自動消除。
+  // 僅在非危機唯讀檢視、且本人確為此案主責或個管（allowedCases）時觸發；有新增才寫檔。
+  if (!_detailReadOnly && currentUser?.email && c.studentId) {
+    const _mineCase = c.counselorEmail === currentUser.email
+      || (configData?.users?.[currentUser.email]?.allowedCases || []).includes(c.id);
+    if (_mineCase) {
+      let _mlAcked = 0;
+      mentalLeavesData.forEach(l => {
+        if (l.deleted || l.studentId !== c.studentId) return;
+        if (!Array.isArray(l.acknowledgedBy)) l.acknowledgedBy = [];
+        if (!l.acknowledgedBy.includes(currentUser.email)) { l.acknowledgedBy.push(currentUser.email); _mlAcked++; }
+      });
+      if (_mlAcked) { try { _syncTodoBadge(); } catch (_) {} saveMentalLeaves().catch(() => {}); }
+    }
+  }
   const _relatedCases = _getRelatedCases(caseId);
   const _hasRelated = _relatedCases.length > 1;
 
@@ -10269,9 +10285,9 @@ async function showCaseDetail(caseId) {
     }
     if (isAdminUser) {
       actionsHtml += ` <button class="btn btn-danger" onclick="deleteCase('${cid}')" data-tip="將個案標記為已刪除（軟刪除，可復原）。確認無誤後再由管理者執行永久刪除。">刪除個案</button>`;
-      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" data-tip="【封存個案】封存後此個案在列表中預設隱藏，可透過篩選「已封存」查閱，統計分析仍計入。&#10;【錯誤建案】點「刪除個案」→ 確認無誤後由管理者「永久刪除」（無法復原）。">？</button>`;
+      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" onclick="event.stopPropagation();_showDataTip(this)" data-tip="【封存個案】封存後此個案在列表中預設隱藏，可透過篩選「已封存」查閱，統計分析仍計入。&#10;【錯誤建案】點「刪除個案」→ 確認無誤後由管理者「永久刪除」（無法復原）。">？</button>`;
     } else {
-      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" data-tip="封存後，此個案在個案列表中預設隱藏。適用於不再需要主動服務、但仍需保存紀錄的個案。可透過篩選「已封存」查閱，統計分析仍會計入。">？</button>`;
+      actionsHtml += ` <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" onclick="event.stopPropagation();_showDataTip(this)" data-tip="封存後，此個案在個案列表中預設隱藏。適用於不再需要主動服務、但仍需保存紀錄的個案。可透過篩選「已封存」查閱，統計分析仍會計入。">？</button>`;
     }
   } else {
     if (isAdminUser) {
@@ -31286,6 +31302,27 @@ window._mlBatchHandling = async () => {
   catch(e) { bgJobFail(jobId, e.message); }
 };
 
+// #33-4：管理頁批量封存（＝批次標記已讀）。將本人 email 併入所選紀錄的 acknowledgedBy，
+// 主責在受輔生分頁批量封存自己的個案 → 管理頁「主責已讀」同步；沿用單筆「封存」的語義（見 _mlAcknowledge）。
+window._mlBatchAck = async () => {
+  if (!_mlCheckedIds.size) { alert('請先勾選要封存的紀錄'); return; }
+  if (!currentUser?.email) return;
+  const ids = [..._mlCheckedIds];
+  let changed = 0;
+  ids.forEach(id => {
+    const r = mentalLeavesData.find(l => l.id === id);
+    if (!r) return;
+    if (!Array.isArray(r.acknowledgedBy)) r.acknowledgedBy = [];
+    if (!r.acknowledgedBy.includes(currentUser.email)) { r.acknowledgedBy.push(currentUser.email); changed++; }
+  });
+  _mlCheckedIds.clear();
+  try { _syncTodoBadge(); } catch (_) {}
+  renderMentalLeavePage();
+  if (!changed) return;
+  const jobId = bgJobAdd(`批次封存 ${changed} 筆身心調適假通知`);
+  try { await saveMentalLeaves(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); }
+};
+
 function _mlParseDateRange(l) {
   const raw = l.leaveDate || '';
   let from, to;
@@ -32025,6 +32062,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
         ${ML_HANDLING_OPTS.map(o=>`<option value="${o}">${o}</option>`).join('')}
       </select>
       <button class="btn btn-primary btn-sm" onclick="window._mlBatchHandling()">套用</button>
+      <button class="btn btn-sm" style="background:#276749;color:#fff;border-color:#276749;white-space:nowrap;" onclick="window._mlBatchAck()" data-tip="將勾選的紀錄標記為已封存（已讀）。主責在此封存自己的個案後，管理頁「主責已讀」會同步顯示為已讀。">🗄️ 批量封存</button>
       <button class="btn btn-secondary btn-sm" onclick="_mlCheckedIds.clear();renderMentalLeavePage()">取消全選</button>
       <button class="btn btn-secondary btn-sm" onclick="mlPrintNotices()" style="white-space:nowrap;margin-left:auto;">🖨️ 列印通知單</button>
     </div>
@@ -38481,7 +38519,7 @@ function _renderCaseMlCard(c) {
     </div>`;
   }).join('');
 
-  return `<div style="margin-top:14px;">
+  return `<div style="margin-top:14px;margin-bottom:16px;">
     <div style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#faf5ff;border:1px solid #d6bcfa;border-radius:8px 8px 0 0;" onclick="window._toggleDisplay('${outerBodyId}','${outerBodyId}-icon')">
       <span style="font-weight:600;color:#553c9a;font-size:.9rem;">身心調適假紀錄（共 ${recs.length} 筆）</span>
       <span id="${outerBodyId}-icon">▼</span>
