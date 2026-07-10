@@ -9127,7 +9127,17 @@ async function _migrateUserEmail(oldEmail, newEmail, entryPatches = {}, opts = {
     bgJobProgress(jobId, 55);
 
     // 4. 儲存 configData（使用者 key 遷移）＋ notifications.json（廣播通知，v154 已拆出獨立檔）
-    await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
+    // 非管理者遷移「本人」帳號（!isPriv && isSelf，本函式頂端已限定只有這種組合才會走到這裡而非
+    // 提前 alert 退出）：改走 configCasesPatch 的 selfRename op（後端鎖內把呼叫者本人條目原樣搬到
+    // toEmail，不接受 params 內容、防止夾帶提權；previousEmails 由後端依伺服器端已知的呼叫者身分
+    // 自動附加，稽核追蹤功能不因改走此通道而遺失）。管理者觸發（isPriv，含管理者遷移他人帳號的
+    // 情境——selfRename 語意上只能搬「呼叫者本人」條目，無法涵蓋）維持整檔寫入，管理者不受
+    // v164 非管理者整檔寫入 deny 影響。
+    if (!isPriv && isSelf) {
+      await Promise.all([_configCasesPatch([{ type: 'selfRename', toEmail: newEmail }]), _flushNotifOps()]);
+    } else {
+      await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
+    }
     bgJobProgress(jobId, 70);
 
     // 5. 儲存受影響的個案 chunks（無則跳過）
@@ -11423,7 +11433,7 @@ async function addCaseManager(caseId) {
   showLoading('儲存個案管理員…');
   const jobId = bgJobAdd(`新增個案管理員：${email}`);
   try {
-    await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
+    await Promise.all([_configCasesPatch([{ type: 'caseAccessUpsert', email, caseId }]), _flushNotifOps()]);
     bgJobDone(jobId);
     renderNotifBell();
     auditLog(`新增個案管理員 ${email}`, caseId);
@@ -11432,7 +11442,7 @@ async function addCaseManager(caseId) {
   } catch (err) {
     bgJobFail(jobId, err.message);
     hideLoading();
-    alert('儲存失敗：' + err.message);
+    alert('儲存失敗：' + err.message + '\n請重新整理頁面確認實際狀態。');
   }
 }
 
@@ -11442,7 +11452,7 @@ async function removeCaseManager(caseId, email) {
   const entry = configData.users[email];
   if (!entry) return;
   entry.allowedCases = (entry.allowedCases || []).filter(id => id !== caseId);
-  if (!entry.allowedCases.length) { delete entry.allowedCases; delete entry.extraRole; }
+  if (!entry.allowedCases.length) { delete entry.allowedCases; if (entry.extraRole === '個案管理員') delete entry.extraRole; }
   if (entry.allowedCasesSems) {
     delete entry.allowedCasesSems[caseId];
     if (!Object.keys(entry.allowedCasesSems).length) delete entry.allowedCasesSems;
@@ -11452,7 +11462,7 @@ async function removeCaseManager(caseId, email) {
   showLoading('移除個案管理員…');
   const jobId = bgJobAdd(`移除個案管理員：${email}`);
   try {
-    await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
+    await Promise.all([_configCasesPatch([{ type: 'caseAccessRemove', email, caseId }]), _flushNotifOps()]);
     bgJobDone(jobId);
     auditLog(`移除個案管理員 ${email}`, caseId);
     hideLoading();
@@ -11460,7 +11470,7 @@ async function removeCaseManager(caseId, email) {
   } catch (err) {
     bgJobFail(jobId, err.message);
     hideLoading();
-    alert('移除失敗：' + err.message);
+    alert('移除失敗：' + err.message + '\n請重新整理頁面確認實際狀態。');
   }
 }
 
@@ -11510,12 +11520,16 @@ async function addCaseManagerInDetail(caseId) {
     delete entry.allowedCasesSems[caseId];
     if (!Object.keys(entry.allowedCasesSems).length) delete entry.allowedCasesSems;
   }
+  // 先 upsert 確保 caseId 在 allowedCases（caseAccessSemsSet 後端前提），再視 semScope 覆寫/清除範圍；
+  // 兩個 op 同批送出，後端鎖內依序套用，semsSet 一定看得到同批 upsert 剛加入的 caseId。
+  const ops = [{ type: 'caseAccessUpsert', email, caseId }];
+  ops.push({ type: 'caseAccessSemsSet', email, caseId, sems: semScope !== 'all' ? entry.allowedCasesSems[caseId] : [] });
   const caseName = casesData.find(c => c.id === caseId)?.name || caseId;
   addNotificationToUser(email, 'assigned_manager', caseId, caseName);
   showLoading('儲存個案管理員…');
   const jobId = bgJobAdd(`新增個案管理員：${email}`);
   try {
-    await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
+    await Promise.all([_configCasesPatch(ops), _flushNotifOps()]);
     bgJobDone(jobId);
     renderNotifBell();
     auditLog(`新增個案管理員 ${email}`, caseId);
@@ -11524,7 +11538,7 @@ async function addCaseManagerInDetail(caseId) {
   } catch (err) {
     bgJobFail(jobId, err.message);
     hideLoading();
-    alert('儲存失敗：' + err.message);
+    alert('儲存失敗：' + err.message + '\n請重新整理頁面確認實際狀態。');
   }
 }
 
@@ -14441,14 +14455,18 @@ async function saveClosureEval() {
                   if (_snap) _srcCase.basicInfoSnapshots[_nextSem] = { ..._srcCase.basicInfoSnapshots[_snap] };
                 }
                 _srcCase.updatedAt = new Date().toISOString();
-                Object.values(configData?.users||{}).forEach(info => {
+                const _selfCfgOps = [];
+                Object.entries(configData?.users||{}).forEach(([email, info]) => {
                   if (!(info.allowedCases||[]).includes(caseId)) return;
                   const _ms = info.allowedCasesSems?.[caseId];
-                  if (_ms && !_ms.includes(_nextSem)) _ms.push(_nextSem);
+                  if (_ms && !_ms.includes(_nextSem)) {
+                    _ms.push(_nextSem);
+                    _selfCfgOps.push({ type: 'caseAccessSemsSet', email, caseId, sems: [..._ms] });
+                  }
                 });
                 bgJobProgress(_selfJobId, 50);
                 await saveCasesChunks(caseId);
-                await driveUpdateJsonFile(CONFIG_FILE, configData);
+                if (_selfCfgOps.length) await _configCasesPatch(_selfCfgOps);
                 auditLog('原主責續接', caseId, null, `新增 ${semesterLabel(_nextSem)} 學期`);
                 bgJobDone(_selfJobId, `${semesterLabel(_nextSem)} 學期已加入 ${caseId}`);
                 renderCases();
@@ -14600,10 +14618,16 @@ async function addCaseSemester(caseId) {
   }
   c.updatedAt = new Date().toISOString();
   // 個案管理員繼承：若管理員有學期限制，自動將新學期加入可閱覽範圍
-  Object.values(configData?.users || {}).forEach(info => {
+  // caseAccessSemsSet 一個 op 對應一位使用者（同批送出，後端鎖內逐一套用）；沒有學期限制的
+  // 管理員（sems 為 undefined，不限學期）不受影響，不需送 op。
+  const _acsOps = [];
+  Object.entries(configData?.users || {}).forEach(([email, info]) => {
     if (!(info.allowedCases || []).includes(caseId)) return;
     const sems = info.allowedCasesSems?.[caseId];
-    if (sems && !sems.includes(sem)) sems.push(sem);
+    if (sems && !sems.includes(sem)) {
+      sems.push(sem);
+      _acsOps.push({ type: 'caseAccessSemsSet', email, caseId, sems: [...sems] });
+    }
   });
   showLoading(`新學期開案中（${semesterLabel(sem)}）…`);
   const jobId = bgJobAdd('新學期開案', c.name);
@@ -14612,14 +14636,18 @@ async function addCaseSemester(caseId) {
       bgJobProgress(jobId, 40);
       await saveCasesChunks(caseId);
       bgJobProgress(jobId, 80);
-      await driveUpdateJsonFile(CONFIG_FILE, configData);
+      if (_acsOps.length) await _configCasesPatch(_acsOps);
       auditLog('新學期開案', caseId, null, semesterLabel(sem) + '學期');
       bgJobDone(jobId);
       _caseDetailActiveSem = sem;
       hideLoading();
       renderCases();
       showCaseDetail(caseId);
-    } catch(e) { hideLoading(); bgJobFail(jobId, e.message); }
+    } catch(e) {
+      hideLoading();
+      bgJobFail(jobId, e.message);
+      showToast('個案管理員學期範圍繼承儲存失敗：' + e.message + '，請重新整理頁面確認狀態。', 'error', 6000);
+    }
   })();
 }
 
@@ -18850,7 +18878,10 @@ async function saveInitialInterview() {
     if (!_iiMgrEntry.allowedCases.includes(_initialInterviewCaseId)) {
       _iiMgrEntry.allowedCases.push(_initialInterviewCaseId);
       if (!_iiMgrEntry.extraRole) _iiMgrEntry.extraRole = '個案管理員';
-      driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+      // 此表單失敗不離開頁面、初談表本身已用 saveCasesChunks 走完整儲存流程，這一步失敗不擋主流程，
+      // 但不得靜默吞掉——改用 toast 明確提示，供使用者知道需要重新整理或手動補派。
+      _configCasesPatch([{ type: 'caseAccessUpsert', email: snap.interviewerEmail, caseId: _initialInterviewCaseId }])
+        .catch(e => showToast('初談者自動列管儲存失敗：' + e.message + '，請重新整理頁面確認狀態。', 'error', 6000));
     }
   }
   // mark corresponding todo as done
@@ -20025,10 +20056,25 @@ async function saveCase() {
         : {};
       casesData[idx] = { ...prev, ...newCase, ..._alertUpdate,
         basicInfoSnapshots: _editSem ? { ..._prevSnaps, [_editSem]: _editSnap } : _prevSnaps };
-      await saveCasesChunks(_editingCaseId, newCase.id);
+      // syncManagersFromForm 必須在案號改名前跑：它用「舊案號」判斷現有管理員名單（wasManager），
+      // 若先改名，allowedCases 已被 remap 成新案號，會讓既有管理員全部誤判為「非既有管理員」，
+      // 使用者在此表單取消勾選的管理員將不會被正確移除。
       let cfgChanged = syncManagersFromForm(newCase.id, _editingCaseId);
+      if (newCase.id !== _editingCaseId) {
+        // 案號有改變（inline 改號）：走共用安全改名 helper（remap allowedCases/allowedCasesSems/
+        // transferData、正確清除舊 chunk 殘留），取代原本把新舊案號當成兩個獨立個案存的作法——
+        // 舊作法在新舊案號分屬不同資料分塊（跨學年改號）時，舊分塊的舊紀錄不會被清除，
+        // 舊紀錄會在下次載入時復活（同類 bug 見 Slice 2 changelog／個案架構重構待辦）。
+        // 呼叫前 casesData[idx].id 已是新號，符合 _renameCaseId 支援的第二種呼叫時機；
+        // _renameCaseId 內部已含 configCasesPatch（caseIdRemap），此處不會重複寫 config。
+        await _renameCaseId(_editingCaseId, newCase.id);
+      } else {
+        await saveCasesChunks(_editingCaseId, newCase.id);
+      }
       if (counselorEmail && counselorEmail !== currentUser.email && counselorEmail !== oldCounselorEmail)
         addNotificationToUser(counselorEmail, 'assigned_counselor', newCase.id, name);
+      // cfgChanged 僅可能在管理者（nc-managers-section 僅管理者可見）操作時為 true，
+      // 管理者整檔寫入不受 v164 非管理者 deny 影響，維持原路徑。
       if (cfgChanged) await driveUpdateJsonFile(CONFIG_FILE, configData);
       await _flushNotifOps();
       renderNotifBell();
@@ -20081,10 +20127,14 @@ async function saveCase() {
         if (toAdd.length) target.psychTestResults = [...existing, ...toAdd];
       }
       // 個案管理員繼承：若管理員有學期限制，自動將新學期加入可閱覽範圍（同 addCaseSemester）
-      Object.values(configData?.users || {}).forEach(info => {
+      const _reopenCfgOps = [];
+      Object.entries(configData?.users || {}).forEach(([email, info]) => {
         if (!(info.allowedCases || []).includes(target.id)) return;
         const sems = info.allowedCasesSems?.[target.id];
-        if (sems && !sems.includes(semKey)) sems.push(semKey);
+        if (sems && !sems.includes(semKey)) {
+          sems.push(semKey);
+          _reopenCfgOps.push({ type: 'caseAccessSemsSet', email, caseId: target.id, sems: [...sems] });
+        }
       });
       if (_reopenFailsafe) {
         // 同學期強制再開案 failsafe：保護原主責甲成為個管員 + 通知中心同仁與督導/主任
@@ -20093,8 +20143,11 @@ async function saveCase() {
         if (mgrInfo) {
           if (!mgrInfo.allowedCases) mgrInfo.allowedCases = [];
           if (!mgrInfo.allowedCases.includes(target.id)) mgrInfo.allowedCases.push(target.id);
+          if (!mgrInfo.extraRole) mgrInfo.extraRole = '個案管理員'; // 對齊 caseAccessUpsert 後端語義與確認訊息的承諾
+          _reopenCfgOps.push({ type: 'caseAccessUpsert', email: fs.oldEmail, caseId: target.id });
           if (mgrInfo.allowedCasesSems?.[target.id] && !mgrInfo.allowedCasesSems[target.id].includes(fs.semKey)) {
             mgrInfo.allowedCasesSems[target.id].push(fs.semKey);
+            _reopenCfgOps.push({ type: 'caseAccessSemsSet', email: fs.oldEmail, caseId: target.id, sems: [...mgrInfo.allowedCasesSems[target.id]] });
           }
         }
         const _msg = `${fs.newName} 在 ${fs.oldName} 尚未結案的情況下，對個案 ${target.id}（${target.name}）執行本學期再次開案，主責已轉移，請確認是否符合規定。`;
@@ -20113,7 +20166,7 @@ async function saveCase() {
         addNotificationToUser(counselorEmail, 'assigned_counselor', target.id, target.name);
       }
       await saveCasesChunks(target.id);
-      await Promise.all([driveUpdateJsonFile(CONFIG_FILE, configData), _flushNotifOps()]);
+      await Promise.all([_reopenCfgOps.length ? _configCasesPatch(_reopenCfgOps) : Promise.resolve(), _flushNotifOps()]);
       renderNotifBell();
       if (window._transferPendingLink) {
         const _tIdx = transferData.findIndex(t => t.id === window._transferPendingLink);
@@ -24363,7 +24416,17 @@ async function _renameCaseId(oldId, newId) {
   if (_renameChunk) _caseChunkMap.set(newId, _renameChunk);
   await saveCasesChunks(newId, { removeIds: [oldId] });
   if (_renameChunk) _caseChunkMap.delete(oldId);
-  if (cfgChanged) await driveUpdateJsonFile(CONFIG_FILE, configData);
+  // v164：改走 configCasesPatch 的 caseIdRemap op（後端鎖內對「當下最新」config 做 oldId→newId
+  // remap，不受「呼叫端這份 configData 快照可能已過期」影響），取代整檔覆寫 config.json
+  // （非管理者呼叫此路徑時，整檔寫入已被後端全面 deny，必須改走此通道；管理者呼叫也一併受益於
+  // 鎖內合併，不再有「讀到寫之間別人異動被蓋回」風險）。
+  if (cfgChanged) {
+    try {
+      await _configCasesPatch([{ type: 'caseIdRemap', fromId: oldId, toId: newId }]);
+    } catch (e) {
+      alert(`案號改名：個案管理員授權範圍同步失敗（${e.message}），案號本身與資料已改名成功，請重新整理頁面確認個案管理員名單是否正確，必要時手動於個案詳細頁調整。`);
+    }
+  }
   if (transferChanged) await saveTransfer();
 }
 
@@ -24795,6 +24858,35 @@ function _configSelfPatch(updates) {
   });
   // 鏈本身永遠 resolve，避免一次失敗卡住後續對 config.json 的自助寫入；呼叫端仍從回傳的 run 取得真正結果／例外。
   _configSelfPatchChain = run.catch(() => {});
+  return run;
+}
+
+// ══════════════════════════════════════════════
+//  config.json「CASES 類」個案存取授權 PATCH（v164：非管理者整檔寫入全面收口）
+//  比照 _configSelfPatch：呼叫後端 configCasesPatch（LockService 鎖內套用宣告式 ops，只准動
+//  allowedCases/allowedCasesSems/extraRole 隨動/nomail_ 新增/呼叫者本人條目搬遷），取代原本
+//  「主責新增/移除個管員、每學期範圍切換、初談自動列管、新學期繼承、案號改名 remap、本人 Gmail
+//  遷移、轉銜窗口自填新增輔導人員」七個流程各自整檔覆寫 config.json 的舊路徑——非管理者整檔寫
+//  config.json 已於後端全面 deny（v164），這七個流程若不改走此通道會直接壞掉。
+//  呼叫端須先比照既有樂觀更新慣例改好本地 configData（UI 立即一致）；本函式只負責把等價的 ops
+//  送給後端做鎖內合併權威寫入，不會反向覆寫本地 configData（ops 是宣告式操作，非快照覆寫，
+//  無「舊快照互蓋」風險）。後端未部署（Unknown action）→ fallback 回舊整檔覆寫，確保功能不中斷；
+//  失敗（非 Unknown action）→ 呼叫端須自行處理（提示使用者＋視情況回滾本地變更），不得靜默吞掉。
+// ══════════════════════════════════════════════
+let _configCasesPatchChain = Promise.resolve();
+function _configCasesPatch(ops) {
+  if (!Array.isArray(ops) || !ops.length) return Promise.resolve({ ok: false });
+  const run = _configCasesPatchChain.then(async () => {
+    try {
+      return await proxyCall('configCasesPatch', { ops });
+    } catch (e) {
+      if (!/Unknown action/i.test(e.message || '')) throw e;
+      try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e2) { console.warn('_configCasesPatch fallback failed', e2); }
+      return { ok: true, fallback: true };
+    }
+  });
+  // 鏈本身永遠 resolve，避免一次失敗卡住後續對 config.json 的個案授權寫入；呼叫端仍從回傳的 run 取得真正結果／例外。
+  _configCasesPatchChain = run.catch(() => {});
   return run;
 }
 
@@ -27643,6 +27735,16 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-11', v: 165, title: '檢視系列預約：新建/重排系列會記住原規劃，差異比對與刪除偵測更精確', isProd: true, items: [
+      item('改善', '新建立系列預約、或以「全部系列」／「此筆之後」範圍重新調整系列時，系統會記住這次規劃的完整日期、節次與空間，之後在「檢視此系列預約」清單中，只要有哪一筆偏離這份原規劃就能精確標示，不再只是用現存筆數猜測規律'),
+      item('改善', '同理，被刪除的原規劃場次現在能精確標示「已刪除」（不再是「已刪除（推算）」），且不會再有推算法本身的誤判空間'),
+      item('技術', '「僅此筆」單筆編輯不會更動該筆或系列其他筆的原規劃記錄；若系列中一部分筆記錄了新規劃、一部分仍是舊規劃（例如只對「此筆之後」重排過），逐筆欄位比對仍各自精確，但刪除偵測會保守退回舊版推算，避免把被合法取代的舊場次誤報成刪除；完全沒有原規劃記錄的舊系列，行為與改版前完全相同'),
+    ]},
+    { date: '2026-07-10', v: 164, title: '權限寫入通道收口：個案管理員派任等改走後端專用鎖內合併', isProd: true, items: [
+      item('改善', '個案管理員派任/移除、每學期範圍調整、初談自動列管、新學期繼承、案號改名、本人 Gmail 帳號變更、轉銜窗口新增輔導人員等會異動系統設定檔的操作，改為送出「這次實際要變動的內容」由後端在鎖內合併寫入，不再整份覆寫；避免與其他人同時進行的設定變更互相覆蓋'),
+      item('修復', '「修改案號」在編輯個案畫面直接改案號時，若新舊案號分屬不同資料分塊，舊案號的紀錄未被清除、可能在下次載入時復活；改走既有的安全改名共用邏輯，補上這條路徑的分塊清理'),
+      item('技術', '非管理者不再能透過整份覆寫系統設定檔的方式間接影響他人的權限或帳號資料；後端下架兩個已無前端用量、有個資落地疑慮的信件查詢用途'),
+    ]},
     { date: '2026-07-10', v: 163, title: '檢視系列預約：與原規劃差異醒目標示', isProd: true, items: [
       item('新功能', '「檢視此系列預約」清單中，若某筆的日期、節次（時間）或空間與系列原規劃不同，該欄位以底色標黃醒目呈現，滑過可看到原規劃的值'),
       item('新功能', '系列中疑似被刪除的原規劃場次（依既有規律推算出應有但目前不存在的日期），會以灰階＋刪除線列呈現在清單對應位置，標示「已刪除（推算）」'),
@@ -30097,9 +30199,19 @@ function _bkConfirmSeriesScope(scope) {
 // 節次（起訖時間）、空間各自獨立取多數值，未過半（如剛好各半）不判斷、不誤標。
 // 刪除偵測：僅在相鄰日期差存在明確多數（固定天數頻率，如每週/每兩週）時，以該頻率從最早一筆推算到
 // 最晚一筆之間「應有但目前不存在」的日期，視為疑似被刪除的原規劃筆；頻率不固定（如每月，日差不固定）
-// 或資料點過少則不推算，只做偏離醒目標示。純函式（無 DOM／無日期以外的外部依賴），供
-// _bkRenderSeriesListModal 呼叫，亦供單元測試（test/booking-series-diff.test.js）。
-// list：同一 seriesId 的預約物件陣列（不要求已排序），至少含 id/date/startTime/endTime/room/customRoom。
+// 或資料點過少則不推算，只做偏離醒目標示。
+// v165：新建系列／整系列重排（見 saveBooking）起，成員預約會落地 seriesPlan/planDate 原規劃快照
+// （同一批次共用同一 seriesPlan.stampedAt「代別」）。若清單全員帶「同一代」快照 → 精確模式：
+// 逐筆直接比 x.date vs x.planDate、x.room/customRoom/startTime/endTime vs x.seriesPlan 本身，
+// 不再靠多數值猜；刪除偵測＝seriesPlan.dates（原規劃全部日期）減去現存成員的 planDate 集合，
+// 缺的就是精確已刪除場次（非推算）。若快照缺漏或代別混雜（例如「此筆之後」重排過一部分、或
+// 舊系列後來手動加了新筆）→ 有自己快照的筆仍逐筆精確比對（用自己那份 seriesPlan，不同代之間
+// 互不影響），沒有快照的筆退回沿用 legacy 多數值反推；刪除偵測則整體退回 v163 推算法（混代的
+// dates 若取聯集，會把被合法取代的舊日期誤報成刪除，寧可保守退回推算）。舊資料（完全無快照）
+// 行為與 v163 完全相同。純函式（無 DOM／無日期以外的外部依賴），供 _bkRenderSeriesListModal
+// 呼叫，亦供單元測試（test/booking-series-diff.test.js）。
+// list：同一 seriesId 的預約物件陣列（不要求已排序），至少含 id/date/startTime/endTime/room/customRoom，
+// 可選 seriesPlan（{dates,startTime,endTime,room,customRoom,stampedAt}）/planDate。
 function _bkSeriesDiffAnalyze(list) {
   const mode = (arr) => {
     const cnt = new Map();
@@ -30123,7 +30235,7 @@ function _bkSeriesDiffAnalyze(list) {
   };
 
   const total = list.length;
-  if (total < 2) return { baseline: null, items: new Map(), missingDates: [] };
+  if (total < 2) return { baseline: null, items: new Map(), missingDates: [], deletionMode: null };
 
   const roomMode = mode(list.map(roomKeyOf));
   const periodMode = mode(list.map(periodKeyOf));
@@ -30142,7 +30254,7 @@ function _bkSeriesDiffAnalyze(list) {
   const roomSample = list.find(x => roomKeyOf(x) === roomMode.value);
   const periodSample = list.find(x => periodKeyOf(x) === periodMode.value);
 
-  const baseline = {
+  const legacyBaseline = {
     room: roomConfident ? (roomSample?.room || '') : null,
     customRoom: roomConfident ? (roomSample?.customRoom || '') : null,
     roomConfident,
@@ -30150,42 +30262,84 @@ function _bkSeriesDiffAnalyze(list) {
     endTime: periodConfident ? (periodSample?.endTime || '') : null,
     periodConfident,
     dateRule,
+    exact: false,
   };
+
+  // v165：全員帶「同一代」原規劃快照才算精確模式；缺漏或代別混雜的筆逐筆退回 legacy 比對。
+  const withPlan = list.filter(x => x.seriesPlan && x.planDate);
+  const stampSet = new Set(withPlan.map(x => x.seriesPlan.stampedAt));
+  const preciseMode = withPlan.length === total && stampSet.size === 1;
 
   const items = new Map();
   list.forEach(x => {
+    if (x.seriesPlan && x.planDate) {
+      const sp = x.seriesPlan;
+      const roomChanged = roomKeyOf(x) !== roomKeyOf({ room: sp.room, customRoom: sp.customRoom });
+      const periodChanged = periodKeyOf(x) !== `${(sp.startTime || '').slice(0, 5)}|${(sp.endTime || '').slice(0, 5)}`;
+      const dateChanged = (x.date || '') !== x.planDate;
+      items.set(x.id, {
+        roomChanged, periodChanged, dateChanged, exact: true,
+        origDate: x.planDate, origRoom: sp.room || '', origCustomRoom: sp.customRoom || '',
+        origStart: sp.startTime || '', origEnd: sp.endTime || '',
+      });
+      return;
+    }
     const roomChanged = roomConfident && roomKeyOf(x) !== roomMode.value;
     const periodChanged = periodConfident && periodKeyOf(x) !== periodMode.value;
     let dateChanged = false;
     if (dateRule && x.date) {
       dateChanged = dateRule.type === 'weekday' ? weekdayOf(x) !== dateRule.value : domOf(x) !== dateRule.value;
     }
-    items.set(x.id, { roomChanged, periodChanged, dateChanged });
+    items.set(x.id, {
+      roomChanged, periodChanged, dateChanged, exact: false,
+      origDate: null,
+      origRoom: roomConfident ? (legacyBaseline.room || '') : null,
+      origCustomRoom: roomConfident ? (legacyBaseline.customRoom || '') : null,
+      origStart: periodConfident ? (legacyBaseline.startTime || '') : null,
+      origEnd: periodConfident ? (legacyBaseline.endTime || '') : null,
+    });
   });
 
-  // 疑似被刪除的原規劃日期：至少 3 筆且相鄰日期差存在明確多數（>半數區間同一天數差）才推算，
-  // 避免資料點過少、或頻率本就不固定（如逐筆手動調整過）時誤判。日期規則若判為「每月同一天」
-  // （dom）則不用固定天數推算——月份長短不一（28~31 天），用單一天數差步進會算錯，故略過。
   let missingDates = [];
-  const dates = dated.map(x => x.date).sort();
-  if (dates.length >= 3 && (!dateRule || dateRule.type !== 'dom')) {
-    const diffs = [];
-    for (let i = 1; i < dates.length; i++) diffs.push(daysBetween(dates[i - 1], dates[i]));
-    const diffMode = mode(diffs);
-    if (diffMode.value > 0 && diffMode.count / diffs.length > 0.5) {
-      const set = new Set(dates);
-      let cur = dates[0];
-      const last = dates[dates.length - 1];
-      let guard = 0;
-      while (guard++ < 500) {
-        cur = addDays(cur, diffMode.value);
-        if (cur > last) break;
-        if (!set.has(cur)) missingDates.push(cur);
+  let deletionMode = 'inferred';
+  if (preciseMode) {
+    // 精確模式：seriesPlan.dates（全員同代、內容共用同一份）減去現存成員的 planDate 集合＝精確已刪除場次
+    const planDates = withPlan[0].seriesPlan.dates || [];
+    const existing = new Set(withPlan.map(x => x.planDate));
+    missingDates = planDates.filter(d => !existing.has(d)).sort();
+    deletionMode = 'exact';
+  } else {
+    // 混代／部分缺／全無快照：退回 v163 推算法。至少 3 筆且相鄰日期差存在明確多數才推算，避免資料點
+    // 過少、或頻率本就不固定時誤判；dateRule 為「每月同一天」時不推算（月份長短不一，固定天數步進會算錯）。
+    const dates = dated.map(x => x.date).sort();
+    if (dates.length >= 3 && (!dateRule || dateRule.type !== 'dom')) {
+      const diffs = [];
+      for (let i = 1; i < dates.length; i++) diffs.push(daysBetween(dates[i - 1], dates[i]));
+      const diffMode = mode(diffs);
+      if (diffMode.value > 0 && diffMode.count / diffs.length > 0.5) {
+        const set = new Set(dates);
+        let cur = dates[0];
+        const last = dates[dates.length - 1];
+        let guard = 0;
+        while (guard++ < 500) {
+          cur = addDays(cur, diffMode.value);
+          if (cur > last) break;
+          if (!set.has(cur)) missingDates.push(cur);
+        }
       }
     }
   }
 
-  return { baseline, items, missingDates };
+  const baseline = preciseMode ? {
+    room: withPlan[0].seriesPlan.room || '', customRoom: withPlan[0].seriesPlan.customRoom || '',
+    roomConfident: true,
+    startTime: withPlan[0].seriesPlan.startTime || '', endTime: withPlan[0].seriesPlan.endTime || '',
+    periodConfident: true,
+    dateRule: null,
+    exact: true,
+  } : legacyBaseline;
+
+  return { baseline, items, missingDates, deletionMode };
 }
 
 // 共用：依 seriesId 重繪「系列預約清單」內容並開窗；highlightId 標示「目前這筆」。
@@ -30200,7 +30354,7 @@ function _bkRenderSeriesListModal(seriesId, highlightId) {
     const p = BK_PERIODS.find(pp => pp.start === (start || '').slice(0, 5) && pp.end === (end || '').slice(0, 5));
     return p ? p.label : `${(start || '').slice(0, 5)}–${(end || '').slice(0, 5)}`;
   };
-  const { baseline, items, missingDates } = _bkSeriesDiffAnalyze(list);
+  const { baseline, items, missingDates, deletionMode } = _bkSeriesDiffAnalyze(list);
   const _weekdayNames = ['日', '一', '二', '三', '四', '五', '六'];
   const _dateRuleHint = baseline?.dateRule
     ? (baseline.dateRule.type === 'weekday' ? `原規劃：每週${_weekdayNames[baseline.dateRule.value]}` : `原規劃：每月 ${baseline.dateRule.value} 日`)
@@ -30215,13 +30369,20 @@ function _bkRenderSeriesListModal(seriesId, highlightId) {
     if (isCur) statusParts.push('目前編輯這筆');
     else if ((x.date || '') < today) statusParts.push('已過期');
     if (!x.caseId) statusParts.push('未連結個案');
+    // v165：diff.exact 時（該筆帶原規劃快照）hover 顯示快照精確值，否則沿用 v163 推算基準的提示文字
+    const dateHint = diff.exact ? `原規劃：${diff.origDate}` : _dateRuleHint;
     const dateHtml = diff.dateChanged
-      ? `<span style="${HL}" data-tip="${escHtml(_dateRuleHint)}">${escHtml(x.date || '—')}</span>`
+      ? `<span style="${HL}" data-tip="${escHtml(dateHint)}">${escHtml(x.date || '—')}</span>`
       : escHtml(x.date || '—');
+    const periodHint = diff.exact
+      ? '原規劃：' + _periodLabel(diff.origStart, diff.origEnd)
+      : (baseline?.periodConfident ? '原規劃：' + _periodLabel(baseline.startTime, baseline.endTime) : '');
     const periodHtml = diff.periodChanged
-      ? `<span style="${HL}" data-tip="${escHtml('原規劃：' + _periodLabel(baseline.startTime, baseline.endTime))}">${escHtml(_periodLabel(x.startTime, x.endTime))}</span>`
+      ? `<span style="${HL}" data-tip="${escHtml(periodHint)}">${escHtml(_periodLabel(x.startTime, x.endTime))}</span>`
       : escHtml(_periodLabel(x.startTime, x.endTime));
-    const baseRoomTxt = baseline?.roomConfident ? (baseline.room === '其他' ? (baseline.customRoom || '其他') : baseline.room) : '';
+    const baseRoomTxt = diff.exact
+      ? (diff.origRoom === '其他' ? (diff.origCustomRoom || '其他') : diff.origRoom)
+      : (baseline?.roomConfident ? (baseline.room === '其他' ? (baseline.customRoom || '其他') : baseline.room) : '');
     const roomHtml = diff.roomChanged
       ? `<span style="${HL}" data-tip="${escHtml('原規劃：' + (baseRoomTxt || '—'))}">${escHtml(room || '—')}</span>`
       : escHtml(room || '—');
@@ -30236,7 +30397,10 @@ function _bkRenderSeriesListModal(seriesId, highlightId) {
     </div>` };
   });
 
-  // 疑似被刪除的原規劃列——不可點擊、灰階＋刪除線，仍顯示推算出的原規劃日期／節次／空間
+  // 被刪除的原規劃列——不可點擊、灰階＋刪除線，仍顯示原規劃日期／節次／空間；
+  // v165：deletionMode==='exact' 時（精確模式，來自 seriesPlan.dates 精確比對）標「已刪除」，
+  // 否則沿用 v163 標「已刪除（推算）」。
+  const _deletedLabel = deletionMode === 'exact' ? '已刪除' : '已刪除（推算）';
   const deletedRows = missingDates.map(d => {
     const roomTxt = baseline?.roomConfident ? (baseline.room === '其他' ? (baseline.customRoom || '其他') : baseline.room) : '—';
     const periodTxt = baseline?.periodConfident ? _periodLabel(baseline.startTime, baseline.endTime) : '—';
@@ -30245,7 +30409,7 @@ function _bkRenderSeriesListModal(seriesId, highlightId) {
         <div style="font-size:.9rem;font-weight:600;color:#718096;">${escHtml(d)}　${escHtml(periodTxt)}</div>
         <div style="font-size:.8rem;color:#a0aec0;margin-top:2px;">${escHtml(roomTxt)}</div>
       </div>
-      <span style="font-size:.75rem;color:#a0aec0;white-space:nowrap;text-decoration:none;">已刪除（推算）</span>
+      <span style="font-size:.75rem;color:#a0aec0;white-space:nowrap;text-decoration:none;">${escHtml(_deletedLabel)}</span>
     </div>` };
   });
 
@@ -35806,24 +35970,29 @@ async function saveBooking() {
     if (_convertToSeries) {
       // #34：把原本非系列的單筆預約就地轉為系列 —— 第 0 筆＝更新既有這筆（沿用 id／GC 事件）掛上 seriesId，
       // 其餘 (repeatCount-1) 筆依頻率新增（比照新增系列的建立路徑；共用下方 bkCommit 收尾）。
+      // v165：等同「新建系列」——全體成員（含就地轉換的第 0 筆）落地同一代原規劃快照
+      // （seriesPlan.dates／planDate），供之後「檢視此系列預約」精確比對。
+      const _convDatesAll = Array.from({ length: repeatCount }, (_, _i) => _i === 0 ? date : _bkAddFreq(date, repeatFreq, _i));
+      const _convSeriesPlan = { dates: _convDatesAll, startTime: start, endTime: end, room, customRoom, stampedAt: now };
       const idx0 = bookingsData.findIndex(x => x.id === _editingBookingId);
       if (idx0 >= 0) {
         bookingsData[idx0] = { ...bookingsData[idx0],
           room, customRoom, date, startTime: start, endTime: end,
           counselors, counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
-          notes, updatedAt: now, seriesId };
+          notes, updatedAt: now, seriesId, planDate: date, seriesPlan: _convSeriesPlan };
         if (_bkOverride) bookingsData[idx0].bkOverrideColor = _bkOverride; else delete bookingsData[idx0].bkOverrideColor;
         _pushOp(bookingsData[idx0], existingCalEventId ? 'update' : 'create', calParams);
         _createdObjs.push(bookingsData[idx0]);
       }
       const _convSerialBase = _bkNextSerial();
       for (let _ci = 1; _ci < repeatCount; _ci++) {
-        const _cDate = _bkAddFreq(date, repeatFreq, _ci);
+        const _cDate = _convDatesAll[_ci];
         const _cObj = {
           id: `bk_${Date.now() + _ci}`, bkSerial: _convSerialBase + _ci - 1,
           room, customRoom, date: _cDate, startTime: start, endTime: end,
           counselors, counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
           notes, createdAt: now, updatedAt: now, creatorName, seriesId,
+          planDate: _cDate, seriesPlan: _convSeriesPlan,
         };
         if (_bkOverride) _cObj.bkOverrideColor = _bkOverride;
         bookingsData.push(_cObj);
@@ -35894,6 +36063,13 @@ async function saveBooking() {
       });
 
       const survivors = seriesProposalsAll.filter(p => !deleteIdSet.has(p.id));
+      // v165：整系列重排（頻率／次數變動）——存活筆＋新增筆落地「同一代」原規劃快照，
+      // dates 取重排後的最終日期集合；即使衝突改走拖曳修正視窗，proposals 也已帶快照隨之流轉。
+      const _srStampedAt = now;
+      const _srSeriesPlan = { dates: [...survivors.map(p => p.date), ...createdProposals.map(p => p.date)].sort(),
+        startTime: start, endTime: end, room, customRoom, stampedAt: _srStampedAt };
+      survivors.forEach(p => { p.planDate = p.date; p.seriesPlan = _srSeriesPlan; });
+      createdProposals.forEach(p => { p.planDate = p.date; p.seriesPlan = _srSeriesPlan; });
       // 衝突預檢排除預定刪除的筆（比照 _bkDragFixRecompute 的 live 過濾），避免對即將消失的筆誤報衝突
       const liveProposals = [...survivors, ...createdProposals];
       const excludeIds = new Set(originalSeries.map(b => b.id));
@@ -35998,7 +36174,13 @@ async function saveBooking() {
       // 被編輯這筆本身會恰好拿到 modal 填的日期（delta = date - _editedB.date，套用回自己等於 date）。
       // GC 逐筆同步：已有事件者 update、尚無事件者 create（順便回填歷史系列缺漏的 GC 事件）
       const _dateDelta = _bkDaysBetween(_editedB.date, date);
-      _bkSeriesTargets(bookingsData, _editedB, _bkEditScope).forEach(sb => {
+      const _rangeTargets = _bkSeriesTargets(bookingsData, _editedB, _bkEditScope);
+      // v165：範圍內成員（'future' 為此筆之後子集／'all' 為全系列）套用平移後的最終日期，
+      // 重打成「同一代」原規劃快照；範圍外的舊成員（僅 'future' 情形才會有）維持原本的快照不動——
+      // 兩代快照並存＝混代，_bkSeriesDiffAnalyze 會據此自動退回刪除推算，欄位比對則仍逐筆精確。
+      const _rangeSeriesPlan = { dates: _rangeTargets.map(sb => _dateDelta ? _bkAddDays(sb.date, _dateDelta) : sb.date).sort(),
+        startTime: start, endTime: end, room, customRoom, stampedAt: now };
+      _rangeTargets.forEach(sb => {
         sb.room = room; sb.customRoom = customRoom;
         sb.startTime = start; sb.endTime = end;
         sb.counselors = counselors; sb.counselorEmail = counselorEmail; sb.counselorName = counselorName;
@@ -36006,6 +36188,7 @@ async function saveBooking() {
         sb.notes = notes; sb.updatedAt = now;
         if (_dateDelta) sb.date = _bkAddDays(sb.date, _dateDelta);
         if (_bkOverride) sb.bkOverrideColor = _bkOverride; else delete sb.bkOverrideColor;
+        sb.planDate = sb.date; sb.seriesPlan = _rangeSeriesPlan;
         _pushOp(sb, sb.calendarEventId ? 'update' : 'create', _bkGcParamsOf(sb, !!sb.calendarEventId));
       });
     } else {
@@ -36021,8 +36204,16 @@ async function saveBooking() {
     }
   } else {
     // T2：單筆或系列建立 — 系列每一筆都建立 GC 事件（帶各自日期與流水號）
+    // v165：新建系列時全體成員落地同一代原規劃快照（seriesPlan.dates／各自的 planDate），
+    // 供之後「檢視此系列預約」精確比對／刪除偵測；單筆（無 seriesId）不落地，維持原行為。
+    const _seriesDatesAll = seriesId
+      ? Array.from({ length: repeatCount }, (_, _i) => _i === 0 ? date : _bkAddFreq(date, repeatFreq, _i))
+      : null;
+    const _newSeriesPlan = seriesId
+      ? { dates: _seriesDatesAll, startTime: start, endTime: end, room, customRoom, stampedAt: now }
+      : null;
     for (let _si = 0; _si < repeatCount; _si++) {
-      const _sDate = _si === 0 ? date : _bkAddFreq(date, repeatFreq, _si);
+      const _sDate = _seriesDatesAll ? _seriesDatesAll[_si] : date;
       const _sObj = {
         id: _si === 0 ? newId : `bk_${Date.now() + _si}`,
         bkSerial: newSerial + _si, room, customRoom,
@@ -36030,7 +36221,7 @@ async function saveBooking() {
         counselors, counselorEmail, counselorName, caseId: caseId || '', caseName: caseObj?.name || '',
         notes, createdAt: now, updatedAt: now, creatorName
       };
-      if (seriesId) _sObj.seriesId = seriesId;
+      if (seriesId) { _sObj.seriesId = seriesId; _sObj.planDate = _sDate; _sObj.seriesPlan = _newSeriesPlan; }
       if (_bkOverride) _sObj.bkOverrideColor = _bkOverride;
       bookingsData.push(_sObj);
       _pushOp(_sObj, 'create', { ...calParams, date: _sDate, bkSerial: _sObj.bkSerial });
@@ -40956,7 +41147,10 @@ async function _confirmLinkRecord(recId) {
       try {
         await saveCasesChunks(newId);
         await saveTransfer();
-        if (_newUserKey) await driveUpdateJsonFile(CONFIG_FILE, configData);
+        // 轉銜窗口自填新增輔導人員：nomail_ 佔位帳號（無 Gmail，僅作主責標記）改走 configCasesPatch
+        // 的 nomailAdd op（後端 _nomailAddOk_ 把關，不接受夾帶特權欄位），取代整檔覆寫 config.json——
+        // 此路徑呼叫者未必是管理者（轉銜窗口聯絡人即可觸發），非管理者整檔寫 config 已被後端 deny。
+        if (_newUserKey) await _configCasesPatch([{ type: 'nomailAdd', email: _newUserKey, entry: { ...configData.users[_newUserKey] } }]);
         await _flushNotifOps();
         renderNotifBell();
         bgJobDone(jobId);

@@ -74,8 +74,10 @@ function doPost(e) {
     }
 
     // ── P0-3：敏感動作後端硬閘（前端 UI 隱藏不算數，攻擊者可直呼公開 API）──
-    // (a) 純攻擊面：前端從未使用（deleteFile/moveFile）或僅維運/除錯用（信件傾印），一律限 admin。
-    var ADMIN_ONLY_ACTIONS = { dumpNpust5Emails: true, listInboxEmails: true, deleteFile: true, moveFile: true };
+    // (a) 純攻擊面：前端從未使用（deleteFile/moveFile），一律限 admin。
+    // 註：dumpNpust5Emails／listInboxEmails（信件傾印/列表）已於 F5 從 switch 移除、不可達，
+    // 移出本白名單（留著也無害，但避免誤導成「仍可由 admin 呼叫」）。
+    var ADMIN_ONLY_ACTIONS = { deleteFile: true, moveFile: true };
     if (ADMIN_ONLY_ACTIONS[action] && !isAdminUser_(userEmail)) {
       return jsonResp_({ error: 'Forbidden: admin only' });
     }
@@ -93,15 +95,21 @@ function doPost(e) {
       }
     }
 
-    // ── P0-2：config.json 寫入的授權面保護（非管理者不得改任何使用者的授權欄位／增刪使用者）──
-    // config.json 同時裝自助欄位（PIN/偏好，非管理者自己寫）與授權欄位，故不能整檔限 admin。
-    // 因前端每次整檔覆寫 config，字面「白名單只准改 6 欄」會在多人併發時誤拒；改為只鎖授權欄位，
-    // 既擋提權又不誤殺 PIN/偏好。字面全白名單需前端改為部分更新後才安全（P1）。
-    var CONFIG_PRIV_FIELDS = ['role', 'extraRole', 'isAdmin', 'disabled', 'allowedCases',
-      'allowedCasesSems', 'isTransferContact', 'isMentalLeaveContact', 'leaveQuota', 'name'];
+    // ── P0-2→v164：config.json 整檔寫入的授權面保護，收斂為「非管理者不得變動 users」──
+    // 沿革：P0-2 原本用 diff 比對放行 allowedCases/allowedCasesSems/extraRole 子集變動（字面上
+    // 仍是「整檔覆寫」，只是覆寫內容受限）——非管理者仍可能在 diff 檢查的縫隙夾帶自授個案存取權、
+    // 覆寫他人併發變動、或把讀到寫之間別人的異動蓋回。v164 前端七個原本會整檔覆寫 config 的
+    // 非管理者流程（主責新增/移除個管員、每學期範圍切換、初談自動列管、新學期繼承、案號改名
+    // remap、本人 Gmail 遷移、轉銜窗口自填新增輔導人員）已全部改走 configSelfPatch（自助欄位）／
+    // configCasesPatch（個案存取授權，LockService 鎖內宣告式合併），因此非管理者的整檔寫入請求
+    // 現在「users 物件應與後端當下最新版完全相同」——只要 users 有任何差異就整批拒絕（不比對
+    // 個別欄位，杜絕字面 diff 檢查的縫隙；fail-closed，即使前端漏改也不會退化回整檔覆寫風險）。
+    // config.json 同時裝非授權的全域共用設定（自訂選項清單／家系圖自訂元件等，非管理者本就合法
+    // 會寫），這類不動 users 的寫入不受影響，避免無謂波及既有功能。
+    // 管理者（isAdminUser_）維持整檔寫入權限不變（權限管理頁、合併遷移引擎等 admin-only 流程）。
     if (!isAdminUser_(userEmail) && isConfigWrite_(action, params, localConfigFileId_())) {
-      if (!configWriteAllowedForNonAdmin_(readConfigFresh_(), params.content, userEmail, CONFIG_PRIV_FIELDS)) {
-        return jsonResp_({ error: 'Forbidden: config authorization fields are admin-only' });
+      if (!_configUsersUnchanged_(readConfigFresh_(), params.content)) {
+        return jsonResp_({ error: 'Forbidden: non-admin config.json write must not modify users; use configSelfPatch/configCasesPatch for user or case-access changes' });
       }
     }
 
@@ -176,8 +184,9 @@ function doPost(e) {
       case 'downloadFileBase64':   result = downloadFileBase64_(params); break;
       case 'fetchMentalLeaves':    result = fetchMentalLeaves_(ctx, params); break;
       case 'getNpust5AuthUrl':     result = getAuthUrlNpust5_(); break;
-      case 'dumpNpust5Emails':     result = dumpNpust5Emails_(ctx); break;
-      case 'listInboxEmails':      result = listInboxEmails_(ctx); break;
+      // F5：dumpNpust5Emails／listInboxEmails 已下架（前端零用量的信件傾印/列表，個資落地風險）。
+      // 函式本體保留供未來 trigger 手動呼叫用途，switch 移除後經由 doPost 已不可達（落到 default 的
+      // Unknown action）。
       case 'clearMentalLeaves':              result = clearMentalLeaves_(ctx); break;
       case 'countMentalLeavesUnprocessed':   result = countMentalLeavesUnprocessed_(ctx); break;
       case 'submitUserApplication': result = submitUserApplication_({ ...params, submittedByEmail: userEmail, ctx }); break;
@@ -188,6 +197,7 @@ function doPost(e) {
       case 'listCommit':           result = listCommit_(params, ctx); break;
       case 'notifCommit':          result = notifCommit_(params, ctx); break;
       case 'configSelfPatch':      result = configSelfPatch_(params, ctx, userEmail); break;
+      case 'configCasesPatch':     result = configCasesPatch_(params, ctx, userEmail); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
     return jsonResp_(result);
@@ -554,6 +564,35 @@ function isConfigWrite_(action, params, cfgFileId) {
   return false;
 }
 
+// 深度相等（純函式；供 _configUsersUnchanged_ 比較 users 物件）。
+function _deepEq_(a, b) {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (!a || !b || typeof a !== 'object') return false;
+  var ak = Object.keys(a), bk = Object.keys(b);
+  if (ak.length !== bk.length) return false;
+  for (var i = 0; i < ak.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(b, ak[i])) return false;
+    if (!_deepEq_(a[ak[i]], b[ak[i]])) return false;
+  }
+  return true;
+}
+
+// 純決策（可單元測試，見 test/authz-gate.test.js）：非管理者整檔寫 config.json 時，users 物件
+// 是否與後端當下最新版（oldCfg，來自 readConfigFresh_）完全相同——v164 用此取代 P0-2 的欄位級
+// diff 比對（那個比對方式仍是字面「整檔覆寫」，只是內容受限，非管理者仍可能在比對縫隙夾帶
+// 自授個案存取權／覆寫他人併發變動／把讀到寫之間別人的異動蓋回）。只要 users 有任何差異
+// 就整批視為「有變動」（拒絕），不比對個別欄位，杜絕字面 diff 檢查的縫隙；config.json 內非
+// users 的全域共用設定（自訂選項清單等）不受影響，非管理者本就合法會寫的其他欄位維持可寫。
+// oldCfg 為 null（讀不到當前 config）或任一方 users 非物件 → fail-closed 視為「有變動」（拒絕）。
+function _configUsersUnchanged_(oldCfg, newCfg) {
+  if (!oldCfg || !newCfg || typeof oldCfg !== 'object' || typeof newCfg !== 'object') return false;
+  var oldUsers = oldCfg.users, newUsers = newCfg.users;
+  if (!oldUsers || typeof oldUsers !== 'object' || Array.isArray(oldUsers)) return false;
+  if (!newUsers || typeof newUsers !== 'object' || Array.isArray(newUsers)) return false;
+  return _deepEq_(oldUsers, newUsers);
+}
+
 // ── F3：fileId/parentId 類動作限制在本次 ctx.root 子樹 ──
 // 純函式（getParents 注入，可單元測試）：沿 parents 鏈自 fileId 往上找，能到 rootId 即為 root 子孫。
 function _ancestorContains_(getParents, fileId, rootId, maxHops) {
@@ -701,30 +740,11 @@ function moveFileDestAllowed_(addParents, checkUnderRoot) {
   return true;
 }
 
-// 深度相等（純函式；供授權欄位比對）。
-function _deepEq_(a, b) {
-  if (a === b) return true;
-  if (typeof a !== typeof b) return false;
-  if (!a || !b || typeof a !== 'object') return false;
-  var ak = Object.keys(a), bk = Object.keys(b);
-  if (ak.length !== bk.length) return false;
-  for (var i = 0; i < ak.length; i++) {
-    if (!Object.prototype.hasOwnProperty.call(b, ak[i])) return false;
-    if (!_deepEq_(a[ak[i]], b[ak[i]])) return false;
-  }
-  return true;
-}
-
-// 個管派任可用的 extraRole 值：非管理者流程只准在「空 ↔ 個案管理員」之間轉換，
-// 不得授予/剝奪 管理者、督導、其他特權 extraRole。
-function _extraRoleTransitionOk_(oldV, newV) {
-  var ok = function (v) { return v === undefined || v === null || v === '' || v === '個案管理員'; };
-  return ok(oldV) && ok(newV);
-}
-
 // 非管理者新增使用者 key 的唯一合法情境：轉銜窗口「自填新增輔導人員」建立 nomail_ 佔位帳號
 // （無 Gmail、無法登入，僅作主責標記）。條目不得夾帶任何特權：role 不得為主任/系統管理者、
 // 不得帶 isAdmin/extraRole/窗口旗標/leaveQuota，disabled 只能是 false/未設。
+// v164：供 applyCasesPatchOps_ 的 nomailAdd op 使用（原本供已刪除的 configWriteAllowedForNonAdmin_
+// 整檔 diff 比對使用，該函式與其僅存的呼叫路徑已隨 v164「非管理者整檔寫入全面 deny」一併移除）。
 function _nomailAddOk_(key, entry) {
   if (typeof key !== 'string' || key.indexOf('nomail_') !== 0) return false;
   if (!entry || typeof entry !== 'object') return false;
@@ -732,71 +752,6 @@ function _nomailAddOk_(key, entry) {
   if (entry.isAdmin || entry.extraRole || entry.isTransferContact ||
       entry.isMentalLeaveContact || entry.leaveQuota !== undefined) return false;
   if (entry.disabled !== undefined && entry.disabled !== false) return false;
-  return true;
-}
-
-// 純決策（可單元測試，見 test/authz-gate.test.js）：非管理者寫 config.json 是否放行。
-// 規則：
-// ①使用者 key 原則不得增刪；例外兩種——(a) 新增 nomail_ 佔位帳號（_nomailAddOk_，轉銜窗口
-//   自填新增輔導人員）；(b)「本人 Gmail 遷移」＝恰好刪自己 key＋新增一個 key，且新條目的
-//   全部授權欄位與舊條目 deep-eq（搬家不變權限，防夾帶提權）。
-// ②任何存續條目（含自己與他人）的授權欄位不得變動；例外兩種——(a) allowedCases/
-//   allowedCasesSems 放行（主責新增/移除個管員、初談自動列管、saveCase 個管員同步、
-//   新學期繼承、案號改名 remap 等合法業務流程都會改它；自授個案存取的物件級授權
-//   屬 P1/#35，維持修補前現狀）；(b) extraRole 僅准「空 ↔ 個案管理員」轉換。
-// 只比對授權欄位（不比 pin/偏好等自助欄位），因此非管理者存 PIN／偏好不會因他人資料併發變動而誤拒；
-// 仍完全擋住「把自己或共犯改成 admin／主任／開停用旗標／改額度/姓名」等提權。
-// oldCfg 為 null（讀不到當前 config）→ fail-closed 拒絕（無法驗證即不放行）。
-function configWriteAllowedForNonAdmin_(oldCfg, newCfg, callerEmail, privFields) {
-  if (!oldCfg || !newCfg || typeof oldCfg !== 'object' || typeof newCfg !== 'object') return false;
-  var oldUsers = oldCfg.users || {};
-  var newUsers = newCfg.users || {};
-  var oldKeys = Object.keys(oldUsers);
-  var newKeys = Object.keys(newUsers);
-
-  // key 差集
-  var removed = [], added = [], kept = [];
-  for (var a = 0; a < oldKeys.length; a++) {
-    if (Object.prototype.hasOwnProperty.call(newUsers, oldKeys[a])) kept.push(oldKeys[a]);
-    else removed.push(oldKeys[a]);
-  }
-  for (var b = 0; b < newKeys.length; b++) {
-    if (!Object.prototype.hasOwnProperty.call(oldUsers, newKeys[b])) added.push(newKeys[b]);
-  }
-
-  // 「本人 Gmail 遷移」：恰刪自己＋恰增一個，新條目授權欄位須與舊條目完全一致
-  var selfRename = null; // {fromEntry, toKey}
-  if (removed.length === 1 && added.length === 1 && removed[0] === callerEmail) {
-    var fromE = oldUsers[removed[0]] || {};
-    var toE = newUsers[added[0]] || {};
-    var same = true;
-    for (var p = 0; p < privFields.length; p++) {
-      if (!_deepEq_(fromE[privFields[p]], toE[privFields[p]])) { same = false; break; }
-    }
-    if (same) selfRename = { toKey: added[0] };
-  }
-  if (!selfRename) {
-    if (removed.length) return false;                                   // 不得刪除使用者
-    for (var c = 0; c < added.length; c++) {
-      if (!_nomailAddOk_(added[c], newUsers[added[c]])) return false;   // 新增僅准 nomail_ 佔位
-    }
-  }
-
-  // 存續條目逐一比對授權欄位
-  for (var j = 0; j < kept.length; j++) {
-    var oe = oldUsers[kept[j]] || {};
-    var ne = newUsers[kept[j]] || {};
-    for (var k = 0; k < privFields.length; k++) {
-      var f = privFields[k];
-      if (f === 'allowedCases' || f === 'allowedCasesSems') continue;   // 個管派任流程放行（P1/#35 收物件級）
-      if (f === 'extraRole') {
-        if (_deepEq_(oe[f], ne[f])) continue;
-        if (!_extraRoleTransitionOk_(oe[f], ne[f])) return false;       // 僅准 空↔個案管理員
-        continue;
-      }
-      if (!_deepEq_(oe[f], ne[f])) return false;                        // 其餘授權欄位不得變動
-    }
-  }
   return true;
 }
 
@@ -2479,9 +2434,179 @@ function configSelfPatch_(params, ctx, userEmail) {
   }
 }
 
+// ── config.json「CASES 類」個案存取授權 PATCH（v164：非管理者整檔寫入全面收口）──
+// 沿革：主責新增/移除個管員、每學期範圍切換、初談自動列管、新學期繼承、案號改名 remap、
+// 本人 Gmail 遷移、轉銜窗口自填新增輔導人員（nomail_ 佔位）等七個非管理者流程，原本都是
+// 「本機改 configData → 整檔覆寫 config.json」——覆寫面最大，且 P0-2 只用 diff 比對放行
+// allowedCases/allowedCasesSems/extraRole 子集變動，非管理者仍可能：①自授任意案號存取權
+// ②覆寫他人非授權欄位（併發互蓋）③舊快照互蓋別人讀寫之間的變更。
+// 比照 configSelfPatch_：LockService 鎖內讀最新 config → 套用宣告式 ops（只認 6 種 type，
+// 每種只准動 allowedCases/allowedCasesSems/extraRole 隨動/nomail_ 新增/呼叫者本人條目搬遷這些
+// 明確列舉的欄位，其餘授權欄位 by construction 無法被此通道觸碰）→ 寫回。任一 op 驗證失敗
+// 即整個請求 throw 拒絕（fail-closed，不做部分套用）。呼叫者只需通過既有授權閘，不需要是管理者。
+function configCasesPatch_(params, ctx, userEmail) {
+  var ops = (params && params.ops) || null;
+  if (!Array.isArray(ops) || !ops.length) {
+    throw new Error('configCasesPatch: ops 必須為非空陣列');
+  }
+  if (JSON.stringify(ops).length > 200 * 1024) {
+    throw new Error('configCasesPatch: ops 過大（上限 200KB）');
+  }
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var fileId = localConfigFileId_();
+    if (!fileId) throw new Error('configCasesPatch: 找不到 config.json');
+    var res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() >= 400) {
+      throw new Error('configCasesPatch: 讀取 config.json 失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
+    }
+    var cfg = JSON.parse(res.getContentText());
+    if (!cfg || typeof cfg.users !== 'object' || cfg.users === null || Array.isArray(cfg.users)) {
+      throw new Error('configCasesPatch: config.json 內容異常（users 非物件），已中止寫入以保護資料');
+    }
+
+    applyCasesPatchOps_(cfg.users, ops, userEmail);
+
+    // 懶清理：v154 已遷移到 notifications.json 的舊欄位，順手在本次寫入一併清除（全部使用者）。
+    stripLegacyNotifications_(cfg);
+
+    driveUpdateContent_(fileId, cfg);
+    return { ok: true };
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// 純函式（可單元測試）：email/nomail_ 佔位 key 格式是否 sane（供 applyCasesPatchOps_ 內各 op 的
+// email 欄位驗證共用）。
+function _casesPatchEmailSane_(s) {
+  return typeof s === 'string' && s.length > 0 && (s.indexOf('@') !== -1 || s.indexOf('nomail_') === 0);
+}
+
+// 純函式（可單元測試）：把 ops 陣列套用到 users 物件（就地修改並回傳）。任何一步驗證失敗立即
+// throw，呼叫端（configCasesPatch_）在 LockService 鎖內呼叫，失敗即整個請求中止、不寫回 Drive
+// （fail-closed，不做部分套用）。callerEmail 僅 selfRename 使用（決定「本人」是誰，呼叫者
+// 無法透過 op 參數偽造成搬遷別人的帳號）。
+function applyCasesPatchOps_(users, ops, callerEmail) {
+  if (!users || typeof users !== 'object' || Array.isArray(users)) {
+    throw new Error('applyCasesPatchOps_: users 必須為物件');
+  }
+  if (!Array.isArray(ops) || !ops.length) {
+    throw new Error('applyCasesPatchOps_: ops 必須為非空陣列');
+  }
+
+  ops.forEach(function (op) {
+    if (!op || typeof op !== 'object' || typeof op.type !== 'string') {
+      throw new Error('applyCasesPatchOps_: op 格式錯誤');
+    }
+
+    if (op.type === 'caseAccessUpsert') {
+      if (!_casesPatchEmailSane_(op.email)) throw new Error('caseAccessUpsert: email 格式錯誤');
+      if (typeof op.caseId !== 'string' || !op.caseId) throw new Error('caseAccessUpsert: caseId 必填');
+      var entry1 = users[op.email];
+      if (!entry1) throw new Error('caseAccessUpsert: 使用者不存在（' + op.email + '）');
+      entry1.allowedCases = entry1.allowedCases || [];
+      if (entry1.allowedCases.indexOf(op.caseId) === -1) entry1.allowedCases.push(op.caseId);
+      if (op.sems !== undefined && op.sems !== null) {
+        if (!Array.isArray(op.sems)) throw new Error('caseAccessUpsert: sems 須為陣列');
+        if (!entry1.allowedCasesSems) entry1.allowedCasesSems = {};
+        var union1 = (entry1.allowedCasesSems[op.caseId] || []).concat(op.sems);
+        entry1.allowedCasesSems[op.caseId] = union1.filter(function (v, i) { return union1.indexOf(v) === i; });
+      }
+      if (!entry1.extraRole) entry1.extraRole = '個案管理員';
+
+    } else if (op.type === 'caseAccessRemove') {
+      if (!_casesPatchEmailSane_(op.email)) throw new Error('caseAccessRemove: email 格式錯誤');
+      if (typeof op.caseId !== 'string' || !op.caseId) throw new Error('caseAccessRemove: caseId 必填');
+      var entry2 = users[op.email];
+      if (!entry2) throw new Error('caseAccessRemove: 使用者不存在（' + op.email + '）');
+      entry2.allowedCases = (entry2.allowedCases || []).filter(function (id) { return id !== op.caseId; });
+      if (entry2.allowedCasesSems) {
+        delete entry2.allowedCasesSems[op.caseId];
+        if (!Object.keys(entry2.allowedCasesSems).length) delete entry2.allowedCasesSems;
+      }
+      if (!entry2.allowedCases.length) {
+        delete entry2.allowedCases;
+        if (entry2.extraRole === '個案管理員') delete entry2.extraRole;
+      }
+
+    } else if (op.type === 'caseAccessSemsSet') {
+      if (!_casesPatchEmailSane_(op.email)) throw new Error('caseAccessSemsSet: email 格式錯誤');
+      if (typeof op.caseId !== 'string' || !op.caseId) throw new Error('caseAccessSemsSet: caseId 必填');
+      var entry3 = users[op.email];
+      if (!entry3) throw new Error('caseAccessSemsSet: 使用者不存在（' + op.email + '）');
+      if ((entry3.allowedCases || []).indexOf(op.caseId) === -1) {
+        throw new Error('caseAccessSemsSet: caseId 不在該使用者 allowedCases（' + op.caseId + '）');
+      }
+      if (Array.isArray(op.sems) && op.sems.length) {
+        if (!entry3.allowedCasesSems) entry3.allowedCasesSems = {};
+        var uniq3 = op.sems.filter(function (v, i) { return op.sems.indexOf(v) === i; });
+        entry3.allowedCasesSems[op.caseId] = uniq3;
+      } else if (entry3.allowedCasesSems) {
+        delete entry3.allowedCasesSems[op.caseId];
+        if (!Object.keys(entry3.allowedCasesSems).length) delete entry3.allowedCasesSems;
+      }
+
+    } else if (op.type === 'caseIdRemap') {
+      if (typeof op.fromId !== 'string' || !op.fromId) throw new Error('caseIdRemap: fromId 必填');
+      if (typeof op.toId !== 'string' || !op.toId) throw new Error('caseIdRemap: toId 必填');
+      Object.keys(users).forEach(function (email) {
+        var info = users[email];
+        if (!info) return;
+        if (Array.isArray(info.allowedCases) && info.allowedCases.indexOf(op.fromId) !== -1) {
+          var remapped = info.allowedCases.map(function (id) { return id === op.fromId ? op.toId : id; });
+          info.allowedCases = remapped.filter(function (v, i) { return remapped.indexOf(v) === i; });
+        }
+        if (info.allowedCasesSems && info.allowedCasesSems[op.fromId]) {
+          var sems4 = info.allowedCasesSems[op.fromId];
+          delete info.allowedCasesSems[op.fromId];
+          var union4 = (info.allowedCasesSems[op.toId] || []).concat(sems4);
+          info.allowedCasesSems[op.toId] = union4.filter(function (v, i) { return union4.indexOf(v) === i; });
+        }
+      });
+
+    } else if (op.type === 'nomailAdd') {
+      if (typeof op.email !== 'string' || !op.email) throw new Error('nomailAdd: email 必填');
+      if (Object.prototype.hasOwnProperty.call(users, op.email)) {
+        throw new Error('nomailAdd: 條目已存在（' + op.email + '）');
+      }
+      if (!_nomailAddOk_(op.email, op.entry)) throw new Error('nomailAdd: entry 未通過驗證');
+      users[op.email] = op.entry;
+
+    } else if (op.type === 'selfRename') {
+      if (!_casesPatchEmailSane_(op.toEmail)) throw new Error('selfRename: toEmail 格式錯誤');
+      if (!callerEmail) throw new Error('selfRename: callerEmail 必填');
+      if (Object.prototype.hasOwnProperty.call(users, op.toEmail)) {
+        throw new Error('selfRename: 目標帳號已存在（' + op.toEmail + '）');
+      }
+      var meEntry = users[callerEmail];
+      if (!meEntry) throw new Error('selfRename: 呼叫者條目不存在');
+      // 整個條目原樣搬遷（不接受 params 提供的任何內容）；previousEmails 由後端依伺服器端已知
+      // 的 callerEmail 計算附加，不含任何前端可控內容，維持既有稽核追蹤功能不因改走此通道而遺失。
+      var movedEntry = Object.assign({}, meEntry);
+      var prevEmails = Array.isArray(movedEntry.previousEmails) ? movedEntry.previousEmails.slice() : [];
+      prevEmails.push({ email: callerEmail, changedAt: new Date().toISOString(), by: callerEmail });
+      movedEntry.previousEmails = prevEmails;
+      users[op.toEmail] = movedEntry;
+      delete users[callerEmail];
+
+    } else {
+      throw new Error('applyCasesPatchOps_: 未知 op type（' + op.type + '）');
+    }
+  });
+
+  return users;
+}
+
 // 純函式（可單元測試）：SELF PATCH 欄位白名單。固定 key 集合 ＋ 動態前綴/後綴規則；
-// 白名單外一律拒絕整個請求（不是靜默略過該 key）。DENY 為雙重保險——即使外層 CONFIG_PRIV_FIELDS
-// 漏檢查，此處仍明確擋下授權欄位，確保 SELF PATCH 永遠無法用來提權或改動他人授權狀態。
+// 白名單外一律拒絕整個請求（不是靜默略過該 key）。DENY 為雙重保險——即使外層授權閘（v164 起：
+// 非管理者一律不得整檔寫 config.json）漏檢查，此處仍明確擋下授權欄位，確保 SELF PATCH
+// 永遠無法用來提權或改動他人授權狀態。
 function selfPatchKeyAllowed_(key) {
   if (!key || typeof key !== 'string') return false;
   var DENY = { role: 1, extraRole: 1, isAdmin: 1, disabled: 1, allowedCases: 1,
