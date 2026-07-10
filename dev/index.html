@@ -3867,31 +3867,23 @@ async function migrateConfigIfNeeded() {
   }
 }
 
+// 改走 configSelfPatch（P1 延伸修復）：不再整檔覆寫 config.json，只送出「這波實際變動的
+// key: 值」。debounce 期間可能有多次 syncUserPref_ 呼叫，_pendingPrefUpdates 累積合併後
+// 一次送出（比照原本 debounce 漏斗語義，只是 payload 從整份 config 換成局部 updates）。
 let _prefSyncTimer = null;
-async function _doUserPrefWrite_() {
-  const myEmail = currentUser?.email;
-  if (!myEmail) return;
-  // 寫入前先從 Drive 讀最新版，避免把記憶體中可能過舊的 users 寫回去
-  const myLocalData = { ...(configData.users[myEmail] || {}) };
-  try {
-    const fresh = await driveReadJson(CONFIG_FILE);
-    if (fresh?.users) {
-      // Only absorb users that don't exist locally (added by other admins).
-      // Never overwrite existing local state — local changes (e.g. disabled flag) take priority.
-      for (const [k, freshUser] of Object.entries(fresh.users)) {
-        if (!configData.users[k]) configData.users[k] = freshUser;
-      }
-    }
-  } catch (_) { /* fresh read 失敗時沿用記憶體狀態，確保 pin 仍能寫入 */ }
-  // 無論 fresh read 成敗，都把最新偏好蓋回去
-  configData.users[myEmail] = { ...(configData.users[myEmail] || {}), ...myLocalData };
-  await driveUpdateJsonFile(CONFIG_FILE, configData);
+let _pendingPrefUpdates = {};
+function _doUserPrefWrite_() {
+  const updates = _pendingPrefUpdates;
+  _pendingPrefUpdates = {};
+  if (!Object.keys(updates).length) return Promise.resolve({ ok: false });
+  return _configSelfPatch(updates);
 }
 function syncUserPref_(updates) {
   if (!configData || !currentUser?.email) return;
   // 安全性：只更新已授權帳號，絕不自動建立新條目（防止未授權帳號寫入 config.json）
   if (!configData.users?.[currentUser.email]) return;
-  Object.assign(configData.users[currentUser.email], updates);
+  Object.assign(configData.users[currentUser.email], updates); // 樂觀更新：本地立即反映
+  Object.assign(_pendingPrefUpdates, updates);
   clearTimeout(_prefSyncTimer);
   // PIN 或 pinSkipped 變更：立即寫入（不走 debounce），確保跨裝置同步可靠；回傳 promise 供 savePrefs 顯示結果
   if ('pin' in updates || 'pinSkipped' in updates) {
@@ -7554,24 +7546,16 @@ let _pendingNotifOps = [];
 function _queueNotifPush(email, notif) {
   _pendingNotifOps.push({ op: 'push', email, notif });
 }
-// flush：送出本次累積的 ops。fallback（後端未部署）時套用到 configData in-memory，沿用舊「已讀存 7 天
-// 後自動永久移除＋上限 100 筆」慣例；呼叫端仍需自行寫回 config.json（沿用遷移前既有流程，確保功能不中斷）。
+// flush：送出本次累積的 ops。notifCommit 後端已在 dev/prod 雙邊穩定部署，fallback 分支永不觸發；
+// 即使觸發也只警告，不再整檔回寫 config.json（那是唯一還會把舊 users[*].notifications 寫回去的
+// 路徑，見 v154 遷移註解——本次通知會遺失，但不致把已遷移拆分的資料結構寫壞）。
 async function _flushNotifOps() {
   const ops = _pendingNotifOps;
   _pendingNotifOps = [];
   if (!ops.length) return { pushed: 0 };
   const res = await _notifCommit(ops);
   if (res && res.fallback) {
-    ops.forEach(o => {
-      const u = configData?.users?.[o.email];
-      if (!u) return;
-      if (!Array.isArray(u.notifications)) u.notifications = [];
-      const i = u.notifications.findIndex(n => n.id === o.notif.id);
-      if (i >= 0) u.notifications.splice(i, 1);
-      u.notifications.unshift(o.notif);
-      _pruneOldReadNotifications(u);
-      if (u.notifications.length > 100) u.notifications = u.notifications.slice(0, 100);
-    });
+    console.warn('_flushNotifOps: notifCommit 未部署（fallback），本次通知未落地', ops);
     return { pushed: ops.length, fallback: true };
   }
   return { pushed: ops.length };
@@ -7597,18 +7581,6 @@ function addNotificationToUser(toEmail, type, caseId, caseName, customMsg) {
   });
   return true;
 }
-// 已讀通知：readAt 超過 7 天後自動永久移除（僅 fallback 路徑使用；notifCommit 後端 push 目前只裁切 100 筆上限，
-// 不做 7 天已讀清除——遷移後這項資料衛生行為暫時只在尚未部署 notifCommit 的過渡期生效，屬已知簡化）
-function _pruneOldReadNotifications(user) {
-  if (!user?.notifications?.length) return;
-  const cutoff = Date.now() - 7 * 86400 * 1000;
-  user.notifications = user.notifications.filter(n => {
-    if (!n.read) return true;
-    const t = n.readAt ? new Date(n.readAt).getTime() : new Date(n.createdAt || 0).getTime();
-    return !isFinite(t) || t >= cutoff;
-  });
-}
-
 function _hasNewCounselorAlert(c) {
   if (!c.newCounselorAlert?.date) return false;
   if (c.counselorEmail !== currentUser?.email) return false;
@@ -7624,7 +7596,7 @@ async function dismissNewCounselorAlert(caseId) {
   if (!me.dismissedAlerts.includes(caseId)) me.dismissedAlerts.push(caseId);
   renderCases();
   showCaseDetail(caseId);
-  driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  _configSelfPatch({ dismissedAlerts: me.dismissedAlerts }).catch(() => {});
 }
 
 // ── 背景工作追蹤 ──────────────────────────────────
@@ -8045,8 +8017,10 @@ async function notifDismiss(notifId) {
   n.read = true;
   if (!n.readAt) n.readAt = new Date().toISOString();
   renderNotifBell(); renderNotifList();
+  // notifCommit 後端已在 dev/prod 雙邊穩定部署，fallback 分支永不觸發；即使觸發也不再整檔回寫
+  // config.json（那是唯一還會把舊 users[*].notifications 寫回去的路徑，見 v154 遷移註解）。
   const res = await _notifCommit([{ op: 'markRead', email: currentUser.email, id: notifId, readAt: n.readAt }]);
-  if (res && res.fallback) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  if (res && res.fallback) console.warn('notifDismiss: notifCommit 未部署（fallback），本次已讀狀態未落地');
 }
 
 async function notifClick(notifId, caseId) {
@@ -8057,7 +8031,7 @@ async function notifClick(notifId, caseId) {
     renderNotifBell();
     renderNotifList();
     const res = await _notifCommit([{ op: 'markRead', email: currentUser.email, id: notifId, readAt: n.readAt }]);
-    if (res && res.fallback) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+    if (res && res.fallback) console.warn('notifClick: notifCommit 未部署（fallback），本次已讀狀態未落地');
   }
   if (!caseId) return;
   const notif = _myNotifs().find(x => x.id === notifId);
@@ -8089,7 +8063,7 @@ async function markAllNotifRead() {
   renderNotifBell();
   renderNotifList();
   const res = await _notifCommit([{ op: 'markAllRead', email: currentUser.email, readAt: nowIso }]);
-  if (res && res.fallback) await driveUpdateJsonFile(CONFIG_FILE, configData);
+  if (res && res.fallback) console.warn('markAllNotifRead: notifCommit 未部署（fallback），本次已讀狀態未落地');
 }
 
 // ── 列印/PDF 共用 helper ──────────────────────────────────────────────────
@@ -22067,7 +22041,7 @@ window._majorEventMarkRead = async function(notifId) {
   _renderMajorEventNotifs();
   renderNotifBell?.();
   const res = await _notifCommit([{ op: 'markRead', email: currentUser.email, id: notifId, readAt: n.readAt }]);
-  if (res && res.fallback) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  if (res && res.fallback) console.warn('_majorEventMarkRead: notifCommit 未部署（fallback），本次已讀狀態未落地');
 };
 window._majorEventMarkAllRead = async function() {
   const notifs = _myNotifs();
@@ -22084,7 +22058,7 @@ window._majorEventMarkAllRead = async function() {
   renderNotifBell?.();
   // 只標記重大事件類型（非全部通知），backend markRead 逐則套用，故一次送出多筆 markRead ops
   const res = await _notifCommit(ids.map(id => ({ op: 'markRead', email: currentUser.email, id, readAt: nowIso })));
-  if (res && res.fallback) driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {});
+  if (res && res.fallback) console.warn('_majorEventMarkAllRead: notifCommit 未部署（fallback），本次已讀狀態未落地');
 };
 
 function _mlUpdateBatchBtn() {
@@ -24790,6 +24764,38 @@ async function _attendanceCommit(upserts, removes) {
 // 舊介面保留為相容包裝，但改走併發安全路徑（呼叫端應盡量改用 _attendanceCommit 傳入異動紀錄）
 async function saveAttendance() {
   await driveUpdateJsonFile(ATTENDANCE_FILE, attendanceData);
+}
+
+// ══════════════════════════════════════════════
+//  config.json「SELF 類」使用者自助欄位併發安全 PATCH（P1 延伸修復）
+//  比照 _notifCommit/_attendanceCommit：呼叫後端 configSelfPatch（LockService 鎖內只 PATCH
+//  呼叫者本人條目的白名單欄位），取代原本「偏好/PIN/欄寬/顯示色」各自整檔覆寫 config.json 的
+//  舊路徑——config.json 裝全部使用者的授權欄位，覆寫面最大，任何人同時改權限或另一人寫偏好都會互蓋。
+//  後端未部署（Unknown action）→ fallback 回舊整檔覆寫（driveUpdateJsonFile），確保功能不中斷；
+//  呼叫端須先比照樂觀更新慣例改好本地 configData，fallback 才寫得出正確內容。
+// ══════════════════════════════════════════════
+let _configSelfPatchChain = Promise.resolve();
+function _configSelfPatch(updates) {
+  const myEmail = currentUser?.email;
+  if (!myEmail || !updates || !Object.keys(updates).length) return Promise.resolve({ ok: false });
+  const run = _configSelfPatchChain.then(async () => {
+    try {
+      const res = await proxyCall('configSelfPatch', { updates });
+      if (res && res.user && configData?.users?.[myEmail]) {
+        Object.assign(configData.users[myEmail], res.user);
+        // 刪除欄位（updates 傳 null）：res.user 已不含該 key，Object.assign 不會移除舊值，需另外清掉。
+        Object.keys(updates).forEach(k => { if (updates[k] === null) delete configData.users[myEmail][k]; });
+      }
+      return res;
+    } catch (e) {
+      if (!/Unknown action/i.test(e.message || '')) throw e;
+      try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e2) { console.warn('_configSelfPatch fallback failed', e2); }
+      return { ok: true, fallback: true };
+    }
+  });
+  // 鏈本身永遠 resolve，避免一次失敗卡住後續對 config.json 的自助寫入；呼叫端仍從回傳的 run 取得真正結果／例外。
+  _configSelfPatchChain = run.catch(() => {});
+  return run;
 }
 
 // ══════════════════════════════════════════════
@@ -27575,9 +27581,11 @@ async function syncPinToConfig(pinVal, tmoMins) {
     if (!configData || !currentUser?.email) return;
     // 安全性：只更新已授權帳號，禁止建立新條目
     if (!configData.users?.[currentUser.email]) return;
+    const updates = { pin: pinVal };
+    if (tmoMins !== undefined && tmoMins !== null) updates.pinTmo = tmoMins;
     configData.users[currentUser.email].pin = pinVal;
     if (tmoMins !== undefined && tmoMins !== null) configData.users[currentUser.email].pinTmo = tmoMins;
-    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    await _configSelfPatch(updates);
   } catch (e) { console.warn('syncPinToConfig failed', e); }
 }
 
@@ -27635,6 +27643,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-10', v: 161, title: '個人設定寫入併發安全化：PIN／偏好／顯示色改走後端鎖內部分更新', isProd: false, items: [
+      item('改善', '個人自助設定（PIN、介面偏好、表格欄寬、側欄排序、預約顯示色、新主責提醒關閉等）改為只送出實際變動的欄位、由後端在鎖內合併寫入 config.json，不再整檔覆寫——關閉「有人改權限設定的同時另一人存偏好」互相覆蓋的最後常用窗口（2026-07-09 事故系列延伸修復）'),
+      item('技術', '後端新增 configSelfPatch（LockService 讀-改-寫，只准 PATCH 呼叫者本人條目的白名單欄位，授權欄位明確 deny-list 雙重保險）；寫入時順帶清除通知系統搬遷（v154）後殘留的舊通知欄位；前端移除已不會觸發的通知舊路徑整檔備援寫入；後端未部署時自動退回舊路徑不中斷'),
+    ]},
     { date: '2026-07-10', v: 160, title: '儲存失敗防護：內容快照與一鍵還原＋檢視系列預約＋卡片文字可複製', isProd: false, items: [
       item('新功能', '七類表單（個案基本資料、晤談紀錄、事件處理記錄、精神科醫師紀錄、初談表、轉銜評估、結案評估表）儲存失敗時，跳出明顯視窗提供「重新儲存」與「回到編輯頁（還原剛才輸入的內容）」，輸入內容以記憶體快照保存不落地、不再因網路中斷而消失（回應 #036）；快照未儲存成功前關閉分頁會先跳確認'),
       item('修正', '事件處理記錄與轉銜評估儲存失敗時，畫面上的紀錄未回復造成重試可能重複——已補上失敗回復（#036 延伸巡檢）'),
@@ -28724,7 +28736,7 @@ async function pickMyBkColor(hex, gridId, currentId) {
   if (!me || !configData?.users?.[me]) return;
   configData.users[me].bkColor = hex;
   _renderBkColorGrid(gridId, currentId);
-  try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
+  try { await _configSelfPatch({ bkColor: hex }); } catch (e) { alert('儲存失敗：' + e.message); return; }
   if (document.getElementById('page-bookings')?.classList.contains('active')) renderBookingsPage();
   _renderBkColorRoster();
   showToast?.(`已設定顏色 ${hex}`, 'success');
@@ -28744,7 +28756,7 @@ async function clearMyBkColor(gridId, currentId) {
   if (!confirm('要清除您的 INFOSYS 預設色，改回預設灰底嗎？')) return;
   delete configData.users[me].bkColor;
   _renderBkColorGrid(gridId, currentId);
-  try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
+  try { await _configSelfPatch({ bkColor: null }); } catch (e) { alert('儲存失敗：' + e.message); return; }
   if (document.getElementById('page-bookings')?.classList.contains('active')) renderBookingsPage();
   _renderBkColorRoster();
   showToast?.('已清除自訂顏色', 'info');
@@ -28787,7 +28799,7 @@ async function pickMyBkGcColor(id, gridId, currentId) {
   if (!me || !configData?.users?.[me]) return;
   configData.users[me].bkColorGc = id;
   _renderBkGcDefaultGrid(gridId, currentId);
-  try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
+  try { await _configSelfPatch({ bkColorGc: id }); } catch (e) { alert('儲存失敗：' + e.message); return; }
   _renderBkColorRoster();
   showToast?.(`已設定 GC 預設色 #${id}`, 'success');
 }
@@ -28797,7 +28809,7 @@ async function clearMyBkGcColor(gridId, currentId) {
   if (!confirm('要清除您的 GC 預設色嗎？清除後同步到 Google 日曆時將沿用 INFOSYS 預設色的近似轉換。')) return;
   delete configData.users[me].bkColorGc;
   _renderBkGcDefaultGrid(gridId, currentId);
-  try { await driveUpdateJsonFile(CONFIG_FILE, configData); } catch (e) { alert('儲存失敗：' + e.message); return; }
+  try { await _configSelfPatch({ bkColorGc: null }); } catch (e) { alert('儲存失敗：' + e.message); return; }
   _renderBkColorRoster();
   showToast?.('已清除 GC 預設色', 'info');
 }
@@ -38174,7 +38186,7 @@ async function _bkLinkGc() {
     try {
       const res = await proxyCall('shareCalendarWriters', { emails: [me] });
       if ((res?.granted || []).includes(me)) {
-        if (configData?.users?.[me]) { configData.users[me].gcAclSynced = true; driveUpdateJsonFile(CONFIG_FILE, configData).catch(() => {}); }
+        if (configData?.users?.[me]) { configData.users[me].gcAclSynced = true; _configSelfPatch({ gcAclSynced: true }).catch(() => {}); }
         auditLog('同步 Google 日曆編輯權限（本人）', null, null, me);
         bgJobDone(jobId);
         showToast('✓ 已確認您的帳號具有 Google 日曆編輯權限，請至 Google 日曆查看共用日曆', 'success', 6000);

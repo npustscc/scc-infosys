@@ -187,6 +187,7 @@ function doPost(e) {
       case 'bookingsCommit':       result = bookingsCommit_(params, ctx); break;
       case 'listCommit':           result = listCommit_(params, ctx); break;
       case 'notifCommit':          result = notifCommit_(params, ctx); break;
+      case 'configSelfPatch':      result = configSelfPatch_(params, ctx, userEmail); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
     return jsonResp_(result);
@@ -2415,6 +2416,121 @@ function notifCommit_(params, ctx) {
   } finally {
     try { lock.releaseLock(); } catch (_) {}
   }
+}
+
+// ── config.json「SELF 類」使用者自助欄位併發安全 PATCH（P1 延伸修復）──
+// 沿革：偏好設定／PIN／欄寬／個人顯示色等只影響呼叫者本人的欄位，原本走前端整檔覆寫
+// config.json（configSelfPatch 部署前的舊路徑）；config.json 同時裝全部使用者的授權欄位，
+// 覆寫面最大，任何人同時改權限或另一人寫偏好就會互蓋。比照 notifCommit_/listCommit_收斂為
+// LockService 鎖內讀最新 config → 只 PATCH 呼叫者本人條目的白名單欄位 → 寫回，
+// 回傳更新後的本人條目；呼叫者條目不存在一律拒絕、絕不新建（防未授權帳號夾帶寫入）。
+//
+// 白名單只放行使用者可自行寫入的偏好/PIN/顯示設定；授權欄位（role/extraRole/isAdmin/…）
+// 一律拒絕——見 selfPatchKeyAllowed_ 的 deny-list（雙重保險，即使呼叫端漏檢查也不會被放行）。
+function configSelfPatch_(params, ctx, userEmail) {
+  var updates = (params && params.updates) || null;
+  if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
+    throw new Error('configSelfPatch: updates required');
+  }
+  var keys = Object.keys(updates);
+  if (!keys.length) throw new Error('configSelfPatch: updates 不可為空');
+  // 型別上限防護：序列化後過大一律拒絕，防塞爆 config.json（所有使用者共用同一份檔案）。
+  if (JSON.stringify(updates).length > 200 * 1024) {
+    throw new Error('configSelfPatch: updates 過大（上限 200KB）');
+  }
+  for (var i = 0; i < keys.length; i++) {
+    if (!selfPatchKeyAllowed_(keys[i])) {
+      throw new Error('configSelfPatch: 欄位不在白名單（' + keys[i] + '）');
+    }
+  }
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var fileId = localConfigFileId_();
+    if (!fileId) throw new Error('configSelfPatch: 找不到 config.json');
+    var res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() >= 400) {
+      throw new Error('configSelfPatch: 讀取 config.json 失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
+    }
+    var cfg = JSON.parse(res.getContentText());
+    if (!cfg || typeof cfg.users !== 'object' || cfg.users === null || Array.isArray(cfg.users)) {
+      throw new Error('configSelfPatch: config.json 內容異常（users 非物件），已中止寫入以保護資料');
+    }
+    var me = cfg.users[userEmail];
+    if (!me) throw new Error('configSelfPatch: 呼叫者條目不存在，拒絕建立新條目');
+
+    keys.forEach(function (k) {
+      var v = updates[k];
+      if (v === null) delete me[k];
+      else me[k] = v;
+    });
+
+    // 懶清理：v154 已遷移到 notifications.json 的舊欄位，順手在本次寫入一併清除（全部使用者）。
+    stripLegacyNotifications_(cfg);
+
+    driveUpdateContent_(fileId, cfg);
+    return { user: me };
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// 純函式（可單元測試）：SELF PATCH 欄位白名單。固定 key 集合 ＋ 動態前綴/後綴規則；
+// 白名單外一律拒絕整個請求（不是靜默略過該 key）。DENY 為雙重保險——即使外層 CONFIG_PRIV_FIELDS
+// 漏檢查，此處仍明確擋下授權欄位，確保 SELF PATCH 永遠無法用來提權或改動他人授權狀態。
+function selfPatchKeyAllowed_(key) {
+  if (!key || typeof key !== 'string') return false;
+  var DENY = { role: 1, extraRole: 1, isAdmin: 1, disabled: 1, allowedCases: 1,
+    allowedCasesSems: 1, isTransferContact: 1, isMentalLeaveContact: 1, leaveQuota: 1, name: 1 };
+  if (DENY[key]) return false;
+
+  var FIXED = {
+    semesterPref: 1, counselorFreqs: 1, sortStatusLocked: 1, recPageSize: 1, recSortDesc: 1,
+    todosUnclosedCollapsed: 1, myAttTab: 1, auditColsHidden: 1, pin: 1, pinTmo: 1, pinSkipped: 1,
+    confirmBeforeLeave: 1, bkFreqs: 1, counselorFreqMode: 1, unassignedScanDate: 1, mlTab: 1,
+    bkViewMode: 1, bkDaySpan: 1, bkPageTab: 1, bkCustomRooms: 1, bkCustomOpts: 1,
+    sidebarCollapsed: 1, sidebarPinned: 1, bkColor: 1, bkColorGc: 1, dismissedAlerts: 1, gcAclSynced: 1,
+  };
+  if (FIXED[key]) return true;
+
+  // 側邊欄自訂排序：每個分區各自一個 key（navOrder_<sectionId>）。
+  if (key.indexOf('navOrder_') === 0) return true;
+
+  // 表格欄寬記憶：key 以 ColWidths 結尾，或 ColWidths 後接純數字（如既有的 mlColWidths2）。
+  // 不用 regex 比對——harness 的括號配對器不解析 regex 字面值，含引號/斜線的正則會壞抽取，
+  // 此函式需要被單元測試就地抽出，故改用字串方法。
+  var idx = key.indexOf('ColWidths');
+  if (idx > 0 && _selfPatchAllDigits_(key.slice(idx + 'ColWidths'.length))) return true;
+
+  return false;
+}
+function _selfPatchAllDigits_(s) {
+  if (s === '') return true;
+  for (var i = 0; i < s.length; i++) {
+    var c = s.charCodeAt(i);
+    if (c < 48 || c > 57) return false;
+  }
+  return true;
+}
+
+// 純函式（可單元測試）：懶清理 v154 已遷移到 notifications.json 的舊欄位
+// （users[*].notifications，殘留屬無害死資料但會不必要地增大 config.json）。就地刪除，
+// 回傳是否清理到任何欄位。
+function stripLegacyNotifications_(cfg) {
+  if (!cfg || typeof cfg.users !== 'object' || cfg.users === null || Array.isArray(cfg.users)) return false;
+  var cleaned = false;
+  Object.keys(cfg.users).forEach(function (email) {
+    var u = cfg.users[email];
+    if (u && typeof u === 'object' && Object.prototype.hasOwnProperty.call(u, 'notifications')) {
+      delete u.notifications;
+      cleaned = true;
+    }
+  });
+  return cleaned;
 }
 
 // ── bookings.json 併發安全的批次寫入（LockService）＋寫入當下撞房/撞人檢查 ──
