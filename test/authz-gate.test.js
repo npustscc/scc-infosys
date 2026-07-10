@@ -160,3 +160,78 @@ test('escQ：null/undefined → 空字串（不炸）', () => {
   assert.equal(S._escQ_(null), '');
   assert.equal(S._escQ_(undefined), '');
 });
+
+// ── isConfigWrite_：判定是否為寫 config.json（P0-2）──
+
+const CFG_FID2 = '1CKXefjjiB-PrIFZa-DBQ7Q2ASs-TQroj';
+
+test('isConfigWrite：updateJson path=config.json → true；其他 path → false', () => {
+  const S = loadFromCodeGs(['isConfigWrite_']);
+  assert.equal(S.isConfigWrite_('updateJson', { path: 'config.json' }, CFG_FID2), true);
+  assert.equal(S.isConfigWrite_('updateJson', { path: 'cases/manifest.json' }, CFG_FID2), false);
+});
+
+test('isConfigWrite：updateContentById fileId 命中 config → true；他檔 → false', () => {
+  const S = loadFromCodeGs(['isConfigWrite_']);
+  assert.equal(S.isConfigWrite_('updateContentById', { fileId: CFG_FID2 }, CFG_FID2), true);
+  assert.equal(S.isConfigWrite_('updateContentById', { fileId: '1Other' }, CFG_FID2), false);
+});
+
+test('isConfigWrite：createJson name=config.json → true；讀取類 action → false', () => {
+  const S = loadFromCodeGs(['isConfigWrite_']);
+  assert.equal(S.isConfigWrite_('createJson', { name: 'config.json' }, CFG_FID2), true);
+  assert.equal(S.isConfigWrite_('readJson', { path: 'config.json' }, CFG_FID2), false);
+});
+
+// ── configWriteAllowedForNonAdmin_：非管理者寫 config 的授權面保護（P0-2）──
+
+const PRIV = ['role', 'extraRole', 'isAdmin', 'disabled', 'allowedCases',
+  'allowedCasesSems', 'isTransferContact', 'isMentalLeaveContact', 'leaveQuota', 'name'];
+const mkCfg = (users) => ({ users });
+
+test('cfgWrite：只改自己 pin（授權欄位不變）→ 放行', () => {
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+  const old = mkCfg({ 'a@x.com': { role: '專任諮商心理師', pin: '1111' }, 'b@x.com': { role: '主任' } });
+  const nw  = mkCfg({ 'a@x.com': { role: '專任諮商心理師', pin: '2222' }, 'b@x.com': { role: '主任' } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, nw, 'a@x.com', PRIV), true);
+});
+
+test('cfgWrite：把自己 isAdmin 改成 true → 擋（自我提權）', () => {
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+  const old = mkCfg({ 'a@x.com': { role: '專任諮商心理師' } });
+  const nw  = mkCfg({ 'a@x.com': { role: '專任諮商心理師', isAdmin: true } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, nw, 'a@x.com', PRIV), false);
+});
+
+test('cfgWrite：把自己 role 改成主任 / 動 allowedCases → 擋', () => {
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+  const old = mkCfg({ 'a@x.com': { role: '實習諮商心理師', allowedCases: ['1'] } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, mkCfg({ 'a@x.com': { role: '主任', allowedCases: ['1'] } }), 'a@x.com', PRIV), false);
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, mkCfg({ 'a@x.com': { role: '實習諮商心理師', allowedCases: ['1', '2'] } }), 'a@x.com', PRIV), false);
+});
+
+test('cfgWrite：把別人（共犯）改成 admin → 擋', () => {
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+  const old = mkCfg({ 'a@x.com': { role: '專任諮商心理師' }, 'b@x.com': { role: '實習諮商心理師' } });
+  const nw  = mkCfg({ 'a@x.com': { role: '專任諮商心理師' }, 'b@x.com': { role: '實習諮商心理師', isAdmin: true } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, nw, 'a@x.com', PRIV), false);
+});
+
+test('cfgWrite：新增/刪除使用者 → 擋', () => {
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+  const old = mkCfg({ 'a@x.com': { role: '專任諮商心理師' } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, mkCfg({ 'a@x.com': { role: '專任諮商心理師' }, 'evil@x.com': { role: '主任' } }), 'a@x.com', PRIV), false);
+  assert.equal(S.configWriteAllowedForNonAdmin_(mkCfg({ 'a@x.com': {}, 'b@x.com': {} }), mkCfg({ 'a@x.com': {} }), 'a@x.com', PRIV), false);
+});
+
+test('cfgWrite：他人自助欄位（pin）併發變動、但授權欄位不變 → 放行（不誤拒）', () => {
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+  const old = mkCfg({ 'a@x.com': { role: '專任諮商心理師', pin: '0000' }, 'b@x.com': { role: '主任', pin: 'AAAA' } });
+  const nw  = mkCfg({ 'a@x.com': { role: '專任諮商心理師', pin: '9999' }, 'b@x.com': { role: '主任', pin: 'BBBB' } });
+  assert.equal(S.configWriteAllowedForNonAdmin_(old, nw, 'a@x.com', PRIV), true);
+});
+
+test('cfgWrite：oldCfg 為 null（讀不到當前 config）→ fail-closed 擋', () => {
+  const S = loadFromCodeGs(['configWriteAllowedForNonAdmin_', '_deepEq_']);
+  assert.equal(S.configWriteAllowedForNonAdmin_(null, mkCfg({ 'a@x.com': {} }), 'a@x.com', PRIV), false);
+});

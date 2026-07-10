@@ -93,12 +93,17 @@ function doPost(e) {
       }
     }
 
-    // ── P0-2（皇冠珠寶檔保護）改列 P1，尚未在此啟用 ──
-    // 原打算「config.json／pending_users*.json 的泛用寫入一律限 admin」，但 config.json 同時裝了
-    // 自助欄位（每位使用者自己的 PIN／pinTmo／個人偏好，見前端 syncPinToConfig），一律限 admin 會
-    // 打爛所有非管理者的 PIN／偏好儲存。正確作法是「欄位級」授權（非管理者僅能改自己條目的白名單
-    // 欄位，禁止動 role／extraRole／isAdmin／disabled／allowedCases 等授權欄位與他人條目），需先
-    // 盤點完整自助欄位白名單再實作，故延後至 P1。
+    // ── P0-2：config.json 寫入的授權面保護（非管理者不得改任何使用者的授權欄位／增刪使用者）──
+    // config.json 同時裝自助欄位（PIN/偏好，非管理者自己寫）與授權欄位，故不能整檔限 admin。
+    // 因前端每次整檔覆寫 config，字面「白名單只准改 6 欄」會在多人併發時誤拒；改為只鎖授權欄位，
+    // 既擋提權又不誤殺 PIN/偏好。字面全白名單需前端改為部分更新後才安全（P1）。
+    var CONFIG_PRIV_FIELDS = ['role', 'extraRole', 'isAdmin', 'disabled', 'allowedCases',
+      'allowedCasesSems', 'isTransferContact', 'isMentalLeaveContact', 'leaveQuota', 'name'];
+    if (!isAdminUser_(userEmail) && isConfigWrite_(action, params, localConfigFileId_())) {
+      if (!configWriteAllowedForNonAdmin_(readConfigFresh_(), params.content, userEmail, CONFIG_PRIV_FIELDS)) {
+        return jsonResp_({ error: 'Forbidden: config authorization fields are admin-only' });
+      }
+    }
 
     let result;
     switch (action) {
@@ -469,6 +474,80 @@ function isAdminUser_(userEmail) {
 // 純決策（可單元測試）：shareCalendarWriters 的非管理者路徑——emails 必須恰為「自己一人」。
 function shareToSelfOnly_(emails, userEmail) {
   return Array.isArray(emails) && emails.length === 1 && !!userEmail && emails[0] === userEmail;
+}
+
+// 本環境 config.json 的 fileId：prod 用寫死的 CONFIG_FILE_ID_OVERRIDE，dev 走路徑解析並快取 5 分鐘。
+function localConfigFileId_() {
+  if (CONFIG_FILE_ID_OVERRIDE) return CONFIG_FILE_ID_OVERRIDE;
+  var cache = CacheService.getScriptCache();
+  var CK = 'cfgfid:' + ROOT_FOLDER_ID;
+  try { var hit = cache.get(CK); if (hit) return hit; } catch (_) {}
+  try {
+    var id = resolvePathToId_('config.json', { root: ROOT_FOLDER_ID, configOverride: null });
+    if (id) { try { cache.put(CK, id, 300); } catch (_) {} }
+    return id;
+  } catch (_) { return null; }
+}
+
+// 讀「當前」config.json 全文（不走快取，確保 P0-2 寫入前 diff 用的是最新版）。
+function readConfigFresh_() {
+  try {
+    var id = localConfigFileId_();
+    if (!id) return null;
+    var res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + id + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() !== 200) return null;
+    return JSON.parse(res.getContentText());
+  } catch (e) { return null; }
+}
+
+// ── P0-2：config.json 寫入的授權面保護 ──
+// 純決策（可單元測試）：此動作是否為「寫 config.json」。
+function isConfigWrite_(action, params, cfgFileId) {
+  if (!params) return false;
+  if (action === 'updateJson')        return params.path === 'config.json';
+  if (action === 'createJson')        return params.name === 'config.json';
+  if (action === 'updateContentById') return !!cfgFileId && params.fileId === cfgFileId;
+  return false;
+}
+
+// 深度相等（純函式；供授權欄位比對）。
+function _deepEq_(a, b) {
+  if (a === b) return true;
+  if (typeof a !== typeof b) return false;
+  if (!a || !b || typeof a !== 'object') return false;
+  var ak = Object.keys(a), bk = Object.keys(b);
+  if (ak.length !== bk.length) return false;
+  for (var i = 0; i < ak.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(b, ak[i])) return false;
+    if (!_deepEq_(a[ak[i]], b[ak[i]])) return false;
+  }
+  return true;
+}
+
+// 純決策（可單元測試，見 test/authz-gate.test.js）：非管理者寫 config.json 是否放行。
+// 規則：①不得新增/刪除使用者 key；②任何使用者條目（含自己與他人）的「授權欄位」都不得變動。
+// 只比對授權欄位（不比 pin/偏好等自助欄位），因此非管理者存 PIN／偏好不會因他人資料併發變動而誤拒；
+// 同時完全擋住「把自己或共犯改成 admin／改 allowedCases／開停用旗標」等提權。
+// oldCfg 為 null（讀不到當前 config）→ fail-closed 拒絕（無法驗證即不放行）。
+function configWriteAllowedForNonAdmin_(oldCfg, newCfg, callerEmail, privFields) {
+  if (!oldCfg || !newCfg || typeof oldCfg !== 'object' || typeof newCfg !== 'object') return false;
+  var oldUsers = oldCfg.users || {};
+  var newUsers = newCfg.users || {};
+  var oldKeys = Object.keys(oldUsers).sort();
+  var newKeys = Object.keys(newUsers).sort();
+  if (oldKeys.length !== newKeys.length) return false;                 // 不得增刪使用者
+  for (var i = 0; i < oldKeys.length; i++) if (oldKeys[i] !== newKeys[i]) return false;
+  for (var j = 0; j < oldKeys.length; j++) {
+    var oe = oldUsers[oldKeys[j]] || {};
+    var ne = newUsers[oldKeys[j]] || {};
+    for (var k = 0; k < privFields.length; k++) {
+      if (!_deepEq_(oe[privFields[k]], ne[privFields[k]])) return false; // 授權欄位不得變動
+    }
+  }
+  return true;
 }
 
 // ── 回應工具 ──────────────────────────────────────────────────────────────────
