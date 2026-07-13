@@ -337,6 +337,13 @@ function verifySessionToken_(token) {
 //   不是安全邊界；7 天保底信＋登入紀錄頁（本人隨時可查全部裝置、可一鍵登出所有裝置）才是不可靜默的底線。
 // 設計決策：ip 刻意不參與異常判斷。行動網路/校網浮動 IP 天天在變，納入判斷會天天誤報「新裝置」
 //   造成通知疲勞、反而讓使用者對警示信免疫；「換地區」訊號已由 geo 涵蓋，ip 只留在登入紀錄頁供人工比對。
+// 測試版寄出的通知信主旨前綴——dev/prod 共用同一 npust.scc 信箱，加【測試版】避免收件者把
+// 測試信誤當正式版信件（例：dev 的 7 天保底登入信曾被誤認為 prod 漏信）。依 CALENDAR_NAME 是否
+// 以 [DEV] 開頭判斷環境；推正式版 Copy-Item 後 CALENDAR_NAME 改回正式值即自動無前綴，無需手改。
+function mailEnvPrefix_() {
+  return (CALENDAR_NAME && CALENDAR_NAME.indexOf('[DEV]') === 0) ? '【測試版】' : '';
+}
+
 function loginMailDecision_(history, ua, ip, geo, nowSec) {
   var hist = Array.isArray(history) ? history : [];
   if (hist.length === 0) return { mail: true, reason: 'first_login' };
@@ -485,7 +492,7 @@ function sessionsAppendRecordWithMailDecision_(rec, ctx) {
       try {
         var loginTime = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy/MM/dd HH:mm:ss');
         var isAnomaly = decision.reason === 'new_ua' || decision.reason === 'new_geo';
-        var subject = isAnomaly ? '【屏科大學諮資訊系統】⚠ 新裝置或新位置登入' : '【屏科大學諮資訊系統】登入通知';
+        var subject = mailEnvPrefix_() + (isAnomaly ? '【屏科大學諮資訊系統】⚠ 新裝置或新位置登入' : '【屏科大學諮資訊系統】登入通知');
         var lines = [
           isAnomaly ? '偵測到此帳號在「不熟識的裝置或位置」登入屏科大學諮資訊系統，請確認是否為本人操作：'
                     : '有人以此帳號登入屏科大學諮資訊系統。', '',
@@ -648,7 +655,7 @@ function geoLockAccount_(email, info) {
 function _sendGeoLockMail_(email, info) {
   var toList = _managementNotifyList_(localConfigUsers_());
   var loginTime = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy/MM/dd HH:mm:ss');
-  var subject = '【屏科大學諮資訊系統】🚨 帳號已自動鎖定：非台灣地區登入';
+  var subject = mailEnvPrefix_() + '【屏科大學諮資訊系統】🚨 帳號已自動鎖定：非台灣地區登入';
   var baseLines = [
     '帳號：' + email,
     '登入時間：' + loginTime + '（台北時間）',
@@ -676,7 +683,7 @@ function _sendGeoLockMail_(email, info) {
 function _sendGeoEmptyMail_(email, info) {
   var toList = _managementNotifyList_(localConfigUsers_());
   var loginTime = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy/MM/dd HH:mm:ss');
-  var subject = '【屏科大學諮資訊系統】⚠ 登入位置無法判定';
+  var subject = mailEnvPrefix_() + '【屏科大學諮資訊系統】⚠ 登入位置無法判定';
   var reasonLine = '該次登入無法取得位置資訊，常見原因：瀏覽器安裝廣告/隱私阻擋器（如 uBlock Origin）擋掉 ' +
     'ipapi.co、網路逾時、查詢服務限流。位置判定是「非台灣自動鎖定」防護的前提，該防護對此次登入未生效。';
   var baseLines = [
@@ -2570,7 +2577,7 @@ function _fmtHoursMinutes_(spanMs) {
 function _sendPunchSummaryMail_(email, name, date, punchTs, records) {
   try {
     var summary = punchDaySummary_(records, email, date);
-    var subject = '【屏科大學諮資訊系統】打卡通知（' + date + '）';
+    var subject = mailEnvPrefix_() + '【屏科大學諮資訊系統】打卡通知（' + date + '）';
     var fmtT = function (iso) { return Utilities.formatDate(new Date(iso), 'Asia/Taipei', 'HH:mm:ss'); };
     var lines = [
       (name || email) + '（' + email + '）您好，系統已記錄您的一筆打卡。',
@@ -3752,7 +3759,12 @@ function runGcSyncTick() {
   const minute  = Number(Utilities.formatDate(new Date(), 'Asia/Taipei', 'm'));
   if (!_gcSyncShouldRun(weekday, hour, minute)) return;
 
-  const ctx = { root: ROOT_FOLDER_ID, configOverride: CONFIG_FILE_ID_OVERRIDE, calendarName: CALENDAR_NAME, gmailLabel: 'ml-processed-dev' };
+  // gmailLabel 依本環境 ALLOWED_ROOTS 取（dev＝ml-processed-dev、prod＝ml-processed）——先前硬寫
+  // 'ml-processed-dev'，推正式版 Copy-Item 後仍是 dev label，會與 dev 共用同一 npust.scc 信箱互相汙染
+  // 已處理信件的標記；改為從本環境設定推導，缺才 fallback。
+  const _root = ALLOWED_ROOTS[ROOT_FOLDER_ID];
+  const ctx = { root: ROOT_FOLDER_ID, configOverride: CONFIG_FILE_ID_OVERRIDE, calendarName: CALENDAR_NAME,
+    gmailLabel: (_root && _root.gmailLabel) || 'ml-processed-dev' };
   gcSyncCore_(ctx);
 }
 
