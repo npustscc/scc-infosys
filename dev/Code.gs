@@ -831,7 +831,7 @@ function shareToSelfOnly_(emails, userEmail) {
 // _getLatestCounselorEmail/_getLatestSemCounselorEmails/_isInitialInterviewerOfCase/
 // _caseVisibleToUser），語意須完全一致（單元測試見 test/case-authz.test.js）。
 // CASE_AUTHZ_MODE：'shadow' 只記錄會擋什麼、不真的擋（本階段）；驗證各角色判定皆正確後才翻 'enforce'。
-var CASE_AUTHZ_MODE = 'shadow';
+var CASE_AUTHZ_MODE = 'enforce';
 
 // 學期前綴換算（＝前端 openDateToSemPrefix，語意一致）
 function openDateToSemPrefix_(dateStr) {
@@ -1331,43 +1331,87 @@ function readJsonById_({ fileId }, ctx, userEmail) {
 // → 完全不動、不記錄，原樣回傳（含效能考量：只有非 full-access 讀個案檔才多讀一次 access log）。
 // shadow 模式（CASE_AUTHZ_MODE='shadow'）：只 Logger.log 會擋幾筆，原樣回傳完整內容，不過濾。
 // enforce 模式：才真正 filter parsed.cases（目前恆為 shadow，此分支不會執行）。
+// R1 enforce：對「無權查閱」的個案只保留 metadata，剝除全部臨床內容與敏感 PII。
+// 保留＝cases-index 用來做搜尋/AB 徽章/危機閱讀申請顯示的欄位（前端就靠這些找到並辨識個案），
+//   但刻意扣掉 idNumber（身分證）與 phone——搜尋/徽章/危機申請都用不到，屬最敏感 PII。
+// 剝除＝晤談 records／精神科 psychiatristRecords／初談 initialInterview(s)／各學期評估 semesterEvaluations／
+//   基本資料快照 basicInfoSnapshots 的臨床內容（僅留 counselorEmail/abType 供可見性重算與徽章）。
+// 白名單自足（不引用外部常數）以便單元測試就地抽取。
+function caseStripForRead_(c) {
+  var KEEP = ['id', 'name', 'studentId', 'archived', 'deleted', 'counselorEmail', 'counselorName',
+    'counselorText', 'interviewerEmails', 'department', 'grade', 'openDate', 'updatedAt',
+    'lastActivityAt', 'status', 'abType', 'caseType', 'isTransferCase', 'hasPsyEval', 'semesters', 'chunk'];
+  var out = {};
+  KEEP.forEach(function (k) { if (c[k] !== undefined) out[k] = c[k]; });
+  if (c.basicInfoSnapshots && typeof c.basicInfoSnapshots === 'object') {
+    out.basicInfoSnapshots = {};
+    Object.keys(c.basicInfoSnapshots).forEach(function (sem) {
+      var s = c.basicInfoSnapshots[sem] || {};
+      var kept = {};
+      if (s.counselorEmail !== undefined) kept.counselorEmail = s.counselorEmail;
+      if (s.abType !== undefined) kept.abType = s.abType;
+      out.basicInfoSnapshots[sem] = kept;
+    });
+  }
+  if (c.semesterStatus) out.semesterStatus = c.semesterStatus;
+  out._authzStripped = true; // 標記：臨床內容已因權限剝除（前端可據此提示「需危機閱讀」）
+  return out;
+}
+
+// 讀 case_access_log.json 的 entries，CacheService 快取 60 秒——scoped 載入會逐 chunk 各發一個
+// readJsonById 請求，快取降低跨請求重複讀（超過快取上限則 put 失敗、退回每次讀，不影響正確性）。
+function _readAccessLogCached_(ctx) {
+  var cache = CacheService.getScriptCache();
+  var CK = 'r1accesslog:' + ROOT_FOLDER_ID;
+  try { var hit = cache.get(CK); if (hit) return JSON.parse(hit); } catch (_) {}
+  var entries = [];
+  try {
+    var logData = readJson_({ path: 'case_access_log.json' }, ctx, null); // 非個案檔（{entries}），不遞迴
+    if (logData && Array.isArray(logData.entries)) entries = logData.entries;
+  } catch (_) {}
+  try { cache.put(CK, JSON.stringify(entries), 60); } catch (_) {}
+  return entries;
+}
+
+// R1：readJson_/readJsonById_ 讀完個案檔後的物件級授權關卡。
+// 只認「個案資料檔」＝ parsed.cases 為陣列（cases-index/cases-hot/chunk 皆此結構）。
+// ⚠ 刻意「不」認裸陣列——bookings.json 等清單檔可能是裸陣列、且 booking 亦有 counselorEmail，
+//   enforce 誤判會把非管理者的預約也剝掉；個案檔一律有 .cases，只認它最安全。
+// full-access（主任/系統管理者/管理者）→ 完全不動。非 full-access：可見（主責/個管/初談/督導/義輔/
+//   未派案）或當日危機授權 → 原樣；否則剝成 metadata（caseStripForRead_）。
+// shadow 模式：只 Logger 記錄剝除筆數、原樣回傳；enforce 模式：實際回傳剝除後內容。
 function _caseAuthzApply_(parsed, userEmail, ctx, label) {
-  const casesArr = Array.isArray(parsed) ? parsed
-    : (parsed && Array.isArray(parsed.cases)) ? parsed.cases : null;
-  if (!casesArr) return parsed; // 非個案資料檔，原路回傳
+  if (!parsed || !Array.isArray(parsed.cases)) return parsed;
+  const casesArr = parsed.cases;
 
   const users = localConfigUsers_() || {};
-  if (caseFullAccessRole_(userEmail, users)) return parsed; // full-access：完全不動、不記錄
-
-  let accessLogEntries = [];
-  try {
-    // case_access_log.json 是稽核 feed（{entries:[...]}），非個案檔，userEmail 傳 null
-    // 不會觸發本函式再次計算個案可見性（casesArr 判定為 null 即早退），故不會無限遞迴。
-    const logData = readJson_({ path: 'case_access_log.json' }, ctx, null);
-    if (logData && Array.isArray(logData.entries)) accessLogEntries = logData.entries;
-  } catch (_) { /* 讀失敗當空陣列、不阻斷 */ }
+  if (caseFullAccessRole_(userEmail, users)) return parsed; // full-access：完全不動
 
   const todayStr = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
-  const blockedIds = [];
-  casesArr.forEach(function (c) {
-    if (c && c.id && !caseAllowedForRead_(c, userEmail, users, accessLogEntries, todayStr)) blockedIds.push(c.id);
+  let accessLog = null; // lazy：只有出現「非直接可見」的案才讀危機授權
+  const grantsFor = function () { if (accessLog === null) accessLog = _readAccessLogCached_(ctx); return accessLog; };
+
+  let strippedCount = 0;
+  const outCases = casesArr.map(function (c) {
+    if (!c || !c.id) return c;
+    if (caseVisibleToUser_(c, userEmail, users)) return c;                          // 直接可見
+    if (caseHasCrisisGrant_(c.id, userEmail, grantsFor(), todayStr)) return c;      // 危機閱讀授權
+    strippedCount++;
+    return caseStripForRead_(c);                                                    // 無權 → 剝臨床
   });
-  if (blockedIds.length) {
-    Logger.log('[R1-shadow] user=' + userEmail + ' file=' + label + ' 總' + casesArr.length
-      + '筆 會擋' + blockedIds.length + '筆 caseIds=' + blockedIds.slice(0, 10).join(','));
+
+  if (strippedCount) {
+    Logger.log('[R1-' + CASE_AUTHZ_MODE + '] user=' + userEmail + ' file=' + label
+      + ' 總' + casesArr.length + '筆 剝除臨床' + strippedCount + '筆');
   }
 
   if (CASE_AUTHZ_MODE === 'enforce') {
-    const allowed = casesArr.filter(function (c) {
-      return c && c.id && caseAllowedForRead_(c, userEmail, users, accessLogEntries, todayStr);
-    });
-    if (Array.isArray(parsed)) return allowed;
     const out = {};
     for (const k in parsed) out[k] = parsed[k];
-    out.cases = allowed;
+    out.cases = outCases;
     return out;
   }
-  return parsed;
+  return parsed; // shadow：只記錄，原樣回傳完整內容
 }
 
 function createJson_({ name, content, parentId }) {

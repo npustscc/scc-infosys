@@ -201,3 +201,52 @@ test('caseAllowedForRead_：未派案的案（無主責）→ 全員可見，任
   const c = { id: '1142001', openDate: '2026-06-01' };
   assert.equal(S.caseAllowedForRead_(c, 'anyone@x.tw', users, [], '2026-07-13'), true);
 });
+
+// ── caseStripForRead_（R1 enforce）：無權查閱者只保留 metadata、剝除臨床與敏感 PII ──
+
+function loadStrip() { return loadFromCodeGs(['caseStripForRead_']); }
+
+test('caseStripForRead_：保留 metadata（案號/姓名/學號/主責/狀態/AB/學期）', () => {
+  const S = loadStrip();
+  const c = { id: '1142001', name: '王小明', studentId: 'S123', counselorEmail: 'a@x.tw',
+    status: '進行中', abType: 'A案', semesters: ['1142'], department: '資工系' };
+  const out = S.caseStripForRead_(c);
+  assert.equal(out.id, '1142001');
+  assert.equal(out.name, '王小明');
+  assert.equal(out.studentId, 'S123');
+  assert.equal(out.counselorEmail, 'a@x.tw');
+  assert.equal(out.status, '進行中');
+  assert.equal(out.abType, 'A案');
+  assert.deepEqual(out.semesters, ['1142']);
+  assert.equal(out._authzStripped, true);
+});
+
+test('caseStripForRead_：剝除臨床內容（records/精神科/初談/評估）與敏感 PII（idNumber/phone）', () => {
+  const S = loadStrip();
+  const c = {
+    id: '1142001', name: '王小明', idNumber: 'A123456789', phone: '0912345678',
+    records: [{ date: '2026-07-01', note: '晤談內容' }],
+    psychiatristRecords: [{ date: '2026-07-02' }],
+    initialInterview: { interviewerEmail: 'e@x.tw', content: '初談內容' },
+    initialInterviews: { '1142': { content: 'x' } },
+    semesterEvaluations: [{ sem: '1142', text: '評估' }],
+  };
+  const out = S.caseStripForRead_(c);
+  assert.equal(out.idNumber, undefined, 'idNumber 應被剝除');
+  assert.equal(out.phone, undefined, 'phone 應被剝除');
+  assert.equal(out.records, undefined, 'records 應被剝除');
+  assert.equal(out.psychiatristRecords, undefined);
+  assert.equal(out.initialInterview, undefined);
+  assert.equal(out.initialInterviews, undefined);
+  assert.equal(out.semesterEvaluations, undefined);
+});
+
+test('caseStripForRead_：basicInfoSnapshots 只留 counselorEmail/abType、剝掉其餘臨床基本資料', () => {
+  const S = loadStrip();
+  const c = { id: '1142001', basicInfoSnapshots: { '1142': {
+    counselorEmail: 'a@x.tw', abType: 'B案', mainConcern: '主述臨床內容', familyInfo: '家庭狀況' } } };
+  const out = S.caseStripForRead_(c);
+  assert.deepEqual(out.basicInfoSnapshots['1142'], { counselorEmail: 'a@x.tw', abType: 'B案' });
+  assert.equal(out.basicInfoSnapshots['1142'].mainConcern, undefined);
+  assert.equal(out.basicInfoSnapshots['1142'].familyInfo, undefined);
+});
