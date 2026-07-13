@@ -1401,29 +1401,8 @@
           <input id="cf-q" type="text" placeholder="搜尋姓名 / 學號 / 案號"
             style="flex:1;min-width:160px;padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
             oninput="caseFilters.q=this.value;renderCases()">
-          <select id="cf-status"
-            style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
-            onchange="caseFilters.status=this.value;renderCases()">
-            <option value="">全部狀態</option>
-            <option value="active">進行中</option>
-            <option value="closed">已結案</option>
-            <option value="past_unclosed">過去學期未結案</option>
-            <option value="deleted" id="cf-status-deleted" style="display:none;">已刪除</option>
-          </select>
-          <select id="cf-archived"
-            style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
-            onchange="caseFilters.archived=this.value;renderCases()">
-            <option value="unarchived">未封存</option>
-            <option value="archived">已封存</option>
-            <option value="">全部</option>
-          </select>
-          <select id="cf-abtype"
-            style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
-            onchange="caseFilters.abType=this.value;renderCases()" data-tip="依有效案別篩選（最新學期快照優先，缺值時 fallback 頂層；索引缺欄位的個案選特定案別時會被排除）">
-            <option value="">全部案別</option>
-            <option value="A案">A案</option>
-            <option value="B案">B案</option>
-          </select>
+          <button type="button" class="btn btn-secondary" id="fp-btn-cf" style="font-size:.85rem;padding:6px 12px;white-space:nowrap;"
+            onclick="event.stopPropagation();window._fpTogglePanel('cf')" data-tip="狀態／封存／案別改為勾選：同一群組內複選為「或」，跨群組為「且」，全沒勾＝不篩該維度">🔽 篩選<span id="fp-count-cf"></span></button>
           <span id="cf-counselor-wrap" style="display:none;">
             <select id="cf-counselor"
               style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
@@ -1454,6 +1433,7 @@
           <button id="btn-sort-lock" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="toggleSortLock()"></button>
           <button id="btn-cases-compact" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="toggleCasesCompact()" data-tip="切換緊湊顯示模式">緊湊：關</button>
           <button id="btn-archive-non-current" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;display:none;" onclick="archiveNonCurrentOpenCases()" data-tip="將本學期沒有開案中的個案全部封存，使其成為 cold data（驗證 Hot/Cold 載入用）">封存非本學期開案</button>
+          <div id="fp-panel-cf" class="fp-panel" style="display:none;flex-basis:100%;width:100%;order:99;box-sizing:border-box;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-top:8px;"></div>
         </div>
         <div id="cases-batch-bar" style="display:none;padding:8px 16px;background:#ebf8ff;border-bottom:1px solid #bee3f8;align-items:center;gap:10px;">
           <span id="cases-batch-count" style="font-size:.87rem;color:#2b6cb0;font-weight:600;"></span>
@@ -4256,12 +4236,13 @@ let caseSort = { col: null, dir: 1 };
 let _updateAvailable = false;
 let _versionEtag = null;
 let caseFilters = {
-  q: '', status: '',
+  q: '',
   semester: localStorage.getItem('scc_semester_pref') || currentSemesterPrefix(),
   counselor: '', dateFrom: '', dateTo: '',
-  archived: 'unarchived',
   mlLeaveFrom: '', mlLeaveTo: '',
-  abType: '' // A案/B案篩選（'' = 全部）
+  // v173：狀態／封存／案別改收合式勾選面板（見 _fpSyncPanel），groups 為各維度目前勾選值的 Set
+  // archived 預設勾「未封存」＝沿用改版前的預設行為（只是原本用單一字串，現在同樣語意但可複選）
+  groups: { status: new Set(), archived: new Set(['unarchived']), abType: new Set() },
 };
 
 // ══════════════════════════════════════════════
@@ -5949,8 +5930,8 @@ async function afterLogin() {
       todosData = Array.isArray(raw?.todos) ? raw.todos : [];
       _suppressedTodoRecordIds = new Set(Array.isArray(raw?.suppressedRecordIds) ? raw.suppressedRecordIds : []);
       const _prefs = raw?.caseSearchPrefs || {};
-      if (_prefs.closureStatus !== undefined) _cnClosureStatus = _prefs.closureStatus;
-      if (_prefs.archived !== undefined) _cnArchived = _prefs.archived;
+      if (_prefs.closureStatus !== undefined) _cnClosureStatus = _cnPrefToSet(_prefs.closureStatus);
+      if (_prefs.archived !== undefined) _cnArchived = _cnPrefToSet(_prefs.archived);
       // legacy 檔（無 env 後綴）尚未遷移到新檔 → 快照設空陣列，確保下一次 save 把目前全部
       // todos 當成 upserts 寫入新檔（而非誤判「與快照相同→無需寫入」導致遷移遺漏資料）。
       _todosSnapshot = batch.isTodoLegacy ? [] : _deepClone(todosData);
@@ -7183,6 +7164,105 @@ async function submitCrisisAccess() {
   }
 }
 
+// ══════════════════════════════════════════════
+//  收合式勾選篩選面板（momo 購物式，可重用元件）v173
+//  取代並排 <select>：低數量的篩選維度改勾選框群組，項目一多也不佔版面。
+//  規則：同群組內複選＝OR、跨群組＝AND、某群全沒勾＝該維度不篩（＝不縮限）。
+// ══════════════════════════════════════════════
+// 純函式（有單元測試，見 test/filter-panel.test.js）：
+// groupValues  ＝這筆資料在各群組維度的值，{ groupKey: string | string[] }（一筆可能同時命中多個標籤）
+// activeGroups ＝目前已勾選的條件，{ groupKey: string[] }（空陣列＝該維度不篩）
+function _filterPanelMatch(groupValues, activeGroups) {
+  for (const key of Object.keys(activeGroups)) {
+    const checked = activeGroups[key];
+    if (!checked || !checked.length) continue; // 該群組全沒勾 → 不篩
+    const raw = groupValues[key];
+    const vals = Array.isArray(raw) ? raw : [raw];
+    if (!vals.some(v => checked.includes(v))) return false; // 群組內 OR；本群沒命中即整體不通過（跨群 AND）
+  }
+  return true;
+}
+
+let _fpOpen = new Set();     // 目前展開中的面板 id（全域共用，同時間可能不只一個頁面掛著面板）
+let _fpRegistry = {};        // panelId → { groups, state }，供勾選/清除全部反查對應的呼叫端狀態
+function _fpActiveCount(groups, state) {
+  return groups.filter(g => state[g.key] instanceof Set && state[g.key].size > 0).length;
+}
+// 按鈕：顯示「🔽 篩選」＋已套用條件數；面板初始為空殼，內容由 _fpSyncPanel() 於每次 render 時填入
+function _fpButtonHtml(panelId, label = '🔽 篩選') {
+  return `<button type="button" class="btn btn-secondary" id="fp-btn-${panelId}" style="font-size:.85rem;padding:6px 12px;white-space:nowrap;"
+    onclick="event.stopPropagation();window._fpTogglePanel('${panelId}')">${label}<span id="fp-count-${panelId}"></span></button>`;
+}
+function _fpPanelHtml(panelId) {
+  // flex-basis:100%+order:99：放在任何 flex-wrap 篩選列中都會被擠到最後一行整行顯示，窄螢幕也不擠版
+  return `<div id="fp-panel-${panelId}" class="fp-panel" style="display:none;flex-basis:100%;width:100%;order:99;box-sizing:border-box;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-top:8px;"></div>`;
+}
+// 每次該頁 render() 呼叫，重繪按鈕條件數與面板內容（勾選框不需保留輸入焦點，全重繪安全）
+function _fpSyncPanel(panelId, groups, state, onChangeExpr) {
+  const btn = document.getElementById('fp-btn-' + panelId);
+  const panel = document.getElementById('fp-panel-' + panelId);
+  if (!btn || !panel) return;
+  _fpRegistry[panelId] = { groups, state };
+  const countEl = document.getElementById('fp-count-' + panelId);
+  if (countEl) { const n = _fpActiveCount(groups, state); countEl.textContent = n ? ` (${n})` : ''; }
+  panel.style.display = _fpOpen.has(panelId) ? 'block' : 'none';
+  const groupsHtml = groups.map(g => {
+    const checked = state[g.key] instanceof Set ? state[g.key] : new Set();
+    const optsHtml = g.options.map(o => `
+      <label style="display:flex;align-items:center;gap:5px;font-size:.83rem;color:#4a5568;white-space:nowrap;cursor:pointer;padding:2px 0;">
+        <input type="checkbox" value="${escHtml(o.value)}" ${checked.has(o.value) ? 'checked' : ''}
+          onchange="window._fpToggle('${panelId}','${g.key}',this.value,this.checked);${onChangeExpr}">
+        ${escHtml(o.label)}
+      </label>`).join('') || '<span style="color:#a0aec0;font-size:.8rem;">（無可選項目）</span>';
+    return `<div style="min-width:110px;">
+      <div style="font-size:.78rem;color:#718096;font-weight:600;margin-bottom:5px;">${escHtml(g.title)}</div>
+      ${optsHtml}
+    </div>`;
+  }).join('');
+  panel.innerHTML = `
+    <div style="display:flex;gap:22px;flex-wrap:wrap;">${groupsHtml}</div>
+    <div style="margin-top:10px;">
+      <button type="button" class="btn btn-secondary btn-sm" onclick="window._fpClearAll('${panelId}');${onChangeExpr}">清除全部</button>
+    </div>`;
+}
+window._fpTogglePanel = (panelId) => {
+  if (_fpOpen.has(panelId)) _fpOpen.delete(panelId); else _fpOpen.add(panelId);
+  const panel = document.getElementById('fp-panel-' + panelId);
+  if (panel) panel.style.display = _fpOpen.has(panelId) ? 'block' : 'none';
+};
+window._fpToggle = (panelId, groupKey, value, checked) => {
+  const reg = _fpRegistry[panelId];
+  if (!reg) return;
+  if (!(reg.state[groupKey] instanceof Set)) reg.state[groupKey] = new Set();
+  if (checked) reg.state[groupKey].add(value); else reg.state[groupKey].delete(value);
+};
+window._fpClearAll = (panelId) => {
+  const reg = _fpRegistry[panelId];
+  if (!reg) return;
+  reg.groups.forEach(g => { if (reg.state[g.key] instanceof Set) reg.state[g.key].clear(); });
+};
+// 點面板外或再點一次按鈕收合（比照既有 notif-panel/ml-row-menu 的點外面關閉慣例）
+document.addEventListener('click', (e) => {
+  if (!_fpOpen.size) return;
+  [..._fpOpen].forEach(id => {
+    const panel = document.getElementById('fp-panel-' + id);
+    const btn = document.getElementById('fp-btn-' + id);
+    if (panel && !panel.contains(e.target) && (!btn || !btn.contains(e.target))) {
+      _fpOpen.delete(id);
+      panel.style.display = 'none';
+    }
+  });
+});
+
+// 個案列表「狀態」勾選群組用：一筆個案在狀態維度可能同時命中多個標籤（OR），
+// deleted 與其他標籤互斥（比照改版前 if/else if 的優先序）；past_unclosed 為獨立疊加標籤。
+function _caseStatusTags(c) {
+  if (c.deleted) return ['deleted'];
+  const tags = [c.status === 'closed' ? 'closed' : 'active'];
+  if (_hasPastUnclosed(c)) tags.push('past_unclosed');
+  return tags;
+}
+
 function renderCases() {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
 
@@ -7237,11 +7317,6 @@ function renderCases() {
   }
 
   // ── 篩選列 UI 控制 ──
-  const cfStatusDeleted = document.getElementById('cf-status-deleted');
-  if (cfStatusDeleted) cfStatusDeleted.style.display = isAdmin ? '' : 'none';
-  const cfArchivedSel = document.getElementById('cf-archived');
-  if (cfArchivedSel && cfArchivedSel.value !== caseFilters.archived) cfArchivedSel.value = caseFilters.archived ?? 'unarchived';
-
   const cfCounselorWrap = document.getElementById('cf-counselor-wrap');
   const cfCounselor     = document.getElementById('cf-counselor');
   if (cfCounselorWrap) cfCounselorWrap.style.display = isAdmin ? '' : 'none';
@@ -7249,16 +7324,40 @@ function renderCases() {
     const prev = cfCounselor.value;
     cfCounselor.innerHTML = buildCounselorFilterOpts(prev, true, '全部人員');
   }
+  // v173：狀態／封存／案別收合式勾選面板（已刪除僅 admin 可勾，比照改版前 cf-status-deleted 僅 admin 可見）
+  _fpSyncPanel('cf', [
+    { key: 'status', title: '狀態', options: [
+      { value: 'active', label: '進行中' },
+      { value: 'closed', label: '已結案' },
+      { value: 'past_unclosed', label: '過去學期未結案' },
+      ...(isAdmin ? [{ value: 'deleted', label: '已刪除' }] : []),
+    ] },
+    { key: 'archived', title: '封存', options: [
+      { value: 'unarchived', label: '未封存' },
+      { value: 'archived', label: '已封存' },
+    ] },
+    { key: 'abType', title: '案別', options: [
+      { value: 'A案', label: 'A案' },
+      { value: 'B案', label: 'B案' },
+    ] },
+  ], caseFilters.groups, 'renderCases()');
 
   // ── 套用搜尋 / 篩選 ──
-  const { q, status, semester, counselor, dateFrom, dateTo, archived, abType: abTypeFilter } = caseFilters;
+  const { q, semester, counselor, dateFrom, dateTo } = caseFilters;
+  const cfActiveGroups = {
+    status:   [...caseFilters.groups.status],
+    archived: [...caseFilters.groups.archived],
+    abType:   [...caseFilters.groups.abType],
+  };
   // #8：搜尋完整姓名/學號/案號時，用來補回被 archived/status/semester 篩掉的相符個案（權限已在此之前套過）
   const _searchBaseForHint = [...visible];
-  if (archived === 'unarchived') {
-    visible = visible.filter(c => !c.archived);
-  } else if (archived === 'archived') {
-    visible = visible.filter(c => !!c.archived);
-  }
+  // 狀態／封存／案別三維度合併一次判定（同群組 OR、跨群組 AND、全沒勾＝不篩，見 _filterPanelMatch）；
+  // 個案列表走輕量 index（部分冷資料個案僅有 index stub，可能缺 abType 欄位），缺值時視為不命中任何特定案別
+  visible = visible.filter(c => _filterPanelMatch({
+    status:   _caseStatusTags(c),
+    archived: c.archived ? ['archived'] : ['unarchived'],
+    abType:   [_caseLatestAbType(c)].filter(Boolean),
+  }, cfActiveGroups));
   if (semester) visible = visible.filter(c => {
     if (Array.isArray(c.semesters) && c.semesters.length) return _caseHasSem(c, semester);
     return openDateToSemPrefix(c.openDate) === semester;
@@ -7272,22 +7371,12 @@ function renderCases() {
       (c.formerIds || []).some(f => (f.id||'').toLowerCase().includes(ql)) // 曾用案號也要能被搜尋命中
     );
   }
-  if (status === 'deleted') {
-    visible = visible.filter(c => c.deleted);
-  } else if (status === 'past_unclosed') {
-    visible = visible.filter(c => !c.deleted && _hasPastUnclosed(c));
-  } else if (status) {
-    visible = visible.filter(c => !c.deleted && c.status === status);
-  }
   if (counselor) visible = visible.filter(c => {
     const key = c.counselorEmail || c.counselorName || c.counselorText || '';
     return key === counselor;
   });
   if (dateFrom)  visible = visible.filter(c => (c.openDate || '') >= dateFrom);
   if (dateTo)    visible = visible.filter(c => (c.openDate || '') <= dateTo);
-  // 個案列表走輕量 index（部分冷資料個案僅有 index stub，可能缺 abType 欄位）；
-  // _caseLatestAbType 對缺欄位的個案會 fallback 回傳空字串，選特定 A/B 案時一併排除（見上方 data-tip 說明）
-  if (abTypeFilter) visible = visible.filter(c => _caseLatestAbType(c) === abTypeFilter);
   if (caseFilters.mlLeaveFrom || caseFilters.mlLeaveTo) {
     const mlFrom = caseFilters.mlLeaveFrom;
     const mlTo   = caseFilters.mlLeaveTo;
@@ -7599,7 +7688,10 @@ function _syncCasesBatchBar() {
 
 function resetCaseFilters() {
   const sem = currentSemesterPrefix();
-  caseFilters = { q: '', status: '', semester: sem, counselor: '', dateFrom: '', dateTo: '', archived: 'unarchived', mlLeaveFrom: '', mlLeaveTo: '', abType: '' };
+  caseFilters = {
+    q: '', semester: sem, counselor: '', dateFrom: '', dateTo: '', mlLeaveFrom: '', mlLeaveTo: '',
+    groups: { status: new Set(), archived: new Set(['unarchived']), abType: new Set() },
+  };
   caseSort = { col: null, dir: 1 };
   localStorage.setItem('scc_semester_pref', sem);
   syncUserPref_({ semesterPref: sem });
@@ -7607,13 +7699,11 @@ function resetCaseFilters() {
   const _mlToEl = document.getElementById('cf-ml-to');
   if (_mlFromEl) _mlFromEl.value = '';
   if (_mlToEl) _mlToEl.value = '';
-  ['cf-q', 'cf-status', 'cf-counselor', 'cf-date-from', 'cf-date-to', 'cf-abtype'].forEach(id => {
+  ['cf-q', 'cf-counselor', 'cf-date-from', 'cf-date-to'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
   });
   const cfSem = document.getElementById('cf-semester');
   if (cfSem) cfSem.value = sem;
-  const cfArch = document.getElementById('cf-archived');
-  if (cfArch) cfArch.value = 'unarchived';
   renderCases();
 }
 
@@ -14963,12 +15053,10 @@ function _toggleUnclosedSummary() {
 }
 
 function goCasesPastUnclosed() {
-  caseFilters.status = 'past_unclosed';
+  caseFilters.groups.status = new Set(['past_unclosed']);
   caseFilters.semester = '';
   const cfSemEl = document.getElementById('cf-semester');
   if (cfSemEl) cfSemEl.value = '';
-  const cfStatusEl = document.getElementById('cf-status');
-  if (cfStatusEl) cfStatusEl.value = 'past_unclosed';
   showPage('page-cases', document.querySelector('[data-nav-id="page-cases"]'));
   renderCases();
 }
@@ -15273,11 +15361,16 @@ function _saveCnPrefs() {
   clearTimeout(_cnSavePrefTimer);
   _cnSavePrefTimer = setTimeout(() => saveUserTodos(), 1200);
 }
+// v173：_cnArchived/_cnClosureStatus 存檔格式相容轉換——舊資料是單一字串（''=全部／值=該選項），
+// 新版改 Set 可複選；空字串→空 Set（不篩，語意不變）、非空字串→包該值的單元素 Set（語意不變）。
+function _cnPrefToSet(v) {
+  return new Set(Array.isArray(v) ? v : (v ? [v] : []));
+}
 function _cnClearFilters() {
-  _cnArchived = 'unarchived';
-  _cnClosureStatus = '';
+  _cnArchived = new Set(['unarchived']);
+  _cnClosureStatus = new Set();
   _cnCounselor = '';
-  _cnAbType = '';
+  _cnAbType = new Set();
   _cnPage = 1;
   _cnSelected.clear();
   const searchEl = document.getElementById('cn-search');
@@ -15285,16 +15378,35 @@ function _cnClearFilters() {
   renderCaseNums();
   _saveCnPrefs();
 }
+// v173：封存／狀態／案別改收合式勾選面板，_cnArchived/_cnClosureStatus/_cnAbType 型別由字串改為 Set
+// （同群組可複選＝OR）；_cnArchived 預設勾「未封存」沿用改版前預設行為。
 let _cnPage = 1;
 let _cnPageSize = 30;
 let _cnComposing = false;
-let _cnArchived = 'unarchived';
-let _cnClosureStatus = '';
+let _cnArchived = new Set(['unarchived']);
+let _cnClosureStatus = new Set();
 let _cnCounselor = '';
-let _cnAbType = ''; // A案/B案篩選（'' = 全部）
+let _cnAbType = new Set(); // A案/B案篩選（空集合 = 全部）
 let _cnSelected = new Set();
 let _casesSelected = new Set();
 
+// 案號查詢頁「封存／狀態／案別」勾選面板的群組定義（供首次渲染與 surgical update 共用，避免兩處重複維護）
+function _cnFilterPanelGroups() {
+  return [
+    { key: 'archived', title: '封存', options: [
+      { value: 'unarchived', label: '未封存' },
+      { value: 'archived', label: '已封存' },
+    ] },
+    { key: 'closure', title: '狀態', options: [
+      { value: 'active', label: '未結案' },
+      { value: 'closed', label: '已結案' },
+    ] },
+    { key: 'abType', title: '案別', options: [
+      { value: 'A案', label: 'A案' },
+      { value: 'B案', label: 'B案' },
+    ] },
+  ];
+}
 function renderCaseNums(resetPage) {
   if (resetPage) _cnPage = 1;
   const isAdminUser = currentRole === '主任' || extraRole === '管理者';
@@ -15307,11 +15419,14 @@ function renderCaseNums(resetPage) {
     return;
   }
 
-  if (_cnArchived === 'unarchived') visible = visible.filter(c => !c.archived);
-  else if (_cnArchived === 'archived') visible = visible.filter(c => !!c.archived);
-
-  if (_cnClosureStatus === 'closed') visible = visible.filter(c => c.status === 'closed' && !_hasPastUnclosed(c));
-  else if (_cnClosureStatus === 'active') visible = visible.filter(c => c.status !== 'closed' || _hasPastUnclosed(c));
+  // v173：封存／狀態／案別改收合式勾選面板，同群組 OR、跨群組 AND（見 _filterPanelMatch）；
+  // closure 標籤沿用改版前 if/else if 的互斥判定（僅二態，OR 語意等價）
+  const _cnActiveGroups = { archived: [..._cnArchived], closure: [..._cnClosureStatus], abType: [..._cnAbType] };
+  visible = visible.filter(c => _filterPanelMatch({
+    archived: c.archived ? ['archived'] : ['unarchived'],
+    closure: (c.status === 'closed' && !_hasPastUnclosed(c)) ? ['closed'] : ['active'],
+    abType: [_caseLatestAbType(c)].filter(Boolean),
+  }, _cnActiveGroups));
 
   const counselorMap = new Map();
   visible.forEach(c => {
@@ -15326,7 +15441,6 @@ function renderCaseNums(resetPage) {
     const key = c.counselorEmail || c.counselorName || c.counselorText || '';
     return key === _cnCounselor;
   });
-  if (_cnAbType) visible = visible.filter(c => _caseLatestAbType(c) === _cnAbType);
 
   // 篩選後為空 → 繼續渲染 filter bar，表格顯示「無符合結果」（讓使用者能清除篩選）
 
@@ -15457,14 +15571,10 @@ function renderCaseNums(resetPage) {
     if (pBot) pBot.innerHTML = paginationHtml;
     const sel = document.getElementById('cn-pagesize');
     if (sel) sel.value = String(_cnPageSize);
-    const archSel = document.getElementById('cn-archived');
-    if (archSel && archSel.value !== _cnArchived) archSel.value = _cnArchived;
-    const clSel = document.getElementById('cn-closure-status');
-    if (clSel && clSel.value !== _cnClosureStatus) clSel.value = _cnClosureStatus;
-    const abSel = document.getElementById('cn-abtype');
-    if (abSel && abSel.value !== _cnAbType) abSel.value = _cnAbType;
+    _fpSyncPanel('cn', _cnFilterPanelGroups(), { archived: _cnArchived, closure: _cnClosureStatus, abType: _cnAbType }, '_cnPage=1;_cnSelected.clear();renderCaseNums();_saveCnPrefs()');
+    const _cnIsDefaultArchived = _cnArchived.size === 1 && _cnArchived.has('unarchived');
     const clearBtn = document.getElementById('cn-clear-btn');
-    if (clearBtn) clearBtn.disabled = (_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor&&!_cnAbType&&!(document.getElementById('cn-search')?.value?.trim()));
+    if (clearBtn) clearBtn.disabled = (_cnIsDefaultArchived && !_cnClosureStatus.size && !_cnCounselor && !_cnAbType.size && !(document.getElementById('cn-search')?.value?.trim()));
     const cnslSel = document.getElementById('cn-counselor');
     if (cnslSel) {
       cnslSel.innerHTML = buildCounselorFilterOpts(_cnCounselor, true, '全部人員');
@@ -15486,35 +15596,19 @@ function renderCaseNums(resetPage) {
             oninput="if(!_cnComposing){_cnPage=1;renderCaseNums()}"
             oncompositionstart="_cnComposing=true"
             oncompositionend="_cnComposing=false;_cnPage=1;renderCaseNums()" />
-          <select id="cn-archived" class="field-input" style="padding:4px 6px;font-size:.85rem;"
-            onchange="_cnArchived=this.value;_cnPage=1;_cnSelected.clear();renderCaseNums();_saveCnPrefs()">
-            <option value="unarchived" ${_cnArchived==='unarchived'?'selected':''}>未封存</option>
-            <option value="archived" ${_cnArchived==='archived'?'selected':''}>已封存</option>
-            <option value="" ${_cnArchived===''?'selected':''}>全部</option>
-          </select>
-          <select id="cn-closure-status" class="field-input" style="padding:4px 6px;font-size:.85rem;"
-            onchange="_cnClosureStatus=this.value;_cnPage=1;_cnSelected.clear();renderCaseNums();_saveCnPrefs()">
-            <option value="" ${_cnClosureStatus===''?'selected':''}>全部狀態</option>
-            <option value="active" ${_cnClosureStatus==='active'?'selected':''}>未結案</option>
-            <option value="closed" ${_cnClosureStatus==='closed'?'selected':''}>已結案</option>
-          </select>
           <select id="cn-counselor" class="field-input" style="padding:4px 6px;font-size:.85rem;"
             onchange="_cnCounselor=this.value;_cnPage=1;renderCaseNums()">
             ${buildCounselorFilterOpts(_cnCounselor, true, '全部人員')}
           </select>
-          <select id="cn-abtype" class="field-input" style="padding:4px 6px;font-size:.85rem;"
-            onchange="_cnAbType=this.value;_cnPage=1;renderCaseNums()">
-            <option value="" ${_cnAbType===''?'selected':''}>全部案別</option>
-            <option value="A案" ${_cnAbType==='A案'?'selected':''}>A案</option>
-            <option value="B案" ${_cnAbType==='B案'?'selected':''}>B案</option>
-          </select>
+          ${_fpButtonHtml('cn')}
           <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;">每頁
             <select id="cn-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;"
               onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select>筆
           </label>
           <button id="cn-clear-btn" class="btn btn-secondary btn-sm" onclick="_cnClearFilters()" style="flex-shrink:0;"
-            ${(_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor&&!_cnAbType)?'disabled':''}>清除篩選</button>
+            ${(_cnArchived.size===1 && _cnArchived.has('unarchived') && !_cnClosureStatus.size && !_cnCounselor && !_cnAbType.size)?'disabled':''}>清除篩選</button>
           <button class="btn btn-secondary btn-sm" onclick="_resetCnColWidths()" style="flex-shrink:0;" data-tip="清除已儲存的欄寬設定，恢復預設比例">重設欄寬</button>
+          ${_fpPanelHtml('cn')}
         </div>
       </div>
       <div id="cn-batch-bar" style="display:none;padding:8px 16px;background:#ebf8ff;border-bottom:1px solid #bee3f8;display:flex;align-items:center;gap:10px;">
@@ -15550,6 +15644,7 @@ function renderCaseNums(resetPage) {
       <div id="cn-pagination-bot">${paginationHtml}</div>
     </div>` + (isAdminUser ? _migCardHtml() + _rechunkCardHtml() : '');
   document.getElementById('cn-select-all').indeterminate = !allChecked && someChecked;
+  _fpSyncPanel('cn', _cnFilterPanelGroups(), { archived: _cnArchived, closure: _cnClosureStatus, abType: _cnAbType }, '_cnPage=1;_cnSelected.clear();renderCaseNums();_saveCnPrefs()');
   _syncCnBatchBar();
   _makeCnTableResizable();
   if (isAdminUser) _migRefreshUI();
@@ -20882,8 +20977,8 @@ async function loadUserTodos() {
       todosData = Array.isArray(raw?.todos) ? raw.todos : [];
       _suppressedTodoRecordIds = new Set(Array.isArray(raw?.suppressedRecordIds) ? raw.suppressedRecordIds : []);
       const _prefs = raw?.caseSearchPrefs || {};
-      if (_prefs.closureStatus !== undefined) _cnClosureStatus = _prefs.closureStatus;
-      if (_prefs.archived !== undefined) _cnArchived = _prefs.archived;
+      if (_prefs.closureStatus !== undefined) _cnClosureStatus = _cnPrefToSet(_prefs.closureStatus);
+      if (_prefs.archived !== undefined) _cnArchived = _cnPrefToSet(_prefs.archived);
       // Loaded from legacy file → clear file ID so saveUserTodos creates a new env-specific file。
       // 快照設空陣列：目標新檔尚無資料，下一次 save 需把目前全部 todos 當成 upserts 寫入新檔，
       // 否則若快照誤設為「與 todosData 相同」，diff 出的 upserts 會是空的，遷移將遺漏資料。
@@ -20907,7 +21002,7 @@ async function _saveUserTodosFallback() {
   if (!email) return;
   const envSuffix = DRIVE_FOLDER_ID.slice(-8);
   const fileName = `todos_${email}_${envSuffix}.json`;
-  const content = { todos: todosData, suppressedRecordIds: [..._suppressedTodoRecordIds], caseSearchPrefs: { closureStatus: _cnClosureStatus, archived: _cnArchived }, updatedAt: new Date().toISOString() };
+  const content = { todos: todosData, suppressedRecordIds: [..._suppressedTodoRecordIds], caseSearchPrefs: { closureStatus: [..._cnClosureStatus], archived: [..._cnArchived] }, updatedAt: new Date().toISOString() };
   const usersId = await getUsersFolderId();
   if (!_todoFileId) {
     const q = `name='${fileName}' and '${usersId}' in parents and trashed=false`;
@@ -20951,7 +21046,7 @@ async function saveUserTodos() {
   const filePath = `users/${fileName}`;
   const diff = _diffListById(_todosSnapshot, todosData);
   if (!diff) { await _saveUserTodosFallback(); return; }
-  const meta = { suppressedRecordIds: [..._suppressedTodoRecordIds], caseSearchPrefs: { closureStatus: _cnClosureStatus, archived: _cnArchived }, updatedAt: new Date().toISOString() };
+  const meta = { suppressedRecordIds: [..._suppressedTodoRecordIds], caseSearchPrefs: { closureStatus: [..._cnClosureStatus], archived: [..._cnArchived] }, updatedAt: new Date().toISOString() };
   const res = await _listCommit(filePath, { ...diff, meta });
   if (res && res.fallback) { await _saveUserTodosFallback(); return; }
   if (res && res.data && Array.isArray(res.data.todos)) {
@@ -21703,7 +21798,7 @@ function _offHoursGoCase(caseId) {
   const c = (casesData || []).find(x => x.id === caseId && !x.deleted);
   if (c && _caseNormallyAccessible(c)) { showCaseDetail(caseId); return; }
   showPage('page-casenums', document.querySelector('[data-nav-id="page-casenums"]'));
-  _cnArchived = ''; _cnClosureStatus = ''; _cnCounselor = ''; _cnPage = 1;
+  _cnArchived = new Set(); _cnClosureStatus = new Set(); _cnCounselor = ''; _cnPage = 1;
   renderCaseNums(); // 確保頁面結構（含搜尋框）已建立
   const s = document.getElementById('cn-search');
   if (s) s.value = caseId;
@@ -27896,6 +27991,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-13', v: 173, title: '篩選 UX：收合式勾選篩選面板＋稽核紀錄開放專任檢視', isProd: false, items: [
+      item('改善', '個案列表／案號查詢與管理／身心調適假資料庫三處的篩選改為「🔽 篩選」收合式勾選面板（momo 購物式）：低數量的維度（狀態、封存、案別、風險、受理情況等）改成勾選框群組，同群組內複選為「或」、跨群組為「且」，某群組全沒勾＝該維度不篩；面板按鈕會顯示目前已套用幾個條件，可一鍵「清除全部」。輔導人員／主責等人多的清單與姓名/學號/案號等文字搜尋維持原樣不變'),
+      item('改善', '身心調適假「稽核紀錄」分頁：原僅窗口／主任／管理者可見，改為所有「專任」角色也能檢視，但僅顯示自己的異動；窗口／主任／管理者維持看得到全部人的異動，並新增篩選（動作類型、操作者、日期區間、姓名/學號/案號搜尋）'),
+    ]},
     { date: '2026-07-13', v: 172, title: '空間預約重構 Slice D：時段格線＋使用率統計', isProd: false, items: [
       item('新功能', '空間預約新增「時段格線」分頁：一天檢視，列＝節次、欄＝空間，一眼看出各時段各空間的空檔；點空格直接帶入日期／空間／節次時間開新增預約，點既有預約可直接編輯'),
       item('新功能', '空間預約新增「使用率統計」分頁：可選日期區間（預設本月 1 號～今天），分別列出各空間、各節次、各人的預約量，數字為主、長條為輔'),
@@ -29850,20 +29949,25 @@ function exportCasesCSV() {
   const qEl = document.getElementById('cf-q');
   const semEl = document.getElementById('cf-semester');
   const counselorEl = document.getElementById('cf-counselor');
-  const statusEl = document.getElementById('cf-status');
-  const archivedEl = document.getElementById('cf-archived');
   const q = qEl?.value.trim().toLowerCase() || '';
   const semFilter = semEl?.value || '';
   const counselorFilter = counselorEl?.value || '';
-  const statusFilter = statusEl?.value || '';
-  const archivedFilter = archivedEl?.value ?? 'unarchived';
+  // v173：狀態／封存／案別改讀 caseFilters.groups（收合式勾選面板），比照 renderCases 用 _filterPanelMatch
+  // 統一判定，避免與畫面上實際套用的篩選條件（cf-status/cf-archived 選單已移除）脫節
+  const _exportActiveGroups = {
+    status:   [...caseFilters.groups.status],
+    archived: [...caseFilters.groups.archived],
+    abType:   [...caseFilters.groups.abType],
+  };
 
   const filtered = casesData.filter(c => {
     if (c.deleted) return false;
-    if (archivedFilter === 'unarchived' && c.archived) return false;
-    if (archivedFilter === 'archived' && !c.archived) return false;
+    if (!_filterPanelMatch({
+      status:   _caseStatusTags(c),
+      archived: c.archived ? ['archived'] : ['unarchived'],
+      abType:   [_caseLatestAbType(c)].filter(Boolean),
+    }, _exportActiveGroups)) return false;
     if (semFilter && semesterOf(c.openDate) !== semFilter) return false;
-    if (statusFilter && c.status !== statusFilter) return false;
     if (counselorFilter) {
       const emails = [c.counselorEmail, ...(c.managers || [])];
       if (!emails.includes(counselorFilter)) return false;
@@ -31777,8 +31881,14 @@ let _mlSemFilter = localStorage.getItem('ml_sem_pref') || currentSemesterPrefix(
 let _mlConsec3Filter = false;
 let _mlQFilter = '';
 let _mlRiskFilter = new Set();
-let _mlHandlingFilter = '';
-let _mlAbFilter = ''; // A案/B案篩選（依連結個案的有效 abType；'' = 全部）
+let _mlHandlingFilter = new Set(); // v173：受理情況改收合式勾選面板，型別由字串改 Set（同群組可複選＝OR）
+let _mlAbFilter = new Set(); // A案/B案篩選（依連結個案的有效 abType；空集合 = 全部）
+// v173：稽核紀錄 tab 篩選（僅 canFullAccess 檢視時顯示；專任本人檢視無此篩選，見 _mlRenderAuditTab）
+let _mlAuditActionFilter = new Set();
+let _mlAuditOperator = '';
+let _mlAuditDateFrom = '';
+let _mlAuditDateTo = '';
+let _mlAuditQ = '';
 let _mlQComposing = false;
 let _mlShowArchived = false; // A-3：受輔生／資料庫 tab 共用——是否切換為「檢視已封存」
 
@@ -31895,19 +32005,22 @@ function renderMentalLeavePage() {
   }
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   const canFullAccess = isAdmin || isMentalLeaveContact;
+  // v173：稽核紀錄 tab 開放給所有「專任」角色（僅能看到自己的異動，見 _mlRenderAuditTab）；
+  // 窗口／主任／管理者（canFullAccess）維持看得到全部人的異動。判定沿用既有 role 前綴慣例。
+  const _mlIsFullTimeRole = typeof currentRole === 'string' && currentRole.startsWith('專任');
+  const canSeeMlAudit = canFullAccess || _mlIsFullTimeRole;
   // 若目前 tab 無權限，自動回到受輔生
-  if (!canFullAccess && (_mlTab === 'records' || _mlTab === 'keywords' || _mlTab === 'audit')) _mlTab = 'my';
+  if (!canFullAccess && (_mlTab === 'records' || _mlTab === 'keywords')) _mlTab = 'my';
+  if (!canSeeMlAudit && _mlTab === 'audit') _mlTab = 'my';
   // Save filter state before destroying DOM
   _mlQFilter = document.getElementById('ml-q')?.value ?? _mlQFilter;
-  _mlHandlingFilter = document.getElementById('ml-handling')?.value ?? _mlHandlingFilter;
-  _mlAbFilter = document.getElementById('ml-ab')?.value ?? _mlAbFilter;
   const _mlQHadFocus = document.activeElement?.id === 'ml-q';
   el.innerHTML = `
     <div style="display:flex;gap:2px;border-bottom:2px solid #e2e8f0;margin-bottom:20px;">
       ${_mlTabBtn('my','🙋 受輔生')}
       ${canFullAccess ? _mlTabBtn('records','📋 資料庫') : ''}
       ${canFullAccess ? _mlTabBtn('keywords','🔑 關鍵字設定') : ''}
-      ${canFullAccess ? _mlTabBtn('audit','📋 稽核紀錄') : ''}
+      ${canSeeMlAudit ? _mlTabBtn('audit','📋 稽核紀錄') : ''}
     </div>
     <div id="ml-tab-content"></div>`;
   _mlRenderTab();
@@ -31922,15 +32035,20 @@ function _mlTabBtn(id, label) {
 }
 window._mlSwitchTab = (id) => { _mlTab = id; syncUserPref_({ mlTab: id }); renderMentalLeavePage(); };
 window._mlFilterChange = () => { if (_mlQComposing) return; _mlPage = 1; renderMentalLeavePage(); };
-window._mlRiskToggle = (cb) => { if (cb.checked) _mlRiskFilter.add(cb.value); else _mlRiskFilter.delete(cb.value); _mlPage = 1; renderMentalLeavePage(); };
+// v173：風險/受理情況/案別勾選改由通用收合式面板（_fpToggle）處理，_mlRiskToggle 併入不再單獨存在
 
 // ── ⑤ 稽核紀錄 tab（沿用既有稽核日誌的載入/表格渲染，僅篩選本模組動作） ──
+// v173：窗口／主任／管理者（canFullAccess）看全部人的異動，並提供篩選；
+// 一般「專任」角色（role 以'專任'開頭）也能進本 tab，但只看得到自己的異動（by 本人 email），且不提供篩選。
 function _mlRenderAuditTab(el) {
+  const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  const canFullAccess = isAdmin || isMentalLeaveContact;
   el.innerHTML = `
     <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
       <div style="display:flex;justify-content:flex-end;padding:10px 14px;background:#f7fafc;">
         <button class="btn btn-secondary btn-sm" onclick="window._mlLoadAuditTrack(true)">🔄 重新整理</button>
       </div>
+      ${!canFullAccess ? `<div style="padding:8px 14px;font-size:.8rem;color:#718096;background:#f7fafc;border-top:1px solid #e2e8f0;">僅顯示您本人的異動紀錄</div>` : ''}
       <div id="ml-audit-track-table" style="padding:12px 14px;"></div>
     </div>`;
   window._mlLoadAuditTrack();
@@ -31938,6 +32056,9 @@ function _mlRenderAuditTab(el) {
 window._mlLoadAuditTrack = async (forceRefresh = false) => {
   const wrap = document.getElementById('ml-audit-track-table');
   if (!wrap) return;
+  // 搜尋框全重繪會失焦，比照 ml-q 的作法：重繪前記住焦點與游標位置，重繪後復原
+  const _hadFocus = document.activeElement?.id === 'ml-audit-q';
+  const _selStart = _hadFocus ? document.activeElement.selectionStart : null;
   wrap.innerHTML = `<div class="empty-state" style="padding:20px;"><div class="icon">⏳</div><p>讀取中…</p></div>`;
   if (!Array.isArray(window._auditLogsCache) || forceRefresh) {
     try {
@@ -31951,10 +32072,67 @@ window._mlLoadAuditTrack = async (forceRefresh = false) => {
       return;
     }
   }
+  const isAdmin = currentRole === '主任' || extraRole === '管理者';
+  const canFullAccess = isAdmin || isMentalLeaveContact;
   // 隱私：「再次提醒主責」紀錄本身即揭露該生為個案（有主責），非專任人員不得見（與 A/B案標示同一限縮原則）
   const _mlAuditFT = _mlIsFullTimeStaff();
-  const entries = (window._auditLogsCache || []).filter(l => AUDIT_PAGE_CATEGORIES['身心調適假']?.(l.action)).filter(l => _mlAuditFT || l.action !== '身心調適假再次提醒主責').slice(-200);
-  wrap.innerHTML = _mkAuditTable(entries);
+  const base = (window._auditLogsCache || []).filter(l => AUDIT_PAGE_CATEGORIES['身心調適假']?.(l.action)).filter(l => _mlAuditFT || l.action !== '身心調適假再次提醒主責');
+
+  let filterBarHtml = '';
+  let entries;
+  let actionOpts = [];
+  if (!canFullAccess) {
+    // 一般專任：只看自己的異動（by＝本人 email），無篩選
+    entries = base.filter(l => l.email === currentUser?.email);
+  } else {
+    // canFullAccess：動作類型／操作者選項從目前資料動態盤點（不寫死清單，避免漏列新動作字串）
+    actionOpts = [...new Set(base.map(l => l.action))].sort().map(a => ({ value: a, label: a }));
+    const operatorMap = new Map();
+    base.forEach(l => { if (l.email && !operatorMap.has(l.email)) operatorMap.set(l.email, l.name || l.email); });
+    const operatorOpts = [...operatorMap.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'zh-Hant'));
+    const q = (_mlAuditQ || '').trim().toLowerCase();
+    entries = base.filter(l => {
+      if (!_filterPanelMatch({ action: l.action }, { action: [..._mlAuditActionFilter] })) return false;
+      if (_mlAuditOperator && l.email !== _mlAuditOperator) return false;
+      if (_mlAuditDateFrom && (l.t || '').slice(0, 10) < _mlAuditDateFrom) return false;
+      if (_mlAuditDateTo   && (l.t || '').slice(0, 10) > _mlAuditDateTo)   return false;
+      if (q) {
+        const cid = (l.caseId || '').toLowerCase();
+        let hit = cid.includes(q);
+        if (!hit) {
+          const c = casesData.find(x => x.id === l.caseId);
+          if (c) hit = (c.name || '').toLowerCase().includes(q) || (c.studentId || '').toLowerCase().includes(q);
+        }
+        if (!hit) return false;
+      }
+      return true;
+    });
+    filterBarHtml = `
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px;background:#f7fafc;border-bottom:1px solid #e2e8f0;">
+        ${_fpButtonHtml('mlaudit')}
+        <select id="ml-audit-operator" class="field-input" style="width:auto;" onchange="_mlAuditOperator=this.value;window._mlLoadAuditTrack()">
+          <option value="">全部操作者</option>
+          ${operatorOpts.map(([email, name]) => `<option value="${escHtml(email)}"${_mlAuditOperator === email ? ' selected' : ''}>${escHtml(name)}</option>`).join('')}
+        </select>
+        <input type="date" id="ml-audit-from" class="field-input" style="width:auto;" value="${escHtml(_mlAuditDateFrom)}" onchange="_mlAuditDateFrom=this.value;window._mlLoadAuditTrack()">
+        <span style="color:#718096;font-size:.85rem;">至</span>
+        <input type="date" id="ml-audit-to" class="field-input" style="width:auto;" value="${escHtml(_mlAuditDateTo)}" onchange="_mlAuditDateTo=this.value;window._mlLoadAuditTrack()">
+        <input type="text" id="ml-audit-q" class="field-input" placeholder="搜尋姓名/學號/案號" value="${escHtml(_mlAuditQ)}" style="max-width:180px;"
+          oninput="_mlAuditQ=this.value;window._mlLoadAuditTrack()">
+        <button class="btn btn-secondary btn-sm" onclick="_mlAuditActionFilter.clear();_mlAuditOperator='';_mlAuditDateFrom='';_mlAuditDateTo='';_mlAuditQ='';window._mlLoadAuditTrack()">清除篩選</button>
+      </div>
+      ${_fpPanelHtml('mlaudit')}`;
+  }
+  entries = entries.slice(-200);
+  wrap.innerHTML = filterBarHtml + `<div style="padding:12px 14px;">${_mkAuditTable(entries)}</div>`;
+  if (canFullAccess) {
+    _fpSyncPanel('mlaudit', [{ key: 'action', title: '動作類型', options: actionOpts }],
+      { action: _mlAuditActionFilter }, 'window._mlLoadAuditTrack()');
+  }
+  if (_hadFocus) {
+    const qEl = document.getElementById('ml-audit-q');
+    if (qEl) { qEl.focus(); qEl.setSelectionRange(_selStart, _selStart); }
+  }
 };
 function _getMyCaseStudentIds() {
   const myAllowedIds = new Set(configData?.users?.[currentUser?.email]?.allowedCases || []);
@@ -32713,25 +32891,22 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
   const abF    =  _mlAbFilter;
   const consec3Ids = _mlConsec3Filter ? _mlConsecutive3DayIds(records) : null;
 
+  // v173：風險／受理情況／案別三維度合併一次判定（同群組 OR、跨群組 AND，見 _filterPanelMatch）
+  const _mlActiveGroups = { risk: [...riskF], handling: [...hF], abType: [...abF] };
   let filtered = records.filter(l => {
     if (studentIdFilter && !studentIdFilter.has(l.studentId)) return false;
     if (q && !((l.name||'').toLowerCase().includes(q) || (l.studentId||'').toLowerCase().includes(q) || (l.reason||'').toLowerCase().includes(q))) return false;
     if (semF && l.semester !== semF) return false;
     if (consec3Ids && !consec3Ids.has(l.studentId)) return false;
-    if (riskF.size > 0) {
-      const { level: maxLevel } = _mlEffectiveRisk(l);
-      if (!riskF.has(String(maxLevel))) return false;
-    }
-    if (hF) {
-      const { level: maxLevel } = _mlEffectiveRisk(l);
-      const eff = l.handlingStatus || (maxLevel >= 3 ? '待處理' : '非危機');
-      if (eff !== hF) return false;
-    }
-    if (abF) {
-      // 依「連結個案」的有效 abType 篩選（最新學期快照優先，fallback 頂層）；找不到連結個案者一併排除
-      const _mc = casesData.find(c => !c.deleted && c.studentId === l.studentId);
-      if (!_mc || _caseLatestAbType(_mc) !== abF) return false;
-    }
+    const { level: maxLevel } = _mlEffectiveRisk(l);
+    const effHandling = l.handlingStatus || (maxLevel >= 3 ? '待處理' : '非危機');
+    // 依「連結個案」的有效 abType 篩選（最新學期快照優先，fallback 頂層）；找不到連結個案者一併排除
+    const _mc = casesData.find(c => !c.deleted && c.studentId === l.studentId);
+    if (!_filterPanelMatch({
+      risk: String(maxLevel),
+      handling: effHandling,
+      abType: _mc ? [_caseLatestAbType(_mc)].filter(Boolean) : [],
+    }, _mlActiveGroups)) return false;
     return true;
   });
   const _mlGroups = _mlGroupAndSort(filtered);
@@ -32907,23 +33082,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     ` : ''}
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
       <input type="text" id="ml-q" class="field-input" placeholder="搜尋姓名、學號、緣由…" value="${escHtml(q)}" oninput="window._mlFilterChange()" oncompositionstart="_mlQComposing=true" oncompositionend="_mlQComposing=false;window._mlFilterChange()" style="max-width:200px;">
-      <div style="display:flex;align-items:center;gap:6px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:5px;padding:3px 8px;flex-wrap:wrap;">
-        <span style="font-size:.78rem;color:#718096;white-space:nowrap;">風險：</span>
-        ${[['3','🔴 紅燈'],['2','🟡 黃燈'],['1','🔵 關注'],['0','無燈號']].map(([v,lbl])=>`
-        <label style="display:flex;align-items:center;gap:3px;cursor:pointer;white-space:nowrap;font-size:.83rem;color:#4a5568;">
-          <input type="checkbox" value="${v}" ${riskF.has(v)?'checked':''} onchange="window._mlRiskToggle(this)" style="margin:0;">
-          ${lbl}
-        </label>`).join('')}
-      </div>
-      <select id="ml-handling" class="field-input" onchange="window._mlFilterChange()" style="width:auto;">
-        <option value="">所有受理情況</option>
-        ${ML_HANDLING_OPTS.map(o=>`<option value="${o}"${hF===o?' selected':''}>${o}</option>`).join('')}
-      </select>
-      <select id="ml-ab" class="field-input" onchange="window._mlFilterChange()" style="width:auto;" data-tip="依連結個案的有效案別篩選（最新學期快照優先，fallback 頂層；找不到連結個案者一併排除）">
-        <option value="">全部案別</option>
-        <option value="A案"${abF==='A案'?' selected':''}>A案</option>
-        <option value="B案"${abF==='B案'?' selected':''}>B案</option>
-      </select>
+      ${_fpButtonHtml('ml')}
       <select id="ml-sem" class="field-input" onchange="_mlSemFilter=this.value;localStorage.setItem('ml_sem_pref',this.value);_mlPage=1;renderMentalLeavePage();" style="width:auto;">
         <option value="">所有學期</option>${semOpts}
       </select>
@@ -32941,6 +33100,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
         </select>筆
       </label>
       <button class="btn btn-secondary btn-sm" onclick="window._resetMlColWidths()" data-tip="清除已儲存的欄寬設定，恢復預設比例" style="white-space:nowrap;">重設欄寬</button>
+      ${_fpPanelHtml('ml')}
       ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="window._mlDeduplicateRecords()" data-tip="比對姓名、學號、請假日期、緣由、學期等欄位，清除重複內容的紀錄（保留受理情況最進階者，其次保留最早收到的）" style="white-space:nowrap;">清除重複${adminOnlyChip()}</button>` : ''}
       ${canFullAccess && DRIVE_FOLDER_ID === '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx' ? `
         <button class="btn btn-danger" onclick="window._mlClearAll()" style="white-space:nowrap;margin-left:auto;">🗑️ 清空測試資料</button>
@@ -33008,6 +33168,15 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       <button class="btn btn-secondary btn-sm" ${_mlPage>=totalPages?'disabled':''} onclick="_mlPage=${totalPages};renderMentalLeavePage()">»</button>
     </div>` : (totalFiltered > 0 ? `<div style="text-align:right;font-size:.82rem;color:#a0aec0;margin-top:6px;">共 ${totalFiltered} 筆</div>` : '')}`;
   _makeTableResizable({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,9,10] : [1,2,3,4,5,6,7,8,9], prefKey: 'mlColWidths2', skipCols: isAdmin ? new Set([10]) : new Set() });
+  // v173：風險／受理情況／案別收合式勾選面板（取代原本並排的風險 checkbox 列＋受理情況/案別 select）
+  _fpSyncPanel('ml', [
+    { key: 'risk', title: '風險', options: [
+      { value: '3', label: '🔴 紅燈' }, { value: '2', label: '🟡 黃燈' },
+      { value: '1', label: '🔵 關注' }, { value: '0', label: '無燈號' },
+    ] },
+    { key: 'handling', title: '受理情況', options: ML_HANDLING_OPTS.map(o => ({ value: o, label: o })) },
+    { key: 'abType', title: '案別', options: [{ value: 'A案', label: 'A案' }, { value: 'B案', label: 'B案' }] },
+  ], { risk: _mlRiskFilter, handling: _mlHandlingFilter, abType: _mlAbFilter }, 'window._mlFilterChange()');
 }
 window._resetMlColWidths = () => {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
