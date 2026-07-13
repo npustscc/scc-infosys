@@ -160,8 +160,8 @@ function doPost(e) {
       case 'sessionLogout':      result = sessionLogout_(userEmail); break;
       case 'listMySessions':     result = sessionsListForUser_(userEmail, params, ctx); break;
       case 'getMetadata':        result = getMetadata_(params); break;
-      case 'readJson':           result = readJson_(params, ctx); break;
-      case 'readJsonById':       result = readJsonById_(params); break;
+      case 'readJson':           result = readJson_(params, ctx, userEmail); break;
+      case 'readJsonById':       result = readJsonById_(params, ctx, userEmail); break;
       case 'createJson':         result = createJson_(params); break;
       case 'updateJson':         result = updateJson_(params, ctx); break;
       case 'createFolder':       result = createFolder_(params); break;
@@ -814,6 +814,116 @@ function shareToSelfOnly_(emails, userEmail) {
   return Array.isArray(emails) && emails.length === 1 && !!userEmail && emails[0] === userEmail;
 }
 
+// ── R1：個案物件級授權（IDOR 修補，第一階段 shadow 模式）───────────────────────
+// 破口：readJson_/readJsonById_ 先前零授權檢查，任何過 isAuthorizedUser_ 授權閘的人可直呼
+// 讀取任意個案 chunk（含他人個案）——前端的 scoped 載入只是 UI 篩選，不是真正的邊界。
+// 可見性政策＝最小權限：主任／系統管理者／管理者看全部；其他人（含專任）只看「自己相關」的個案
+// （主責／同 base 學期 co-counselor／個管 allowedCases／初談者／督導 supervisee／義輔窗口／未派案
+// 全員可見）；危機閱讀 carve-out：case_access_log.json 內「當日、本人、該 caseId」的 type:'grant'
+// 仍放行。以下純函式照移植 dev/index.html 對應邏輯（openDateToSemPrefix/_semKeyBase/
+// _getLatestCounselorEmail/_getLatestSemCounselorEmails/_isInitialInterviewerOfCase/
+// _caseVisibleToUser），語意須完全一致（單元測試見 test/case-authz.test.js）。
+// CASE_AUTHZ_MODE：'shadow' 只記錄會擋什麼、不真的擋（本階段）；驗證各角色判定皆正確後才翻 'enforce'。
+var CASE_AUTHZ_MODE = 'shadow';
+
+// 學期前綴換算（＝前端 openDateToSemPrefix，語意一致）
+function openDateToSemPrefix_(dateStr) {
+  if (!dateStr) return '';
+  var d = new Date(dateStr + 'T00:00:00');
+  if (isNaN(d.getTime())) return '';
+  var rocYear = d.getFullYear() - 1911;
+  var month = d.getMonth() + 1;
+  if (month >= 8) return rocYear + '1';
+  if (month === 1) return (rocYear - 1) + '1';
+  return (rocYear - 1) + '2';
+}
+
+// sem key 去掉 '#N' 後綴取 base（＝前端 _semKeyBase，供同 base 學期多筆開案比對）
+function semKeyBase_(key) {
+  if (!key) return '';
+  var i = key.indexOf('#');
+  return i === -1 ? key : key.slice(0, i);
+}
+
+// 個案「最新學期」主責 email：往前找第一個有值的快照，皆無則 fallback 頂層 counselorEmail。
+function caseLatestCounselorEmail_(c) {
+  var sems = (Array.isArray(c.semesters) && c.semesters.length
+    ? c.semesters.slice() : [openDateToSemPrefix_(c.openDate)].filter(Boolean)).sort();
+  for (var i = sems.length - 1; i >= 0; i--) {
+    var snap = c.basicInfoSnapshots && c.basicInfoSnapshots[sems[i]];
+    if (snap && snap.counselorEmail) return snap.counselorEmail;
+  }
+  return c.counselorEmail || '';
+}
+
+// 最新 base 學期（可能有多筆 #N 開案）所有不重複的主責 email（供同 base 學期 co-counselor 互相可見）。
+function caseLatestSemCounselorEmails_(c) {
+  var sems = (Array.isArray(c.semesters) && c.semesters.length
+    ? c.semesters.slice() : [openDateToSemPrefix_(c.openDate)].filter(Boolean)).sort();
+  if (!sems.length) return [];
+  var latestBase = semKeyBase_(sems[sems.length - 1]);
+  var emails = sems.filter(function (s) { return semKeyBase_(s) === latestBase; })
+    .map(function (s) { return c.basicInfoSnapshots && c.basicInfoSnapshots[s] && c.basicInfoSnapshots[s].counselorEmail; })
+    .filter(Boolean);
+  var seen = {}, out = [];
+  emails.forEach(function (e) { if (!seen[e]) { seen[e] = true; out.push(e); } });
+  return out;
+}
+
+// 是否為此案初次晤談者（完整資料 initialInterview/initialInterviews；index-only 個案 fallback interviewerEmails）。
+function isInitialInterviewerOfCase_(c, email) {
+  if (!email) return false;
+  if (c.initialInterview && c.initialInterview.interviewerEmail === email) return true;
+  if (c.initialInterviews) {
+    var vals = Object.values(c.initialInterviews);
+    for (var i = 0; i < vals.length; i++) { if (vals[i] && vals[i].interviewerEmail === email) return true; }
+    return false;
+  }
+  if (!c.initialInterview && !c.initialInterviews && Array.isArray(c.interviewerEmails)) {
+    return c.interviewerEmails.indexOf(email) !== -1;
+  }
+  return false;
+}
+
+// 個案對某使用者是否可見（非 full-access 角色的可見性單一真相；users＝config.users map）。
+function caseVisibleToUser_(c, email, users) {
+  if (!email) return false;
+  var lat = caseLatestCounselorEmail_(c);
+  if (!lat) return true; // 未派案：全員可見
+  if (lat === email) return true; // 主責
+  if (caseLatestSemCounselorEmails_(c).indexOf(email) !== -1) return true; // 同 base 學期多筆開案互相可見
+  var u = users || {};
+  var allowedCases = (u[email] && u[email].allowedCases) || [];
+  if (allowedCases.indexOf(c.id) !== -1) return true; // 個管（手動）
+  if (isInitialInterviewerOfCase_(c, email)) return true; // 初次晤談者
+  var supervisees = (u[email] && u[email].superviseeEmails) || [];
+  if (Array.isArray(supervisees) && supervisees.indexOf(lat) !== -1) return true; // 督導當然個管
+  if (u[email] && u[email].isVolunteerContact === true && u[lat] && u[lat].role === '義務輔導老師') return true; // 義輔窗口
+  return false;
+}
+
+// 是否享有全案可見（主任／系統管理者／isAdmin／extraRole 管理者）；停用帳號 fail-closed 不享。
+function caseFullAccessRole_(email, users) {
+  var u = (users || {})[email];
+  if (!u || u.disabled === true) return false;
+  return u.role === '主任' || u.role === '系統管理者' || u.isAdmin === true || u.extraRole === '管理者';
+}
+
+// 危機閱讀 carve-out：case_access_log.json 內「當日、本人、該 caseId」的 grant。
+function caseHasCrisisGrant_(caseId, email, accessLogEntries, todayStr) {
+  return (accessLogEntries || []).some(function (e) {
+    return e && e.type === 'grant' && e.email === email && e.caseId === caseId
+      && String(e.t || '').slice(0, 10) === todayStr;
+  });
+}
+
+// 綜合判定（可測）：full-access → 可見性判定 → 危機當日 grant。
+function caseAllowedForRead_(c, email, users, accessLogEntries, todayStr) {
+  if (caseFullAccessRole_(email, users)) return true;
+  if (caseVisibleToUser_(c, email, users)) return true;
+  return caseHasCrisisGrant_(c.id, email, accessLogEntries, todayStr);
+}
+
 // 本環境 config.json 的 fileId：prod 用寫死的 CONFIG_FILE_ID_OVERRIDE，dev 走路徑解析並快取 5 分鐘。
 function localConfigFileId_() {
   if (CONFIG_FILE_ID_OVERRIDE) return CONFIG_FILE_ID_OVERRIDE;
@@ -1187,23 +1297,70 @@ function getMetadata_({ fileId, fields }) {
   return driveGet_('files/' + fileId, { fields: fields || 'id,name,mimeType' });
 }
 
-function readJson_({ path }, ctx) {
+function readJson_({ path }, ctx, userEmail) {
   const fileId = resolvePathToId_(path, ctx);
   const res = UrlFetchApp.fetch(
     'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
     { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
   );
   if (res.getResponseCode() >= 400) throw new Error('readJson failed: ' + path);
-  return JSON.parse(res.getContentText());
+  const parsed = JSON.parse(res.getContentText());
+  return _caseAuthzApply_(parsed, userEmail, ctx, path);
 }
 
-function readJsonById_({ fileId }) {
+function readJsonById_({ fileId }, ctx, userEmail) {
   const res = UrlFetchApp.fetch(
     'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
     { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
   );
   if (res.getResponseCode() >= 400) throw new Error('readJsonById failed: ' + fileId);
-  return JSON.parse(res.getContentText());
+  const parsed = JSON.parse(res.getContentText());
+  return _caseAuthzApply_(parsed, userEmail, ctx, fileId);
+}
+
+// R1：readJson_/readJsonById_ 讀完內容後的個案物件級授權關卡。
+// 啟發式判定「個案資料檔」：parsed.cases 為陣列（涵蓋 chunk/cases-hot/cases-index，皆此結構），
+// chunk 若為裸陣列（parsed 本身是 Array）也一併支援。非個案檔或 caller 為 full-access（看全部）
+// → 完全不動、不記錄，原樣回傳（含效能考量：只有非 full-access 讀個案檔才多讀一次 access log）。
+// shadow 模式（CASE_AUTHZ_MODE='shadow'）：只 Logger.log 會擋幾筆，原樣回傳完整內容，不過濾。
+// enforce 模式：才真正 filter parsed.cases（目前恆為 shadow，此分支不會執行）。
+function _caseAuthzApply_(parsed, userEmail, ctx, label) {
+  const casesArr = Array.isArray(parsed) ? parsed
+    : (parsed && Array.isArray(parsed.cases)) ? parsed.cases : null;
+  if (!casesArr) return parsed; // 非個案資料檔，原路回傳
+
+  const users = localConfigUsers_() || {};
+  if (caseFullAccessRole_(userEmail, users)) return parsed; // full-access：完全不動、不記錄
+
+  let accessLogEntries = [];
+  try {
+    // case_access_log.json 是稽核 feed（{entries:[...]}），非個案檔，userEmail 傳 null
+    // 不會觸發本函式再次計算個案可見性（casesArr 判定為 null 即早退），故不會無限遞迴。
+    const logData = readJson_({ path: 'case_access_log.json' }, ctx, null);
+    if (logData && Array.isArray(logData.entries)) accessLogEntries = logData.entries;
+  } catch (_) { /* 讀失敗當空陣列、不阻斷 */ }
+
+  const todayStr = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy-MM-dd');
+  const blockedIds = [];
+  casesArr.forEach(function (c) {
+    if (c && c.id && !caseAllowedForRead_(c, userEmail, users, accessLogEntries, todayStr)) blockedIds.push(c.id);
+  });
+  if (blockedIds.length) {
+    Logger.log('[R1-shadow] user=' + userEmail + ' file=' + label + ' 總' + casesArr.length
+      + '筆 會擋' + blockedIds.length + '筆 caseIds=' + blockedIds.slice(0, 10).join(','));
+  }
+
+  if (CASE_AUTHZ_MODE === 'enforce') {
+    const allowed = casesArr.filter(function (c) {
+      return c && c.id && caseAllowedForRead_(c, userEmail, users, accessLogEntries, todayStr);
+    });
+    if (Array.isArray(parsed)) return allowed;
+    const out = {};
+    for (const k in parsed) out[k] = parsed[k];
+    out.cases = allowed;
+    return out;
+  }
+  return parsed;
 }
 
 function createJson_({ name, content, parentId }) {
