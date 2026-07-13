@@ -364,13 +364,71 @@ function loginMailDecision_(history, ua, ip, geo, nowSec) {
   return { mail: false, reason: '' };
 }
 
+// ── v167：非台灣登入自動鎖定 ─────────────────────────────────────────────────
+// 純決策（可單元測試，見 test/geo-lock.test.js）：本次登入是否應判定為「非台灣地區」而鎖定帳號。
+// ⚠️ 安全註記（務必保留）：geo/cc 都是前端自報值（向 ipapi.co 查詢後由瀏覽器帶上來），使用者可用
+// VPN／代理讓查詢結果本身就顯示台灣，也可直接竄改請求參數繞過——這道鎖只防「用正常前端的機會型
+// 攻擊者／帳號外流後被順手誤用」，不是安全邊界，不能取代後端 isAuthorizedUser_ 等真正的授權檢查。
+// 規則：cc（ISO 國碼）非空 → 精準比對，非 'TW' 即鎖；cc 空但 geo（地名字串）非空 → 退回比對 geo
+// 字串是否以 'Taiwan' 結尾（cc 是本次新增欄位，舊前端分頁尚未升級時只會帶 geo，需相容）；
+// geo 與 cc 皆空（查詢逾時、被廣告/隱私阻擋器擋掉、服務限流）→ 無法判斷，不鎖——避免把「查不到
+// 位置」的合法使用者誤鎖死；這種情境改由 geoEmptyNoticeDecision_ 雙向提醒，而非直接鎖定。
+function geoLockDecision_(geo, cc) {
+  var ccStr = String(cc == null ? '' : cc).trim().toUpperCase();
+  if (ccStr) return { lock: ccStr !== 'TW' };
+  var geoStr = String(geo == null ? '' : geo).trim().toLowerCase();
+  if (geoStr) return { lock: geoStr.slice(-6) !== 'taiwan' };
+  return { lock: false };
+}
+
+// 純決策（可單元測試）：本次登入 geo 為空（定位失敗）時，是否該寄出雙向提醒信（7 天冷卻，
+// 避免同一人常態被廣告阻擋器擋掉查詢卻天天收信）。history：同一 email 在 sessions.json 的既有
+// 紀錄（各筆可能帶有上次寄出提醒的 geoEmptyNoticedAtMs）。
+function geoEmptyNoticeDecision_(history, nowMs) {
+  var hist = Array.isArray(history) ? history : [];
+  var lastNoticedMs = null;
+  hist.forEach(function (s) {
+    if (s && s.geoEmptyNoticedAtMs) {
+      var t = Number(s.geoEmptyNoticedAtMs);
+      if (lastNoticedMs === null || t > lastNoticedMs) lastNoticedMs = t;
+    }
+  });
+  var SEVEN_DAYS_MS = 7 * 24 * 3600 * 1000;
+  if (lastNoticedMs === null) return true;
+  return (Number(nowMs) - lastNoticedMs) >= SEVEN_DAYS_MS;
+}
+
 // 簽發 session＋依異常偵測決定是否寄登入通知信＋寫入登入紀錄。IP／大致位置由前端取得後傳入（GAS 拿不到來源 IP）。
 // 寄信、記錄失敗都不阻斷登入。
 function sessionStart_(userEmail, params, ctx) {
-  var issued = issueSessionToken_(userEmail);
   var ua  = String((params && params.ua)  || '').slice(0, 200) || '（未提供）';
   var ip  = String((params && params.ip)  || '').slice(0, 64);
   var geo = String((params && params.geo) || '').slice(0, 120);
+  var cc  = String((params && params.cc)  || '').slice(0, 8);
+
+  // v167：非台灣登入鎖定判斷須在簽發 token 之前——一旦判定鎖定，完全不核發任何可用的 session token。
+  var geoDecision = geoLockDecision_(geo, cc);
+  if (geoDecision.lock) {
+    var lockInfo = { ua: ua, ip: ip, geo: geo };
+    try { geoLockAccount_(userEmail, lockInfo); } catch (e) { Logger.log('geoLockAccount_ 例外：' + e.message); }
+    // 鎖帳號、登出所有裝置、寄信、寫登入紀錄依序「串行」取放各自的鎖——LockService 全 script
+    // 同一把鎖，不可巢狀 waitLock，故此處刻意不共用單一把鎖，逐步各自 waitLock/releaseLock。
+    try { sessionRevokeAllDevices_(userEmail); } catch (e) { Logger.log('sessionRevokeAllDevices_（geo_lock）例外：' + e.message); }
+    var mailSentLock = false;
+    try { mailSentLock = _sendGeoLockMail_(userEmail, lockInfo); } catch (e) { Logger.log('geo_lock 通知信例外：' + e.message); }
+    try {
+      var nowSecLock = Math.floor(Date.now() / 1000);
+      sessionsAppendGeoLockRecord_({
+        jti: null, email: userEmail, ua: ua, ip: ip, geo: geo,
+        iat: nowSecLock, exp: nowSecLock,  // 未核發可用 token，iat=exp 使其立即視為過期
+        issuedAtMs: Date.now(), issuedAt: new Date().toISOString(),
+        mailSent: mailSentLock, mailReason: 'geo_lock',
+      }, ctx);
+    } catch (e) { Logger.log('sessionsAppendGeoLockRecord_ 呼叫例外：' + e.message); }
+    return { error: 'geo_locked' };
+  }
+
+  var issued = issueSessionToken_(userEmail);
   var mailSent = false;
   try {
     var result = sessionsAppendRecordWithMailDecision_({
@@ -447,6 +505,17 @@ function sessionsAppendRecordWithMailDecision_(rec, ctx) {
     rec.mailSent = mailSent;
     rec.mailReason = decision.reason || '';
 
+    // v167：geo 空值（定位失敗）雙向提醒——與上面的「異常偵測登入通知」互相獨立，各自照各自規則跑。
+    // 7 天冷卻依 history 中最近一次 geoEmptyNoticedAtMs 判斷，本次若寄出則標記在本筆紀錄上。
+    if (!rec.geo) {
+      if (geoEmptyNoticeDecision_(history, Date.now())) {
+        rec.geoEmptyNoticedAtMs = Date.now();
+        try { _sendGeoEmptyMail_(rec.email, { ip: rec.ip, ua: rec.ua }); } catch (mailErr2) {
+          Logger.log('geo_empty 提醒信寄送失敗：' + mailErr2.message);
+        }
+      }
+    }
+
     data.sessions.push(rec);
     var cutoff = Date.now() - 45 * 24 * 3600 * 1000;
     data.sessions = data.sessions.filter(function (s) { return s && s.issuedAtMs && s.issuedAtMs >= cutoff; });
@@ -470,6 +539,165 @@ function sessionsAppendRecordWithMailDecision_(rec, ctx) {
   } finally {
     try { lock.releaseLock(); } catch (_) {}
   }
+}
+
+// v167：非台灣登入鎖定情境的登入紀錄寫入，與一般登入分流——不跑 loginMailDecision_（該情境是否寄信
+// 已在 _sendGeoLockMail_ 階段各自決定），直接把已知的 mailSent/mailReason 寫入一筆紀錄。
+// 讀寫/prune 邏輯沿用 sessionsAppendRecordWithMailDecision_（見該函式的鎖內讀-改-寫取捨說明）；
+// 呼叫端須確保呼叫當下未持有 ScriptLock（LockService 全 script 同一把鎖，不可巢狀 waitLock，
+// sessionStart_ 已將鎖帳號／登出裝置／寄信／本函式串行取放，而非巢狀）。
+function sessionsAppendGeoLockRecord_(rec, ctx) {
+  if (!ctx) return;
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(10000); } catch (_) {}
+  try {
+    var fileId = null;
+    var data = { sessions: [] };
+    try {
+      fileId = resolvePathToId_('sessions.json', ctx);
+      var res = UrlFetchApp.fetch(
+        'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+        { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+      );
+      if (res.getResponseCode() < 400) {
+        try { data = JSON.parse(res.getContentText()); } catch (_) { data = { sessions: [] }; }
+        if (!data || !Array.isArray(data.sessions)) data = { sessions: [] };
+      }
+    } catch (_) { /* 檔不存在，稍後建立 */ }
+
+    data.sessions.push(rec);
+    var cutoff = Date.now() - 45 * 24 * 3600 * 1000;
+    data.sessions = data.sessions.filter(function (s) { return s && s.issuedAtMs && s.issuedAtMs >= cutoff; });
+    data.sessions.sort(function (a, b) { return (b.issuedAtMs || 0) - (a.issuedAtMs || 0); });
+    var perUser = {};
+    var kept = [];
+    data.sessions.forEach(function (s) {
+      var e = s.email || '';
+      perUser[e] = (perUser[e] || 0) + 1;
+      if (perUser[e] <= 15) kept.push(s);
+    });
+    data.sessions = kept;
+
+    if (fileId) {
+      driveUpdateContent_(fileId, data);
+    } else {
+      var pn = resolvePathToParentAndName_('sessions.json', ctx);
+      driveUpload_(pn.fileName, data, pn.parentId);
+    }
+  } catch (e) {
+    Logger.log('sessionsAppendGeoLockRecord_ 寫入失敗：' + e.message);
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// v167：取得「專任／管理層」通知名單（非台灣登入鎖定、定位失敗雙向提醒共用）——未停用且
+// （role 屬於指定名單，或 isAdmin===true，或 extraRole==='管理者'）的 email，去重。
+// 判定基準刻意比 adminDecision_ 寬（多納入專任社工師/心理師三類角色，非僅管理者），
+// 因為這兩則通知目的是「讓能處理帳號/資安狀況的人知道」，不是權限判定。
+function _managementNotifyList_(users) {
+  if (!users || typeof users !== 'object') return [];
+  var ROLES = { '主任': true, '系統管理者': true, '專任社會工作師': true, '專任諮商心理師': true, '專任臨床心理師': true };
+  var seen = {};
+  var out = [];
+  Object.keys(users).forEach(function (email) {
+    var u = users[email];
+    if (!u || u.disabled === true) return;
+    var qualifies = !!ROLES[u.role] || u.isAdmin === true || u.extraRole === '管理者';
+    if (!qualifies) return;
+    if (!seen[email]) { seen[email] = true; out.push(email); }
+  });
+  return out;
+}
+
+// v167：鎖帳號本體——自己取 ScriptLock（呼叫端不得已持有鎖，見上方 sessionStart_ 的串行說明），
+// 直接讀本環境 config.json（localConfigFileId_：CONFIG_FILE_ID_OVERRIDE || 路徑解析，與授權閘
+// 用同一套本環境解析，不受請求帶入的 rootFolderId 影響）→ 標記 disabled → 寫回 → 清授權快取
+// （localConfigUsers_ 的 300 秒快取，不清則鎖定延遲最多 5 分鐘生效）。email 若不在 users 表
+// （理論上不會，isAuthorizedUser_ 授權閘已先擋過）則略過寫入。info 供稽核 log 用途。
+function geoLockAccount_(email, info) {
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(10000); } catch (_) {}
+  try {
+    var cfgId = localConfigFileId_();
+    if (!cfgId) return false;
+    var res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + cfgId + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() !== 200) return false;
+    var cfg = JSON.parse(res.getContentText());
+    if (!cfg || !cfg.users || typeof cfg.users !== 'object' || !cfg.users[email]) return false;
+    cfg.users[email].disabled = true;
+    cfg.users[email].disabledReason = 'geo_lock';
+    cfg.users[email].disabledAt = new Date().toISOString();
+    driveUpdateContent_(cfgId, cfg);
+    try { CacheService.getScriptCache().remove('cfgusers:' + (CONFIG_FILE_ID_OVERRIDE || ROOT_FOLDER_ID)); } catch (_) {}
+    Logger.log('geo_lock：帳號已鎖定 email=' + email + ' geo=' + (info && info.geo) + ' ip=' + (info && info.ip));
+    return true;
+  } catch (e) {
+    Logger.log('geoLockAccount_ 失敗：' + e.message);
+    return false;
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// v167：寄送「非台灣登入自動鎖定」通知信——管理層＋當事人皆收，內容相同，當事人多一句提醒。
+// best-effort：兩封各自 try/catch，任一失敗不影響另一封；回傳是否至少一封寄成功。
+function _sendGeoLockMail_(email, info) {
+  var toList = _managementNotifyList_(localConfigUsers_());
+  var loginTime = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy/MM/dd HH:mm:ss');
+  var subject = '【屏科大學諮資訊系統】🚨 帳號已自動鎖定：非台灣地區登入';
+  var baseLines = [
+    '帳號：' + email,
+    '登入時間：' + loginTime + '（台北時間）',
+    '回報位置：' + ((info && info.geo) || '（無）'),
+    'IP 位址：' + ((info && info.ip) || '（無）'),
+    '瀏覽器資訊：' + ((info && info.ua) || '（無）'),
+    '',
+    '系統偵測到非台灣地區登入，已自動停用該帳號並登出其所有裝置。',
+    '解鎖方式：管理者可於使用者管理頁重新啟用該帳號。',
+  ];
+  var sent = false;
+  try {
+    if (toList.length) { MailApp.sendEmail(toList.join(','), subject, baseLines.join('\n')); sent = true; }
+  } catch (e) { Logger.log('geo_lock 通知信（管理層）寄送失敗：' + e.message); }
+  try {
+    var selfLines = baseLines.concat(['', '若非您本人操作請立即聯繫中心。']);
+    MailApp.sendEmail(email, subject, selfLines.join('\n'));
+    sent = true;
+  } catch (e) { Logger.log('geo_lock 通知信（當事人）寄送失敗：' + e.message); }
+  return sent;
+}
+
+// v167：寄送「定位失敗」雙向提醒信（geo 空值、7 天冷卻，見 geoEmptyNoticeDecision_）——說明該次
+// 登入未受「非台灣自動鎖定」防護，管理層＋當事人皆收；當事人另附改善指引與驗證方式。
+function _sendGeoEmptyMail_(email, info) {
+  var toList = _managementNotifyList_(localConfigUsers_());
+  var loginTime = Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy/MM/dd HH:mm:ss');
+  var subject = '【屏科大學諮資訊系統】⚠ 登入位置無法判定';
+  var reasonLine = '該次登入無法取得位置資訊，常見原因：瀏覽器安裝廣告/隱私阻擋器（如 uBlock Origin）擋掉 ' +
+    'ipapi.co、網路逾時、查詢服務限流。位置判定是「非台灣自動鎖定」防護的前提，該防護對此次登入未生效。';
+  var baseLines = [
+    '帳號：' + email,
+    '登入時間：' + loginTime + '（台北時間）',
+    'IP 位址：' + ((info && info.ip) || '（無）'),
+    '瀏覽器資訊：' + ((info && info.ua) || '（無）'),
+    '',
+    reasonLine,
+  ];
+  try {
+    if (toList.length) MailApp.sendEmail(toList.join(','), subject, baseLines.join('\n'));
+  } catch (e) { Logger.log('geo_empty 提醒信（管理層）寄送失敗：' + e.message); }
+  try {
+    var selfLines = baseLines.concat([
+      '',
+      '改善指引：請將 ipapi.co 加入阻擋器允許清單，或暫停阻擋器後重新登入。',
+      '驗證方式：重新登入後至系統「登入紀錄」頁，該筆若顯示大致位置即已改善；改善後將不再收到本通知。',
+    ]);
+    MailApp.sendEmail(email, subject, selfLines.join('\n'));
+  } catch (e) { Logger.log('geo_empty 提醒信（當事人）寄送失敗：' + e.message); }
 }
 
 // 回傳指定使用者的登入紀錄（新到舊），每筆標記 revoked（已登出註銷或已過期）與是否為本次 session。
