@@ -6848,6 +6848,78 @@ function _isOffHours(isoOrDate) {
   }
   return hh < hours.start || hh >= endHour;                            // 時區以本機為準
 }
+// ══════════════════════════════════════════════
+//  請假時數計算（v175）：與 _isOffHours 共用同一套 weeklyHours/extraWorkDays/
+//  semesterPeriods/nonSemesterEndHour 判定，確保「某日是否上班／上班起訖」全站唯一標準。
+// ══════════════════════════════════════════════
+// 某日的上班時段（{start,end} 整點小時數）；非上班日回傳 null。邏輯與 _isOffHours 一致，
+// 差別只是回傳「時段」而非「當下是否 off-hours 的布林值」。
+function _dayWorkHours(cfg, ymd) {
+  if ((cfg.holidays || []).includes(ymd)) return null;                  // 假日 → 非上班日
+  const dow = new Date(ymd + 'T00:00:00').getDay();
+  const isExtra = (cfg.extraWorkDays || []).includes(ymd);
+  let hours = cfg.weeklyHours?.[dow] || null;
+  if (!hours && isExtra) {
+    // 補班日、且該星期本無設定 → 沿用第一個有設定的星期時段（同 _isOffHours）
+    hours = Object.values(cfg.weeklyHours || {}).find(h => h && Number.isFinite(h.start) && Number.isFinite(h.end)) || null;
+  }
+  if (!hours) return null;                                              // 非上班日
+  let endHour = hours.end;
+  const periods = cfg.semesterPeriods || [];
+  if (periods.length) {
+    // 學期時段外（寒暑假等）無晚班——下班時數上限降到 nonSemesterEndHour（同 _isOffHours #4a）
+    const inSem = periods.some(p => p && p.from && p.to && ymd >= p.from && ymd <= p.to);
+    if (!inSem) {
+      const cap = Number.isFinite(cfg.nonSemesterEndHour) ? cfg.nonSemesterEndHour : 18;
+      endHour = Math.min(endHour, cap);
+    }
+  }
+  return { start: hours.start, end: endHour };
+}
+// 某日上班起訖時間字串（'HH:00'），供請假申請表單預設值／改日期時自動套用；
+// 非上班日（如週末、假日）沒有「上班時段」可套，退而取其他星期第一組有效時段，皆無則 08:00–18:00。
+function _dayWorkStartEnd(cfg, ymd) {
+  const fmt = h => String(h).padStart(2, '0') + ':00';
+  const wh = _dayWorkHours(cfg, ymd);
+  if (wh) return { start: fmt(wh.start), end: fmt(wh.end) };
+  const fallback = Object.values(cfg.weeklyHours || {}).find(h => h && Number.isFinite(h.start) && Number.isFinite(h.end));
+  return { start: fmt(fallback ? fallback.start : 8), end: fmt(fallback ? fallback.end : 18) };
+}
+// 請假涵蓋的「實際上班時數」：逐日取「該日上班時段 ∩ 請假範圍」，再扣掉當日午休
+// （固定為當日上班起算的第 5 小時，如 08:00 上班→12:00-13:00、12:00 晚班→16:00-17:00）。
+// 非上班日、跨日夜間／假日等非上班時間逐日交集後自然貢獻 0 小時，不會像掛鐘時間差整段照算。
+// 四捨五入到 0.5 小時，與 la-hours 欄位既有 step 一致。純函式：不讀 DOM、不用預設參數。
+function _leaveWorkHours(cfg, fromDate, fromTime, toDate, toTime) {
+  if (!fromDate) return 0;
+  const toD = toDate || fromDate;
+  if (toD < fromDate) return 0;
+  const parseT = (t, fallbackHour) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(t || '');
+    return m ? (Number(m[1]) + Number(m[2]) / 60) : fallbackHour;
+  };
+  let total = 0;
+  const d = new Date(fromDate + 'T00:00:00');
+  const endD = new Date(toD + 'T00:00:00');
+  while (d <= endD) {
+    const ymd = _fmtDate(d);
+    const wh = _dayWorkHours(cfg, ymd);
+    if (wh) {
+      const dayStart = (ymd === fromDate) ? parseT(fromTime, wh.start) : wh.start;
+      const dayEnd = (ymd === toD) ? parseT(toTime, wh.end) : wh.end;
+      const rangeStart = Math.max(dayStart, wh.start);
+      const rangeEnd = Math.min(dayEnd, wh.end);
+      if (rangeEnd > rangeStart) {
+        let dayHours = rangeEnd - rangeStart;
+        const breakStart = wh.start + 4, breakEnd = wh.start + 5;         // 上班起算第 5 小時＝午休
+        const overlap = Math.max(0, Math.min(rangeEnd, breakEnd) - Math.max(rangeStart, breakStart));
+        dayHours -= overlap;
+        if (dayHours > 0) total += dayHours;
+      }
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  return Math.round(total * 2) / 2;
+}
 // #4：某人此刻是否「非排班／非上班」——輪值日只有輪值者算上班，其餘人一律 off-duty（列入監督）；
 // 非輪值日則沿用全域 _isOffHours。用於決定「沒排班卻上線/看改個案」是否寫入監督 feed。
 function _isOffDutyNow(email, isoOrDate) {
@@ -25716,6 +25788,7 @@ function _myAttRenderApplyTab(el) {
     .sort((a, b) => (b.appliedAt || '').localeCompare(a.appliedAt || ''));
   const typeOpts = types.map(t => `<option value="${t.id}">${escHtml(t.name)}${t.isComp ? '（用補休）' : t.deductsQuota ? '（扣抵額度）' : ''}</option>`).join('');
   const today = _fmtDate(new Date());
+  const _todayWork = _dayWorkStartEnd(_getWorkHoursConfig(), today); // 起訖時間預設值＝今日上班起訖
   const myRows = myApps.length ? myApps.map(a => `
     <tr>
       <td>${escHtml(a.leaveTypeName)}</td>
@@ -25742,18 +25815,18 @@ function _myAttRenderApplyTab(el) {
             <select id="la-type" class="field-select" style="min-width:170px;" onchange="_laUpdateRemaining()">${typeOpts}</select></div>
           <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;"><span id="la-from-label">開始（日期／時間）</span></label>
             <div style="display:flex;gap:4px;">
-              <input id="la-from" type="date" class="field-input" value="${today}" onchange="_laAutoHours()">
-              <input id="la-from-time" type="time" class="field-input" style="width:110px;" onchange="_laAutoHours()">
+              <input id="la-from" type="date" class="field-input" value="${today}" onchange="_laFromDateChange()">
+              <input id="la-from-time" type="time" class="field-input" style="width:110px;" value="${_todayWork.start}" onchange="_laAutoHours()">
             </div></div>
           <div id="la-end-row"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">結束（日期／時間）</label>
             <div style="display:flex;gap:4px;">
-              <input id="la-to" type="date" class="field-input" value="${today}" onchange="_laAutoHours()">
-              <input id="la-to-time" type="time" class="field-input" style="width:110px;" onchange="_laAutoHours()">
+              <input id="la-to" type="date" class="field-input" value="${today}" onchange="_laToDateChange()">
+              <input id="la-to-time" type="time" class="field-input" style="width:110px;" value="${_todayWork.end}" onchange="_laAutoHours()">
             </div></div>
-          <div id="la-hours-row"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">時數（小時）</label>
-            <input id="la-hours" type="number" min="0.5" step="0.5" class="field-input" style="width:110px;" placeholder="如 8"></div>
+          <div id="la-hours-row"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">時數（小時，系統自動計算）</label>
+            <input id="la-hours" type="number" class="field-input" style="width:110px;background:#f7fafc;cursor:not-allowed;" readonly tabindex="-1" title="依起訖日期時間自動計算，已扣除非上班時段與午休" placeholder="0"></div>
         </div>
-        <div id="la-hint-hours" style="font-size:.76rem;color:#a0aec0;margin-top:6px;">填入起訖時間可自動換算時數（例：08:00–12:00 = 4 小時）；亦可手動調整時數。整天請假可只填日期。</div>
+        <div id="la-hint-hours" style="font-size:.76rem;color:#a0aec0;margin-top:6px;">時數依起訖日期／時間自動換算（例：08:00–12:00 = 4 小時），已扣除非上班時段與午休，不可手動修改。整天請假可只填日期。</div>
         <div id="la-hint-manual" style="display:none;font-size:.76rem;color:#a0aec0;margin-top:6px;">補登一筆打卡紀錄（如忘記簽到／簽退）。系統會依當日打卡時間先後自動判定簽到／簽退，如同打卡機。手動補登的紀錄會標記為「手動」供督導稽核。</div>
         <div id="la-remaining" style="font-size:.82rem;color:#2b6cb0;margin-top:10px;"></div>
         <div style="margin-top:10px;"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">事由</label>
@@ -25774,6 +25847,7 @@ function _myAttRenderApplyTab(el) {
       </div>
     </div>`;
   _laKindChange();
+  _laAutoHours();   // 依預設起訖日期/時間算出初始時數（la-hours 唯讀，需在此先算好）
   attachInit('la', [], { dropTargets: ['la-reason'] });
 }
 
@@ -25832,18 +25906,41 @@ function _laKindChange() {
   else _laUpdateRemaining();
 }
 
-// 依起訖日期＋時間自動換算時數（兩者皆填時數才自動帶入，使用者仍可手動覆蓋）
+// 依起訖日期＋時間自動換算「實際上班時數」（_leaveWorkHours：只計上班時段、扣午休）。
+// la-hours 為唯讀欄位，值一律由此函式統一寫入，使用者不可手動修改。
 function _laAutoHours() {
   const fromD = document.getElementById('la-from')?.value;
   const toD   = document.getElementById('la-to')?.value || fromD;
   const fromT = document.getElementById('la-from-time')?.value;
   const toT   = document.getElementById('la-to-time')?.value;
   const hoursEl = document.getElementById('la-hours');
-  if (!hoursEl || !fromD || !fromT || !toT) return;
-  const start = new Date(`${fromD}T${fromT}`);
-  const end   = new Date(`${toD}T${toT}`);
-  if (isNaN(start.getTime()) || isNaN(end.getTime()) || end <= start) return;
-  hoursEl.value = Math.round((end - start) / 3600000 * 10) / 10;
+  if (!hoursEl || !fromD) return;
+  hoursEl.value = _leaveWorkHours(_getWorkHoursConfig(), fromD, fromT, toD, toT);
+}
+// 把某日期欄位（la-from／la-to）對應的當日上班起訖時間，套到對應的時間欄位（改日期時自動同步）
+function _laApplyDayTime(dateElId, timeElId) {
+  const dateEl = document.getElementById(dateElId);
+  const timeEl = document.getElementById(timeElId);
+  if (!dateEl || !timeEl || !dateEl.value) return;
+  const dw = _dayWorkStartEnd(_getWorkHoursConfig(), dateEl.value);
+  timeEl.value = (dateElId === 'la-from') ? dw.start : dw.end;
+}
+// 開始日期變更：若晚於目前結束日，結束日自動跟上開始日（避免結束早於開始）；
+// 兩者日期各自套用當日上班起訖時間後，重新換算時數。
+function _laFromDateChange() {
+  const fromEl = document.getElementById('la-from');
+  const toEl = document.getElementById('la-to');
+  if (fromEl && toEl && toEl.value && fromEl.value && fromEl.value > toEl.value) {
+    toEl.value = fromEl.value;
+    _laApplyDayTime('la-to', 'la-to-time');
+  }
+  _laApplyDayTime('la-from', 'la-from-time');
+  _laAutoHours();
+}
+// 結束日期變更：套用當日上班起訖時間，重新換算時數。
+function _laToDateChange() {
+  _laApplyDayTime('la-to', 'la-to-time');
+  _laAutoHours();
 }
 
 // 申請日期/時間範圍的純文字描述（HTML 顯示時請自行 escHtml）
@@ -25906,7 +26003,7 @@ async function submitLeave() {
   if (!fromDate) { alert('請選擇開始日期'); return; }
   if (toDate < fromDate) { alert('結束日期不可早於開始日期'); return; }
   if (toDate === fromDate && fromTime && toTime && toTime <= fromTime) { alert('同日的結束時間需晚於開始時間'); return; }
-  if (!hours || hours <= 0) { alert('請輸入有效時數'); return; }
+  if (!hours || hours <= 0) { alert('所選起訖期間無實際上班時數，請確認日期／時間'); return; }
 
   let leaveTypeId = '', leaveTypeName = '加班登記', deductsQuota = false;
   if (kind !== 'overtime') {
@@ -27991,6 +28088,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-14', v: 175, title: '請假申請時數改自動精算＋起訖日期時間預設當日上班', isProd: false, items: [
+      item('修復', '請假時數改為只計「實際上班時段」並自動扣除每日午休（上班起算第 5 小時，如 08:00 上班→12:00-13:00、晚班 12:00 上班→16:00-17:00）；跨日請假不再誤把過夜等非上班時間算進時數（原本用起訖掛鐘時間差整段照算）'),
+      item('改善', '開始日期晚於結束日期時，結束日期自動跟上開始日期（避免結束早於開始）'),
+      item('改善', '時數欄改為系統自動計算、不可手動編輯，一律依起訖日期／時間即時換算，避免與實際上班時段脫節'),
+      item('改善', '請假申請起訖日期預設今日，時間自動帶入當日的上班起訖時間；改選其他日期時，該日的時間欄位也會自動套用該日的上班起訖時間'),
+    ]},
     { date: '2026-07-14', v: 174, title: '空間預約時段格線改主責顯示/雙擊/拖曳＋身心調適假動作圖示化', isProd: false, items: [
       item('改善', '空間預約「時段格線」分頁改名「單日詳細預約」並移到「預約」分頁右邊；占用格改以「主責」姓名為主顯示（不論有無連結個案），案號等識別資訊改為 hover 才看得到；改為雙擊（比照其他檢視既有雙擊機制）才進編輯，避免誤點；占用格可拖曳到別的格，放開即把該筆預約改到目標欄空間＋目標列節次的起訖時間，撞房/撞人時沿用既有拖曳衝突修正流程（重用既有預約更新與衝突機制，未另寫一套）'),
       item('改善', '身心調適假列上「收到／填寫評估表／封存」三個動作改為姓名下方橫排小圖示（📩／📝／🗄），各附 hover 說明，取代原「⋯ 更多」溢位選單；已收到者顯示「已收到 ✓」'),
