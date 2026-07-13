@@ -1417,6 +1417,13 @@
             <option value="archived">已封存</option>
             <option value="">全部</option>
           </select>
+          <select id="cf-abtype"
+            style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
+            onchange="caseFilters.abType=this.value;renderCases()" data-tip="依有效案別篩選（最新學期快照優先，缺值時 fallback 頂層；索引缺欄位的個案選特定案別時會被排除）">
+            <option value="">全部案別</option>
+            <option value="A案">A案</option>
+            <option value="B案">B案</option>
+          </select>
           <span id="cf-counselor-wrap" style="display:none;">
             <select id="cf-counselor"
               style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;"
@@ -4219,7 +4226,8 @@ let caseFilters = {
   semester: localStorage.getItem('scc_semester_pref') || currentSemesterPrefix(),
   counselor: '', dateFrom: '', dateTo: '',
   archived: 'unarchived',
-  mlLeaveFrom: '', mlLeaveTo: ''
+  mlLeaveFrom: '', mlLeaveTo: '',
+  abType: '' // A案/B案篩選（'' = 全部）
 };
 
 // ══════════════════════════════════════════════
@@ -4488,6 +4496,54 @@ document.addEventListener('keyup', function (e) {
   const toolbar = editor.previousElementSibling;
   if (toolbar?.classList.contains('rt-toolbar')) _updateRtBtnStates(toolbar);
 });
+
+// ── 通用：批次勾選清單的 Shift 範圍選取 ──
+// 適用全站所有「列級批次勾選」清單（個案列表、案號查詢與管理、待辦事項、身心調適假等，見下方清單），
+// 不含單一設定用途的 checkbox（如「僅看自己」這類非清單多選）。
+// 用事件委派掛在 document 上（依 class 判斷群組），不受清單 re-render（innerHTML 重建）影響；
+// 記錄每個群組「上次點擊」的 checkbox，shift+click 時把兩者之間（依目前 DOM 順序）的同群組 checkbox
+// 全部設成本次點擊 checkbox 的勾選狀態，並對每個被改動的 checkbox 觸發 change 事件，讓既有 onchange
+// （如 _casesSelected 等狀態同步）照常執行。checkbox 的 click 事件觸發時 checked 已是切換後的新值。
+const SHIFT_RANGE_SELECT_CLASSES = [
+  'case-row-chk',   // 個案列表
+  'cn-row-chk',     // 案號查詢與管理
+  'todo-select-cb', // 待辦事項列表
+  'ml-row-chk',     // 身心調適假資料庫
+  'ml-notif-cb',    // 待辦頁「身心調適假通知」區塊
+  'bp-cb',          // 晤談記錄批次列印
+  'sem-chk',        // 學期批次刪除
+  'ecd-chk',        // 釋放空個案案號
+  'rb-chk',         // 資源回收桶
+  'grad-cb',        // 畢業生列管
+  'wd-cb',          // 休退學列管
+  'mspv-cb',        // 督導設定的受督者picker
+];
+const _shiftRangeLastClicked = {}; // class 名稱 → 該群組最後點擊的 checkbox 元素
+// 用 capture phase：部分清單（如個案列表）的 row checkbox 外層有 onclick="event.stopPropagation()"
+// 阻擋事件冒泡到 document，capture phase 由上而下先於那些 bubble-phase 攔截執行，才能穩定收到事件。
+document.addEventListener('click', function (e) {
+  const cb = e.target.closest('input[type="checkbox"]');
+  if (!cb) return;
+  const cls = SHIFT_RANGE_SELECT_CLASSES.find(c => cb.classList.contains(c));
+  if (!cls) return;
+  if (e.shiftKey && _shiftRangeLastClicked[cls] && document.contains(_shiftRangeLastClicked[cls]) && _shiftRangeLastClicked[cls] !== cb) {
+    const group = [...document.querySelectorAll('.' + cls)];
+    const from = group.indexOf(_shiftRangeLastClicked[cls]);
+    const to = group.indexOf(cb);
+    if (from !== -1 && to !== -1) {
+      const [lo, hi] = from < to ? [from, to] : [to, from];
+      const target = cb.checked;
+      for (let i = lo; i <= hi; i++) {
+        const item = group[i];
+        if (item.checked !== target) {
+          item.checked = target;
+          item.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      }
+    }
+  }
+  _shiftRangeLastClicked[cls] = cb;
+}, true);
 
 function _updateRtBtnStates(toolbar) {
   toolbar.querySelectorAll('[data-cmd]').forEach(btn => {
@@ -7146,7 +7202,7 @@ function renderCases() {
   }
 
   // ── 套用搜尋 / 篩選 ──
-  const { q, status, semester, counselor, dateFrom, dateTo, archived } = caseFilters;
+  const { q, status, semester, counselor, dateFrom, dateTo, archived, abType: abTypeFilter } = caseFilters;
   // #8：搜尋完整姓名/學號/案號時，用來補回被 archived/status/semester 篩掉的相符個案（權限已在此之前套過）
   const _searchBaseForHint = [...visible];
   if (archived === 'unarchived') {
@@ -7180,6 +7236,9 @@ function renderCases() {
   });
   if (dateFrom)  visible = visible.filter(c => (c.openDate || '') >= dateFrom);
   if (dateTo)    visible = visible.filter(c => (c.openDate || '') <= dateTo);
+  // 個案列表走輕量 index（部分冷資料個案僅有 index stub，可能缺 abType 欄位）；
+  // _caseLatestAbType 對缺欄位的個案會 fallback 回傳空字串，選特定 A/B 案時一併排除（見上方 data-tip 說明）
+  if (abTypeFilter) visible = visible.filter(c => _caseLatestAbType(c) === abTypeFilter);
   if (caseFilters.mlLeaveFrom || caseFilters.mlLeaveTo) {
     const mlFrom = caseFilters.mlLeaveFrom;
     const mlTo   = caseFilters.mlLeaveTo;
@@ -7491,7 +7550,7 @@ function _syncCasesBatchBar() {
 
 function resetCaseFilters() {
   const sem = currentSemesterPrefix();
-  caseFilters = { q: '', status: '', semester: sem, counselor: '', dateFrom: '', dateTo: '', archived: 'unarchived', mlLeaveFrom: '', mlLeaveTo: '' };
+  caseFilters = { q: '', status: '', semester: sem, counselor: '', dateFrom: '', dateTo: '', archived: 'unarchived', mlLeaveFrom: '', mlLeaveTo: '', abType: '' };
   caseSort = { col: null, dir: 1 };
   localStorage.setItem('scc_semester_pref', sem);
   syncUserPref_({ semesterPref: sem });
@@ -7499,7 +7558,7 @@ function resetCaseFilters() {
   const _mlToEl = document.getElementById('cf-ml-to');
   if (_mlFromEl) _mlFromEl.value = '';
   if (_mlToEl) _mlToEl.value = '';
-  ['cf-q', 'cf-status', 'cf-counselor', 'cf-date-from', 'cf-date-to'].forEach(id => {
+  ['cf-q', 'cf-status', 'cf-counselor', 'cf-date-from', 'cf-date-to', 'cf-abtype'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
   });
   const cfSem = document.getElementById('cf-semester');
@@ -15160,6 +15219,7 @@ function _cnClearFilters() {
   _cnArchived = 'unarchived';
   _cnClosureStatus = '';
   _cnCounselor = '';
+  _cnAbType = '';
   _cnPage = 1;
   _cnSelected.clear();
   const searchEl = document.getElementById('cn-search');
@@ -15173,6 +15233,7 @@ let _cnComposing = false;
 let _cnArchived = 'unarchived';
 let _cnClosureStatus = '';
 let _cnCounselor = '';
+let _cnAbType = ''; // A案/B案篩選（'' = 全部）
 let _cnSelected = new Set();
 let _casesSelected = new Set();
 
@@ -15207,6 +15268,7 @@ function renderCaseNums(resetPage) {
     const key = c.counselorEmail || c.counselorName || c.counselorText || '';
     return key === _cnCounselor;
   });
+  if (_cnAbType) visible = visible.filter(c => _caseLatestAbType(c) === _cnAbType);
 
   // 篩選後為空 → 繼續渲染 filter bar，表格顯示「無符合結果」（讓使用者能清除篩選）
 
@@ -15341,8 +15403,10 @@ function renderCaseNums(resetPage) {
     if (archSel && archSel.value !== _cnArchived) archSel.value = _cnArchived;
     const clSel = document.getElementById('cn-closure-status');
     if (clSel && clSel.value !== _cnClosureStatus) clSel.value = _cnClosureStatus;
+    const abSel = document.getElementById('cn-abtype');
+    if (abSel && abSel.value !== _cnAbType) abSel.value = _cnAbType;
     const clearBtn = document.getElementById('cn-clear-btn');
-    if (clearBtn) clearBtn.disabled = (_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor&&!(document.getElementById('cn-search')?.value?.trim()));
+    if (clearBtn) clearBtn.disabled = (_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor&&!_cnAbType&&!(document.getElementById('cn-search')?.value?.trim()));
     const cnslSel = document.getElementById('cn-counselor');
     if (cnslSel) {
       cnslSel.innerHTML = buildCounselorFilterOpts(_cnCounselor, true, '全部人員');
@@ -15380,12 +15444,18 @@ function renderCaseNums(resetPage) {
             onchange="_cnCounselor=this.value;_cnPage=1;renderCaseNums()">
             ${buildCounselorFilterOpts(_cnCounselor, true, '全部人員')}
           </select>
+          <select id="cn-abtype" class="field-input" style="padding:4px 6px;font-size:.85rem;"
+            onchange="_cnAbType=this.value;_cnPage=1;renderCaseNums()">
+            <option value="" ${_cnAbType===''?'selected':''}>全部案別</option>
+            <option value="A案" ${_cnAbType==='A案'?'selected':''}>A案</option>
+            <option value="B案" ${_cnAbType==='B案'?'selected':''}>B案</option>
+          </select>
           <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;">每頁
             <select id="cn-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;"
               onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select>筆
           </label>
           <button id="cn-clear-btn" class="btn btn-secondary btn-sm" onclick="_cnClearFilters()" style="flex-shrink:0;"
-            ${(_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor)?'disabled':''}>清除篩選</button>
+            ${(_cnArchived==='unarchived'&&_cnClosureStatus===''&&!_cnCounselor&&!_cnAbType)?'disabled':''}>清除篩選</button>
           <button class="btn btn-secondary btn-sm" onclick="_resetCnColWidths()" style="flex-shrink:0;" data-tip="清除已儲存的欄寬設定，恢復預設比例">重設欄寬</button>
         </div>
       </div>
@@ -27757,6 +27827,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-13', v: 169, title: 'UI 改善：稽核紀錄獨立分頁、A案/B案篩選、批次勾選 Shift 範圍選取', isProd: false, items: [
+      item('新功能', '身心調適假新增「稽核紀錄」獨立分頁（原「異動追蹤」可收合區塊升級，僅系所專任人員/管理者可見）'),
+      item('新功能', '個案列表、案號查詢與管理、身心調適假新增 A案/B案 下拉篩選'),
+      item('改善', '所有批次勾選清單支援 Shift 範圍選取'),
+    ]},
     { date: '2026-07-13', v: 168, title: '打卡後自動寄送當日彙整信', isProd: true, items: [
       item('新功能', '每次打卡成功（實習生與所有人皆適用）後，系統會自動寄一封 email 給該筆打卡紀錄的當事人，內容含當日所有打卡紀錄、標註最早與最晚打卡時間，並計算最早到最晚涵蓋的工時（定義與差勤月報一致，滿 9 小時為正常、午休不另扣）'),
       item('技術', '後端新增純函式 punchDaySummary_ 彙整當日打卡（供 attendanceCommit_ 寄信與單元測試共用）；寄信動作安排在 LockService 鎖釋放之後才執行，避免拉長鎖持有時間拖慢並發打卡；「更新定位」等既有 id 改寫不觸發寄信，只有新增的打卡紀錄才寄；寄信全程 best-effort，失敗僅記錄 Logger 不影響打卡主流程'),
@@ -31613,8 +31688,8 @@ let _mlConsec3Filter = false;
 let _mlQFilter = '';
 let _mlRiskFilter = new Set();
 let _mlHandlingFilter = '';
+let _mlAbFilter = ''; // A案/B案篩選（依連結個案的有效 abType；'' = 全部）
 let _mlQComposing = false;
-let _mlAuditTrackOpen = false; // 「📋 異動追蹤」區塊收合狀態
 
 // 可見個案身分之人員：專任＋實習＋主任＋系統管理者（不得向兼任/義務輔導老師/行政等未接觸個案身分之人員揭露該生為個案）
 // 函式名沿用舊名 _mlIsFullTimeStaff 以避免大範圍改名，實際涵蓋範圍已不限專任（含實習諮商心理師）
@@ -31705,38 +31780,27 @@ function renderMentalLeavePage() {
   if (!_mlTabRestored) {
     _mlTabRestored = true;
     const saved = configData?.users?.[currentUser?.email]?.mlTab;
-    const valid = ['my', 'records', 'keywords'];
+    const valid = ['my', 'records', 'keywords', 'audit'];
     if (saved && valid.includes(saved)) _mlTab = saved;
   }
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   const canFullAccess = isAdmin || isMentalLeaveContact;
   // 若目前 tab 無權限，自動回到受輔生
-  if (!canFullAccess && (_mlTab === 'records' || _mlTab === 'keywords')) _mlTab = 'my';
+  if (!canFullAccess && (_mlTab === 'records' || _mlTab === 'keywords' || _mlTab === 'audit')) _mlTab = 'my';
   // Save filter state before destroying DOM
   _mlQFilter = document.getElementById('ml-q')?.value ?? _mlQFilter;
   _mlHandlingFilter = document.getElementById('ml-handling')?.value ?? _mlHandlingFilter;
+  _mlAbFilter = document.getElementById('ml-ab')?.value ?? _mlAbFilter;
   const _mlQHadFocus = document.activeElement?.id === 'ml-q';
   el.innerHTML = `
     <div style="display:flex;gap:2px;border-bottom:2px solid #e2e8f0;margin-bottom:20px;">
       ${_mlTabBtn('my','🙋 受輔生')}
       ${canFullAccess ? _mlTabBtn('records','📋 資料庫') : ''}
       ${canFullAccess ? _mlTabBtn('keywords','🔑 關鍵字設定') : ''}
+      ${canFullAccess ? _mlTabBtn('audit','📋 稽核紀錄') : ''}
     </div>
-    <div id="ml-tab-content"></div>
-    <div style="margin-top:20px;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
-      <div style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#f7fafc;" onclick="window._mlToggleAuditTrack()">
-        <span style="font-weight:600;font-size:.9rem;color:#4a5568;">📋 異動追蹤</span>
-        <span id="ml-audit-track-icon">${_mlAuditTrackOpen ? '▼' : '▶'}</span>
-      </div>
-      <div id="ml-audit-track-body" style="display:${_mlAuditTrackOpen ? 'block' : 'none'};padding:12px 14px;">
-        <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
-          <button class="btn btn-secondary btn-sm" onclick="window._mlLoadAuditTrack(true)">🔄 重新整理</button>
-        </div>
-        <div id="ml-audit-track-table"></div>
-      </div>
-    </div>`;
+    <div id="ml-tab-content"></div>`;
   _mlRenderTab();
-  if (_mlAuditTrackOpen) window._mlLoadAuditTrack();
   if (_mlQHadFocus) {
     const _qEl = document.getElementById('ml-q');
     if (_qEl) { _qEl.focus(); const _l = _qEl.value.length; _qEl.setSelectionRange(_l, _l); }
@@ -31750,15 +31814,17 @@ window._mlSwitchTab = (id) => { _mlTab = id; syncUserPref_({ mlTab: id }); rende
 window._mlFilterChange = () => { if (_mlQComposing) return; _mlPage = 1; renderMentalLeavePage(); };
 window._mlRiskToggle = (cb) => { if (cb.checked) _mlRiskFilter.add(cb.value); else _mlRiskFilter.delete(cb.value); _mlPage = 1; renderMentalLeavePage(); };
 
-// ── ⑤ 異動追蹤（沿用既有稽核日誌的載入/表格渲染，僅篩選本模組動作） ──
-window._mlToggleAuditTrack = () => {
-  _mlAuditTrackOpen = !_mlAuditTrackOpen;
-  const body = document.getElementById('ml-audit-track-body');
-  const icon = document.getElementById('ml-audit-track-icon');
-  if (body) body.style.display = _mlAuditTrackOpen ? 'block' : 'none';
-  if (icon) icon.textContent = _mlAuditTrackOpen ? '▼' : '▶';
-  if (_mlAuditTrackOpen) window._mlLoadAuditTrack();
-};
+// ── ⑤ 稽核紀錄 tab（沿用既有稽核日誌的載入/表格渲染，僅篩選本模組動作） ──
+function _mlRenderAuditTab(el) {
+  el.innerHTML = `
+    <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;">
+      <div style="display:flex;justify-content:flex-end;padding:10px 14px;background:#f7fafc;">
+        <button class="btn btn-secondary btn-sm" onclick="window._mlLoadAuditTrack(true)">🔄 重新整理</button>
+      </div>
+      <div id="ml-audit-track-table" style="padding:12px 14px;"></div>
+    </div>`;
+  window._mlLoadAuditTrack();
+}
 window._mlLoadAuditTrack = async (forceRefresh = false) => {
   const wrap = document.getElementById('ml-audit-track-table');
   if (!wrap) return;
@@ -31827,6 +31893,7 @@ function _mlRenderTab() {
   const el = document.getElementById('ml-tab-content');
   if (!el) return;
   if (_mlTab === 'keywords') _mlRenderKeywordsTab(el);
+  else if (_mlTab === 'audit') _mlRenderAuditTab(el);
   else if (_mlTab === 'my') _mlRenderRecordsTab(el, _getMyStudentIds());
   else _mlRenderRecordsTab(el, null);
 }
@@ -32435,6 +32502,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
   const riskF  =  _mlRiskFilter;
   const semF   =  _mlSemFilter;
   const hF     =  _mlHandlingFilter;
+  const abF    =  _mlAbFilter;
   const consec3Ids = _mlConsec3Filter ? _mlConsecutive3DayIds(records) : null;
 
   let filtered = records.filter(l => {
@@ -32450,6 +32518,11 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       const { level: maxLevel } = _mlEffectiveRisk(l);
       const eff = l.handlingStatus || (maxLevel >= 3 ? '待處理' : '非危機');
       if (eff !== hF) return false;
+    }
+    if (abF) {
+      // 依「連結個案」的有效 abType 篩選（最新學期快照優先，fallback 頂層）；找不到連結個案者一併排除
+      const _mc = casesData.find(c => !c.deleted && c.studentId === l.studentId);
+      if (!_mc || _caseLatestAbType(_mc) !== abF) return false;
     }
     return true;
   });
@@ -32618,6 +32691,11 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       <select id="ml-handling" class="field-input" onchange="window._mlFilterChange()" style="width:auto;">
         <option value="">所有受理情況</option>
         ${ML_HANDLING_OPTS.map(o=>`<option value="${o}"${hF===o?' selected':''}>${o}</option>`).join('')}
+      </select>
+      <select id="ml-ab" class="field-input" onchange="window._mlFilterChange()" style="width:auto;" data-tip="依連結個案的有效案別篩選（最新學期快照優先，fallback 頂層；找不到連結個案者一併排除）">
+        <option value="">全部案別</option>
+        <option value="A案"${abF==='A案'?' selected':''}>A案</option>
+        <option value="B案"${abF==='B案'?' selected':''}>B案</option>
       </select>
       <select id="ml-sem" class="field-input" onchange="_mlSemFilter=this.value;localStorage.setItem('ml_sem_pref',this.value);_mlPage=1;renderMentalLeavePage();" style="width:auto;">
         <option value="">所有學期</option>${semOpts}
