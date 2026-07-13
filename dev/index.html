@@ -1933,6 +1933,9 @@
       <div style="display:flex;gap:2px;border-bottom:2px solid #e2e8f0;margin-bottom:16px;">
         <button type="button" id="bk-tabbtn-booking" class="bk-page-tabbtn" onclick="_bkSwitchTab('booking')">預約</button>
         <button type="button" id="bk-tabbtn-audit" class="bk-page-tabbtn" onclick="_bkSwitchTab('audit')">稽核紀錄</button>
+        <!-- v172（重構 Slice D）：時段格線＋使用率統計，比照既有 tab pattern 新增 -->
+        <button type="button" id="bk-tabbtn-grid" class="bk-page-tabbtn" onclick="_bkSwitchTab('grid')">🗓 時段格線</button>
+        <button type="button" id="bk-tabbtn-stats" class="bk-page-tabbtn" onclick="_bkSwitchTab('stats')">📊 使用率統計</button>
       </div>
       <div id="bk-tab-booking">
       <div class="card" style="margin-bottom:20px;">
@@ -1994,6 +1997,35 @@
           </div>
           <div id="bookings-audit-body" style="padding:0;min-height:40px;"></div>
         </div>
+      </div>
+      </div>
+      <!-- v172（重構 Slice D1）：時段格線——一天檢視，列＝節次、欄＝空間，一眼看空檔 -->
+      <div id="bk-tab-grid" style="display:none;">
+      <div class="card">
+        <div class="card-header" style="flex-wrap:wrap;gap:8px;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <button class="btn btn-secondary btn-sm" onclick="_bkShiftGridDate(-1)" style="font-size:1.1rem;padding:3px 10px;">‹</button>
+            <input type="date" id="bk-grid-date" style="padding:5px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;" onchange="_bkGridDate=this.value;renderBkGridTab()">
+            <button class="btn btn-secondary btn-sm" onclick="_bkShiftGridDate(1)" style="font-size:1.1rem;padding:3px 10px;">›</button>
+            <button class="btn btn-secondary btn-sm" onclick="_bkGridDate=new Date().toISOString().slice(0,10);renderBkGridTab()">今天</button>
+          </div>
+          <span style="color:#718096;font-size:.8rem;">點空格新增預約，點既有預約可編輯</span>
+        </div>
+        <div id="bk-grid-body" style="padding:0;min-height:60px;"></div>
+      </div>
+      </div>
+      <!-- v172（重構 Slice D2）：使用率統計——可選區間，各空間/各節次/各人使用量 -->
+      <div id="bk-tab-stats" style="display:none;">
+      <div class="card">
+        <div class="card-header" style="flex-wrap:wrap;gap:8px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-size:.8rem;color:#718096;">區間：</span>
+            <input type="date" id="bk-stat-from" style="padding:5px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;" onchange="_bkStatFrom=this.value;renderBkStatsTab()">
+            <span style="color:#718096;font-size:.85rem;">～</span>
+            <input type="date" id="bk-stat-to" style="padding:5px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.875rem;" onchange="_bkStatTo=this.value;renderBkStatsTab()">
+          </div>
+        </div>
+        <div id="bk-stats-body" style="padding:12px 16px;"></div>
       </div>
       </div>
     </div>
@@ -27864,6 +27896,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-13', v: 172, title: '空間預約重構 Slice D：時段格線＋使用率統計', isProd: false, items: [
+      item('新功能', '空間預約新增「時段格線」分頁：一天檢視，列＝節次、欄＝空間，一眼看出各時段各空間的空檔；點空格直接帶入日期／空間／節次時間開新增預約，點既有預約可直接編輯'),
+      item('新功能', '空間預約新增「使用率統計」分頁：可選日期區間（預設本月 1 號～今天），分別列出各空間、各節次、各人的預約量，數字為主、長條為輔'),
+    ]},
     { date: '2026-07-13', v: 171, title: '測試版通知信加【測試版】前綴＋修正日曆同步信件標記', isProd: false, items: [
       item('改善', '測試版寄出的通知信（登入、非台灣鎖定、定位失敗、打卡彙整）主旨一律加上「【測試版】」前綴，避免與正式版信件混淆（測試版與正式版共用同一個系統信箱）；正式版信件不受影響'),
       item('修正', '修正 Google 日曆定時同步在正式版誤用測試版信件處理標記（ml-processed-dev）的問題——測試版與正式版共用同一信箱，標記混用可能讓兩邊互相影響已處理信件的判定；改為依環境自動取用正確標記'),
@@ -30698,6 +30734,10 @@ let _bkListView = false;
 // （比照 _mlTabRestored／_mlTab 的既有模式）。
 let _bkPageTab = 'booking';
 let _bkPageTabRestored = false;
+// v172（重構 Slice D）：時段格線目前檢視日期／使用率統計目前檢視區間（'' 時 render 函式會補預設值）
+let _bkGridDate = '';
+let _bkStatFrom = '';
+let _bkStatTo = '';
 let _bkListPage = 1;
 const _BK_LIST_PAGE_SIZE = 15;
 let _bkAuditPage = 0;
@@ -34002,6 +34042,172 @@ function _getBkDisplayRooms() {
   return [...ROOMS, ...extra];
 }
 
+// ── v172（重構 Slice D1）：時段格線——一天檢視，列＝BK_PERIODS 節次、欄＝ROOMS 空間 ──────
+// 某節次是否與該筆預約時間重疊（半開區間，比照既有 _bkFindConflict／saveBooking 撞房判定）
+function _bkPeriodOverlaps(b, period) {
+  return (b.startTime || '') < period.end && (b.endTime || '') > period.start;
+}
+// 一筆預約橫跨多節次時，找出「起始」節次索引（用來判斷其餘節次要標「續」），
+// 找不到重疊節次（自訂時間完全落在節次表外）回傳 -1。
+function _bkFirstOverlapPeriodIdx(b) {
+  return BK_PERIODS.findIndex(p => _bkPeriodOverlaps(b, p));
+}
+// 判斷一筆預約是否歸入「其他」欄：room 直接是 '其他'（含舊資料 customRoom 附掛），
+// 或 room 是不在 ROOMS 固定 8 項內的自訂空間名稱（見 saveBooking：新建時直接把自訂空間名存進 room）。
+function _bkIsOtherRoomBooking(b) {
+  return b.room === '其他' || !!(b.room && !ROOMS.includes(b.room));
+}
+function _bkShiftGridDate(delta) {
+  if (!_bkGridDate) _bkGridDate = new Date().toISOString().slice(0, 10);
+  _bkGridDate = _bkAddDays(_bkGridDate, delta);
+  renderBkGridTab();
+}
+function _bkOpenGridNew(room, date, start, end) {
+  // 「其他」欄彙整非標準空間的預約（見 _bkIsOtherRoomBooking），本身不是新增預約 modal 裡的可選
+  // 空間 chip（_populateBookingRoomChipsList 排除 ROOMS 中的『其他』），故不預帶空間，交由使用者
+  // 自行挑選既有空間或新增自訂空間；其餘欄位（日期／節次時間）照常預帶。
+  const prefill = { date, startTime: start, endTime: end };
+  if (room !== '其他') prefill.room = room;
+  openBookingModal(null, prefill);
+}
+function renderBkGridTab() {
+  if (!_bkGridDate) _bkGridDate = new Date().toISOString().slice(0, 10);
+  const dateEl = document.getElementById('bk-grid-date');
+  if (dateEl) dateEl.value = _bkGridDate;
+  const body = document.getElementById('bk-grid-body');
+  if (!body) return;
+
+  const dayBookings = bookingsData.filter(b => b.date === _bkGridDate);
+  const cellMatch = (b, room) => room === '其他' ? _bkIsOtherRoomBooking(b) : b.room === room;
+  // 案號優先去識別化呈現；無案號才退回主責/借用事由名稱（比照既有卡片慣例，非硬性規定學號/姓名）
+  const _label = b => b.caseId ? escHtml(b.caseId) : escHtml(b.counselorName || '—');
+
+  let html = `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">`;
+  html += `<tr><th style="padding:6px 8px;background:#f7fafc;border-bottom:2px solid #e2e8f0;border-right:1px solid #e2e8f0;font-size:.78rem;color:#718096;text-align:left;white-space:nowrap;">節次</th>`;
+  html += ROOMS.map(r => `<th style="padding:6px 8px;background:#f7fafc;border-bottom:2px solid #e2e8f0;border-right:1px solid #e2e8f0;font-size:.78rem;font-weight:700;color:#2d3748;text-align:center;white-space:nowrap;min-width:96px;">${escHtml(r)}</th>`).join('');
+  html += '</tr>';
+
+  BK_PERIODS.forEach(p => {
+    html += `<tr><td style="padding:5px 8px;background:#f7fafc;border-bottom:1px solid #e2e8f0;border-right:1px solid #e2e8f0;font-size:.76rem;color:#4a5568;white-space:nowrap;">${escHtml(p.label)}</td>`;
+    ROOMS.forEach(room => {
+      const matches = dayBookings.filter(b => cellMatch(b, room) && _bkPeriodOverlaps(b, p));
+      if (matches.length === 0) {
+        html += `<td onclick="_bkOpenGridNew('${escHtml(room)}','${_bkGridDate}','${p.start}','${p.end}')" data-tip="點此新增預約" style="padding:5px 7px;border-bottom:1px solid #e2e8f0;border-right:1px solid #e2e8f0;text-align:center;color:#cbd5e0;cursor:pointer;transition:background .1s;" onmouseover="this.style.background='#f0f9ff'" onmouseout="this.style.background=''">＋</td>`;
+      } else {
+        const cells = matches.map(b => {
+          const clr = _bkEffColor(b);
+          const style = clr ? `background:${clr}22;border-left:3px solid ${clr};` : 'background:#edf2f7;';
+          const continued = _bkFirstOverlapPeriodIdx(b) !== BK_PERIODS.indexOf(p);
+          const txt = continued ? `↳續 ${_label(b)}` : _label(b);
+          return `<div onclick="event.stopPropagation();editBooking('${escHtml(b.id)}')" data-tip="點此編輯" title="${escHtml((b.counselorName||'')+(b.notes?'／'+b.notes:''))}" style="${style}border-radius:4px;padding:2px 5px;margin-bottom:2px;font-size:.76rem;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${txt}</div>`;
+        }).join('');
+        html += `<td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;border-right:1px solid #e2e8f0;vertical-align:top;">${cells}</td>`;
+      }
+    });
+    html += '</tr>';
+  });
+  html += '</table></div>';
+
+  // 自訂時間、完全不落在任何節次區間內的預約（如早於第1節或晚於第11節）：另列一區，避免漏顯示。
+  const unmatched = dayBookings.filter(b => _bkFirstOverlapPeriodIdx(b) === -1);
+  if (unmatched.length) {
+    const fmtT = t => (t || '').slice(0, 5);
+    html += `<div style="padding:10px 16px;border-top:1px solid #e2e8f0;">
+      <div style="font-size:.8rem;font-weight:600;color:#718096;margin-bottom:6px;">不落在節次表內的自訂時間預約</div>` +
+      unmatched.map(b => {
+        const clr = _bkEffColor(b);
+        const style = clr ? `background:${clr}22;border-left:3px solid ${clr};` : 'background:#edf2f7;';
+        const roomD = _bkIsOtherRoomBooking(b) ? (b.customRoom || b.room || '其他') : (b.room || '—');
+        return `<div onclick="editBooking('${escHtml(b.id)}')" style="${style}border-radius:5px;padding:5px 8px;margin-bottom:4px;font-size:.82rem;cursor:pointer;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span style="font-weight:600;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</span>
+          <span style="color:#4a5568;">${escHtml(roomD)}</span>
+          <span>${_label(b)}</span>
+        </div>`;
+      }).join('') + `</div>`;
+  }
+
+  body.innerHTML = html;
+}
+
+// ── v172（重構 Slice D2）：使用率統計 ─────────────────────────────────────────
+// 純函式（無 DOM／全域讀寫副作用，供 test/booking-usage.test.js 單元測試；依賴 BK_PERIODS 由呼叫端
+// 所在的全域提供，harness 測試以 extraGlobals 注入替身，見 test/README「加新測試」）。
+// bookings：預約陣列；from/to：'YYYY-MM-DD' 字串（含端點，from<=date<=to 才計入）。
+// 回傳 { byRoom:[{room,count}]（多到少）, byPeriod:[{label,count}]（依 BK_PERIODS 順序）,
+//        byPerson:[{name,count}]（多到少） }。
+function _bkUsageStats(bookings, from, to) {
+  const inRange = (bookings || []).filter(b => b && b.date >= from && b.date <= to);
+
+  // byRoom：'其他'（含舊資料 customRoom 附掛）優先以 customRoom 呈現實際空間名稱，避免全部
+  // 不同的自訂空間被籠統歸成同一列「其他」，看不出各自使用量。
+  const roomCounts = new Map();
+  inRange.forEach(b => {
+    const key = (b.room === '其他' && b.customRoom) ? b.customRoom : (b.room || b.customRoom || '（未指定空間）');
+    roomCounts.set(key, (roomCounts.get(key) || 0) + 1);
+  });
+  const byRoom = [...roomCounts.entries()]
+    .map(([room, count]) => ({ room, count }))
+    .sort((a, b) => b.count - a.count);
+
+  // byPeriod：依重疊判定，一筆預約可能同時累計到多個節次（跨節次預約），依 BK_PERIODS 原順序呈現。
+  const byPeriod = BK_PERIODS.map(p => ({
+    label: p.label,
+    count: inRange.reduce((n, b) => n + (((b.startTime || '') < p.end && (b.endTime || '') > p.start) ? 1 : 0), 0),
+  }));
+
+  // byPerson：以 counselorName（顯示用聯合字串）為主，缺值才退回 counselors[0]
+  const personCounts = new Map();
+  inRange.forEach(b => {
+    const name = b.counselorName || b.counselors?.[0]?.name || b.counselors?.[0]?.label || '（未指定）';
+    personCounts.set(name, (personCounts.get(name) || 0) + 1);
+  });
+  const byPerson = [...personCounts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
+
+  return { byRoom, byPeriod, byPerson };
+}
+
+function renderBkStatsTab() {
+  const today = new Date().toISOString().slice(0, 10);
+  if (!_bkStatFrom) _bkStatFrom = today.slice(0, 8) + '01'; // 預設本月 1 號
+  if (!_bkStatTo) _bkStatTo = today;
+  const fromEl = document.getElementById('bk-stat-from');
+  const toEl   = document.getElementById('bk-stat-to');
+  if (fromEl) fromEl.value = _bkStatFrom;
+  if (toEl)   toEl.value   = _bkStatTo;
+
+  const body = document.getElementById('bk-stats-body');
+  if (!body) return;
+  const { byRoom, byPeriod, byPerson } = _bkUsageStats(bookingsData, _bkStatFrom, _bkStatTo);
+
+  // 數字為主、長條為輔：pct = 該列 count / 該組 max（無資料時避免除以 0）
+  const barTable = (title, rows, labelKey) => {
+    const max = Math.max(1, ...rows.map(r => r.count));
+    const rowsHtml = rows.length
+      ? rows.map(r => {
+          const pct = Math.round((r.count / max) * 100);
+          return `<div style="display:flex;align-items:center;gap:10px;padding:4px 0;">
+            <span style="min-width:160px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.85rem;color:#2d3748;" title="${escHtml(r[labelKey])}">${escHtml(r[labelKey])}</span>
+            <span style="min-width:28px;text-align:right;font-size:.85rem;font-weight:700;color:#2b6cb0;">${r.count}</span>
+            <div style="flex:1;background:#edf2f7;border-radius:4px;overflow:hidden;height:10px;">
+              <div style="width:${pct}%;background:#4299e1;height:100%;"></div>
+            </div>
+          </div>`;
+        }).join('')
+      : '<div style="color:#a0aec0;font-size:.85rem;padding:6px 0;">（此區間無資料）</div>';
+    return `<div style="margin-bottom:20px;">
+      <div style="font-weight:700;color:#2d3748;margin-bottom:8px;">${escHtml(title)}</div>
+      ${rowsHtml}
+    </div>`;
+  };
+
+  body.innerHTML =
+    barTable('各空間使用量', byRoom, 'room') +
+    barTable('各節次熱度', byPeriod, 'label') +
+    barTable('各人預約量', byPerson, 'name');
+}
+
 function _bkRenderDayColumn(date) {
   const fmtT = t => (t || '').slice(0, 5);
   const dayBookings = bookingsData.filter(b => b.date === date);
@@ -34127,7 +34333,8 @@ function _resetBkOverrideUi(color) {
 // #5-6：「預約」／「稽核紀錄」tab 切換，純前端顯示切換（不重新載入預約資料；稽核紀錄僅在切入
 // 該 tab 時才視需要讀取，沿用 renderBookingsAuditLog 既有的快取優先＋背景更新機制）。
 function _bkApplyTabVisibility() {
-  const labels = { booking: '預約', audit: '稽核紀錄' };
+  // v172：新增 grid（時段格線）／stats（使用率統計）兩個 tab，比照既有 booking/audit pattern
+  const labels = { booking: '預約', audit: '稽核紀錄', grid: '時段格線', stats: '使用率統計' };
   Object.keys(labels).forEach(id => {
     const btn = document.getElementById('bk-tabbtn-' + id);
     if (btn) btn.dataset.active = (_bkPageTab === id) ? '1' : '0';
@@ -34140,6 +34347,8 @@ function _bkSwitchTab(id) {
   syncUserPref_({ bkPageTab: id });
   _bkApplyTabVisibility();
   if (id === 'audit') renderBookingsAuditLog();
+  else if (id === 'grid') renderBkGridTab();
+  else if (id === 'stats') renderBkStatsTab();
 }
 
 function renderBookingsPage() {
@@ -34147,7 +34356,7 @@ function renderBookingsPage() {
   if (!_bkPageTabRestored) {
     _bkPageTabRestored = true;
     const saved = configData?.users?.[currentUser?.email]?.bkPageTab;
-    if (saved === 'audit' || saved === 'booking') _bkPageTab = saved;
+    if (saved === 'audit' || saved === 'booking' || saved === 'grid' || saved === 'stats') _bkPageTab = saved;
   }
   _bkApplyTabVisibility();
   const dateEl = document.getElementById('booking-date');
@@ -34172,6 +34381,8 @@ function renderBookingsPage() {
     if (fromEl && !fromEl.value) fromEl.value = new Date().toISOString().slice(0, 10);
     renderBkListView(body);
     if (_bkPageTab === 'audit') renderBookingsAuditLog();
+  else if (_bkPageTab === 'grid') renderBkGridTab();
+  else if (_bkPageTab === 'stats') renderBkStatsTab();
     return;
   }
 
@@ -34270,6 +34481,8 @@ function renderBookingsPage() {
     body.innerHTML = html;
   }
   if (_bkPageTab === 'audit') renderBookingsAuditLog();
+  else if (_bkPageTab === 'grid') renderBkGridTab();
+  else if (_bkPageTab === 'stats') renderBkStatsTab();
 }
 
 function renderBkListView(body) {
@@ -35539,6 +35752,8 @@ function _bkShowSeriesRepeatEditable(b) {
 }
 
 // prefill：由格子雙擊帶入（見 _bkCellDblClick）時提供 { room, date }，指定該空間／日期；
+// v172：時段格線點空格新增（見 _bkOpenGridNew）另外提供 { startTime, endTime }，指定該節次時間，
+// 沿用既有 _restoreBkPeriod 比對機制自動選對應節次選單（比對不到節次時退回自訂時間欄位）。
 // 未提供時（如點頁面上方「＋新增預約」按鈕）日期一律預設為今天（本地時區），不沿用目前檢視中瀏覽到的日期。
 function openBookingModal(prefillCaseId, prefill) {
   // 立即用記憶體資料開窗（不卡畫面）；最新預約改在背景重讀，回來後重跑衝突檢查（見函式結尾）。
@@ -35554,11 +35769,15 @@ function openBookingModal(prefillCaseId, prefill) {
   _populateBookingCounselorSelect();
   _populateBookingCaseDatalist();
   _initBkPeriodSelect();
-  document.getElementById('bk-period').value = '';
-  document.getElementById('bk-custom-times').style.display = 'none';
   document.getElementById('bk-date').value = prefill?.date || new Date().toISOString().slice(0,10);
-  document.getElementById('bk-start').value = '';
-  document.getElementById('bk-end').value = '';
+  if (prefill?.startTime) {
+    _restoreBkPeriod(prefill.startTime, prefill.endTime);
+  } else {
+    document.getElementById('bk-period').value = '';
+    document.getElementById('bk-custom-times').style.display = 'none';
+    document.getElementById('bk-start').value = '';
+    document.getElementById('bk-end').value = '';
+  }
   document.getElementById('bk-notes').value = '';
   document.getElementById('bk-case-id').value = prefillCaseId || '';
   document.getElementById('bk-case-hint').style.display = 'none';
