@@ -2385,13 +2385,76 @@ function casesUpsert_({ path, upserts, removes }, ctx) {
   }
 }
 
+// v168：打卡當日彙整（純函式，供 attendanceCommit_ 寄信與單元測試共用）——
+// 從 records 篩出同一人同一天的 punch 紀錄，依時間排序後回傳筆數、最早/最晚 timestamp、涵蓋工時(ms)。
+// 純計算、無副作用、不呼叫任何 GAS API，方便在 test/ 就地抽出單元測試。
+function punchDaySummary_(records, email, date) {
+  var ts = (records || [])
+    .filter(function (r) { return r && r.type === 'punch' && r.email === email && r.date === date && r.timestamp; })
+    .map(function (r) { return r.timestamp; })
+    .sort();
+  if (!ts.length) return { count: 0, first: null, last: null, spanMs: 0, timestamps: [] };
+  var first = ts[0], last = ts[ts.length - 1];
+  var spanMs = ts.length >= 2 ? (new Date(last).getTime() - new Date(first).getTime()) : 0;
+  return { count: ts.length, first: first, last: last, spanMs: spanMs, timestamps: ts };
+}
+
+// v168：毫秒差轉「X 小時 Y 分」（不足 1 分顯示 0 分），供打卡彙整信使用。
+function _fmtHoursMinutes_(spanMs) {
+  var totalMin = Math.floor((spanMs || 0) / 60000);
+  var h = Math.floor(totalMin / 60);
+  var m = totalMin % 60;
+  return h + ' 小時 ' + m + ' 分';
+}
+
+// v168：寄送「打卡通知」給打卡當事人——每次新增打卡（非「更新定位」等既有 id 改寫）觸發，內容含
+// 當日所有打卡紀錄、標註最早/最晚、並計算涵蓋工時（定義與差勤月報 _dailyWorkHours 一致）。
+// best-effort：try/catch 包住，寄信失敗只 Logger.log，絕不影響打卡主流程（由呼叫端於 lock 釋放後呼叫）。
+function _sendPunchSummaryMail_(email, name, date, punchTs, records) {
+  try {
+    var summary = punchDaySummary_(records, email, date);
+    var subject = '【屏科大學諮資訊系統】打卡通知（' + date + '）';
+    var fmtT = function (iso) { return Utilities.formatDate(new Date(iso), 'Asia/Taipei', 'HH:mm:ss'); };
+    var lines = [
+      (name || email) + '（' + email + '）您好，系統已記錄您的一筆打卡。',
+      '本次打卡時間：' + fmtT(punchTs),
+      '',
+      '── 當日（' + date + '）打卡紀錄 ──',
+    ];
+    summary.timestamps.forEach(function (t, i) {
+      var mark = '';
+      if (t === summary.first) mark += '　← 最早';
+      if (t === summary.last) mark += '　← 最晚';
+      lines.push((i + 1) + '. ' + fmtT(t) + mark);
+    });
+    lines.push('');
+    if (summary.count >= 2) {
+      lines.push('最早打卡：' + fmtT(summary.first));
+      lines.push('最晚打卡：' + fmtT(summary.last));
+      lines.push('涵蓋工時（最晚−最早，午休不另扣）：' + _fmtHoursMinutes_(summary.spanMs));
+    } else {
+      lines.push('目前僅一筆打卡紀錄，尚無法計算工時（需至少兩筆）。');
+    }
+    lines.push('');
+    lines.push('※ 此為系統自動通知信，工時定義與差勤月報一致（滿 9 小時為正常，午休不另扣）。');
+    MailApp.sendEmail(email, subject, lines.join('\n'));
+  } catch (e) {
+    Logger.log('_sendPunchSummaryMail_ 寄送失敗：' + e.message);
+  }
+}
+
 // ── attendance.json 併發安全的打卡寫入（LockService 讀-改-寫）──
 // 修 2026-07-09 事故：前端 saveAttendance() 整檔覆寫，多人同時打卡時後寫者蓋掉先寫者（A 打卡不見、B 還在）。
 // 改為鎖內讀最新 → 依 id upsert（新增打卡 append、更新定位 replace）／依 id remove → 寫回，回傳合併後全部 records。
 // fail-closed：檔案存在但讀取失敗／內容異常一律中止，絕不以空殼重寫。
+// v168：鎖內順便記錄「新增」的 punch 紀錄（newPunches），寫回成功、releaseLock 之後才逐筆寄送當日彙整信
+// ——MailApp 放鎖內會拉長鎖持有時間、拖慢並發打卡，寄信失敗也絕不可影響打卡主流程或原本回傳值。
 function attendanceCommit_({ upserts, removes }, ctx) {
   const lock = LockService.getScriptLock();
   lock.waitLock(15000);
+  var recordsSnapshot = null;
+  var newPunches = []; // 本次新增（非既有 id 改寫，如「更新定位」）的 punch 紀錄
+  var result;
   try {
     let fileId = null;
     let data = { records: [] };
@@ -2414,8 +2477,13 @@ function attendanceCommit_({ upserts, removes }, ctx) {
     data.records.forEach(function (r, i) { if (r && r.id) pos[r.id] = i; });
     (upserts || []).forEach(function (rec) {
       if (!rec || !rec.id) return;
-      if (pos[rec.id] !== undefined) data.records[pos[rec.id]] = rec;
-      else { pos[rec.id] = data.records.length; data.records.push(rec); }
+      if (pos[rec.id] !== undefined) {
+        data.records[pos[rec.id]] = rec;
+      } else {
+        pos[rec.id] = data.records.length;
+        data.records.push(rec);
+        if (rec.type === 'punch' && rec.email) newPunches.push(rec);
+      }
     });
     const rmSet = {};
     (removes || []).forEach(function (id) { if (id) rmSet[id] = true; });
@@ -2429,10 +2497,20 @@ function attendanceCommit_({ upserts, removes }, ctx) {
       const pn = resolvePathToParentAndName_('attendance.json', ctx);
       driveUpload_(pn.fileName, data, pn.parentId);
     }
-    return { ok: true, records: data.records, count: data.records.length };
+    recordsSnapshot = data.records;
+    result = { ok: true, records: data.records, count: data.records.length };
   } finally {
     try { lock.releaseLock(); } catch (_) {}
   }
+
+  // v168：鎖已釋放，逐筆寄送當日彙整信（單筆失敗不影響其他筆，也不影響本函式回傳值）。
+  if (newPunches.length && recordsSnapshot) {
+    newPunches.forEach(function (rec) {
+      try { _sendPunchSummaryMail_(rec.email, rec.name, rec.date, rec.timestamp, recordsSnapshot); }
+      catch (e) { Logger.log('attendanceCommit_ 寄送打卡彙整信失敗：' + e.message); }
+    });
+  }
+  return result;
 }
 
 // ── 泛用「清單型 JSON 檔」併發安全寫入（LockService 讀-改-寫）──
