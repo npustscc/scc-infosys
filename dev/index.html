@@ -3525,7 +3525,9 @@
     <!-- 身心調適假管理 -->
     <div id="page-mental-leave" class="page">
       <div class="page-title" style="display:flex;align-items:center;gap:12px;">
-        <span>身心調適假管理</span><span id="ml-title-fetch"></span>
+        <span>身心調適假管理</span>
+        <button class="btn btn-secondary" style="padding:4px 8px;font-size:.8rem;" onclick="window._mlShowHelp()" title="說明">？</button>
+        <span id="ml-title-fetch"></span>
       </div>
       <div id="mental-leave-body"></div>
     </div>
@@ -6222,6 +6224,21 @@ async function _ckLoadAny(name) {
     });
   } catch { return null; }
 }
+// R5（資安）：登出時清空個案 chunk 的 IndexedDB 快取（chunks/meta 兩個 store 整個清空，
+// 不只清目前環境的 key——dev/prod 共用同一個 scc_chunk_cache DB，登出後一律不留個案個資）。
+// 清除失敗不可阻斷登出，內部自行吞錯。
+async function _ckClearCaseCache() {
+  try {
+    const db = await _idbOpen();
+    await new Promise((resolve) => {
+      const tx = db.transaction(['chunks', 'meta'], 'readwrite');
+      tx.objectStore('chunks').clear();
+      tx.objectStore('meta').clear();
+      tx.oncomplete = resolve;
+      tx.onerror = resolve;
+    });
+  } catch (_) { /* 清除失敗不可阻斷登出 */ }
+}
 
 // ══════════════════════════════════════════════
 //  Chunk Load Bar（banner 下方進度條）
@@ -8071,6 +8088,15 @@ window._mlAcknowledge = async (id) => {
   _syncTodoBadge();
   if (document.getElementById('notif-panel')?.style.display !== 'none') renderNotifList();
   if (document.getElementById('page-todos')?.classList.contains('active')) renderTodosPage();
+  // A-4：列上／卡片上的「收到」鈕就地重繪，讓「已收到 ✓」立即反映，不必整頁重載
+  if (document.getElementById('page-mental-leave')?.classList.contains('active')) renderMentalLeavePage();
+  if (_detailCaseId) {
+    const _mc = (casesData || []).find(cc => !cc.deleted && cc.studentId === r.studentId);
+    if (_mc && _mc.id === _detailCaseId) {
+      const _mlDiv = document.getElementById('detail-ml-leaves');
+      if (_mlDiv) _mlDiv.innerHTML = _renderCaseMlCard(_mc);
+    }
+  }
   const jobId = bgJobAdd(`身心調適假已確認：${r.name || r.studentId}`);
   try { await saveMentalLeaves(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); }
 };
@@ -20556,9 +20582,18 @@ async function runInitialization() {
 function signOut() {
   google.accounts.id.disableAutoSelect();
   try { localStorage.removeItem(_SESSION_LS_KEY); localStorage.removeItem(_USER_LS_KEY); } catch (_) {}
+  // R5（資安）：登出清除個案個資快取，避免共用裝置殘留敏感資料。清除失敗不可阻斷登出。
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('scc_closure_draft_')) localStorage.removeItem(k); // 結案評估草稿含個案臨床文字
+    }
+  } catch (_) {}
+  try { _ckClearCaseCache(); } catch (_) {} // IndexedDB 個案 chunk 快取（不 await，登出流程不因此卡住）
   gIdToken = null;
   currentUser = currentRole = extraRole = configData = null;
   casesData = [];
+  mentalLeavesData = [];
 
   document.getElementById('lock-overlay').style.display    = 'none';
   document.getElementById('user-info').style.display   = 'none';
@@ -27554,7 +27589,9 @@ function escHtml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/\x27/g, '&#39;')   // R6：屬性若用單引號包住使用者輸入時防 XSS（\x27 避免字面量單引號干擾字串/註解感知的工具解析）
+    .replace(/\x60/g, '&#96;');  // R6：防範反引號被用於樣板字面量注入的邊角情境（\x60 同上，避免字面量反引號）
 }
 
 // 顯示可能包含 HTML 標記的內容（富文字編輯器產生的）；舊資料為純文字時做基本換行處理
@@ -27827,6 +27864,15 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-13', v: 170, title: '身心調適假新增封存、列動作收進「⋯ 更多」選單、收到確認鈕', isProd: false, items: [
+      item('新功能', '身心調適假新增「封存」（受輔生／資料庫兩分頁皆可，單筆與批次）：封存後預設列表隱藏，可用「顯示已封存」找回並解除封存；封存為 archived 欄位，與既有「已讀」是不同的兩件事'),
+      item('新功能', '身心調適假列上新增「收到」確認鈕（受輔生／資料庫列表與個案詳細頁的身心調適假卡片皆有），點了即記錄本人已收到；已收到者改顯示「已收到 ✓」'),
+      item('新功能', '批次封存前，若所選紀錄中有主責尚未收到，會先跳出確認框（僅顯示案號，不含姓名/學號）：可選擇只封存已讀的、或全部封存並一併將未讀者標記為已收到'),
+      item('改善', '身心調適假資料庫列表每列動作鈕（填寫評估表／再次提醒／封存）收進一顆「⋯」更多選單，減少窗口角色列上按鈕擁擠；燈號下拉維持在列上'),
+      item('修復', '身心調適假管理頁標題旁補上有效的「？」說明按鈕（原按鈕點了沒反應），點了顯示頁面用途、燈號意義、評估表用途等簡短說明'),
+      item('資安', 'escHtml 補上單引號與反引號跳脫，防禦屬性以單引號包住使用者輸入時的 XSS 邊角情境'),
+      item('資安', '登出時清除瀏覽器端個案個資快取：IndexedDB 個案 chunk 快取（chunks/meta）與 localStorage 結案評估草稿一併清除，避免共用裝置殘留敏感資料；清除失敗不影響登出流程'),
+    ]},
     { date: '2026-07-13', v: 169, title: 'UI 改善：稽核紀錄獨立分頁、A案/B案篩選、批次勾選 Shift 範圍選取', isProd: false, items: [
       item('新功能', '身心調適假新增「稽核紀錄」獨立分頁（原「異動追蹤」可收合區塊升級，僅系所專任人員/管理者可見）'),
       item('新功能', '個案列表、案號查詢與管理、身心調適假新增 A案/B案 下拉篩選'),
@@ -31690,6 +31736,7 @@ let _mlRiskFilter = new Set();
 let _mlHandlingFilter = '';
 let _mlAbFilter = ''; // A案/B案篩選（依連結個案的有效 abType；'' = 全部）
 let _mlQComposing = false;
+let _mlShowArchived = false; // A-3：受輔生／資料庫 tab 共用——是否切換為「檢視已封存」
 
 // 可見個案身分之人員：專任＋實習＋主任＋系統管理者（不得向兼任/義務輔導老師/行政等未接觸個案身分之人員揭露該生為個案）
 // 函式名沿用舊名 _mlIsFullTimeStaff 以避免大範圍改名，實際涵蓋範圍已不限專任（含實習諮商心理師）
@@ -31771,6 +31818,25 @@ window._mlRemind = async (id) => {
     auditLog('身心調適假再次提醒主責', mc.id, r.id, '重新發送待辦提醒給主責'); // 去識別化：涉及個案僅記案號，不記學號
     showToast('已重新提醒主責人員', 'success');
   } catch(e) { bgJobFail(jobId, e.message); }
+};
+// A-1：頁面標題旁「？」說明鈕（原頁面無有效說明入口）。點了用既有 modal 樣式呈現簡短說明。
+window._mlShowHelp = () => {
+  document.getElementById('ml-help-modal')?.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'ml-help-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:480px;">
+      <div class="modal-header"><h3>🌿 身心調適假管理說明</h3></div>
+      <div class="modal-body" style="padding:12px 2px 8px;font-size:.88rem;color:#4a5568;line-height:1.7;">
+        <p><strong>用途</strong>：從信箱自動擷取學生的身心調適假請假信件，依關鍵字比對風險燈號，協助窗口與主責及早關懷追蹤。</p>
+        <p><strong>燈號意義</strong>：🔴 紅燈（危機）／🟡 黃燈（醫療）／🔵 關注／無燈號（未命中關鍵字，可手動覆寫）。</p>
+        <p><strong>身心狀態評估表</strong>：身心調適假窗口於進案前對學生進行的評估與介入紀錄，適用於非受輔生且紅燈或連請三日者，並非諮商晤談紀錄。</p>
+        <p><strong>封存</strong>：處理完畢的紀錄可封存，預設列表隱藏，可切換「顯示已封存」找回並解除封存。</p>
+      </div>
+      <div class="modal-footer"><button class="btn btn-primary" onclick="document.getElementById('ml-help-modal')?.remove()">我知道了</button></div>
+    </div>`;
+  document.body.appendChild(modal);
 };
 function renderMentalLeavePage() {
   const el = document.getElementById('mental-leave-body');
@@ -31951,10 +32017,11 @@ window._mlBatchHandling = async () => {
   catch(e) { bgJobFail(jobId, e.message); }
 };
 
-// #33-4：管理頁批量封存（＝批次標記已讀）。將本人 email 併入所選紀錄的 acknowledgedBy，
-// 主責在受輔生分頁批量封存自己的個案 → 管理頁「主責已讀」同步；沿用單筆「封存」的語義（見 _mlAcknowledge）。
+// #33-4：管理頁批量標記已讀。將本人 email 併入所選紀錄的 acknowledgedBy，
+// 主責在受輔生分頁批量標記自己的個案 → 管理頁「主責已讀」同步；沿用單筆「收到」的語義（見 _mlAcknowledge）。
+// 注意：此為「已讀」而非 A-3 的真封存（archived 欄位）——兩者是不同動作，列表預設隱藏靠的是後者。
 window._mlBatchAck = async () => {
-  if (!_mlCheckedIds.size) { alert('請先勾選要封存的紀錄'); return; }
+  if (!_mlCheckedIds.size) { alert('請先勾選要標記已讀的紀錄'); return; }
   if (!currentUser?.email) return;
   const ids = [..._mlCheckedIds];
   let changed = 0;
@@ -31968,8 +32035,104 @@ window._mlBatchAck = async () => {
   try { _syncTodoBadge(); } catch (_) {}
   renderMentalLeavePage();
   if (!changed) return;
-  const jobId = bgJobAdd(`批次封存 ${changed} 筆身心調適假通知`);
+  const jobId = bgJobAdd(`批次標記已讀 ${changed} 筆身心調適假通知`);
   try { await saveMentalLeaves(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); }
+};
+
+// ── A-2：每列「⋯ 更多」溢位選單（純前端、點外面關閉）──────────────
+// 產生單一選單項目的 HTML；onclickBody 為點擊要執行的原 onclick 行為（保留各動作原本行為）。
+function _mlMenuItemHtml(onclickBody, label, tip) {
+  return `<button onclick="event.stopPropagation();window._mlCloseRowMenus();${onclickBody}" ${tip ? `data-tip="${escHtml(tip)}"` : ''} style="display:block;width:100%;text-align:left;background:none;border:none;padding:6px 10px;font-size:.8rem;cursor:pointer;border-radius:4px;color:#2d3748;white-space:nowrap;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='none'">${label}</button>`;
+}
+window._mlToggleRowMenu = (id) => {
+  const dd = document.getElementById('ml-rowmenu-' + id);
+  if (!dd) return;
+  const willOpen = dd.style.display === 'none';
+  window._mlCloseRowMenus();
+  if (willOpen) dd.style.display = 'block';
+};
+window._mlCloseRowMenus = () => {
+  document.querySelectorAll('.ml-row-menu-dd').forEach(d => { d.style.display = 'none'; });
+};
+document.addEventListener('click', () => window._mlCloseRowMenus());
+
+// ── A-3：封存／解除封存（真正的列表隱藏，區別於「已讀」acknowledgedBy）──────────────
+// A-4：批次封存前先檢查每筆的「主責」是否已收到（acknowledgedBy），未讀者跳出確認框去識別化（僅列案號）。
+async function _mlArchiveIds(ids) {
+  const targets = ids.map(id => mentalLeavesData.find(l => l.id === id)).filter(l => l && !l.deleted && !l.archived);
+  if (!targets.length) { alert('沒有可封存的紀錄（已封存者自動跳過）。'); return; }
+  const infoed = targets.map(l => {
+    const mc = (casesData || []).find(c => !c.deleted && c.studentId === l.studentId);
+    const counselorEmail = mc ? _getLatestCounselorEmail(mc) : '';
+    const isAcked = !!(counselorEmail && (l.acknowledgedBy || []).includes(counselorEmail));
+    return { l, mc, counselorEmail, isAcked };
+  });
+  const unread = infoed.filter(x => x.counselorEmail && !x.isAcked);
+  let toArchive = infoed;
+  let toAckToo = [];
+  if (unread.length) {
+    // 去識別化：確認框僅顯示案號，不得出現姓名/學號
+    const listTxt = unread.map(x => x.mc.id).join('、');
+    const doAll = confirm(
+      `以下個案的主責尚未確認收到：${listTxt}\n\n也要一起封存嗎？\n\n` +
+      `【確定】＝全部封存（未讀者一併標記為已收到）\n【取消】＝只封存主責已收到的，未讀者暫不封存`
+    );
+    if (doAll) {
+      toAckToo = unread;
+    } else {
+      const unreadIds = new Set(unread.map(x => x.l.id));
+      toArchive = infoed.filter(x => !unreadIds.has(x.l.id));
+      if (!toArchive.length) return;
+    }
+  } else if (!confirm(`確定要封存 ${targets.length} 筆身心調適假紀錄？`)) {
+    return;
+  }
+  toAckToo.forEach(x => {
+    if (!Array.isArray(x.l.acknowledgedBy)) x.l.acknowledgedBy = [];
+    if (!x.l.acknowledgedBy.includes(x.counselorEmail)) x.l.acknowledgedBy.push(x.counselorEmail);
+  });
+  const now = new Date().toISOString();
+  toArchive.forEach(x => { x.l.archived = true; x.l.archivedAt = now; x.l.archivedBy = currentUser?.email || ''; });
+  // 只清掉「這次實際被封存」的勾選（跳過的未讀者維持勾選，方便使用者接續處理）；批次／單筆共用此函式皆適用
+  toArchive.forEach(x => _mlCheckedIds.delete(x.l.id));
+  renderMentalLeavePage();
+  const jobId = bgJobAdd(`封存 ${toArchive.length} 筆身心調適假紀錄`);
+  try {
+    await saveMentalLeaves();
+    bgJobDone(jobId);
+    toArchive.forEach(x => auditLog('封存身心調適假紀錄', x.mc ? x.mc.id : null, x.l.id, `學號 ${x.l.studentId || '—'}`));
+  } catch (e) {
+    toArchive.forEach(x => { x.l.archived = false; delete x.l.archivedAt; delete x.l.archivedBy; });
+    bgJobFail(jobId, e.message);
+    renderMentalLeavePage();
+  }
+}
+async function _mlUnarchiveIds(ids) {
+  const targets = ids.map(id => mentalLeavesData.find(l => l.id === id)).filter(l => l && l.archived);
+  if (!targets.length) { alert('沒有可解除封存的紀錄。'); return; }
+  if (!confirm(`確定要解除封存 ${targets.length} 筆身心調適假紀錄？`)) return;
+  targets.forEach(l => { l.archived = false; _mlCheckedIds.delete(l.id); });
+  renderMentalLeavePage();
+  const jobId = bgJobAdd(`解除封存 ${targets.length} 筆身心調適假紀錄`);
+  try {
+    await saveMentalLeaves();
+    bgJobDone(jobId);
+    targets.forEach(l => auditLog('解除封存身心調適假紀錄', null, l.id, `學號 ${l.studentId || '—'}`));
+  } catch (e) {
+    targets.forEach(l => { l.archived = true; });
+    bgJobFail(jobId, e.message);
+    renderMentalLeavePage();
+  }
+}
+window._mlArchiveOne = async (id) => { await _mlArchiveIds([id]); };
+window._mlUnarchiveOne = async (id) => { await _mlUnarchiveIds([id]); };
+window._mlBatchArchive = async () => {
+  if (!_mlCheckedIds.size) { alert('請先勾選要封存的紀錄'); return; }
+  await _mlArchiveIds([..._mlCheckedIds]);
+};
+window._mlBatchUnarchive = async () => {
+  if (!_mlCheckedIds.size) { alert('請先勾選要解除封存的紀錄'); return; }
+  await _mlUnarchiveIds([..._mlCheckedIds]);
 };
 
 function _mlParseDateRange(l) {
@@ -32497,7 +32660,8 @@ function printMlAssessment(recordId) {
 function _mlRenderRecordsTab(el, studentIdFilter = null) {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
   const canFullAccess = isAdmin || isMentalLeaveContact;
-  const records = mentalLeavesData.filter(l => !l.deleted);
+  // A-3：預設濾掉已封存；切到「顯示已封存」時改為只顯示已封存（比照個案列表 unarchived/archived 篩選）
+  const records = mentalLeavesData.filter(l => !l.deleted && (_mlShowArchived ? !!l.archived : !l.archived));
   const q      = (_mlQFilter       || '').trim().toLowerCase();
   const riskF  =  _mlRiskFilter;
   const semF   =  _mlSemFilter;
@@ -32561,12 +32725,13 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     // ④a：🔔再次提醒移至學生姓名下方；④c：僅窗口／主任／系統管理者可見（見 _mlBellVisible）
     const _mlCounselorEmailForBell = (_mlFT && mc && _mlHasCase) ? (mc.counselorEmail || '') : '';
     const _mlIsAckedForBell = _mlCounselorEmailForBell && (l.acknowledgedBy||[]).includes(_mlCounselorEmailForBell);
-    const _mlBellBtn = (_mlBellVisible && _mlCounselorEmailForBell && !_mlIsAckedForBell)
-      ? `<div style="margin-top:2px;"><button onclick="event.stopPropagation();window._mlRemind('${escHtml(l.id)}')" style="border:none;background:#fef3c7;color:#92400e;border-radius:4px;padding:1px 5px;font-size:.75rem;cursor:pointer;" data-tip="重新發送提醒給主責">🔔</button></div>`
+    // A-2：🔔再次提醒改收進列末「⋯ 更多」選單（見下方 _mlMoreBtn）；是否顯示入口的權限判斷不變
+    const _mlBellMenuItem = (_mlBellVisible && _mlCounselorEmailForBell && !_mlIsAckedForBell)
+      ? _mlMenuItemHtml(`window._mlRemind('${escHtml(l.id)}')`, '🔔 再次提醒主責', '重新發送提醒給主責')
       : '';
-    const nameLink = (mc
+    const nameLink = mc
       ? `<button onclick="showCaseDetail('${escHtml(mc.id)}')" style="border:none;background:none;cursor:pointer;color:#2b6cb0;font-weight:600;padding:0;font-size:inherit;">${escHtml(l.name||'—')}</button>`
-      : `<span>${escHtml(l.name||'—')}</span>`) + _mlBellBtn;
+      : `<span>${escHtml(l.name||'—')}</span>`;
     const runInfo = _runInfoMap[l.id] || {};
     const isRunChild = runInfo.isRun;
     const rowBg = isRunChild
@@ -32584,7 +32749,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     const _mlCaseBadge = (_mlRecSem && !_mlHasCase)
       ? `<span style="display:inline-block;background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 5px;font-size:.68rem;margin-top:2px;">未開案</span>`
       : '';
-    // ③④：僅專任人員可見「A/B案＋主責」與「主責已讀」標示（不得向兼任/義務輔導老師/實習生等揭露該生為個案）；🔔再次提醒已移至姓名欄下方且另行收縮可見範圍（見 _mlBellBtn/_mlBellVisible）
+    // ③④：僅專任人員可見「A/B案＋主責」與「主責已讀」標示（不得向兼任/義務輔導老師/實習生等揭露該生為個案）；🔔再次提醒（A-2）已收進列末「⋯ 更多」選單，見 _mlBellMenuItem/_mlBellVisible
     const _mlCaseInfoBadge = (_mlFT && mc && _mlHasCase) ? (() => {
       const abT = mc.basicInfoSnapshots?.[_mlRecSem]?.abType || mc.abType || '';
       const abBadge = abT === 'A案'
@@ -32619,34 +32784,52 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     const isChecked = _mlCheckedIds.has(l.id);
     const { from: _mlFrom, to: _mlTo } = _mlParseDateRange(l);
     const mlDateStr = _mlFrom ? (_mlFrom !== _mlTo ? `${_mlFrom.slice(5).replace('-','/')} – ${_mlTo.slice(5).replace('-','/')}` : _mlFrom.slice(5).replace('-','/')) : (l.leaveDate || '—');
-    // 身心狀態評估表入口（#030-⑤）：非受輔生且（紅燈或連請三日）的掛載紀錄（anchor）本列顯示
-    let _mlaHtml = '';
+    // 身心狀態評估表入口（#030-⑤）：非受輔生且（紅燈或連請三日）的掛載紀錄（anchor）本列顯示；
+    // A-2：狀態 chip（未填倒數）仍留在列上供一眼辨識，實際填寫/檢視按鈕收進「⋯ 更多」選單
+    let _mlaChip = '';
+    let _mlaMenuItem = '';
     if (_mlaAnchorMap && _mlaAnchorMap[l.id]?.id === l.id && _mlAssessFillable(l)) {
       const _mlaFilled = !!l.assessment;
-      const _mlaBtn = _mlaFilled
-        ? `<button onclick="event.stopPropagation();openMlAssessmentModal('${escHtml(l.id)}')" style="border:1px solid #9ae6b4;background:#f0fff4;color:#276749;border-radius:10px;padding:0 8px;font-size:.72rem;cursor:pointer;white-space:nowrap;" data-tip="此評估表為身心調適假窗口於進案前對學生進行的評估與介入紀錄（非諮商晤談紀錄）；點開可檢視/編輯/列印">📝 評估表 ✓</button>`
-        : `<button onclick="event.stopPropagation();openMlAssessmentModal('${escHtml(l.id)}')" style="border:1px solid #fbd38d;background:#fffaf0;color:#9c4221;border-radius:10px;padding:0 8px;font-size:.72rem;cursor:pointer;white-space:nowrap;font-weight:600;" data-tip="此評估表為身心調適假窗口於進案前對學生進行的評估與介入紀錄（非諮商晤談紀錄）；身心調適假連請三日/紅燈之非受輔生，需於 3 個工作日內完成填寫">📝 填寫評估表</button>`;
-      const _mlaChip = !_mlaFilled
+      _mlaMenuItem = _mlaFilled
+        ? _mlMenuItemHtml(`openMlAssessmentModal('${escHtml(l.id)}')`, '📝 評估表 ✓', '此評估表為身心調適假窗口於進案前對學生進行的評估與介入紀錄（非諮商晤談紀錄）；點開可檢視/編輯/列印')
+        : _mlMenuItemHtml(`openMlAssessmentModal('${escHtml(l.id)}')`, '📝 填寫評估表', '此評估表為身心調適假窗口於進案前對學生進行的評估與介入紀錄（非諮商晤談紀錄）；身心調適假連請三日/紅燈之非受輔生，需於 3 個工作日內完成填寫');
+      _mlaChip = !_mlaFilled
         ? (l.assessmentNotifiedAt
             ? _mlAssessCountdownChip(_mlAddWorkdays(l.assessmentNotifiedAt.slice(0, 10), 3), '評估表未填：')
             : `<span style="border-radius:4px;padding:0 6px;font-size:.72rem;background:#edf2f7;color:#4a5568;border:1px solid #e2e8f0;white-space:nowrap;">評估表未填</span>`)
         : '';
-      _mlaHtml = `<div style="margin-top:3px;display:flex;gap:4px;align-items:center;flex-wrap:wrap;">${_mlaBtn}${_mlaChip}</div>`;
     }
+    // A-3：封存／解除封存選單項——依目前檢視（_mlShowArchived）用同一顆選單顯示對應動作
+    const _mlArchiveMenuItem = l.archived
+      ? _mlMenuItemHtml(`window._mlUnarchiveOne('${escHtml(l.id)}')`, '♻️ 解除封存')
+      : _mlMenuItemHtml(`window._mlArchiveOne('${escHtml(l.id)}')`, '🗄 封存', '封存後此紀錄在列表中預設隱藏，可透過「顯示已封存」找回並解除封存');
+    const _mlMenuBody = [_mlaMenuItem, _mlBellMenuItem, _mlArchiveMenuItem].filter(Boolean).join('');
+    const _mlMoreBtn = _mlMenuBody
+      ? `<div style="position:relative;display:inline-block;">
+          <button onclick="event.stopPropagation();window._mlToggleRowMenu('${escHtml(l.id)}')" style="border:1px solid #cbd5e0;background:#fff;color:#4a5568;border-radius:4px;padding:2px 8px;font-size:.78rem;cursor:pointer;" title="更多操作">⋯</button>
+          <div id="ml-rowmenu-${escHtml(l.id)}" class="ml-row-menu-dd" style="display:none;position:absolute;right:0;top:100%;z-index:80;background:#fff;border:1px solid #cbd5e0;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.18);padding:4px;min-width:170px;">${_mlMenuBody}</div>
+        </div>`
+      : '';
+    // A-4：列上「收到」鈕——直接重用既有 window._mlAcknowledge；已收到者改顯示狀態文字
+    const _mlAckedByMe = !!(currentUser?.email && (l.acknowledgedBy || []).includes(currentUser.email));
+    const _mlAckBtn = _mlAckedByMe
+      ? `<span style="color:#276749;font-size:.72rem;white-space:nowrap;">已收到 ✓</span>`
+      : `<button onclick="event.stopPropagation();window._mlAcknowledge('${escHtml(l.id)}')" style="padding:2px 8px;background:#276749;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.72rem;white-space:nowrap;">收到</button>`;
     return `${groupHeader}<tr style="background:${rowBg};${leftBorder}${bottomBorder}">
       <td style="${_cbPad}text-align:center;width:28px;"><input type="checkbox" class="ml-row-chk" data-id="${escHtml(l.id)}" ${isChecked?'checked':''} onchange="window._mlToggleCheck('${escHtml(l.id)}',this.checked)"></td>
       <td style="padding:7px 10px;">${nameLink}</td>
       <td style="padding:7px 10px;">${studentIdCell}</td>
-      <td style="padding:7px 10px;">${escHtml(mlDateStr)}${dateBadge}${_mlaHtml}</td>
+      <td style="padding:7px 10px;">${escHtml(mlDateStr)}${dateBadge}${_mlaChip ? `<div style="margin-top:3px;">${_mlaChip}</div>` : ''}</td>
       <td style="padding:7px 10px;font-size:.8rem;">${escHtml(l.reason||'—')}</td>
       <td style="padding:7px 10px;">${_mlRiskOverrideSelect(l)}${_mlIsOverride ? ' <span style="font-size:.68rem;color:#805ad5;font-weight:600;">手動</span>' : ''}${kwChips ? `<div style="margin-top:3px;">${kwChips}</div>` : ''}</td>
       <td style="padding:7px 8px;">${handlingSel}</td>
       <td style="padding:7px 10px;">${courseBtn}</td>
       <td style="padding:7px 10px;font-size:.8rem;color:#718096;">${escHtml(l.semester||'—')}</td>
+      <td style="padding:7px 6px;text-align:center;white-space:nowrap;"><div style="display:flex;gap:4px;align-items:center;justify-content:center;">${_mlAckBtn}${_mlMoreBtn}</div></td>
       ${isAdmin ? `<td style="padding:7px 10px;"><button class="btn btn-danger btn-sm" onclick="window._mlDeleteRecord('${escHtml(l.id)}')">刪除${adminOnlyChip(false, true)}</button></td>` : ''}
     </tr>
     <tr id="ml-course-${escHtml(l.id)}" style="display:none;background:#f7fffe;">
-      <td colspan="${isAdmin ? 10 : 9}" style="padding:0 !important;margin:0;border:none;max-width:0;overflow:hidden;">
+      <td colspan="${isAdmin ? 11 : 10}" style="padding:0 !important;margin:0;border:none;max-width:0;overflow:hidden;">
         <div style="box-sizing:border-box;width:100%;padding:8px 12px;overflow-x:auto;${leftBorder}">${_mlCourseDetailHtml(l, `window._mlToggleCourse('${escHtml(l.id)}')`)}</div>
       </td>
     </tr>`;
@@ -32704,6 +32887,10 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
         <input type="checkbox" ${_mlConsec3Filter?'checked':''} onchange="_mlConsec3Filter=this.checked;_mlPage=1;renderMentalLeavePage();" style="margin:0;">
         連請三天
       </label>
+      <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;" data-tip="切換後只顯示已封存的紀錄，可於此找回並解除封存">
+        <input type="checkbox" ${_mlShowArchived?'checked':''} onchange="_mlShowArchived=this.checked;_mlPage=1;renderMentalLeavePage();" style="margin:0;">
+        🗄 顯示已封存
+      </label>
       <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;">每頁
         <select id="ml-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;" onchange="_mlPageSize=parseInt(this.value);_mlPage=1;renderMentalLeavePage();">
           ${[100,200,300].map(n=>`<option value="${n}"${_mlPageSize===n?' selected':''}>${n}</option>`).join('')}
@@ -32722,7 +32909,10 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
         ${ML_HANDLING_OPTS.map(o=>`<option value="${o}">${o}</option>`).join('')}
       </select>
       <button class="btn btn-primary btn-sm" onclick="window._mlBatchHandling()">套用</button>
-      <button class="btn btn-sm" style="background:#276749;color:#fff;border-color:#276749;white-space:nowrap;" onclick="window._mlBatchAck()" data-tip="將勾選的紀錄標記為已封存（已讀）。主責在此封存自己的個案後，管理頁「主責已讀」會同步顯示為已讀。">🗄️ 批量封存</button>
+      <button class="btn btn-sm" style="background:#276749;color:#fff;border-color:#276749;white-space:nowrap;" onclick="window._mlBatchAck()" data-tip="將勾選的紀錄標記為已讀。主責在此標記自己的個案後，管理頁「主責已讀」會同步顯示為已讀。與下方「封存」是不同動作：封存才會讓紀錄從預設列表隱藏。">✅ 批次標記已讀</button>
+      ${_mlShowArchived
+        ? `<button class="btn btn-sm" style="background:#4a5568;color:#fff;border-color:#4a5568;white-space:nowrap;" onclick="window._mlBatchUnarchive()" data-tip="將勾選的紀錄解除封存，重新出現在預設列表中。">♻️ 批次解封</button>`
+        : `<button class="btn btn-sm" style="background:#805ad5;color:#fff;border-color:#805ad5;white-space:nowrap;" onclick="window._mlBatchArchive()" data-tip="將勾選的紀錄封存，預設列表隱藏，可用「顯示已封存」找回。若所選紀錄的主責尚未收到，會先跳出確認。">📦 批次封存</button>`}
       <button class="btn btn-secondary btn-sm" onclick="_mlCheckedIds.clear();renderMentalLeavePage()">取消全選</button>
       <button class="btn btn-secondary btn-sm" onclick="mlPrintNotices()" style="white-space:nowrap;margin-left:auto;">🖨️ 列印通知單</button>
     </div>
@@ -32746,7 +32936,8 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
           <col id="ml-col-6" style="min-width:90px;">
           <col id="ml-col-7" style="min-width:60px;">
           <col id="ml-col-8" style="min-width:60px;">
-          ${isAdmin ? '<col id="ml-col-9" style="min-width:50px;">' : ''}
+          <col id="ml-col-9" style="min-width:110px;">
+          ${isAdmin ? '<col id="ml-col-10" style="min-width:50px;">' : ''}
         </colgroup>
         <thead><tr style="background:#f7fafc;text-align:left;">
           <th style="padding:8px 6px;text-align:center;width:28px;"><input type="checkbox" ${allChecked?'checked':''} onchange="window._mlCheckAll(this.checked)" title="全選/取消"></th>
@@ -32758,7 +32949,8 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
           <th style="padding:8px 10px;" data-col="6">受理情況</th>
           <th style="padding:8px 10px;" data-col="7">課程</th>
           <th style="padding:8px 10px;" data-col="8">學期</th>
-          ${isAdmin ? '<th style="padding:8px 10px;" data-col="9"></th>' : ''}
+          <th style="padding:8px 10px;" data-col="9">動作</th>
+          ${isAdmin ? '<th style="padding:8px 10px;" data-col="10"></th>' : ''}
         </tr></thead>
         <tbody>${rowsHtml}</tbody>
       </table>
@@ -32771,11 +32963,11 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       <button class="btn btn-secondary btn-sm" ${_mlPage>=totalPages?'disabled':''} onclick="_mlPage++;renderMentalLeavePage()">›</button>
       <button class="btn btn-secondary btn-sm" ${_mlPage>=totalPages?'disabled':''} onclick="_mlPage=${totalPages};renderMentalLeavePage()">»</button>
     </div>` : (totalFiltered > 0 ? `<div style="text-align:right;font-size:.82rem;color:#a0aec0;margin-top:6px;">共 ${totalFiltered} 筆</div>` : '')}`;
-  _makeTableResizable({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,9] : [1,2,3,4,5,6,7,8], prefKey: 'mlColWidths2', skipCols: isAdmin ? new Set([9]) : new Set() });
+  _makeTableResizable({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,9,10] : [1,2,3,4,5,6,7,8,9], prefKey: 'mlColWidths2', skipCols: isAdmin ? new Set([10]) : new Set() });
 }
 window._resetMlColWidths = () => {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
-  _resetTableColWidths({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,9] : [1,2,3,4,5,6,7,8], prefKey: 'mlColWidths2' });
+  _resetTableColWidths({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,9,10] : [1,2,3,4,5,6,7,8,9], prefKey: 'mlColWidths2' });
 };
 
 // ══════════════════════════════════════════════
@@ -39212,7 +39404,7 @@ function _renderCaseMlCard(c) {
           (_mlAssessCanEdit() && !_detailReadOnly) ? `<button class="btn btn-secondary btn-sm" style="font-size:.72rem;padding:1px 8px;" onclick="openMlAssessmentModal('${escHtml(l.id)}')">編輯</button>` : '',
           `<button class="btn btn-secondary btn-sm" style="font-size:.72rem;padding:1px 8px;" onclick="printMlAssessment('${escHtml(l.id)}')">列印</button>`,
         ].filter(Boolean).join('');
-        _mlaRow = `<tr><td colspan="4" style="padding:4px 8px 8px;background:#fdfaff;border-bottom:1px solid #e9d8fd;">
+        _mlaRow = `<tr><td colspan="5" style="padding:4px 8px 8px;background:#fdfaff;border-bottom:1px solid #e9d8fd;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:.78rem;color:#553c9a;">
             <span style="background:#e9d8fd;border-radius:4px;padding:0 6px;font-weight:600;" data-tip="此評估表為身心調適假窗口於進案前對學生進行的評估與介入紀錄（非諮商晤談紀錄）">📝 身心狀態評估表</span>
             <span>評估日期：${escHtml(_a.evalDate||'—')}</span>
@@ -39223,11 +39415,17 @@ function _renderCaseMlCard(c) {
           </div>
         </td></tr>`;
       }
+      // A-4：個案詳細頁的身心調適假紀錄卡片同樣加「收到」，直接重用 window._mlAcknowledge
+      const _mlaAckedByMe = !!(currentUser?.email && (l.acknowledgedBy || []).includes(currentUser.email));
+      const _mlaAckCell = _mlaAckedByMe
+        ? `<span style="color:#276749;font-size:.74rem;white-space:nowrap;">已收到 ✓</span>`
+        : `<button onclick="event.stopPropagation();window._mlAcknowledge('${escHtml(l.id)}')" style="padding:2px 8px;background:#276749;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.74rem;white-space:nowrap;">收到</button>`;
       return `<tr style="background:${bg};">
         <td style="padding:4px 8px;white-space:nowrap;font-size:.82rem;">${escHtml(_rDateStr)}</td>
         <td style="padding:4px 8px;font-size:.82rem;max-width:220px;">${escHtml(l.reason||'—')}</td>
         <td style="padding:4px 8px;">${_mlRiskBadge(maxLevel, true)}</td>
         <td style="padding:4px 8px;font-size:.78rem;"><span style="background:${hs.bg||'#f7fafc'};color:${hs.color||'#718096'};border:1px solid ${hs.border||'#e2e8f0'};border-radius:4px;padding:0 5px;">${escHtml(hVal)}</span></td>
+        <td style="padding:4px 8px;text-align:center;">${_mlaAckCell}</td>
       </tr>${_mlaRow}`;
     }).join('');
     const semLabel = semesterLabel(sem) || sem;
@@ -39252,6 +39450,7 @@ function _renderCaseMlCard(c) {
             <th style="padding:4px 8px;text-align:left;font-weight:600;">緣由</th>
             <th style="padding:4px 8px;text-align:left;font-weight:600;">風險</th>
             <th style="padding:4px 8px;text-align:left;font-weight:600;">受理情況</th>
+            <th style="padding:4px 8px;text-align:center;font-weight:600;">確認</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table></div>
