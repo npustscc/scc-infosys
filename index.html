@@ -4131,7 +4131,7 @@ async function _fetchClientIpGeo() {
     if (!r.ok) return {};
     const d = await r.json();
     const geo = [d.city, d.region, d.country_name].filter(Boolean).join(', ');
-    return { ip: d.ip || '', geo: geo };
+    return { ip: d.ip || '', geo: geo, cc: d.country_code || '' };  // cc：ISO 國碼（v167 非台灣登入鎖定用）
   } catch (_) { return {}; }
 }
 let currentUser  = null;   // { email, name, picture }
@@ -5701,12 +5701,23 @@ async function handleCredentialResponse(response) {
   try { localStorage.removeItem(_SESSION_LS_KEY); } catch (_) {}
   try {
     const _ipgeo = await _fetchClientIpGeo();  // best-effort，失敗回空物件、不阻斷登入
-    const s = await proxyCall('sessionStart', { ua: navigator.userAgent.slice(0, 200), ip: _ipgeo.ip || '', geo: _ipgeo.geo || '' });
+    const s = await proxyCall('sessionStart', { ua: navigator.userAgent.slice(0, 200), ip: _ipgeo.ip || '', geo: _ipgeo.geo || '', cc: _ipgeo.cc || '' });
     try {
       localStorage.setItem(_SESSION_LS_KEY, s.sessionToken);
       localStorage.setItem(_USER_LS_KEY, JSON.stringify(currentUser));
     } catch (_) { /* localStorage 已滿等寫入失敗僅略過（session 只活在本次頁面），不影響登入 */ }
   } catch (e) {
+    // v167：非台灣登入自動鎖定（見 Code.gs geoLockDecision_）——後端 sessionStart 回
+    // { error: 'geo_locked' } 時，proxyCall 尾段的一般錯誤攔截會 throw new Error('geo_locked')。
+    // 這是唯一必須完全阻斷登入的 sessionStart 失敗情境：帳號已被停用、所有裝置已登出，
+    // 不可比照其他換發失敗那樣退回「以 Google 權杖繼續」（那只會讓後續每個請求都被授權閘擋下）。
+    if (e.message === 'geo_locked') {
+      _hideReloginModal();
+      alert('您的帳號因偵測到非台灣地區的登入位置，已被系統自動鎖定並登出所有裝置。\n若為誤判，請聯繫中心同仁（管理者可於使用者管理頁重新啟用）。');
+      currentUser = null; gIdToken = null;
+      try { localStorage.removeItem(_SESSION_LS_KEY); localStorage.removeItem(_USER_LS_KEY); } catch (_) {}
+      return;
+    }
     _syslog?.('warn', '換發登入憑證失敗（' + e.message + '），以 Google 權杖繼續');
   }
   if (_isRefresh) {
@@ -27746,6 +27757,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-13', v: 167, title: '資安強化：非台灣登入自動鎖定帳號＋定位失敗雙向提醒', isProd: true, items: [
+      item('資安', '新增「非台灣登入自動鎖定」：登入時系統偵測到帳號來自非台灣地區，會自動停用該帳號、登出其所有裝置，並通知系所專任人員/管理者與當事人本人；當事人畫面會顯示明確的鎖定說明，若為誤判可請管理者於使用者管理頁重新啟用'),
+      item('改善', '新增「登入位置無法判定」雙向提醒：若某次登入因瀏覽器阻擋器、網路逾時等原因查不到位置資訊（導致上述防護對這次登入未生效），會提醒當事人與專任人員/管理者，並附改善方式；同一帳號 7 天內只提醒一次，避免每次登入都收信'),
+      item('技術', '後端新增純函式 geoLockDecision_：以前端回報的國碼精準判斷，國碼查不到時退回比對地名字串是否以「Taiwan」結尾（相容尚未更新的分頁）；地理資訊完全空白（查詢失敗）時不鎖定，改由 geoEmptyNoticeDecision_（7 天冷卻）雙向提醒；兩者皆為 geo/cc 前端自報值判斷，只防機會型誤用，非安全邊界'),
+    ]},
     { date: '2026-07-11', v: 166, title: '資安強化：圖片來源白名單＋登入通知改新裝置/新位置警示', isProd: true, items: [
       item('資安', '新增 Content Security Policy 圖片來源白名單（img-src）：頁面只能顯示既定來源的圖片（系統本身的附件/家系圖/PDF轉圖片、地圖圖磚、Google 帳號大頭貼），防止萬一被注入惡意內容時，利用圖片網址將資料偷偷外傳到未知網域'),
       item('改善', '登入通知信改為「異常偵測」邏輯：只在新裝置或新位置登入時才寄出警示信，熟悉的裝置與地點每隔幾天仍會收到一次保底通知，減少每天都收到信的干擾；「登入紀錄」頁照常記錄每一次登入，可隨時查看全部裝置並一鍵登出所有裝置'),
