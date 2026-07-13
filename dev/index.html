@@ -1911,10 +1911,10 @@
       <div id="bookings-alert"></div>
       <!-- #5-6：「預約」／「稽核紀錄」tab；純前端顯示切換，不重新載入資料 -->
       <div style="display:flex;gap:2px;border-bottom:2px solid #e2e8f0;margin-bottom:16px;">
-        <button type="button" id="bk-tabbtn-booking" class="bk-page-tabbtn" onclick="_bkSwitchTab('booking')">預約</button>
+        <button type="button" id="bk-tabbtn-booking" class="bk-page-tabbtn" onclick="_bkSwitchTab('booking')">預約總覽</button>
+        <!-- v174：時段格線移到「預約」右邊並改名「單日詳細預約」（id/內部 key 維持 grid，只改顯示文字與順序） -->
+        <button type="button" id="bk-tabbtn-grid" class="bk-page-tabbtn" onclick="_bkSwitchTab('grid')">🗓 單日詳細預約</button>
         <button type="button" id="bk-tabbtn-audit" class="bk-page-tabbtn" onclick="_bkSwitchTab('audit')">稽核紀錄</button>
-        <!-- v172（重構 Slice D）：時段格線＋使用率統計，比照既有 tab pattern 新增 -->
-        <button type="button" id="bk-tabbtn-grid" class="bk-page-tabbtn" onclick="_bkSwitchTab('grid')">🗓 時段格線</button>
         <button type="button" id="bk-tabbtn-stats" class="bk-page-tabbtn" onclick="_bkSwitchTab('stats')">📊 使用率統計</button>
       </div>
       <div id="bk-tab-booking">
@@ -1989,7 +1989,7 @@
             <button class="btn btn-secondary btn-sm" onclick="_bkShiftGridDate(1)" style="font-size:1.1rem;padding:3px 10px;">›</button>
             <button class="btn btn-secondary btn-sm" onclick="_bkGridDate=new Date().toISOString().slice(0,10);renderBkGridTab()">今天</button>
           </div>
-          <span style="color:#718096;font-size:.8rem;">點空格新增預約，點既有預約可編輯</span>
+          <span style="color:#718096;font-size:.8rem;">點空格新增預約，雙擊既有預約可編輯，亦可拖曳調整空間／時段</span>
         </div>
         <div id="bk-grid-body" style="padding:0;min-height:60px;"></div>
       </div>
@@ -27991,6 +27991,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-14', v: 174, title: '空間預約時段格線改主責顯示/雙擊/拖曳＋身心調適假動作圖示化', isProd: false, items: [
+      item('改善', '空間預約「時段格線」分頁改名「單日詳細預約」並移到「預約」分頁右邊；占用格改以「主責」姓名為主顯示（不論有無連結個案），案號等識別資訊改為 hover 才看得到；改為雙擊（比照其他檢視既有雙擊機制）才進編輯，避免誤點；占用格可拖曳到別的格，放開即把該筆預約改到目標欄空間＋目標列節次的起訖時間，撞房/撞人時沿用既有拖曳衝突修正流程（重用既有預約更新與衝突機制，未另寫一套）'),
+      item('改善', '身心調適假列上「收到／填寫評估表／封存」三個動作改為姓名下方橫排小圖示（📩／📝／🗄），各附 hover 說明，取代原「⋯ 更多」溢位選單；已收到者顯示「已收到 ✓」'),
+      item('改善', '空間預約「預約」分頁改名「預約總覽」'),
+    ]},
     { date: '2026-07-13', v: 173, title: '篩選 UX：收合式勾選篩選面板＋稽核紀錄開放專任檢視', isProd: false, items: [
       item('改善', '個案列表／案號查詢與管理／身心調適假資料庫三處的篩選改為「🔽 篩選」收合式勾選面板（momo 購物式）：低數量的維度（狀態、封存、案別、風險、受理情況等）改成勾選框群組，同群組內複選為「或」、跨群組為「且」，某群組全沒勾＝該維度不篩；面板按鈕會顯示目前已套用幾個條件，可一鍵「清除全部」。輔導人員／主責等人多的清單與姓名/學號/案號等文字搜尋維持原樣不變'),
       item('改善', '身心調適假「稽核紀錄」分頁：原僅窗口／主任／管理者可見，改為所有「專任」角色也能檢視，但僅顯示自己的異動；窗口／主任／管理者維持看得到全部人的異動，並新增篩選（動作類型、操作者、日期區間、姓名/學號/案號搜尋）'),
@@ -32261,22 +32266,9 @@ window._mlBatchAck = async () => {
   try { await saveMentalLeaves(); bgJobDone(jobId); } catch(e) { bgJobFail(jobId, e.message); }
 };
 
-// ── A-2：每列「⋯ 更多」溢位選單（純前端、點外面關閉）──────────────
-// 產生單一選單項目的 HTML；onclickBody 為點擊要執行的原 onclick 行為（保留各動作原本行為）。
-function _mlMenuItemHtml(onclickBody, label, tip) {
-  return `<button onclick="event.stopPropagation();window._mlCloseRowMenus();${onclickBody}" ${tip ? `data-tip="${escHtml(tip)}"` : ''} style="display:block;width:100%;text-align:left;background:none;border:none;padding:6px 10px;font-size:.8rem;cursor:pointer;border-radius:4px;color:#2d3748;white-space:nowrap;" onmouseover="this.style.background='#f7fafc'" onmouseout="this.style.background='none'">${label}</button>`;
-}
-window._mlToggleRowMenu = (id) => {
-  const dd = document.getElementById('ml-rowmenu-' + id);
-  if (!dd) return;
-  const willOpen = dd.style.display === 'none';
-  window._mlCloseRowMenus();
-  if (willOpen) dd.style.display = 'block';
-};
-window._mlCloseRowMenus = () => {
-  document.querySelectorAll('.ml-row-menu-dd').forEach(d => { d.style.display = 'none'; });
-};
-document.addEventListener('click', () => window._mlCloseRowMenus());
+// ── v174：每列「收到／填寫評估表／封存」改為姓名下方橫排小圖示（見 _mlRenderRecordsTab 內
+// _mlIconBtn），取代原 A-2「⋯ 更多」溢位選單；_mlMenuItemHtml/_mlToggleRowMenu/_mlCloseRowMenus
+// 已無呼叫端（grep 確認），一併移除。
 
 // ── A-3：封存／解除封存（真正的列表隱藏，區別於「已讀」acknowledgedBy）──────────────
 // A-4：批次封存前先檢查每筆的「主責」是否已收到（acknowledgedBy），未讀者跳出確認框去識別化（僅列案號）。
@@ -32932,6 +32924,8 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
   const _mlFT = _mlIsFullTimeStaff();
   // ④c：🔔再次提醒按鈕收縮至窗口／主任／系統管理者可見（A/B案badge、主責姓名、已讀/未讀標示仍維持專任可見 _mlFT，不受此收縮影響）
   const _mlBellVisible = isMentalLeaveContact || currentRole === '主任' || currentRole === '系統管理者' || extraRole === '管理者';
+  // v174：姓名下方圖示列——取代原 A-2「⋯ 更多」溢位選單；hover 說明比照全站 data-tip 慣例。
+  const _mlIconBtn = (icon, tip, onclickBody) => `<button type="button" onclick="event.stopPropagation();${onclickBody}" data-tip="${escHtml(tip)}" style="border:none;background:none;cursor:pointer;font-size:.92rem;padding:1px 2px;line-height:1;">${icon}</button>`;
   const rowsHtml = pageRecords.length ? pageRecords.map(l => {
     const { matchedKeywords } = _mlMatchKeywords(l.reason);
     const { level: maxLevel, isOverride: _mlIsOverride } = _mlEffectiveRisk(l);
@@ -32944,9 +32938,9 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     // ④a：🔔再次提醒移至學生姓名下方；④c：僅窗口／主任／系統管理者可見（見 _mlBellVisible）
     const _mlCounselorEmailForBell = (_mlFT && mc && _mlHasCase) ? (mc.counselorEmail || '') : '';
     const _mlIsAckedForBell = _mlCounselorEmailForBell && (l.acknowledgedBy||[]).includes(_mlCounselorEmailForBell);
-    // A-2：🔔再次提醒改收進列末「⋯ 更多」選單（見下方 _mlMoreBtn）；是否顯示入口的權限判斷不變
-    const _mlBellMenuItem = (_mlBellVisible && _mlCounselorEmailForBell && !_mlIsAckedForBell)
-      ? _mlMenuItemHtml(`window._mlRemind('${escHtml(l.id)}')`, '🔔 再次提醒主責', '重新發送提醒給主責')
+    // v174：🔔再次提醒改與收到／填寫評估表／封存並列於姓名下方圖示列（見下方 _mlIconRow）；是否顯示入口的權限判斷不變
+    const _mlBellIcon = (_mlBellVisible && _mlCounselorEmailForBell && !_mlIsAckedForBell)
+      ? _mlIconBtn('🔔', '再次提醒主責', `window._mlRemind('${escHtml(l.id)}')`)
       : '';
     const nameLink = mc
       ? `<button onclick="showCaseDetail('${escHtml(mc.id)}')" style="border:none;background:none;cursor:pointer;color:#2b6cb0;font-weight:600;padding:0;font-size:inherit;">${escHtml(l.name||'—')}</button>`
@@ -32968,7 +32962,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     const _mlCaseBadge = (_mlRecSem && !_mlHasCase)
       ? `<span style="display:inline-block;background:#fed7d7;color:#9b2c2c;border-radius:4px;padding:0 5px;font-size:.68rem;margin-top:2px;">未開案</span>`
       : '';
-    // ③④：僅專任人員可見「A/B案＋主責」與「主責已讀」標示（不得向兼任/義務輔導老師/實習生等揭露該生為個案）；🔔再次提醒（A-2）已收進列末「⋯ 更多」選單，見 _mlBellMenuItem/_mlBellVisible
+    // ③④：僅專任人員可見「A/B案＋主責」與「主責已讀」標示（不得向兼任/義務輔導老師/實習生等揭露該生為個案）；🔔再次提醒見 _mlBellIcon/_mlBellVisible
     const _mlCaseInfoBadge = (_mlFT && mc && _mlHasCase) ? (() => {
       const abT = mc.basicInfoSnapshots?.[_mlRecSem]?.abType || mc.abType || '';
       const abBadge = abT === 'A案'
@@ -33004,39 +32998,33 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     const { from: _mlFrom, to: _mlTo } = _mlParseDateRange(l);
     const mlDateStr = _mlFrom ? (_mlFrom !== _mlTo ? `${_mlFrom.slice(5).replace('-','/')} – ${_mlTo.slice(5).replace('-','/')}` : _mlFrom.slice(5).replace('-','/')) : (l.leaveDate || '—');
     // 身心狀態評估表入口（#030-⑤）：非受輔生且（紅燈或連請三日）的掛載紀錄（anchor）本列顯示；
-    // A-2：狀態 chip（未填倒數）仍留在列上供一眼辨識，實際填寫/檢視按鈕收進「⋯ 更多」選單
+    // v174：狀態 chip（未填倒數）仍留在列上供一眼辨識，實際填寫/檢視改姓名下方圖示（見 _mlIconRow）
     let _mlaChip = '';
-    let _mlaMenuItem = '';
+    let _mlaIcon = '';
     if (_mlaAnchorMap && _mlaAnchorMap[l.id]?.id === l.id && _mlAssessFillable(l)) {
       const _mlaFilled = !!l.assessment;
-      _mlaMenuItem = _mlaFilled
-        ? _mlMenuItemHtml(`openMlAssessmentModal('${escHtml(l.id)}')`, '📝 評估表 ✓', '此評估表為身心調適假窗口於進案前對學生進行的評估與介入紀錄（非諮商晤談紀錄）；點開可檢視/編輯/列印')
-        : _mlMenuItemHtml(`openMlAssessmentModal('${escHtml(l.id)}')`, '📝 填寫評估表', '此評估表為身心調適假窗口於進案前對學生進行的評估與介入紀錄（非諮商晤談紀錄）；身心調適假連請三日/紅燈之非受輔生，需於 3 個工作日內完成填寫');
+      _mlaIcon = _mlaFilled
+        ? _mlIconBtn('📝✓', '評估表已填，點此檢視/編輯/列印（此評估表為身心調適假窗口於進案前對學生進行的評估與介入紀錄，非諮商晤談紀錄）', `openMlAssessmentModal('${escHtml(l.id)}')`)
+        : _mlIconBtn('📝', '填寫評估表：此評估表為身心調適假窗口於進案前對學生進行的評估與介入紀錄（非諮商晤談紀錄）；身心調適假連請三日/紅燈之非受輔生，需於 3 個工作日內完成填寫', `openMlAssessmentModal('${escHtml(l.id)}')`);
       _mlaChip = !_mlaFilled
         ? (l.assessmentNotifiedAt
             ? _mlAssessCountdownChip(_mlAddWorkdays(l.assessmentNotifiedAt.slice(0, 10), 3), '評估表未填：')
             : `<span style="border-radius:4px;padding:0 6px;font-size:.72rem;background:#edf2f7;color:#4a5568;border:1px solid #e2e8f0;white-space:nowrap;">評估表未填</span>`)
         : '';
     }
-    // A-3：封存／解除封存選單項——依目前檢視（_mlShowArchived）用同一顆選單顯示對應動作
-    const _mlArchiveMenuItem = l.archived
-      ? _mlMenuItemHtml(`window._mlUnarchiveOne('${escHtml(l.id)}')`, '♻️ 解除封存')
-      : _mlMenuItemHtml(`window._mlArchiveOne('${escHtml(l.id)}')`, '🗄 封存', '封存後此紀錄在列表中預設隱藏，可透過「顯示已封存」找回並解除封存');
-    const _mlMenuBody = [_mlaMenuItem, _mlBellMenuItem, _mlArchiveMenuItem].filter(Boolean).join('');
-    const _mlMoreBtn = _mlMenuBody
-      ? `<div style="position:relative;display:inline-block;">
-          <button onclick="event.stopPropagation();window._mlToggleRowMenu('${escHtml(l.id)}')" style="border:1px solid #cbd5e0;background:#fff;color:#4a5568;border-radius:4px;padding:2px 8px;font-size:.78rem;cursor:pointer;" title="更多操作">⋯</button>
-          <div id="ml-rowmenu-${escHtml(l.id)}" class="ml-row-menu-dd" style="display:none;position:absolute;right:0;top:100%;z-index:80;background:#fff;border:1px solid #cbd5e0;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.18);padding:4px;min-width:170px;">${_mlMenuBody}</div>
-        </div>`
-      : '';
-    // A-4：列上「收到」鈕——直接重用既有 window._mlAcknowledge；已收到者改顯示狀態文字
+    // v174：封存／解除封存改圖示——依目前檢視（_mlShowArchived）顯示對應動作
+    const _mlArchiveIcon = l.archived
+      ? _mlIconBtn('♻️', '解除封存', `window._mlUnarchiveOne('${escHtml(l.id)}')`)
+      : _mlIconBtn('🗄', '封存：封存後此紀錄在列表中預設隱藏，可透過「顯示已封存」找回並解除封存', `window._mlArchiveOne('${escHtml(l.id)}')`);
+    // v174：「收到」也併入圖示列（已收到者顯示文字狀態、非按鈕）；三動作＋🔔提醒橫排於姓名下方，取代原「⋯ 更多」選單
     const _mlAckedByMe = !!(currentUser?.email && (l.acknowledgedBy || []).includes(currentUser.email));
-    const _mlAckBtn = _mlAckedByMe
-      ? `<span style="color:#276749;font-size:.72rem;white-space:nowrap;">已收到 ✓</span>`
-      : `<button onclick="event.stopPropagation();window._mlAcknowledge('${escHtml(l.id)}')" style="padding:2px 8px;background:#276749;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.72rem;white-space:nowrap;">收到</button>`;
+    const _mlAckIcon = _mlAckedByMe
+      ? `<span data-tip="已收到" style="color:#276749;font-size:.72rem;white-space:nowrap;">已收到 ✓</span>`
+      : _mlIconBtn('📩', '收到：確認已知悉此筆身心調適假', `window._mlAcknowledge('${escHtml(l.id)}')`);
+    const _mlIconRow = `<div style="display:flex;gap:3px;align-items:center;margin-top:2px;flex-wrap:wrap;">${_mlAckIcon}${_mlaIcon}${_mlArchiveIcon}${_mlBellIcon}</div>`;
     return `${groupHeader}<tr style="background:${rowBg};${leftBorder}${bottomBorder}">
       <td style="${_cbPad}text-align:center;width:28px;"><input type="checkbox" class="ml-row-chk" data-id="${escHtml(l.id)}" ${isChecked?'checked':''} onchange="window._mlToggleCheck('${escHtml(l.id)}',this.checked)"></td>
-      <td style="padding:7px 10px;">${nameLink}</td>
+      <td style="padding:7px 10px;">${nameLink}${_mlIconRow}</td>
       <td style="padding:7px 10px;">${studentIdCell}</td>
       <td style="padding:7px 10px;">${escHtml(mlDateStr)}${dateBadge}${_mlaChip ? `<div style="margin-top:3px;">${_mlaChip}</div>` : ''}</td>
       <td style="padding:7px 10px;font-size:.8rem;">${escHtml(l.reason||'—')}</td>
@@ -33044,11 +33032,10 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       <td style="padding:7px 8px;">${handlingSel}</td>
       <td style="padding:7px 10px;">${courseBtn}</td>
       <td style="padding:7px 10px;font-size:.8rem;color:#718096;">${escHtml(l.semester||'—')}</td>
-      <td style="padding:7px 6px;text-align:center;white-space:nowrap;"><div style="display:flex;gap:4px;align-items:center;justify-content:center;">${_mlAckBtn}${_mlMoreBtn}</div></td>
       ${isAdmin ? `<td style="padding:7px 10px;"><button class="btn btn-danger btn-sm" onclick="window._mlDeleteRecord('${escHtml(l.id)}')">刪除${adminOnlyChip(false, true)}</button></td>` : ''}
     </tr>
     <tr id="ml-course-${escHtml(l.id)}" style="display:none;background:#f7fffe;">
-      <td colspan="${isAdmin ? 11 : 10}" style="padding:0 !important;margin:0;border:none;max-width:0;overflow:hidden;">
+      <td colspan="${isAdmin ? 10 : 9}" style="padding:0 !important;margin:0;border:none;max-width:0;overflow:hidden;">
         <div style="box-sizing:border-box;width:100%;padding:8px 12px;overflow-x:auto;${leftBorder}">${_mlCourseDetailHtml(l, `window._mlToggleCourse('${escHtml(l.id)}')`)}</div>
       </td>
     </tr>`;
@@ -33140,7 +33127,6 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
           <col id="ml-col-6" style="min-width:90px;">
           <col id="ml-col-7" style="min-width:60px;">
           <col id="ml-col-8" style="min-width:60px;">
-          <col id="ml-col-9" style="min-width:110px;">
           ${isAdmin ? '<col id="ml-col-10" style="min-width:50px;">' : ''}
         </colgroup>
         <thead><tr style="background:#f7fafc;text-align:left;">
@@ -33153,7 +33139,6 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
           <th style="padding:8px 10px;" data-col="6">受理情況</th>
           <th style="padding:8px 10px;" data-col="7">課程</th>
           <th style="padding:8px 10px;" data-col="8">學期</th>
-          <th style="padding:8px 10px;" data-col="9">動作</th>
           ${isAdmin ? '<th style="padding:8px 10px;" data-col="10"></th>' : ''}
         </tr></thead>
         <tbody>${rowsHtml}</tbody>
@@ -33167,7 +33152,8 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       <button class="btn btn-secondary btn-sm" ${_mlPage>=totalPages?'disabled':''} onclick="_mlPage++;renderMentalLeavePage()">›</button>
       <button class="btn btn-secondary btn-sm" ${_mlPage>=totalPages?'disabled':''} onclick="_mlPage=${totalPages};renderMentalLeavePage()">»</button>
     </div>` : (totalFiltered > 0 ? `<div style="text-align:right;font-size:.82rem;color:#a0aec0;margin-top:6px;">共 ${totalFiltered} 筆</div>` : '')}`;
-  _makeTableResizable({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,9,10] : [1,2,3,4,5,6,7,8,9], prefKey: 'mlColWidths2', skipCols: isAdmin ? new Set([10]) : new Set() });
+  // v174：移除「動作」欄（col9，動作改到姓名下方圖示列），col10（admin 刪除欄）欄號維持不變
+  _makeTableResizable({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,10] : [1,2,3,4,5,6,7,8], prefKey: 'mlColWidths2', skipCols: isAdmin ? new Set([10]) : new Set() });
   // v173：風險／受理情況／案別收合式勾選面板（取代原本並排的風險 checkbox 列＋受理情況/案別 select）
   _fpSyncPanel('ml', [
     { key: 'risk', title: '風險', options: [
@@ -33180,7 +33166,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
 }
 window._resetMlColWidths = () => {
   const isAdmin = currentRole === '主任' || extraRole === '管理者';
-  _resetTableColWidths({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,9,10] : [1,2,3,4,5,6,7,8,9], prefKey: 'mlColWidths2' });
+  _resetTableColWidths({ table: document.getElementById('ml-records-table'), colPrefix: 'ml-col-', colNums: isAdmin ? [1,2,3,4,5,6,7,8,10] : [1,2,3,4,5,6,7,8], prefKey: 'mlColWidths2' });
 };
 
 // ══════════════════════════════════════════════
@@ -34248,8 +34234,13 @@ function renderBkGridTab() {
 
   const dayBookings = bookingsData.filter(b => b.date === _bkGridDate);
   const cellMatch = (b, room) => room === '其他' ? _bkIsOtherRoomBooking(b) : b.room === room;
-  // 案號優先去識別化呈現；無案號才退回主責/借用事由名稱（比照既有卡片慣例，非硬性規定學號/姓名）
-  const _label = b => b.caseId ? escHtml(b.caseId) : escHtml(b.counselorName || '—');
+  // v174：占用格改以「主責」為主顯示（不論有無連結個案，一律顯示主責姓名）；案號等識別資訊
+  // 改為 hover 才看得到（見 _gridHoverInfo），避免一眼掃過格線就看到個案識別。
+  const _gridMainLabel = b => escHtml(b.counselorName || b.counselors?.[0]?.name || b.counselors?.[0]?.label || '—');
+  const _gridHoverInfo = b => {
+    const caseInfo = b.caseId ? (b.caseName ? `${b.caseName}（${b.caseId}）` : b.caseId) : (b.bkSerial ? `預約編號 ${b.bkSerial}` : '');
+    return escHtml(caseInfo + (b.notes ? (caseInfo ? '／' : '') + b.notes : ''));
+  };
 
   let html = `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">`;
   html += `<tr><th style="padding:6px 8px;background:#f7fafc;border-bottom:2px solid #e2e8f0;border-right:1px solid #e2e8f0;font-size:.78rem;color:#718096;text-align:left;white-space:nowrap;">節次</th>`;
@@ -34261,16 +34252,20 @@ function renderBkGridTab() {
     ROOMS.forEach(room => {
       const matches = dayBookings.filter(b => cellMatch(b, room) && _bkPeriodOverlaps(b, p));
       if (matches.length === 0) {
-        html += `<td onclick="_bkOpenGridNew('${escHtml(room)}','${_bkGridDate}','${p.start}','${p.end}')" data-tip="點此新增預約" style="padding:5px 7px;border-bottom:1px solid #e2e8f0;border-right:1px solid #e2e8f0;text-align:center;color:#cbd5e0;cursor:pointer;transition:background .1s;" onmouseover="this.style.background='#f0f9ff'" onmouseout="this.style.background=''">＋</td>`;
+        // v174：空格仍點一下新增（沿用既有 _bkOpenGridNew）；同時是拖曳放置目標——拖入代表把某筆
+        // 預約改到「本格空間＋本格節次起訖時間」，重用既有 bkDragOver/bkDrop 拖曳與衝突機制。
+        html += `<td onclick="_bkOpenGridNew('${escHtml(room)}','${_bkGridDate}','${p.start}','${p.end}')" ondragover="bkDragOver(event)" ondrop="bkDrop(event,'${escHtml(room)}',undefined,'${p.start}','${p.end}')" ondragenter="bkDragEnter(this)" ondragleave="bkDragLeave(this)" data-tip="點此新增預約，亦可拖曳既有預約至此" style="padding:5px 7px;border-bottom:1px solid #e2e8f0;border-right:1px solid #e2e8f0;text-align:center;color:#cbd5e0;cursor:pointer;transition:background .1s;" onmouseover="this.style.background='#f0f9ff'" onmouseout="this.style.background=''">＋</td>`;
       } else {
         const cells = matches.map(b => {
           const clr = _bkEffColor(b);
           const style = clr ? `background:${clr}22;border-left:3px solid ${clr};` : 'background:#edf2f7;';
           const continued = _bkFirstOverlapPeriodIdx(b) !== BK_PERIODS.indexOf(p);
-          const txt = continued ? `↳續 ${_label(b)}` : _label(b);
-          return `<div onclick="event.stopPropagation();editBooking('${escHtml(b.id)}')" data-tip="點此編輯" title="${escHtml((b.counselorName||'')+(b.notes?'／'+b.notes:''))}" style="${style}border-radius:4px;padding:2px 5px;margin-bottom:2px;font-size:.76rem;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${txt}</div>`;
+          const txt = continued ? `↳續 ${_gridMainLabel(b)}` : _gridMainLabel(b);
+          // v174：改雙擊編輯（比照預約卡片既有雙擊機制 _bkCardDblClick，避免誤點）；可拖曳
+          // （bkDragStart/bkDragEnd，重用既有卡片拖曳機制），放到目標格＝把此筆預約改到目標欄空間＋目標列節次時間。
+          return `<div data-bk-card="1" draggable="true" ondragstart="bkDragStart(event,'${escHtml(b.id)}')" ondragend="bkDragEnd(event)" ondblclick="_bkCardDblClick(event,'${escHtml(b.id)}')" data-tip="點兩下編輯，可拖曳改期" title="${_gridHoverInfo(b)}" style="${style}border-radius:4px;padding:2px 5px;margin-bottom:2px;font-size:.76rem;cursor:grab;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${txt}</div>`;
         }).join('');
-        html += `<td style="padding:4px 5px;border-bottom:1px solid #e2e8f0;border-right:1px solid #e2e8f0;vertical-align:top;">${cells}</td>`;
+        html += `<td ondragover="bkDragOver(event)" ondrop="bkDrop(event,'${escHtml(room)}',undefined,'${p.start}','${p.end}')" ondragenter="bkDragEnter(this)" ondragleave="bkDragLeave(this)" style="padding:4px 5px;border-bottom:1px solid #e2e8f0;border-right:1px solid #e2e8f0;vertical-align:top;transition:outline .1s;">${cells}</td>`;
       }
     });
     html += '</tr>';
@@ -34287,10 +34282,10 @@ function renderBkGridTab() {
         const clr = _bkEffColor(b);
         const style = clr ? `background:${clr}22;border-left:3px solid ${clr};` : 'background:#edf2f7;';
         const roomD = _bkIsOtherRoomBooking(b) ? (b.customRoom || b.room || '其他') : (b.room || '—');
-        return `<div onclick="editBooking('${escHtml(b.id)}')" style="${style}border-radius:5px;padding:5px 8px;margin-bottom:4px;font-size:.82rem;cursor:pointer;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        return `<div ondblclick="_bkCardDblClick(event,'${escHtml(b.id)}')" data-tip="點兩下編輯" title="${_gridHoverInfo(b)}" style="${style}border-radius:5px;padding:5px 8px;margin-bottom:4px;font-size:.82rem;cursor:pointer;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <span style="font-weight:600;">${fmtT(b.startTime)}–${fmtT(b.endTime)}</span>
           <span style="color:#4a5568;">${escHtml(roomD)}</span>
-          <span>${_label(b)}</span>
+          <span>${_gridMainLabel(b)}</span>
         </div>`;
       }).join('') + `</div>`;
   }
@@ -34503,7 +34498,8 @@ function _resetBkOverrideUi(color) {
 // 該 tab 時才視需要讀取，沿用 renderBookingsAuditLog 既有的快取優先＋背景更新機制）。
 function _bkApplyTabVisibility() {
   // v172：新增 grid（時段格線）／stats（使用率統計）兩個 tab，比照既有 booking/audit pattern
-  const labels = { booking: '預約', audit: '稽核紀錄', grid: '時段格線', stats: '使用率統計' };
+  // v174：booking 改名「預約總覽」、grid 改名「單日詳細預約」（僅顯示文字，key 不變）
+  const labels = { booking: '預約總覽', audit: '稽核紀錄', grid: '單日詳細預約', stats: '使用率統計' };
   Object.keys(labels).forEach(id => {
     const btn = document.getElementById('bk-tabbtn-' + id);
     if (btn) btn.dataset.active = (_bkPageTab === id) ? '1' : '0';
@@ -34842,22 +34838,32 @@ async function _bkGcFlush() {
   _bkGcRunning = false;
 }
 
-// 拖曳調整：非系列預約直接套用＋衝突檢查；系列預約先詢問套用範圍（見 _bkDragConfirmScope）。
-let _bkDragPending = null; // { id, newRoom, newDate }（等待系列範圍確認時暫存，尚未套用到 bookingsData）
+// v174：拖曳結束後最終畫面刷新——依目前所在 tab 決定重繪目標；「時段格線」（單日詳細預約）拖曳
+// 只改房間／節次時間、不改日期，仍走同一套 bkDrop/_bkDragConfirmScope/衝突修正 modal，僅render目標不同。
+function _bkRefreshCurrentView() {
+  if (_bkPageTab === 'grid') renderBkGridTab(); else renderBookingsPage();
+}
 
-async function bkDrop(event, newRoom, newDate) {
+// 拖曳調整：非系列預約直接套用＋衝突檢查；系列預約先詢問套用範圍（見 _bkDragConfirmScope）。
+let _bkDragPending = null; // { id, newRoom, newDate, newStart, newEnd }（等待系列範圍確認時暫存，尚未套用到 bookingsData）
+
+// newStart/newEnd（v174，選填）：時段格線拖曳改期用——把預約改到目標節次的起訖時間（房間/日期拖曳
+// 不帶這兩個參數）。衝突判定完全重用 _bkFindConflict／_bkLocalConflicts（本就以 candidate.startTime/
+// endTime 通用比對，不需另寫邏輯）；系列預約走既有 _bkDragConfirmScope，時間差同日期差一樣做整批平移。
+async function bkDrop(event, newRoom, newDate, newStart, newEnd) {
   event.preventDefault();
   const dropEl = event.currentTarget;
   dropEl.style.outline = '';
   const bookingId = event.dataTransfer.getData('bk-id');
   const b = bookingsData.find(x => x.id === bookingId);
   if (!b) return;
-  const changed = (newRoom && b.room !== newRoom) || (newDate && b.date !== newDate);
+  const changed = (newRoom && b.room !== newRoom) || (newDate && b.date !== newDate) ||
+    (newStart && b.startTime !== newStart) || (newEnd && b.endTime !== newEnd);
   if (!changed) return;
 
   if (b.seriesId) {
     // 系列預約：先不套用，詢問範圍後由 _bkDragConfirmScope 處理
-    _bkDragPending = { id: bookingId, newRoom: newRoom || '', newDate: newDate || '' };
+    _bkDragPending = { id: bookingId, newRoom: newRoom || '', newDate: newDate || '', newStart: newStart || '', newEnd: newEnd || '' };
     document.getElementById('bk-drag-scope-modal').style.display = 'flex';
     return;
   }
@@ -34866,17 +34872,21 @@ async function bkDrop(event, newRoom, newDate) {
   const proposal = { ...b };
   if (newRoom) proposal.room = newRoom;
   if (newDate) proposal.date = newDate;
+  if (newStart) proposal.startTime = newStart;
+  if (newEnd) proposal.endTime = newEnd;
   if (_bkLocalConflicts([proposal], new Set([b.id])).length) {
     _bkOpenDragFixModal([b], [proposal], '拖曳調整預約');
     return;
   }
 
-  const oldRoom = b.room, oldDate = b.date;
+  const oldRoom = b.room, oldDate = b.date, oldStart = b.startTime, oldEnd = b.endTime;
   if (newRoom) b.room = newRoom;
   if (newDate) b.date = newDate;
+  if (newStart) b.startTime = newStart;
+  if (newEnd) b.endTime = newEnd;
 
   // 立即更新畫面（樂觀更新，不顯示 loading）
-  renderBookingsPage();
+  _bkRefreshCurrentView();
 
   const jobId = bgJobAdd('拖曳調整預約', `${b.room} ${b.date}`);
   try {
@@ -34888,8 +34898,8 @@ async function bkDrop(event, newRoom, newDate) {
     bgJobProgress(jobId, 75);
 
     if (result.error === 'conflict') {
-      b.room = oldRoom; b.date = oldDate;
-      renderBookingsPage();
+      b.room = oldRoom; b.date = oldDate; b.startTime = oldStart; b.endTime = oldEnd;
+      _bkRefreshCurrentView();
       const w = result.with || {};
       const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
       const kind = result.conflictType === 'person' ? '人員' : '空間';
@@ -34908,17 +34918,19 @@ async function bkDrop(event, newRoom, newDate) {
       if (fb) Object.assign(b, fb);
     }
 
-    auditLog(`空間預約調整：${oldRoom}${oldDate !== (newDate||oldDate) ? ' '+oldDate : ''} → ${b.room}${b.date !== oldDate ? ' '+b.date : ''}（${b.counselorName || '—'}）`);
+    const timeMsg = (newStart || newEnd) ? `　時間 ${(oldStart||'').slice(0,5)}–${(oldEnd||'').slice(0,5)} → ${(b.startTime||'').slice(0,5)}–${(b.endTime||'').slice(0,5)}` : '';
+    auditLog(`空間預約調整：${oldRoom}${oldDate !== (newDate||oldDate) ? ' '+oldDate : ''} → ${b.room}${b.date !== oldDate ? ' '+b.date : ''}（${b.counselorName || '—'}）${timeMsg}`);
     bgJobDone(jobId);
-    renderBookingsPage();
+    _bkRefreshCurrentView();
   } catch(e) {
-    b.room = oldRoom; b.date = oldDate;
-    renderBookingsPage();
+    b.room = oldRoom; b.date = oldDate; b.startTime = oldStart; b.endTime = oldEnd;
+    _bkRefreshCurrentView();
     bgJobFail(jobId, e.message);
   }
 }
 
-// 系列拖曳：使用者選定套用範圍後套用（房間變更套用所有 targets；日期依 delta 平移，語意與 saveBooking T3 相同）。
+// 系列拖曳：使用者選定套用範圍後套用（房間變更套用所有 targets；日期依 delta 平移，語意與 saveBooking T3 相同；
+// v174：時間變更同理依 delta 分鐘數整批平移，供時段格線拖曳系列預約使用）。
 async function _bkDragConfirmScope(scope) {
   document.getElementById('bk-drag-scope-modal').style.display = 'none';
   const pending = _bkDragPending; _bkDragPending = null;
@@ -34927,6 +34939,8 @@ async function _bkDragConfirmScope(scope) {
   if (!b) return;
 
   const dateDelta = pending.newDate ? _bkDaysBetween(b.date, pending.newDate) : 0;
+  const startDeltaMin = pending.newStart ? _bkTimeDeltaMin(b.startTime, pending.newStart) : 0;
+  const endDeltaMin = pending.newEnd ? _bkTimeDeltaMin(b.endTime, pending.newEnd) : 0;
   const targets = _bkSeriesTargets(bookingsData, b, scope);
   if (!targets.length) return;
 
@@ -34935,6 +34949,8 @@ async function _bkDragConfirmScope(scope) {
     const p = { ...t };
     if (pending.newRoom) p.room = pending.newRoom;
     if (dateDelta) p.date = _bkAddDays(t.date, dateDelta);
+    if (startDeltaMin) p.startTime = _bkShiftTime(t.startTime, startDeltaMin);
+    if (endDeltaMin) p.endTime = _bkShiftTime(t.endTime, endDeltaMin);
     return p;
   });
   const excludeIds = new Set(targets.map(t => t.id));
@@ -34943,13 +34959,15 @@ async function _bkDragConfirmScope(scope) {
     return;
   }
 
-  const snapshot = targets.map(t => ({ id: t.id, room: t.room, customRoom: t.customRoom, date: t.date }));
+  const snapshot = targets.map(t => ({ id: t.id, room: t.room, customRoom: t.customRoom, date: t.date, startTime: t.startTime, endTime: t.endTime }));
 
   targets.forEach(t => {
     if (pending.newRoom) t.room = pending.newRoom;
     if (dateDelta) t.date = _bkAddDays(t.date, dateDelta);
+    if (startDeltaMin) t.startTime = _bkShiftTime(t.startTime, startDeltaMin);
+    if (endDeltaMin) t.endTime = _bkShiftTime(t.endTime, endDeltaMin);
   });
-  renderBookingsPage();
+  _bkRefreshCurrentView();
 
   const jobId = bgJobAdd('拖曳調整系列預約', `共 ${targets.length} 筆`);
   try {
@@ -34962,9 +34980,9 @@ async function _bkDragConfirmScope(scope) {
     if (result.error === 'conflict') {
       snapshot.forEach(s => {
         const t = bookingsData.find(x => x.id === s.id);
-        if (t) { t.room = s.room; t.customRoom = s.customRoom; t.date = s.date; }
+        if (t) { t.room = s.room; t.customRoom = s.customRoom; t.date = s.date; t.startTime = s.startTime; t.endTime = s.endTime; }
       });
-      renderBookingsPage();
+      _bkRefreshCurrentView();
       const w = result.with || {};
       const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
       const kind = result.conflictType === 'person' ? '人員' : '空間';
@@ -34985,15 +35003,15 @@ async function _bkDragConfirmScope(scope) {
       });
     }
 
-    auditLog(`空間預約調整（系列拖曳，共 ${targets.length} 筆）：${pending.newRoom ? '空間→'+pending.newRoom+'；' : ''}${dateDelta ? `日期平移 ${dateDelta} 天` : ''}`);
+    auditLog(`空間預約調整（系列拖曳，共 ${targets.length} 筆）：${pending.newRoom ? '空間→'+pending.newRoom+'；' : ''}${dateDelta ? `日期平移 ${dateDelta} 天；` : ''}${(startDeltaMin || endDeltaMin) ? `時間平移 ${startDeltaMin || endDeltaMin} 分鐘` : ''}`);
     bgJobDone(jobId);
-    renderBookingsPage();
+    _bkRefreshCurrentView();
   } catch (e) {
     snapshot.forEach(s => {
       const t = bookingsData.find(x => x.id === s.id);
-      if (t) { t.room = s.room; t.customRoom = s.customRoom; t.date = s.date; }
+      if (t) { t.room = s.room; t.customRoom = s.customRoom; t.date = s.date; t.startTime = s.startTime; t.endTime = s.endTime; }
     });
-    renderBookingsPage();
+    _bkRefreshCurrentView();
     bgJobFail(jobId, e.message);
   }
 }
@@ -35202,7 +35220,7 @@ async function _bkDragFixApply() {
   });
   const deletedIdSet = new Set(deleted.map(b => b.id));
   if (deletedIdSet.size) bookingsData = bookingsData.filter(b => !deletedIdSet.has(b.id));
-  renderBookingsPage();
+  _bkRefreshCurrentView();
 
   const jobId = bgJobAdd(st.scopeLabel, `共 ${survivors.length} 筆，刪除 ${deleted.length} 筆`);
   try {
@@ -35217,7 +35235,7 @@ async function _bkDragFixApply() {
 
     if (result.error === 'conflict') {
       bookingsData = _snapshot;
-      renderBookingsPage();
+      _bkRefreshCurrentView();
       const w = result.with || {};
       const wRoom = w.room === '其他' ? (w.customRoom || '其他') : (w.room || '');
       const kind = result.conflictType === 'person' ? '人員' : '空間';
@@ -35251,10 +35269,10 @@ async function _bkDragFixApply() {
     const _fixFirst = survivors[0] ? `${_bkDragFixRoomLabel(survivors[0])} ${survivors[0].date} ${(survivors[0].startTime||'').slice(0,5)}–${(survivors[0].endTime||'').slice(0,5)}${survivors[0].counselorName ? '　'+survivors[0].counselorName : ''}` : '';
     auditLog(`空間預約調整（拖曳＋衝突修正，共 ${survivors.length} 筆，刪除 ${deleted.length} 筆）：${_fixFirst}${survivors.length > 1 ? ' 等' : ''}`);
     bgJobDone(jobId);
-    renderBookingsPage();
+    _bkRefreshCurrentView();
   } catch (e) {
     bookingsData = _snapshot;
-    renderBookingsPage();
+    _bkRefreshCurrentView();
     bgJobFail(jobId, e.message);
   }
   _bkDragFix = null;
@@ -36074,6 +36092,22 @@ function _bkDaysBetween(a, b) {
   const da = new Date(ay, am - 1, ad);
   const db = new Date(by, bm - 1, bd);
   return Math.round((db - da) / 86400000);
+}
+
+// v174：時段格線拖曳系列預約平移用——回傳 newT 相對於 oldT 的分鐘差（可正可負）。t 為 'HH:MM'（或含秒的
+// 'HH:MM:SS'，僅取前兩段）。與 _bkDaysBetween 同一組平移語意，供 _bkDragConfirmScope 整批位移時間用。
+function _bkTimeDeltaMin(oldT, newT) {
+  const toMin = t => { const [h, m] = (t || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+  return toMin(newT) - toMin(oldT);
+}
+// v174：依分鐘差平移 'HH:MM' 時間字串（超出 0–24 時以 24 小時循環處理，本系統節次皆在同日內不會用到跨日）。
+function _bkShiftTime(t, deltaMin) {
+  const [h, m] = (t || '0:0').split(':').map(Number);
+  let total = (h || 0) * 60 + (m || 0) + (deltaMin || 0);
+  total = ((total % 1440) + 1440) % 1440;
+  const hh = String(Math.floor(total / 60)).padStart(2, '0');
+  const mm = String(total % 60).padStart(2, '0');
+  return `${hh}:${mm}`;
 }
 
 // #24：由系列既有日期陣列（依日期升冪排序）反推當初的重複頻率，供編輯系列時預先勾選對應的頻率
@@ -44931,7 +44965,7 @@ function toggleNavPin(navId) {
 <div id="bk-drag-scope-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10001;align-items:center;justify-content:center;padding:20px;">
   <div style="background:#fff;border-radius:12px;max-width:360px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
     <h3 style="margin:0 0 8px;font-size:1rem;color:#2d3748;">拖曳調整系列預約</h3>
-    <p style="font-size:.875rem;color:#718096;margin-bottom:16px;">此預約屬於系列，請選擇套用範圍（房間變更套用所有選定範圍；日期變更將依此筆的日期差平移）：</p>
+    <p style="font-size:.875rem;color:#718096;margin-bottom:16px;">此預約屬於系列，請選擇套用範圍（房間變更套用所有選定範圍；日期／時間變更將依此筆的差值整批平移）：</p>
     <div style="display:flex;flex-direction:column;gap:8px;">
       <button class="btn btn-secondary" onclick="_bkDragConfirmScope('this')">僅此筆</button>
       <button class="btn btn-secondary" onclick="_bkDragConfirmScope('future')">此筆及之後</button>
