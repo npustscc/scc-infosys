@@ -6874,6 +6874,11 @@ function _dayWorkHours(cfg, ymd) {
       endHour = Math.min(endHour, cap);
     }
   }
+  // v176：config 的 end（如 18:00）只是 _isOffHours 用來偵測「奇怪上線時間」的邊界，
+  // 不代表差勤實際下班時間——差勤規則是「上班起＋9 小時」（其中 1 小時為午休，實際工時 8 小時），
+  // 如 08:00 上班→17:00 下班。此處只影響 _dayWorkStartEnd／_leaveWorkHours（請假時數計算），
+  // 不影響 _isOffHours（它有自己的一份邏輯，未共用此函式）。
+  endHour = Math.min(endHour, hours.start + 9);
   return { start: hours.start, end: endHour };
 }
 // 某日上班起訖時間字串（'HH:00'），供請假申請表單預設值／改日期時自動套用；
@@ -6883,7 +6888,10 @@ function _dayWorkStartEnd(cfg, ymd) {
   const wh = _dayWorkHours(cfg, ymd);
   if (wh) return { start: fmt(wh.start), end: fmt(wh.end) };
   const fallback = Object.values(cfg.weeklyHours || {}).find(h => h && Number.isFinite(h.start) && Number.isFinite(h.end));
-  return { start: fmt(fallback ? fallback.start : 8), end: fmt(fallback ? fallback.end : 18) };
+  const fbStart = fallback ? fallback.start : 8;
+  // v176：fallback 下班時間同樣 cap 成 start+9（差勤實際下班＝上班起+9h，含 1h 午休），預設變 08:00–17:00
+  const fbEnd = Math.min(fallback ? fallback.end : 18, fbStart + 9);
+  return { start: fmt(fbStart), end: fmt(fbEnd) };
 }
 // 請假涵蓋的「實際上班時數」：逐日取「該日上班時段 ∩ 請假範圍」，再扣掉當日午休
 // （固定為當日上班起算的第 5 小時，如 08:00 上班→12:00-13:00、12:00 晚班→16:00-17:00）。
@@ -25816,12 +25824,12 @@ function _myAttRenderApplyTab(el) {
           <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;"><span id="la-from-label">開始（日期／時間）</span></label>
             <div style="display:flex;gap:4px;">
               <input id="la-from" type="date" class="field-input" value="${today}" onchange="_laFromDateChange()">
-              <input id="la-from-time" type="time" class="field-input" style="width:110px;" value="${_todayWork.start}" onchange="_laAutoHours()">
+              <input id="la-from-time" type="time" class="field-input" style="min-width:118px;" value="${_todayWork.start}" onchange="_laAutoHours()">
             </div></div>
           <div id="la-end-row"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">結束（日期／時間）</label>
             <div style="display:flex;gap:4px;">
               <input id="la-to" type="date" class="field-input" value="${today}" onchange="_laToDateChange()">
-              <input id="la-to-time" type="time" class="field-input" style="width:110px;" value="${_todayWork.end}" onchange="_laAutoHours()">
+              <input id="la-to-time" type="time" class="field-input" style="min-width:118px;" value="${_todayWork.end}" onchange="_laAutoHours()">
             </div></div>
           <div id="la-hours-row"><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">時數（小時，系統自動計算）</label>
             <input id="la-hours" type="number" class="field-input" style="width:110px;background:#f7fafc;cursor:not-allowed;" readonly tabindex="-1" title="依起訖日期時間自動計算，已扣除非上班時段與午休" placeholder="0"></div>
@@ -28088,6 +28096,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-14', v: 176, title: '身心調適假圖示放大改版＋請假時間欄加寬＋實際下班17:00修正', isProd: false, items: [
+      item('改善', '身心調適假列表姓名下方的動作圖示（收到／評估表／封存／再次提醒）整體放大，較容易點按辨識；未讀圖示改為 🟦、已讀改為 ✅、封存改為 📦（解除封存 ♻️ 不變）'),
+      item('修復', '請假申請表單的起訖「時間」欄位太窄，導致「上午08:00」等時間文字被切掉看不全，已加寬欄位'),
+      item('修復', '差勤請假時數計算與請假表單預設下班時間，原本誤用系統上班時間設定裡「異常上線偵測」用的下班時間（如 18:00）當作實際下班時間；已修正為正確規則「上班起＋9 小時（含 1 小時午休，實際工時 8 小時）」，如 08:00 上班→17:00 下班。請假表單起訖時間預設值、以及請假時數自動換算皆已同步修正（例：同一天從 08:00 請到 20:00，時數仍正確算為 8 小時）'),
+    ]},
     { date: '2026-07-14', v: 175, title: '請假申請時數改自動精算＋起訖日期時間預設當日上班', isProd: true, items: [
       item('修復', '請假時數改為只計「實際上班時段」並自動扣除每日午休（上班起算第 5 小時，如 08:00 上班→12:00-13:00、晚班 12:00 上班→16:00-17:00）；跨日請假不再誤把過夜等非上班時間算進時數（原本用起訖掛鐘時間差整段照算）'),
       item('改善', '開始日期晚於結束日期時，結束日期自動跟上開始日期（避免結束早於開始）'),
@@ -33028,7 +33041,8 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
   // ④c：🔔再次提醒按鈕收縮至窗口／主任／系統管理者可見（A/B案badge、主責姓名、已讀/未讀標示仍維持專任可見 _mlFT，不受此收縮影響）
   const _mlBellVisible = isMentalLeaveContact || currentRole === '主任' || currentRole === '系統管理者' || extraRole === '管理者';
   // v174：姓名下方圖示列——取代原 A-2「⋯ 更多」溢位選單；hover 說明比照全站 data-tip 慣例。
-  const _mlIconBtn = (icon, tip, onclickBody) => `<button type="button" onclick="event.stopPropagation();${onclickBody}" data-tip="${escHtml(tip)}" style="border:none;background:none;cursor:pointer;font-size:.92rem;padding:1px 2px;line-height:1;">${icon}</button>`;
+  // v176：圖示放大（原 .92rem/1px 2px 過小），未讀/已讀/封存圖示同步更換
+  const _mlIconBtn = (icon, tip, onclickBody) => `<button type="button" onclick="event.stopPropagation();${onclickBody}" data-tip="${escHtml(tip)}" style="border:none;background:none;cursor:pointer;font-size:1.15rem;padding:2px 4px;line-height:1;">${icon}</button>`;
   const rowsHtml = pageRecords.length ? pageRecords.map(l => {
     const { matchedKeywords } = _mlMatchKeywords(l.reason);
     const { level: maxLevel, isOverride: _mlIsOverride } = _mlEffectiveRisk(l);
@@ -33118,12 +33132,12 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
     // v174：封存／解除封存改圖示——依目前檢視（_mlShowArchived）顯示對應動作
     const _mlArchiveIcon = l.archived
       ? _mlIconBtn('♻️', '解除封存', `window._mlUnarchiveOne('${escHtml(l.id)}')`)
-      : _mlIconBtn('🗄', '封存：封存後此紀錄在列表中預設隱藏，可透過「顯示已封存」找回並解除封存', `window._mlArchiveOne('${escHtml(l.id)}')`);
+      : _mlIconBtn('📦', '封存：封存後此紀錄在列表中預設隱藏，可透過「顯示已封存」找回並解除封存', `window._mlArchiveOne('${escHtml(l.id)}')`);
     // v174：「收到」也併入圖示列（已收到者顯示文字狀態、非按鈕）；三動作＋🔔提醒橫排於姓名下方，取代原「⋯ 更多」選單
     const _mlAckedByMe = !!(currentUser?.email && (l.acknowledgedBy || []).includes(currentUser.email));
     const _mlAckIcon = _mlAckedByMe
-      ? `<span data-tip="已收到" style="color:#276749;font-size:.72rem;white-space:nowrap;">已收到 ✓</span>`
-      : _mlIconBtn('📩', '收到：確認已知悉此筆身心調適假', `window._mlAcknowledge('${escHtml(l.id)}')`);
+      ? `<span data-tip="已收到" style="color:#276749;font-size:1.15rem;padding:2px 4px;line-height:1;display:inline-block;">✅</span>`
+      : _mlIconBtn('🟦', '收到（未讀）：確認已知悉此筆身心調適假', `window._mlAcknowledge('${escHtml(l.id)}')`);
     const _mlIconRow = `<div style="display:flex;gap:3px;align-items:center;margin-top:2px;flex-wrap:wrap;">${_mlAckIcon}${_mlaIcon}${_mlArchiveIcon}${_mlBellIcon}</div>`;
     return `${groupHeader}<tr style="background:${rowBg};${leftBorder}${bottomBorder}">
       <td style="${_cbPad}text-align:center;width:28px;"><input type="checkbox" class="ml-row-chk" data-id="${escHtml(l.id)}" ${isChecked?'checked':''} onchange="window._mlToggleCheck('${escHtml(l.id)}',this.checked)"></td>
