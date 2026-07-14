@@ -3727,6 +3727,8 @@ const DEFAULT_WORK_HOURS = {
   dutyRoster: [],                 // [{date:'YYYY-MM-DD', email}]；#4 輪值上班：該日僅輪值者算上班
   semesterPeriods: [],            // [{from:'YYYY-MM-DD', to:'YYYY-MM-DD'}]；#4a 學期時段（此區間內才有晚班）
   nonSemesterEndHour: 18,         // 非學期（寒暑假等，不在 semesterPeriods 內）的下班時數上限＝無晚班
+  // v177：實習生晚班班表——全中心統一的晚班時段（個人不可調，只能勾「哪幾天適用」，見 users[email].eveningShiftDays）
+  eveningShift: { start: 12, workEnd: 21 },
 };
 // 空間預約使用者顏色（32 色）+ GC 11 色映射
 const BK_USER_COLORS = [
@@ -6859,9 +6861,17 @@ function _isOffHours(isoOrDate) {
 // ══════════════════════════════════════════════
 // 某日的上班時段（{start,end} 整點小時數）；非上班日回傳 null。邏輯與 _isOffHours 一致，
 // 差別只是回傳「時段」而非「當下是否 off-hours 的布林值」。
-function _dayWorkHours(cfg, ymd) {
-  if ((cfg.holidays || []).includes(ymd)) return null;                  // 假日 → 非上班日
+// evening（v177，選填）：{ days:[週幾陣列], start, workEnd }——該使用者的晚班設定，由呼叫端組好傳入，
+// 純函式本身不讀 configData／currentUser。晚班日＝整天上班時段改晚班（不是加班延長），
+// 且僅在學期時段內生效（寒暑假等學期外自動失效、回退一般判斷）；假日仍優先＝休假（下方 holidays 檢查先擋）。
+function _dayWorkHours(cfg, ymd, evening) {
+  if ((cfg.holidays || []).includes(ymd)) return null;                  // 假日 → 非上班日（晚班不例外）
   const dow = new Date(ymd + 'T00:00:00').getDay();
+  if (evening?.days?.includes(dow)) {
+    const periods = cfg.semesterPeriods || [];
+    const inSem = !periods.length || periods.some(p => p && p.from && p.to && ymd >= p.from && ymd <= p.to);
+    if (inSem) return { start: evening.start, end: evening.workEnd };   // 晚班日自帶上班身分，不受一般 weeklyHours 是否上班日影響
+  }
   const isExtra = (cfg.extraWorkDays || []).includes(ymd);
   let hours = cfg.weeklyHours?.[dow] || null;
   if (!hours && isExtra) {
@@ -6889,9 +6899,10 @@ function _dayWorkHours(cfg, ymd) {
 }
 // 某日上班起訖時間字串（'HH:00'），供請假申請表單預設值／改日期時自動套用；
 // 非上班日（如週末、假日）沒有「上班時段」可套，退而取其他星期第一組有效時段，皆無則 08:00–18:00。
-function _dayWorkStartEnd(cfg, ymd) {
+// evening（v177，選填）：透傳給 _dayWorkHours；fallback 分支（非上班日退回其他星期）不適用晚班，不用動。
+function _dayWorkStartEnd(cfg, ymd, evening) {
   const fmt = h => String(h).padStart(2, '0') + ':00';
-  const wh = _dayWorkHours(cfg, ymd);
+  const wh = _dayWorkHours(cfg, ymd, evening);
   if (wh) return { start: fmt(wh.start), end: fmt(wh.end) };
   const fallback = Object.values(cfg.weeklyHours || {}).find(h => h && Number.isFinite(h.start) && Number.isFinite(h.end));
   const fbStart = fallback ? fallback.start : 8;
@@ -6907,7 +6918,8 @@ function _dayWorkStartEnd(cfg, ymd) {
 // （固定為當日上班起算的第 5 小時，如 08:00 上班→12:00-13:00、12:00 晚班→16:00-17:00）。
 // 非上班日、跨日夜間／假日等非上班時間逐日交集後自然貢獻 0 小時，不會像掛鐘時間差整段照算。
 // 四捨五入到 0.5 小時，與 la-hours 欄位既有 step 一致。純函式：不讀 DOM、不用預設參數。
-function _leaveWorkHours(cfg, fromDate, fromTime, toDate, toTime) {
+// evening（v177，選填）：{ days, start, workEnd }，透傳給逐日的 _dayWorkHours；請假表單一律傳「本人」的晚班設定。
+function _leaveWorkHours(cfg, fromDate, fromTime, toDate, toTime, evening) {
   if (!fromDate) return 0;
   const toD = toDate || fromDate;
   if (toD < fromDate) return 0;
@@ -6920,7 +6932,7 @@ function _leaveWorkHours(cfg, fromDate, fromTime, toDate, toTime) {
   const endD = new Date(toD + 'T00:00:00');
   while (d <= endD) {
     const ymd = _fmtDate(d);
-    const wh = _dayWorkHours(cfg, ymd);
+    const wh = _dayWorkHours(cfg, ymd, evening);
     if (wh) {
       const dayStart = (ymd === fromDate) ? parseT(fromTime, wh.start) : wh.start;
       const dayEnd = (ymd === toD) ? parseT(toTime, wh.end) : wh.end;
@@ -25421,7 +25433,7 @@ function renderAttendanceMgr() {
     { id: 'punch',   label: '打卡紀錄' },
     { id: 'summary', label: '差勤匯總' },
     { id: 'review',  label: '請假審核' },
-    { id: 'types',   label: '假別與額度' },
+    { id: 'types',   label: '假別與班表' },
   ];
   const pend = (leavesData?.applications || []).filter(a => a.status === 'pending').length;
   if (bar) {
@@ -25615,6 +25627,22 @@ function renderLeaveTypesAdmin() {
     return `<tr><td style="white-space:nowrap;">${escHtml(i.name)}</td>${cells}<td><button class="btn btn-secondary btn-sm" style="font-size:.74rem;" onclick="saveInternQuota('${i.email}')">儲存</button></td></tr>`;
   }).join('');
 
+  // 實習生晚班班表（v177）：全中心統一晚班時段 + 逐實習生勾晚班星期
+  const esCfg = _getWorkHoursConfig().eveningShift || { start: 12, workEnd: 21 };
+  const esHourOpts = n => Array.from({ length: 24 }, (_, h) =>
+    `<option value="${h}"${h === n ? ' selected' : ''}>${String(h).padStart(2,'0')}:00</option>`
+  ).join('');
+  const esDowLabels = ['週日','週一','週二','週三','週四','週五','週六'];
+  const esDowOrder = [1,2,3,4,5,6,0]; // 顯示順序：週一~週日
+  const eveningRows = interns.map(i => {
+    const days = Array.isArray(configData?.users?.[i.email]?.eveningShiftDays) ? configData.users[i.email].eveningShiftDays : [];
+    const cbs = esDowOrder.map(dow => `
+      <td style="text-align:center;">
+        <input type="checkbox" id="es_day_${_safeIdKey(i.email)}_${dow}" ${days.includes(dow) ? 'checked' : ''}>
+      </td>`).join('');
+    return `<tr><td style="white-space:nowrap;">${escHtml(i.name)}</td>${cbs}<td><button class="btn btn-secondary btn-sm" style="font-size:.74rem;" onclick="_saveInternEveningDays('${i.email}')">儲存</button></td></tr>`;
+  }).join('');
+
   body.innerHTML = `
     <div class="card" style="margin-bottom:20px;">
       <div class="card-header"><h3>可申請假別</h3></div>
@@ -25655,6 +25683,29 @@ function renderLeaveTypesAdmin() {
                    <tbody>${quotaRows}</tbody>
                  </table>
                </div>`}
+      </div>
+    </div>
+    <div class="card" style="margin-top:20px;">
+      <div class="card-header"><h3>實習生晚班班表</h3></div>
+      <div style="padding:16px 20px;">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid #edf2f7;">
+          <div><label style="font-size:.8rem;color:#718096;display:block;margin-bottom:4px;">晚班上班</label>
+            <select id="es-start" class="field-select" style="width:auto;">${esHourOpts(esCfg.start)}</select></div>
+          <span style="color:#a0aec0;padding-bottom:8px;">~</span>
+          <div><label style="font-size:.8rem;color:#718096;display:block;margin-bottom:4px;">晚班下班</label>
+            <select id="es-workend" class="field-select" style="width:auto;">${esHourOpts(esCfg.workEnd)}</select></div>
+          <button class="btn btn-primary btn-sm" onclick="_adminSaveEveningShift()">儲存晚班時段</button>
+          <span style="font-size:.76rem;color:#a0aec0;">（全中心統一，個人不可調；下方逐實習生只勾選「哪幾天算晚班日」）</span>
+        </div>
+        ${interns.length === 0
+          ? '<div style="color:#a0aec0;font-size:.9rem;">目前沒有在任實習生。</div>'
+          : `<div style="overflow-x:auto;">
+               <table class="data-table" style="min-width:560px;">
+                 <thead><tr><th>實習生</th>${esDowOrder.map(dow => `<th style="text-align:center;">${esDowLabels[dow]}</th>`).join('')}<th></th></tr></thead>
+                 <tbody>${eveningRows}</tbody>
+               </table>
+             </div>`}
+        <p style="font-size:.76rem;color:#a0aec0;margin-top:10px;">晚班日＝該生整日上班時段改為晚班時段，請假時數與請假表單預設起訖依此計算；寒暑假（學期時段外）晚班自動失效以一般時段計；此設定不影響非上班時間監督的判定。</p>
       </div>
     </div>`;
 }
@@ -25739,6 +25790,47 @@ async function saveInternQuota(email) {
   catch (e) { showToast('儲存失敗：' + e.message, 'error'); }
 }
 
+// ── 實習生晚班班表（v177）──────────────────────────
+// 讀取某使用者的晚班設定：eveningShiftDays 非空陣列時回 { days, start, workEnd }（晚班時段一律讀全中心統一設定），
+// 否則回 null（無晚班）。純函式 _dayWorkHours／_dayWorkStartEnd／_leaveWorkHours 不讀 configData，
+// 一律由呼叫端（請假表單、後台預覽等）先呼叫本函式組好 evening 物件再傳入。
+function _userEveningShift(email) {
+  const days = configData?.users?.[email]?.eveningShiftDays;
+  if (!Array.isArray(days) || !days.length) return null;
+  const es = _getWorkHoursConfig().eveningShift || { start: 12, workEnd: 21 };
+  return { days, start: es.start, workEnd: es.workEnd };
+}
+
+// 儲存全中心統一的晚班時段（後台「假別與班表」卡片頂部）
+async function _adminSaveEveningShift() {
+  const s = parseInt(document.getElementById('es-start')?.value, 10);
+  const e = parseInt(document.getElementById('es-workend')?.value, 10);
+  if (!Number.isFinite(s) || !Number.isFinite(e)) return;
+  if (s >= e) { alert('晚班上班時間須早於下班時間。'); return; }
+  const cur = _getWorkHoursConfig();
+  configData.workHoursConfig = { ...cur, eveningShift: { start: s, workEnd: e } };
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('設定晚班時段', null, null, `${String(s).padStart(2,'0')}:00 ~ ${String(e).padStart(2,'0')}:00`, { major: true });
+    showToast('已儲存晚班時段', 'success');
+    renderLeaveTypesAdmin();
+  } catch (err) { showToast('儲存失敗：' + err.message, 'error'); }
+}
+
+// 儲存單一實習生的晚班星期（週幾勾選陣列；空陣列＝無晚班）
+async function _saveInternEveningDays(email) {
+  if (!configData.users?.[email]) { alert('找不到使用者'); return; }
+  const days = [0,1,2,3,4,5,6].filter(dow => document.getElementById(`es_day_${_safeIdKey(email)}_${dow}`)?.checked);
+  configData.users[email].eveningShiftDays = days;
+  try {
+    await driveUpdateJsonFile(CONFIG_FILE, configData);
+    auditLog('設定實習生晚班日', null, null, `${_userName(email)}：${days.length ? days.map(d => '日一二三四五六'[d]).join('') : '（無晚班）'}`);
+    showToast(`已儲存 ${_userName(email)} 的晚班日`, 'success');
+    renderLeaveTypesAdmin();
+  } catch (err) { showToast('儲存失敗：' + err.message, 'error'); }
+}
+function _safeIdKey(email) { return String(email || '').replace(/[^a-zA-Z0-9]/g, '_'); }
+
 // ══════════════════════════════════════════════
 //  實習生差勤申請頁
 // ══════════════════════════════════════════════
@@ -25806,7 +25898,7 @@ function _myAttRenderApplyTab(el) {
     .sort((a, b) => (b.appliedAt || '').localeCompare(a.appliedAt || ''));
   const typeOpts = types.map(t => `<option value="${t.id}">${escHtml(t.name)}${t.isComp ? '（用補休）' : t.deductsQuota ? '（扣抵額度）' : ''}</option>`).join('');
   const today = _fmtDate(new Date());
-  const _todayWork = _dayWorkStartEnd(_getWorkHoursConfig(), today); // 起訖時間預設值＝今日上班起訖
+  const _todayWork = _dayWorkStartEnd(_getWorkHoursConfig(), today, _userEveningShift(currentUser?.email)); // 起訖時間預設值＝今日上班起訖（含本人晚班設定）
   const myRows = myApps.length ? myApps.map(a => `
     <tr>
       <td>${escHtml(a.leaveTypeName)}</td>
@@ -25959,13 +26051,13 @@ function _laAutoHours() {
   const toT   = _laGetTime('la-to-time');
   const hoursEl = document.getElementById('la-hours');
   if (!hoursEl || !fromD) return;
-  hoursEl.value = _leaveWorkHours(_getWorkHoursConfig(), fromD, fromT, toD, toT);
+  hoursEl.value = _leaveWorkHours(_getWorkHoursConfig(), fromD, fromT, toD, toT, _userEveningShift(currentUser?.email));
 }
 // 把某日期欄位（la-from／la-to）對應的當日上班起訖時間，套到對應的時間欄位（改日期時自動同步）
 function _laApplyDayTime(dateElId, timeElId) {
   const dateEl = document.getElementById(dateElId);
   if (!dateEl || !dateEl.value || !document.getElementById(timeElId + '-h')) return;
-  const dw = _dayWorkStartEnd(_getWorkHoursConfig(), dateEl.value);
+  const dw = _dayWorkStartEnd(_getWorkHoursConfig(), dateEl.value, _userEveningShift(currentUser?.email));
   _laSetTime(timeElId, (dateElId === 'la-from') ? dw.start : dw.end);
 }
 // 開始日期變更：若晚於目前結束日，結束日自動跟上開始日（避免結束早於開始）；
@@ -28131,6 +28223,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-14', v: 177, title: '實習生晚班班表：逐人設定晚班日', isProd: false, items: [
+      item('新功能', '差勤管理後台「假別與額度」tab 改名「假別與班表」，新增「實習生晚班班表」卡片：卡片頂部可設定全中心統一的晚班時段（如 12:00–21:00），下方逐一實習生勾選一週中哪幾天算晚班日'),
+      item('改善', '晚班日的請假時數計算、以及請假申請表單的預設起訖時間，整天都改依該生的晚班時段計算（例：晚班日整天請假＝12:00–21:00，午休 16:00–17:00 照常扣除），非晚班日則不受影響、照常以一般上班時段計算'),
+      item('改善', '晚班日僅在學期時段內生效；寒暑假等學期時段外，個人晚班設定自動失效，改以一般時段計算（與全域晚班規則一致）'),
+      item('改善', '晚班班表設定不影響「非上班時間監督」的異常上線偵測，判定邏輯維持不變'),
+    ]},
     { date: '2026-07-14', v: 176, title: '身心調適假圖示放大改版＋請假時間欄加寬＋下班／彈性下班時間改後台可設定', isProd: false, items: [
       item('改善', '身心調適假列表姓名下方的動作圖示（收到／評估表／封存／再次提醒）整體放大，較容易點按辨識；未讀圖示改為 🟨、已讀改為 ✅、封存改為 📦（解除封存 ♻️ 不變）'),
       item('改善', '請假申請表單的起訖「時間」欄位改為 24 小時制的「時：分」下拉選單（原生時間欄位跟著瀏覽器顯示上午/下午 12 小時制且無法強制改），同時解決原欄位太窄導致「上午08:00」被切掉看不全的問題；手動打卡補登共用此欄位，分鐘可選完整 00–59'),
