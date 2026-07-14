@@ -107,3 +107,34 @@ test('v176：_dayWorkStartEnd 於 config end=18 時回傳 end=\'17:00\'（上班
   const S = loadFns();
   assert.deepEqual(S._dayWorkStartEnd(CFG, '2026-07-13'), { start: '08:00', end: '17:00' });
 });
+
+// ══════ v176 rework：下班時間／彈性下班時間改後台可設定（workEnd 新欄位）══════
+test('v176 rework：{start:8, workEnd:17, end:18} 單日 08:00-20:00（超過彈性下班 18:00）→ 下班時間 17:00 為準，時數仍為 8', () => {
+  const S = loadFns();
+  const cfg = { weeklyHours: { 1: { start: 8, workEnd: 17, end: 18 } }, extraWorkDays: [], semesterPeriods: [], nonSemesterEndHour: 18, holidays: [] };
+  assert.equal(S._leaveWorkHours(cfg, '2026-07-13', '08:00', '2026-07-13', '20:00'), 8);
+});
+
+test('v176 rework：{start:8, workEnd:16, end:18} 整天（08:00-18:00）→ 下班提前至 16:00，扣午休後 = 7', () => {
+  const S = loadFns();
+  const cfg = { weeklyHours: { 1: { start: 8, workEnd: 16, end: 18 } }, extraWorkDays: [], semesterPeriods: [], nonSemesterEndHour: 18, holidays: [] };
+  assert.equal(S._leaveWorkHours(cfg, '2026-07-13', '08:00', '2026-07-13', '18:00'), 7);
+});
+
+test('v176 rework：晚班 {start:12, workEnd:21, end:21} 單日 12:00-21:00（午休 16:00-17:00）→ 8', () => {
+  const S = loadFns();
+  const cfg = { weeklyHours: { 6: { start: 12, workEnd: 21, end: 21 } }, extraWorkDays: [], semesterPeriods: [], nonSemesterEndHour: 18, holidays: [] };
+  assert.equal(S._leaveWorkHours(cfg, '2026-07-18', '12:00', '2026-07-18', '21:00'), 8);
+});
+
+test('v176 rework：_dayWorkStartEnd 有設定 workEnd:17（config end=20）→ 回傳 end=\'17:00\'（以下班時間為準，非彈性下班）', () => {
+  const S = loadFns();
+  const cfg = { weeklyHours: { 1: { start: 8, workEnd: 17, end: 20 } }, extraWorkDays: [], semesterPeriods: [], nonSemesterEndHour: 18, holidays: [] };
+  assert.deepEqual(S._dayWorkStartEnd(cfg, '2026-07-13'), { start: '08:00', end: '17:00' });
+});
+
+test('v176 rework：_dayWorkStartEnd 無 workEnd（舊資料，僅 start/end=18）→ fallback 回傳 end=\'17:00\'（上班起+9h）', () => {
+  const S = loadFns();
+  const cfg = { weeklyHours: { 1: { start: 8, end: 18 } }, extraWorkDays: [], semesterPeriods: [], nonSemesterEndHour: 18, holidays: [] };
+  assert.deepEqual(S._dayWorkStartEnd(cfg, '2026-07-13'), { start: '08:00', end: '17:00' });
+});
