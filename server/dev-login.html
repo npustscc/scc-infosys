@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>SCC InfoSys — 本地登入（開發用）</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 420px; margin: 4rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.1rem; }
+  label { display: block; margin-top: .8rem; font-size: .9rem; }
+  input { width: 100%; box-sizing: border-box; padding: .5rem; margin-top: .25rem; font-size: 1rem; }
+  button { margin-top: 1.2rem; padding: .6rem 1.2rem; font-size: 1rem; cursor: pointer; }
+  #msg { margin-top: 1rem; font-size: .9rem; white-space: pre-wrap; }
+  .err { color: #b00; }
+  .ok { color: #080; }
+</style>
+</head>
+<body>
+<h1>SCC InfoSys — 本地登入（開發用途，不要對外公開）</h1>
+<p style="font-size:.85rem;color:#666">
+  同源表單打 <code>sessionStart</code>（本地帳密＋TOTP），成功後把 token 寫進
+  <code>localStorage</code>（鍵名與未改造的前端相容），跳轉 <code>/</code>——
+  未改造的前端會直接撿到 session，完全繞過 Google 登入，供真 UI 驗收。
+</p>
+<form id="f">
+  <label>Email<input type="email" name="email" required autocomplete="username" /></label>
+  <label>密碼<input type="password" name="password" required autocomplete="current-password" /></label>
+  <label>TOTP（若帳號未啟用可留空）<input type="text" name="otp" inputmode="numeric" autocomplete="one-time-code" /></label>
+  <button type="submit">登入</button>
+</form>
+<div id="msg"></div>
+<script>
+// ROOT_FOLDER_ID：與 dev/index.html 的 DRIVE_FOLDER_ID 常數相同值，決定 localStorage 命名空間
+// （前端讀 'scc_session_' + DRIVE_FOLDER_ID），寫錯這個值前端會撿不到 token。
+const ROOT_FOLDER_ID = '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx';
+const SESSION_LS_KEY = 'scc_session_' + ROOT_FOLDER_ID;
+
+const form = document.getElementById('f');
+const msg = document.getElementById('msg');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  msg.textContent = '登入中…';
+  msg.className = '';
+  const fd = new FormData(form);
+  const payload = JSON.stringify({
+    action: 'sessionStart',
+    rootFolderId: ROOT_FOLDER_ID,
+    email: fd.get('email'),
+    password: fd.get('password'),
+    otp: fd.get('otp') || '',
+    ua: navigator.userAgent,
+  });
+  const body = new URLSearchParams();
+  body.append('payload', payload);
+  try {
+    const r = await fetch('/exec', { method: 'POST', body });
+    const data = await r.json();
+    if (!data.success) throw new Error(data.error || '未知錯誤');
+    if (data.data && data.data.error) throw new Error(data.data.error);
+    localStorage.setItem(SESSION_LS_KEY, data.data.sessionToken);
+    msg.className = 'ok';
+    msg.textContent = '登入成功，正在跳轉…';
+    location.href = '/';
+  } catch (err) {
+    msg.className = 'err';
+    msg.textContent = '登入失敗：' + err.message;
+  }
+});
+</script>
+</body>
+</html>
