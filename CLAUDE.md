@@ -7,7 +7,7 @@
 
 ## 資安原則（最高優先，凌駕功能）
 
-本系統承辦學生（含未成年）心理諮商個資，且 **GitHub repo 為公開**。因此：
+本系統承辦大學生（皆 18 歲以上）心理諮商個資，且 **GitHub repo 為公開**。因此：
 
 1. **後端 GAS `doPost` 才是真正的安全邊界，前端只是 UI 閘門。** 任何人都能取得公開的 `CLIENT_ID` / `APPS_SCRIPT_URL` / `DRIVE_FOLDER_ID` 直接呼叫後端。因此**每個需要授權的 action 一律經 `isAuthorizedUser_` 授權閘**（email 須在 `config.users` 且未停用），預設 deny；要放行的例外（如 `ping`、`submitUserApplication`）必須明列並寫清楚理由。新增 action 時預設它是「需要授權」的。
 2. **機密與個資永不進 repo。** `creds.json`（含 OAuth client secret）、`*.csv`（個案清單）、`*.docx`/`*.xlsx`、`forsystems/` 已列入 `.gitignore`；新增這類檔案前先確認被 ignore。絕不 `git add -A` 一把梭。
