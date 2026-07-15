@@ -17,10 +17,16 @@ const proxy = require('./actions/proxy');
 const audit = require('./audit');
 const sessionActions = require('./actions/session');
 const storageActions = require('./actions/storage');
+const commitActions = require('./actions/commit');
 
 const STORAGE_ACTIONS = new Set([
   'readJson', 'updateJson', 'readJsonById', 'updateContentById',
   'createJson', 'getMetadata', 'listFolder', 'query', 'startupBatch',
+]);
+
+// Phase 1.5：厚 commit 類 action（見 actions/commit.js），皆為併發安全的鎖內讀-改-寫。
+const COMMIT_ACTIONS = new Set([
+  'casesUpsert', 'attendanceCommit', 'bookingsCommit', 'listCommit', 'notifCommit',
 ]);
 
 function getConfigUsersSafe(db, ctx) {
@@ -172,6 +178,11 @@ async function handleRequest(db, config, payload) {
       case 'listFolder': result = storageActions.listFolder(db, params); break;
       case 'query': result = storageActions.query(db, params); break;
       case 'startupBatch': result = storageActions.startupBatch(db, params, ctx); break;
+      case 'casesUpsert': result = commitActions.casesUpsert(db, params, ctx); break;
+      case 'attendanceCommit': result = commitActions.attendanceCommit(db, params, ctx); break;
+      case 'bookingsCommit': result = commitActions.bookingsCommit(db, params, ctx); break;
+      case 'listCommit': result = commitActions.listCommit(db, params, ctx); break;
+      case 'notifCommit': result = commitActions.notifCommit(db, params, ctx); break;
       default: {
         if (proxy.isProxyAction(action)) {
           outcome = 'denied';
@@ -192,7 +203,7 @@ async function handleRequest(db, config, payload) {
       audit.appendAuditLog(db, {
         email: outcomeEmail,
         action: action || '(none)',
-        target: params && (params.path || params.fileId || params.folderId || params.parentId || null),
+        target: params && (params.path || params.file || params.fileId || params.folderId || params.parentId || null),
         outcome,
         latencyMs: Date.now() - t0,
         detail,
@@ -201,4 +212,4 @@ async function handleRequest(db, config, payload) {
   }
 }
 
-module.exports = { handleRequest, STORAGE_ACTIONS };
+module.exports = { handleRequest, STORAGE_ACTIONS, COMMIT_ACTIONS };

@@ -29,6 +29,9 @@ function openDb(dbPath) {
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  // 等效 GAS LockService.getScriptLock().waitLock(15000)：若另一個連線持有寫鎖（IMMEDIATE 交易），
+  // 逾時前重試而非立即拋 SQLITE_BUSY（厚 commit action，見 actions/commit.js，多以此保護 RMW）。
+  db.pragma('busy_timeout = 15000');
   runMigrations(db);
   return db;
 }

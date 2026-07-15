@@ -198,15 +198,25 @@ test('startupBatch：回傳齊全（config/各檔案/usersFolderId/modTimes）',
   assert.ok(r.data.modTimes.config);
 });
 
-// ── 未實作 action ────────────────────────────────────────────────────
+// ── 厚 commit 類 action（Phase 1.5：見 actions/commit.js＋test/commit-actions.test.js 詳細案例）──
+// dispatch 層只驗證「有掛到閘門與 ACTION_TABLE」，語意細節（fail-closed／不整檔覆寫等）另有專檔涵蓋。
 
-test('casesUpsert（厚商業邏輯 commit 類）→ Not implemented on node backend', async () => {
+test('casesUpsert（厚商業邏輯 commit 類）→ 經 dispatch 正常寫入（不再是 Not implemented）', async () => {
   const db = openDb(':memory:');
   await setupAuthorizedUser(db, 'a@x.com', 'right-password');
+  vdrive.createFolder(db, { name: 'cases', parentId: ROOT });
   const login1 = await login(db, testConfig(), 'a@x.com', 'right-password');
-  const r = await handleRequest(db, testConfig(), { action: 'casesUpsert', sessionToken: login1.data.sessionToken, rootFolderId: ROOT, path: 'x', upserts: [] });
-  assert.equal(r.data.error, 'Not implemented on node backend: casesUpsert');
+  const r = await handleRequest(db, testConfig(), {
+    action: 'casesUpsert', sessionToken: login1.data.sessionToken, rootFolderId: ROOT,
+    path: 'cases/chunk-a.json', upserts: [{ id: 'C1', name: 'demo' }],
+  });
+  assert.equal(r.success, true);
+  assert.equal(r.data.ok, true);
+  assert.equal(r.data.count, 1);
 });
+
+// ── 未實作 action ────────────────────────────────────────────────────
+
 
 test('createCalendarEvent（日曆同步）→ Not implemented (phase 2 GAS proxy)', async () => {
   const db = openDb(':memory:');

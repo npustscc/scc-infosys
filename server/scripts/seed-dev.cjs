@@ -18,7 +18,10 @@ const cfg = vdrive.createJson(db, {
   content: { users: { 'dev@scc.local': { role: '專任諮商心理師' } } },
 });
 const usersFolder = vdrive.createFolder(db, { name: 'users', parentId: ROOT });
-const bookings = vdrive.createJson(db, { name: 'bookings.json', parentId: ROOT, content: { items: [] } });
+// bookings.json 形狀須符合 bookingsCommit（actions/commit.js）的契約（{ bookings:[...] }），
+// 否則 fail-closed 會正確地拒絕寫入既有的（形狀錯誤的）檔案——這不是 bug，是 2026-07-08/09
+// 事故防護在起作用；種子資料本身必須符合真實契約才不會誤觸這道防線。
+const bookings = vdrive.createJson(db, { name: 'bookings.json', parentId: ROOT, content: { bookings: [] } });
 const outside = vdrive.createJson(db, {
   name: 'outside-secret.json',
   parentId: 'OTHER_ROOT_NOT_OURS_000000000000',
