@@ -2188,6 +2188,7 @@
         </div>
       </div>
 
+      <div id="_closure-draft-status" style="font-size:.8rem;color:#718096;margin-bottom:6px;"></div>
       <div class="form-actions">
         <button class="btn btn-secondary" onclick="cancelClosureEval()">取消</button>
         <button class="btn btn-secondary" id="btn-print-eval" onclick="printClosureEval()">列印</button>
@@ -2275,6 +2276,7 @@
         </div>
       </div>
 
+      <div id="_te-draft-status" style="font-size:.8rem;color:#718096;margin-bottom:6px;"></div>
       <div class="form-actions">
         <button class="btn btn-secondary" onclick="cancelTransferEvalForm()">取消</button>
         <button class="btn btn-primary" id="btn-save-transfer-eval" onclick="saveTransferEval()">儲存</button>
@@ -2694,6 +2696,7 @@
         </div>
       </div>
 
+      <div id="_case-draft-status" style="font-size:.8rem;color:#718096;margin-bottom:6px;"></div>
       <div class="form-actions">
         <button class="btn btn-secondary" onclick="cancelCaseForm()">取消</button>
         <button class="btn btn-danger" id="btn-delete-sem-data" style="display:none;" onclick="">刪除此學期基本資料</button>
@@ -3573,7 +3576,7 @@
     <!-- 身心狀態評估表（v179：modal 改全頁） -->
     <div id="page-ml-assess" class="page">
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px;flex-wrap:wrap;">
-        <button class="btn btn-secondary" onclick="handlePrevPage()">← 返回</button>
+        <button class="btn btn-secondary" onclick="exitMlAssessment()">← 返回</button>
         <div class="page-title" style="margin:0;border:none;padding:0;" id="mla-page-title">身心狀態評估表</div>
       </div>
       <div id="mla-page-body"></div>
@@ -4939,7 +4942,9 @@ function handleFloatingBack() {
     || (typeof _initialInterviewCaseId !== 'undefined' && _initialInterviewCaseId);
   if (from === 'page-event-records') { exitEventRecordForm(); return; }
   if (from === 'page-transfer-eval') { cancelTransferEvalForm(); return; }
-  if (from === 'page-new-record' || from === 'page-closure-eval' || from === 'page-initial-interview') {
+  // v185：結案評估／個案資料表單改走各自的離開防護（原本這裡直接導頁，繞過草稿備援與離開詢問）
+  if (from === 'page-closure-eval') { cancelClosureEval(); return; }
+  if (from === 'page-new-record' || from === 'page-initial-interview') {
     if (caseId) {
       showCaseDetail(caseId);
     } else {
@@ -4953,7 +4958,8 @@ function handleFloatingBack() {
     _detailBackToNewCase();
     return;
   }
-  if (from === 'page-case-detail' || from === 'page-new-case' || from === 'page-pending') {
+  if (from === 'page-new-case') { cancelCaseForm(); return; }
+  if (from === 'page-case-detail' || from === 'page-pending') {
     showPage('page-cases', document.querySelector('[data-nav-id="page-cases"]'));
     try { renderCases(); } catch(_) {}
     return;
@@ -5724,6 +5730,14 @@ const GenogramEditor = (() => {
     try{const c=(typeof casesData!=='undefined')&&casesData&&casesData.find(x=>x.id===_caseId);if(!c||!c.genogramStore||!c.genogramStore[_storeKey])return;const d=c.genogramStore[_storeKey];_objs=JSON.parse(JSON.stringify(d.objs||[]));if(d.idSeq)_idSeq=Math.max(_idSeq,d.idSeq);}catch(e){}
   }
 
+  // ── v185：草稿備援（獨立機制，不進 todo）───────────────────────────────
+  // key 刻意不用 scc_draft_ 前綴，避免被 _migrateLocalStorageDrafts() 掃到、誤產生一筆待辦
+  // （家系圖草稿的還原走「重開同一個案/欄位的編輯器時本機偵測詢問」，宿主表單上下文複雜，不適合走 todo）。
+  function _genoDraftKey(){
+    const email=(typeof currentUser!=='undefined'&&currentUser&&currentUser.email)||'';
+    return `scc_geno_draft_${_caseId||''}_${_storeKey||''}_${email}`;
+  }
+
   // ── Sidebar SVG helpers ───────────────────────────────────────────
   function _shapeSvg(t,sz){
     sz=sz||32;const S=sz/2,s=S*.55,ns=NS;
@@ -5801,7 +5815,7 @@ const GenogramEditor = (() => {
   // ── Build UI ──────────────────────────────────────────────────────
   function _buildUI(){
     const ov=document.createElement('div');ov.id='geno-overlay';ov.classList.toggle('geno-readonly',_readOnly);
-    ov.innerHTML=`<div id="geno-header"><span style="font-weight:700;font-size:1.1rem;color:#2b6cb0;">家族圖${_readOnly?'（唯讀檢視）':'繪製'}</span><div style="display:flex;gap:6px;align-items:center;"><button class="geno-tb-btn geno-edit-only" onclick="GenogramEditor.undo()" title="Ctrl+Z">↩ 復原</button><button class="geno-tb-btn geno-edit-only" onclick="GenogramEditor.redo()" title="Ctrl+Y">↪ 重做</button><button class="geno-tb-btn" onclick="GenogramEditor.zoomFit()">⊞ 全圖</button><div class="geno-tb-sep"></div><button class="btn btn-secondary btn-sm" onclick="GenogramEditor.close()">${_readOnly?'關閉':'取消'}</button><button class="btn btn-primary btn-sm geno-edit-only" onclick="GenogramEditor.save()">插入家族圖</button></div></div><div id="geno-toolbar" class="geno-edit-only"><span style="font-size:.76rem;color:#718096;margin-right:2px;">工具：</span><button class="geno-tb-btn active" id="geno-t-select" onclick="GenogramEditor.setTool('select')" title="選取/拖曳；拖曳空白處框選多物件；Space+拖曳平移">↖ 選取/移動</button><button class="geno-tb-btn" id="geno-t-connect" onclick="GenogramEditor.setTool('connect')" title="點兩個節點連線（先在側欄選連線類型）">─ 連線</button><button class="geno-tb-btn" id="geno-t-text" onclick="GenogramEditor.setTool('text')" title="點畫布新增文字；雙擊編輯">T 文字</button><button class="geno-tb-btn" id="geno-t-freehand" onclick="GenogramEditor.setTool('freehand')" title="自由手繪">✏ 手繪</button><button class="geno-tb-btn" id="geno-t-boundary" onclick="GenogramEditor.setTool('boundary')" title="生活圈：拖曳圈出同住/關係緊密的一群人，虛線灰框表示框選範圍（非手繪筆跡）">⭕ 生活圈</button><button class="geno-tb-btn" id="geno-t-erase" onclick="GenogramEditor.setTool('erase')" title="點物件刪除">✕ 橡皮擦</button><div class="geno-tb-sep"></div><span style="font-size:.76rem;color:#718096;margin-right:2px;">文字：</span><button class="geno-tb-btn" id="geno-txt-bold" onclick="GenogramEditor.toggleTextProp('bold')" title="粗體" style="font-weight:700;min-width:26px;">B</button><button class="geno-tb-btn" id="geno-txt-italic" onclick="GenogramEditor.toggleTextProp('italic')" title="斜體" style="font-style:italic;min-width:26px;">I</button><button class="geno-tb-btn" id="geno-txt-strike" onclick="GenogramEditor.toggleTextProp('strikethrough')" title="刪除線" style="text-decoration:line-through;min-width:26px;">S</button><select id="geno-txt-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.applyFontSize(+this.value)" title="字級">${[8,9,10,11,12,14,16,18,20,24].map(n=>`<option value="${n}"${n===12?' selected':''}>${n}px</option>`).join('')}</select><span style="font-size:.76rem;color:#718096;margin-left:4px;margin-right:2px;">介面字：</span><select id="geno-lbl-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.setNodeLabelFontSize(+this.value)" title="側欄與節點標籤字級">${[9,10,11,12,13,14,16].map(n=>`<option value="${n}"${n===11?' selected':''}>${n}</option>`).join('')}</select><div class="geno-tb-sep"></div><button class="geno-tb-btn active" id="geno-snap-btn" onclick="GenogramEditor.toggleSnap()" title="網格吸附">⊡ 吸附</button><button class="geno-tb-btn" onclick="GenogramEditor.saveAsCustom()" title="將已選取物件存為共用自訂元件">📌 自訂元件</button><button class="geno-tb-btn" onclick="GenogramEditor.deleteSelected()" title="刪除所選（Delete鍵）">🗑 刪除</button><button class="geno-tb-btn" onclick="GenogramEditor.clearSelect()" title="取消選取（Esc）">☐ 取消</button><button class="geno-tb-btn" onclick="GenogramEditor.autoArrangeAll()" title="自動整理世代間距（避免多代擠在一起）並均勻排列所有子女、調整倒ㄇ寬度">✨ 美化</button><div class="geno-tb-sep"></div><span style="font-size:.75rem;color:#718096;">填色：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:1.5px solid #a0aec0;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<span style="font-size:.75rem;color:#718096;margin-left:6px;" title="節點外框色、關係線顏色">框線：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyStrokeColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:2.5px solid #718096;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<button class="geno-tb-btn" onclick="GenogramEditor.clearColor()" onmousedown="event.preventDefault()" title="清除選取物件的顏色設定">✕色</button><div class="geno-tb-sep"></div><button class="geno-tb-btn" onclick="GenogramEditor.toggleDisability()" title="標記/取消所選節點為「身心障礙」（右上角黑色標記，可與慢性病同時勾選）">♿ 身心障礙</button><button class="geno-tb-btn" onclick="GenogramEditor.toggleChronicIllness()" title="標記/取消所選節點為「慢性病」（右側黑色標記，可與身心障礙同時勾選）">🩺 慢性病</button></div><div id="geno-body"><div id="geno-sidebar" class="geno-edit-only"></div><div id="geno-sb-resize" class="geno-edit-only"></div><div id="geno-canvas-wrap"><svg id="geno-svg" xmlns="${NS}"><g id="geno-vp"></g></svg></div></div>`;
+    ov.innerHTML=`<div id="geno-header"><span style="font-weight:700;font-size:1.1rem;color:#2b6cb0;">家族圖${_readOnly?'（唯讀檢視）':'繪製'}</span><span id="geno-draft-status" class="geno-edit-only" style="font-size:.74rem;color:#a0aec0;margin-left:8px;"></span><div style="display:flex;gap:6px;align-items:center;"><button class="geno-tb-btn geno-edit-only" onclick="GenogramEditor.undo()" title="Ctrl+Z">↩ 復原</button><button class="geno-tb-btn geno-edit-only" onclick="GenogramEditor.redo()" title="Ctrl+Y">↪ 重做</button><button class="geno-tb-btn" onclick="GenogramEditor.zoomFit()">⊞ 全圖</button><div class="geno-tb-sep"></div><button class="btn btn-secondary btn-sm" onclick="GenogramEditor.exit()">${_readOnly?'關閉':'取消'}</button><button class="btn btn-primary btn-sm geno-edit-only" onclick="GenogramEditor.save()">插入家族圖</button></div></div><div id="geno-toolbar" class="geno-edit-only"><span style="font-size:.76rem;color:#718096;margin-right:2px;">工具：</span><button class="geno-tb-btn active" id="geno-t-select" onclick="GenogramEditor.setTool('select')" title="選取/拖曳；拖曳空白處框選多物件；Space+拖曳平移">↖ 選取/移動</button><button class="geno-tb-btn" id="geno-t-connect" onclick="GenogramEditor.setTool('connect')" title="點兩個節點連線（先在側欄選連線類型）">─ 連線</button><button class="geno-tb-btn" id="geno-t-text" onclick="GenogramEditor.setTool('text')" title="點畫布新增文字；雙擊編輯">T 文字</button><button class="geno-tb-btn" id="geno-t-freehand" onclick="GenogramEditor.setTool('freehand')" title="自由手繪">✏ 手繪</button><button class="geno-tb-btn" id="geno-t-boundary" onclick="GenogramEditor.setTool('boundary')" title="生活圈：拖曳圈出同住/關係緊密的一群人，虛線灰框表示框選範圍（非手繪筆跡）">⭕ 生活圈</button><button class="geno-tb-btn" id="geno-t-erase" onclick="GenogramEditor.setTool('erase')" title="點物件刪除">✕ 橡皮擦</button><div class="geno-tb-sep"></div><span style="font-size:.76rem;color:#718096;margin-right:2px;">文字：</span><button class="geno-tb-btn" id="geno-txt-bold" onclick="GenogramEditor.toggleTextProp('bold')" title="粗體" style="font-weight:700;min-width:26px;">B</button><button class="geno-tb-btn" id="geno-txt-italic" onclick="GenogramEditor.toggleTextProp('italic')" title="斜體" style="font-style:italic;min-width:26px;">I</button><button class="geno-tb-btn" id="geno-txt-strike" onclick="GenogramEditor.toggleTextProp('strikethrough')" title="刪除線" style="text-decoration:line-through;min-width:26px;">S</button><select id="geno-txt-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.applyFontSize(+this.value)" title="字級">${[8,9,10,11,12,14,16,18,20,24].map(n=>`<option value="${n}"${n===12?' selected':''}>${n}px</option>`).join('')}</select><span style="font-size:.76rem;color:#718096;margin-left:4px;margin-right:2px;">介面字：</span><select id="geno-lbl-size" class="geno-tb-btn" style="padding:2px 4px;" onchange="GenogramEditor.setNodeLabelFontSize(+this.value)" title="側欄與節點標籤字級">${[9,10,11,12,13,14,16].map(n=>`<option value="${n}"${n===11?' selected':''}>${n}</option>`).join('')}</select><div class="geno-tb-sep"></div><button class="geno-tb-btn active" id="geno-snap-btn" onclick="GenogramEditor.toggleSnap()" title="網格吸附">⊡ 吸附</button><button class="geno-tb-btn" onclick="GenogramEditor.saveAsCustom()" title="將已選取物件存為共用自訂元件">📌 自訂元件</button><button class="geno-tb-btn" onclick="GenogramEditor.deleteSelected()" title="刪除所選（Delete鍵）">🗑 刪除</button><button class="geno-tb-btn" onclick="GenogramEditor.clearSelect()" title="取消選取（Esc）">☐ 取消</button><button class="geno-tb-btn" onclick="GenogramEditor.autoArrangeAll()" title="自動整理世代間距（避免多代擠在一起）並均勻排列所有子女、調整倒ㄇ寬度">✨ 美化</button><div class="geno-tb-sep"></div><span style="font-size:.75rem;color:#718096;">填色：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:1.5px solid #a0aec0;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<span style="font-size:.75rem;color:#718096;margin-left:6px;" title="節點外框色、關係線顏色">框線：</span>${['#ffffff','#e2e8f0','#fed7d7','#fbd38d','#fefcbf','#c6f6d5','#bee3f8','#e9d8fd','#fed7e8','#2d3748'].map(c=>`<span onclick="GenogramEditor.applyStrokeColor('${c}')" onmousedown="event.preventDefault()" title="${c}" style="display:inline-block;width:14px;height:14px;background:${c};border:2.5px solid #718096;border-radius:2px;cursor:pointer;vertical-align:middle;margin:0 1px;flex-shrink:0;"></span>`).join('')}<button class="geno-tb-btn" onclick="GenogramEditor.clearColor()" onmousedown="event.preventDefault()" title="清除選取物件的顏色設定">✕色</button><div class="geno-tb-sep"></div><button class="geno-tb-btn" onclick="GenogramEditor.toggleDisability()" title="標記/取消所選節點為「身心障礙」（右上角黑色標記，可與慢性病同時勾選）">♿ 身心障礙</button><button class="geno-tb-btn" onclick="GenogramEditor.toggleChronicIllness()" title="標記/取消所選節點為「慢性病」（右側黑色標記，可與身心障礙同時勾選）">🩺 慢性病</button></div><div id="geno-body"><div id="geno-sidebar" class="geno-edit-only"></div><div id="geno-sb-resize" class="geno-edit-only"></div><div id="geno-canvas-wrap"><svg id="geno-svg" xmlns="${NS}"><g id="geno-vp"></g></svg></div></div>`;
     document.body.appendChild(ov);
     {const s=document.getElementById('geno-lbl-size');if(s)s.value=String(_nodeLabelFontSize);}
     setNodeLabelFontSize(_nodeLabelFontSize);
@@ -5830,19 +5844,63 @@ const GenogramEditor = (() => {
     _zoom=1;_panX=0;_panY=0;_undo=[];_redo=[];_connectFrom=null;_connectLine=null;
     _boxSel=null;_freehandPts=[];_freehandEl=null;_spaceDown=false;
     _textFontSize=12;_textBold=false;_textItalic=false;_textStrike=false;
-    _loadJson();_buildUI();
+    // v185：草稿還原偵測——重開同一個案/欄位的編輯器時，若偵測到本機殘留草稿，詢問是否還原
+    let _restoredFromDraft=false;
+    if(!_readOnly){
+      try{
+        const raw=localStorage.getItem(_genoDraftKey());
+        if(raw){
+          const draft=JSON.parse(raw);
+          if(draft&&Array.isArray(draft.objs)){
+            if(confirm('偵測到此家族圖有尚未存回表單的草稿（可能因先前意外關閉視窗而保留）。\n\n是否要還原草稿內容？\n選擇「取消」則捨棄草稿，改載入表單中目前已存的版本。')){
+              _objs=JSON.parse(JSON.stringify(draft.objs));
+              if(draft.idSeq)_idSeq=Math.max(_idSeq,draft.idSeq);
+              _restoredFromDraft=true;
+            }else{
+              try{localStorage.removeItem(_genoDraftKey());}catch(e){}
+            }
+          }
+        }
+      }catch(e){}
+    }
+    if(!_restoredFromDraft)_loadJson();
+    _buildUI();
+    if(!_readOnly){
+      _gdSetBaseline('genogram',{objs:_objs,idSeq:_idSeq});
+      _gdStartAutosave('genogram',_genoDraftKey(),()=>({objs:_objs,idSeq:_idSeq}),'geno-draft-status');
+    }
   }
 
   function close(){
+    _gdStopAutosave('genogram');
     const ov=document.getElementById('geno-overlay');if(ov)ov.remove();
     document.removeEventListener('keydown',_onKeyDown);
     document.removeEventListener('keyup',_onKeyUp);
     _svg=null;_vp=null;
   }
 
+  // v185：頂部「取消/關閉」按鈕改呼叫此函式——唯讀直接關閉；編輯模式有未存回的變更才跳三選離開對話框
+  // （存回表單／留草稿離開／捨棄離開，另有「取消」可繼續編輯），沒有變更則直接關閉。
+  function exit(){
+    if(_readOnly){close();return;}
+    const dirty=_gdIsDirty('genogram',{objs:_objs,idSeq:_idSeq});
+    if(!dirty){try{localStorage.removeItem(_genoDraftKey());}catch(e){}close();return;}
+    _genoExitDialog(
+      ()=>{save();},
+      ()=>{
+        try{
+          const json=JSON.stringify({objs:_objs,idSeq:_idSeq});
+          if(json.length<=200000)localStorage.setItem(_genoDraftKey(),json);
+        }catch(e){}
+        close();
+      },
+      ()=>{try{localStorage.removeItem(_genoDraftKey());}catch(e){}close();}
+    );
+  }
+
   function save(){
     if(_readOnly){close();return;}
-    if(!_objs.length){close();return;}
+    if(!_objs.length){try{localStorage.removeItem(_genoDraftKey());}catch(e){}close();return;}
     _exportPng(dataUrl=>{
       if(!dataUrl){alert('匯出圖片失敗，請重試。');return;}
       _showSizePanel(dataUrl,w=>{
@@ -5856,7 +5914,9 @@ const GenogramEditor = (() => {
           const old=editor.querySelector('[data-geno-key="'+_storeKey+'"]');
           if(old)old.replaceWith(img);else editor.appendChild(img);
         }
-        _saveJson();close();
+        _saveJson();
+        try{localStorage.removeItem(_genoDraftKey());}catch(e){}
+        close();
       });
     });
   }
@@ -5938,7 +5998,7 @@ const GenogramEditor = (() => {
     _zoom=Math.min(W/cW,H/cH,3);_panX=(W-cW*_zoom)/2-lx*_zoom+40*_zoom;_panY=(H-cH*_zoom)/2-ly*_zoom+40*_zoom;_render();
   }
 
-  return{open,close,save,undo,redo,setTool,setShape,setLinkType,toggleTextProp,applyFontSize,setNodeLabelFontSize,toggleSnap,zoomFit,deleteSelected,editLabel,saveAsCustom,deleteCustom,placeCustom,placeBuiltinTemplate,applyColor,applyStrokeColor,clearColor,clearSelect,autoArrangeAll,toggleSbSection,toggleDisability,toggleChronicIllness};
+  return{open,close,save,exit,undo,redo,setTool,setShape,setLinkType,toggleTextProp,applyFontSize,setNodeLabelFontSize,toggleSnap,zoomFit,deleteSelected,editLabel,saveAsCustom,deleteCustom,placeCustom,placeBuiltinTemplate,applyColor,applyStrokeColor,clearColor,clearSelect,autoArrangeAll,toggleSbSection,toggleDisability,toggleChronicIllness};
 })();
 
 function openGenogramEditor(fieldId,caseId,storeKey){
@@ -14274,6 +14334,50 @@ let _closureEvalDraft = null;
 let _closureEvalType = 'closure'; // 'closure' | 'semester'
 let _closureEvalSem  = null;     // active semester when eval was opened
 let _closureEditingEvalId = null; // null=新增, string=編輯中的 evalId
+let _closureDraftTodoId = null; // v185：從草稿待辦「繼續編輯」重開時記錄對應 todoId
+
+// ── v185：結案評估／學期評估表單草稿備援與離開防護 ──────────────────────────
+// 快照涵蓋 cancelClosureEval() 原本靜默寫入草稿的所有欄位（沿用同一組欄位，僅改儲存路徑與時機）。
+function _closureFormSnapshot() {
+  return {
+    dims: CLOSURE_DIMS.map((_, i) => document.querySelector(`input[name="dim-${i}"]:checked`)?.value || '不清楚'),
+    light: document.querySelector('input[name="cl-light"]:checked')?.value || '',
+    description: getRichTextValue('cl-description'),
+    chiefComplaint: getRichTextValue('cl-chief-complaint'),
+    assessment: getRichTextValue('cl-assessment'),
+    treatmentProvided: getRichTextValue('cl-treatment'),
+    reason: _clReasonGet(),
+    lightDescription: _clLightDescGet(),
+    closureDate: _clDateGet(),
+    followup: _clFollowupGet(),
+  };
+}
+function _closureDraftKey() {
+  return `scc_draft_closure_${currentUser?.email || ''}_${_closureCaseId || ''}_${_closureEvalType}`;
+}
+function _startClosureDraftAutosave() {
+  _gdStartAutosave('closure', _closureDraftKey(), _closureFormSnapshot, '_closure-draft-status');
+}
+function _stopClosureDraftAutosave() { _gdStopAutosave('closure'); }
+
+function _restoreClosureDraft(snap) {
+  if (!snap) return;
+  (snap.dims || []).forEach((level, i) => {
+    if (!level) return;
+    const r = document.querySelector(`input[name="dim-${i}"][value="${level}"]`);
+    if (r) r.checked = true;
+  });
+  if (snap.light) { const r = document.querySelector(`input[name="cl-light"][value="${snap.light}"]`); if (r) r.checked = true; }
+  if (snap.description != null)       setRichTextValue('cl-description', snap.description);
+  if (snap.chiefComplaint != null)    setRichTextValue('cl-chief-complaint', snap.chiefComplaint);
+  if (snap.assessment != null)        setRichTextValue('cl-assessment', snap.assessment);
+  if (snap.treatmentProvided != null) setRichTextValue('cl-treatment', snap.treatmentProvided);
+  if (snap.reason) _clReasonSet(snap.reason);
+  if (snap.lightDescription) _clLightDescSet(snap.lightDescription, snap.light);
+  if (snap.closureDate) _clDateSet(snap.closureDate, _closureEvalSem, casesData.find(c => c.id === _closureCaseId)?.records || []);
+  if (snap.followup) _clFollowupSet(snap.followup);
+  _gdSetBaseline('closure', _closureFormSnapshot());
+}
 
 function _genEvalId() {
   return 'ev_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
@@ -14543,6 +14647,10 @@ function openClosureEvalPage(caseId, evalType, editingEvalId) {
   setAlert('closure-alert', '', '');
   document.getElementById('btn-confirm-closure').disabled = false;
   showPage('page-closure-eval', null);
+  // v185：欄位（含既有評估/草稿回填）皆已就緒後才取基準快照，避免把回填資料誤判為使用者輸入
+  _gdSetBaseline('closure', _closureFormSnapshot());
+  _startClosureDraftAutosave();
+  const _clds0 = document.getElementById('_closure-draft-status'); if (_clds0) _clds0.textContent = '';
 }
 
 // ── 結案原因 chips ──────────────────────────────────────────────────────
@@ -14837,24 +14945,49 @@ function _buildRefEvalHtml(evals) {
   </div>`;
 }
 
-function cancelClosureEval() {
-  _closureEvalDraft = {
-    caseId: _closureCaseId,
-    evalType: _closureEvalType,
-    dims: CLOSURE_DIMS.map((_, i) => document.querySelector(`input[name="dim-${i}"]:checked`)?.value || '不清楚'),
-    light: document.querySelector('input[name="cl-light"]:checked')?.value || '',
-    description: getRichTextValue('cl-description'),
-    chiefComplaint: getRichTextValue('cl-chief-complaint'),
-    assessment: getRichTextValue('cl-assessment'),
-    treatmentProvided: getRichTextValue('cl-treatment'),
-    reason: _clReasonGet(),
-    lightDescription: _clLightDescGet(),
-    closureDate: _clDateGet(),
-    followup: _clFollowupGet(),
-  };
-  try { localStorage.setItem('scc_closure_draft_' + _closureCaseId, JSON.stringify(_closureEvalDraft)); } catch {}
+// v185：原本按「取消」會靜默把草稿寫入 localStorage（scc_closure_draft_<caseId>，無離開詢問）。
+// 改為：無實際輸入直接離開；有輸入則跳 _showExitDialog 讓使用者選擇儲存/暫存草稿至待辦/捨棄離開。
+function _exitClosureEvalSilent() {
+  _stopClosureDraftAutosave();
+  try { localStorage.removeItem(_closureDraftKey()); } catch(_) {}
+  try { localStorage.removeItem('scc_closure_draft_' + _closureCaseId); } catch(_) {} // 舊版（v185 前）殘留 key 一併清
+  _closureEvalDraft = null;
+  _closureDraftTodoId = null;
   if (_closureCaseId) showCaseDetail(_closureCaseId);
   else backToCaseList();
+}
+
+function cancelClosureEval() {
+  if (!_gdIsDirty('closure', _closureFormSnapshot())) { _exitClosureEvalSilent(); return; }
+  _showExitDialog(_closureEvalType === 'closure' ? '離開結案評估表' : '離開學期評估表',
+    () => saveClosureEval(),
+    () => _draftClosureEval(),
+    () => _exitClosureEvalSilent()
+  );
+}
+
+function _draftClosureEval() {
+  const snap = _closureFormSnapshot();
+  const c = casesData.find(x => x.id === _closureCaseId);
+  const label = _closureEvalType === 'closure' ? '結案評估草稿' : '學期評估草稿';
+  const existingTodo = _closureDraftTodoId ? todosData.find(t => t.id === _closureDraftTodoId) : null;
+  const todoId = existingTodo?.id || _genTodoId();
+  _putTodoItem({
+    id: todoId, type: 'closure_draft', label,
+    caseId: _closureCaseId, caseLabel: c ? `${c.name}（${_closureCaseId}）` : (_closureCaseId || ''),
+    draftData: { caseId: _closureCaseId, evalType: _closureEvalType, snapshot: snap },
+    origin: 'manual', notifRead: false, done: false,
+    createdAt: existingTodo?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
+  });
+  _stopClosureDraftAutosave();
+  try { localStorage.removeItem(_closureDraftKey()); } catch(_) {}
+  try { localStorage.removeItem('scc_closure_draft_' + _closureCaseId); } catch(_) {}
+  _closureEvalDraft = null;
+  _closureDraftTodoId = null;
+  showPage('page-todos', document.querySelector('[data-nav-id="page-todos"]'));
+  renderTodosPage();
+  showToast('已暫存草稿至待辦事項', 'success');
+  saveUserTodos().catch(e => console.warn('saveUserTodos failed:', e));
 }
 
 function _buildEvalPrintHtml(c, ev, formTitle) {
@@ -15051,7 +15184,15 @@ async function saveClosureEval() {
 
   // 樂觀更新：立即導回個案詳細
   _closureEvalDraft = null;
+  _stopClosureDraftAutosave();
   try { localStorage.removeItem('scc_closure_draft_' + caseId); } catch {}
+  try { localStorage.removeItem(_closureDraftKey()); } catch(_) {}
+  if (_closureDraftTodoId) {
+    const _cldt = todosData.find(t => t.id === _closureDraftTodoId);
+    if (_cldt) { _cldt.done = true; _cldt.doneAt = new Date().toISOString(); }
+    _closureDraftTodoId = null;
+    saveUserTodos().catch(() => {});
+  }
   renderCases();
   showCaseDetail(caseId);
 
@@ -16734,13 +16875,115 @@ async function editCaseNum(oldId) {
 //  個案新增
 // ══════════════════════════════════════════════
 let _editingCaseId = null;
+let _caseDraftTodoId = null; // 從「繼續編輯」草稿待辦重開表單時記錄對應 todoId，儲存成功後標記完成
+
+// ── v185：個案資料表單草稿備援與離開防護 ──────────────────────────────────
+// 快照涵蓋 saveCase() 會讀取的主要欄位；用來跟開表單當下的基準快照比對，
+// 判斷「使用者是否有實際輸入」——而不是欄位是否為空，避免編輯模式回填既有資料被誤判為使用者輸入。
+function _caseFormSnapshot() {
+  const gv = id => document.getElementById(id)?.value ?? '';
+  const gr = name => document.querySelector(`input[name="${name}"]:checked`)?.value || '';
+  const gchk = id => !!document.getElementById(id)?.checked;
+  return {
+    id: gv('nc-id'), openDate: gv('nc-open-date'), name: gv('nc-name'), studentId: gv('nc-student-id'),
+    idNumber: gv('nc-id-number'),
+    birthY: gv('nc-birth-year'), birthM: gv('nc-birth-month'), birthD: gv('nc-birth-day'),
+    gender: gr('nc-gender'), genderId: gr('nc-gender-id'), caseType: gr('nc-type'),
+    nationality: gr('nc-nationality'), ethnicity: gr('nc-ethnicity'),
+    ethnicityNote: Object.values(ETH_NOTE_IDS).map(gv).join('|'),
+    program: gv('nc-program'), disability: gv('nc-disability'), dept: gv('nc-dept'),
+    grade: gv('nc-grade'), classNo: gv('nc-class'), phone: gv('nc-phone'), email: gv('nc-email'),
+    residence: gr('nc-residence'), address: gv('nc-address'),
+    emgName: gv('nc-emg-name'), emgPhone: gv('nc-emg-phone'), emgRelation: gv('nc-emg-relation'),
+    source: gr('nc-source'), status: gr('nc-status'), abType: gr('nc-ab-type'),
+    bReasons: [..._ncBReasonsSelected].sort().join('|'),
+    counselorEmail: gv('nc-counselor'), foreignCountry: gv('nc-foreign-country'),
+    bsrs: ['nc-bsrs1','nc-bsrs2','nc-bsrs3','nc-bsrs4','nc-bsrs5','nc-bsrs6'].map(gv).join('|'),
+    bsrsUnfilled: gchk('nc-bsrs-unfilled'), isTransferCase: gchk('nc-is-transfer-case'),
+    pastRecords: ['nc-past-psych','nc-past-med','nc-past-counsel'].filter(gchk).join('|'),
+    topics: [...document.querySelectorAll('input[name="nc-topic"]:checked')].map(cb => cb.value).sort().join('|'),
+    topicOther: gv('nc-topic-other'),
+  };
+}
+function _caseDraftKey() {
+  return `scc_draft_case_${currentUser?.email || ''}_${_editingCaseId || 'new'}`;
+}
+function _startCaseDraftAutosave() {
+  _gdStartAutosave('case', _caseDraftKey(), _caseFormSnapshot, '_case-draft-status');
+}
+function _stopCaseDraftAutosave() { _gdStopAutosave('case'); }
 
 function cancelCaseForm() {
-  if (_editingCaseId) {
-    showCaseDetail(_editingCaseId);
-  } else {
-    showPage('page-cases', document.querySelector('[data-nav-id="page-cases"]'));
+  const _exit = () => {
+    _stopCaseDraftAutosave();
+    try { localStorage.removeItem(_caseDraftKey()); } catch(_) {}
+    if (_editingCaseId) showCaseDetail(_editingCaseId);
+    else showPage('page-cases', document.querySelector('[data-nav-id="page-cases"]'));
+  };
+  if (!document.getElementById('page-new-case')?.classList.contains('active') || !_gdIsDirty('case', _caseFormSnapshot())) {
+    _exit(); return;
   }
+  _showExitDialog('離開個案資料表單',
+    () => saveCase(),
+    () => _draftCaseForm(),
+    () => _exit()
+  );
+}
+
+function _draftCaseForm() {
+  const snap = _caseFormSnapshot();
+  const label = _editingCaseId ? '個案資料編輯草稿' : '新增個案草稿';
+  const caseLabel = _editingCaseId ? `${casesData.find(c => c.id === _editingCaseId)?.name || ''}（${_editingCaseId}）` : (snap.name ? `${snap.name}（草稿）` : '（未命名新個案）');
+  const existingTodo = _caseDraftTodoId ? todosData.find(t => t.id === _caseDraftTodoId) : null;
+  const todoId = existingTodo?.id || _genTodoId();
+  _putTodoItem({
+    id: todoId, type: 'case_draft', label,
+    caseId: _editingCaseId || '', caseLabel,
+    draftData: { editingCaseId: _editingCaseId, snapshot: snap },
+    origin: 'manual', notifRead: false, done: false,
+    createdAt: existingTodo?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
+  });
+  _stopCaseDraftAutosave();
+  try { localStorage.removeItem(_caseDraftKey()); } catch(_) {}
+  _caseDraftTodoId = null;
+  showPage('page-todos', document.querySelector('[data-nav-id="page-todos"]'));
+  renderTodosPage();
+  showToast('已暫存草稿至待辦事項', 'success');
+  saveUserTodos().catch(e => console.warn('saveUserTodos failed:', e));
+}
+
+// 依快照還原表單欄位（供「繼續編輯」草稿使用）；欄位對照同 _caseFormSnapshot()。
+function _restoreCaseFormSnapshot(snap) {
+  if (!snap) return;
+  const sv = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+  const sr = (name, v) => { if (!v) return; const el = document.querySelector(`input[name="${name}"][value="${v}"]`); if (el) el.checked = true; };
+  const sck = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+  sv('nc-id', snap.id); sv('nc-open-date', snap.openDate); sv('nc-name', snap.name); sv('nc-student-id', snap.studentId);
+  sv('nc-id-number', snap.idNumber);
+  sv('nc-birth-year', snap.birthY); sv('nc-birth-month', snap.birthM); sv('nc-birth-day', snap.birthD);
+  sr('nc-gender', snap.gender); sr('nc-gender-id', snap.genderId); sr('nc-type', snap.caseType);
+  sr('nc-nationality', snap.nationality);
+  if (snap.ethnicity) { sr('nc-ethnicity', snap.ethnicity); toggleEthnicityNote({ value: snap.ethnicity }); }
+  sv('nc-program', snap.program); sv('nc-disability', snap.disability); sv('nc-dept', snap.dept);
+  sv('nc-grade', snap.grade); sv('nc-class', snap.classNo); sv('nc-phone', snap.phone); sv('nc-email', snap.email);
+  sr('nc-residence', snap.residence); sv('nc-address', snap.address);
+  sv('nc-emg-name', snap.emgName); sv('nc-emg-phone', snap.emgPhone); sv('nc-emg-relation', snap.emgRelation);
+  sr('nc-source', snap.source); sr('nc-status', snap.status); sr('nc-ab-type', snap.abType);
+  if (snap.bReasons) { _ncBReasonsSelected = new Set(snap.bReasons.split('|').filter(Boolean)); _ncOnAbTypeChange(); }
+  sv('nc-counselor', snap.counselorEmail); sv('nc-foreign-country', snap.foreignCountry);
+  (snap.bsrs || '').split('|').forEach((v, i) => {
+    const id = ['nc-bsrs1','nc-bsrs2','nc-bsrs3','nc-bsrs4','nc-bsrs5','nc-bsrs6'][i];
+    if (id && v) setBsrsBtn(id, v);
+  });
+  sck('nc-bsrs-unfilled', snap.bsrsUnfilled); sck('nc-is-transfer-case', snap.isTransferCase);
+  (snap.pastRecords || '').split('|').filter(Boolean).forEach(id => sck(id, true));
+  const topicSet = new Set((snap.topics || '').split('|').filter(Boolean));
+  document.querySelectorAll('input[name="nc-topic"]').forEach(cb => { cb.checked = topicSet.has(cb.value); });
+  if (topicSet.has('其他')) {
+    const wrap = document.getElementById('nc-topic-other-wrap'); if (wrap) wrap.style.display = 'flex';
+    sv('nc-topic-other', snap.topicOther);
+  }
+  calcBsrsTotal();
 }
 
 function openEditCasePage(caseId) {
@@ -16862,6 +17105,9 @@ function openEditCasePage(caseId) {
       _btnDelSemEdit.style.display = 'none';
     }
   }
+  // v185：欄位回填完成後才取基準快照，避免把「載入既有資料」誤判為使用者輸入
+  _gdSetBaseline('case', _caseFormSnapshot());
+  _startCaseDraftAutosave();
 }
 
 // 一學生一案號：合併遷移後的曾用案號（formerIds）也視為已占用，避免新案號誤撞
@@ -16992,6 +17238,10 @@ function openNewCasePage() {
   const _btnDelSem = document.getElementById('btn-delete-sem-data');
   if (_btnDelSem) { _btnDelSem.style.display = 'none'; _btnDelSem.onclick = null; }
   showPage('page-new-case', null);
+  // v185：草稿備援基準快照（新增模式；編輯模式由 openEditCasePage 在欄位填完後覆蓋一次）
+  _gdSetBaseline('case', _caseFormSnapshot());
+  _startCaseDraftAutosave();
+  const _cds0 = document.getElementById('_case-draft-status'); if (_cds0) _cds0.textContent = '';
 }
 
 // ── 系所列表
@@ -20716,6 +20966,15 @@ async function saveCase() {
     abType, bCaseReasons, status, isTransferCase, createdAt: now, updatedAt: now,
   };
 
+  // v185：確定會儲存（驗證皆已通過）——停止草稿備援、清掉草稿 key；若是從草稿待辦繼續編輯，標記該待辦完成
+  _stopCaseDraftAutosave();
+  try { localStorage.removeItem(_caseDraftKey()); } catch(_) {}
+  if (_caseDraftTodoId) {
+    const _cdt = todosData.find(t => t.id === _caseDraftTodoId);
+    if (_cdt) { _cdt.done = true; _cdt.doneAt = now; }
+    _caseDraftTodoId = null;
+    saveUserTodos().catch(() => {});
+  }
   // 儲存前記憶體快照：此表單失敗時不會離開頁面（欄位仍在），故不需重開頁面（reopenFn 給 null）
   _armSaveFailSnapshot('個案基本資料', 'page-new-case', null, saveCase);
   try {
@@ -21628,13 +21887,18 @@ function _migrateLocalStorageDrafts() {
       if (key.includes('scc_draft_psy_')) { type = 'psychiatrist'; label = '精神科評估草稿'; }
       else if (key.includes('scc_draft_ii_')) { type = 'initial_interview'; label = '初次晤談表草稿'; }
       else if (key.includes('scc_draft_record_')) { type = 'record'; label = '晤談記錄草稿'; }
+      else {
+        // v185：新增 7 張表單其中 6 張（不含家系圖，其還原機制獨立、不進 todo）沿用 scc_draft_ 前綴系列
+        const _nt = _parseDraftKeyType(key);
+        if (_nt) { type = _nt.type; label = _nt.label; }
+      }
       // extract caseId: key format scc_draft_record_{email}_{caseId}_{recordId}
       const parts = key.split('_');
       const emailParts = email.split('@');
       let caseId = '';
       const emailIdx = parts.findIndex(p => p === emailParts[0] || key.includes(email));
       // simpler: find caseId as the part that starts with letter/year pattern
-      const afterEmail = key.replace(`scc_draft_`, '').replace(/^(record|psy|ii)_/, '').replace(email + '_', '');
+      const afterEmail = key.replace(`scc_draft_`, '').replace(/^(record|psy|ii|case|closure|transfer|mlassess|booking|issue)_/, '').replace(email + '_', '');
       caseId = afterEmail.split('_')[0] || '';
       // find case name
       const caseObj = casesData.find(c => c.id === caseId);
@@ -21757,6 +22021,97 @@ function _syncPendingRecordsToTodos() {
     saveUserTodos().catch(e => console.warn('saveUserTodos after sync failed:', e));
     _syncBellBadge();
   }
+}
+
+// ── v185：全站表單草稿備援共用引擎 ──────────────────────────────────────
+// 供本次補上防護的 6 張表單使用（個案資料／結案評估／轉銜評估／身心狀態評估表／空間預約／問題回報）；
+// 晤談記錄／初談表／精神科評估／事件處理記錄已各自有既有實作，不動既有邏輯。
+// 家系圖編輯器另有獨立機制（不進 todo），不使用本引擎。
+
+// 純函式：依 localStorage key 判斷屬於哪一種新表單草稿（scc_draft_<tag>_ 前綴系列）。
+// 找不到對應前綴時回傳 null（呼叫端 fallback 為既有的通用 'autosave' 類型，不影響既有行為）。
+function _parseDraftKeyType(key) {
+  const MAP = [
+    ['scc_draft_case_',     'case_draft',      '個案資料草稿'],
+    ['scc_draft_closure_',  'closure_draft',   '結案評估草稿'],
+    ['scc_draft_transfer_', 'transfer_draft',  '轉銜評估草稿'],
+    ['scc_draft_mlassess_', 'ml_assess_draft', '身心狀態評估表草稿'],
+    ['scc_draft_booking_',  'booking_draft',   '空間預約草稿'],
+    ['scc_draft_issue_',    'issue_draft',     '問題回報草稿'],
+  ];
+  for (const [prefix, type, label] of MAP) {
+    if (key && key.includes(prefix)) return { type, label };
+  }
+  return null;
+}
+
+// 純函式：目前表單快照是否與開表單當下的基準快照（baseline）不同——用來判定「使用者是否有實際輸入」，
+// 而不是單純看欄位是否為空，避免編輯模式回填既有資料、或新增模式的預設值（如今天日期）被誤判為使用者輸入。
+// baselineJson 允許為 null/undefined（尚未設定基準時視為「與任何非 undefined 快照都不同」＝ dirty）。
+function _isDraftSnapshotDirty(currentSnapshot, baselineJson) {
+  if (baselineJson == null) return currentSnapshot !== undefined;
+  return JSON.stringify(currentSnapshot) !== baselineJson;
+}
+
+// name → { timer, baseline(JSON string) }
+const _genericDraftState = {};
+function _gdSetBaseline(name, snapshot) {
+  _genericDraftState[name] = { ..._genericDraftState[name], baseline: JSON.stringify(snapshot) };
+}
+function _gdIsDirty(name, snapshot) {
+  return _isDraftSnapshotDirty(snapshot, _genericDraftState[name]?.baseline);
+}
+// snapshotFn()：回傳目前表單快照（plain object）；statusElId：畫面上顯示「草稿備援 HH:MM」的小字 id（可省略）。
+// 200KB 上限（家系圖等大型 JSON 走獨立機制，這裡是保險——極端情況下若某表單快照異常肥大，跳過該次寫入並於狀態小字註明）。
+function _gdStartAutosave(name, key, snapshotFn, statusElId) {
+  _gdStopAutosave(name);
+  if (!_genericDraftState[name]) _genericDraftState[name] = {};
+  _genericDraftState[name].timer = setInterval(() => {
+    try {
+      const snap = snapshotFn();
+      if (!_gdIsDirty(name, snap)) return;
+      const json = JSON.stringify(snap);
+      const statusEl = statusElId ? document.getElementById(statusElId) : null;
+      if (json.length > 200000) {
+        if (statusEl) statusEl.textContent = '草稿內容過大，本次未備援';
+        return;
+      }
+      localStorage.setItem(key, json);
+      if (statusEl) {
+        const t = new Date();
+        statusEl.textContent = `草稿備援 ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`;
+      }
+    } catch (e) { console.warn('draft autosave failed:', name, e); }
+  }, 5000);
+}
+function _gdStopAutosave(name) {
+  if (_genericDraftState[name]?.timer) { clearInterval(_genericDraftState[name].timer); _genericDraftState[name].timer = null; }
+}
+
+// v185：家系圖編輯器專用離開對話框（存回表單／留草稿離開／捨棄離開／取消）。家系圖草稿走獨立
+// localStorage 機制、不進 todo（宿主表單上下文複雜），故不能直接沿用下方 _showExitDialog
+// （其「暫存草稿」語意是寫入待辦事項，且按鈕文案針對一般紀錄表單，套用在此處會誤導）。
+function _genoExitDialog(onSaveBack, onKeepDraft, onDiscard) {
+  document.getElementById('exit-dialog-overlay')?.remove();
+  const el = document.createElement('div');
+  el.id = 'exit-dialog-overlay';
+  el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100010;display:flex;align-items:center;justify-content:center;padding:20px;';
+  el.innerHTML = `
+    <div style="background:#fff;border-radius:12px;padding:28px 24px;width:100%;max-width:360px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+      <div style="font-size:1rem;font-weight:700;margin-bottom:6px;">離開家族圖編輯器</div>
+      <div style="font-size:.875rem;color:#718096;margin-bottom:20px;">尚未插入回表單，請選擇離開方式：</div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <button class="btn btn-primary" id="geno-exit-save" style="text-align:left;padding:10px 14px;">存回表單 — 插入家族圖後離開</button>
+        <button class="btn btn-secondary" id="geno-exit-draft" style="text-align:left;padding:10px 14px;">留草稿離開 — 下次重開此圖時可還原</button>
+        <button class="btn btn-secondary" id="geno-exit-discard" style="text-align:left;padding:10px 14px;color:#c53030;border-color:#fc8181;">捨棄離開 — 放棄本次編輯</button>
+        <button class="btn btn-secondary" id="geno-exit-cancel" style="text-align:left;padding:10px 14px;">取消 — 繼續編輯</button>
+      </div>
+    </div>`;
+  document.body.appendChild(el);
+  document.getElementById('geno-exit-save').onclick    = () => { el.remove(); onSaveBack(); };
+  document.getElementById('geno-exit-draft').onclick   = () => { el.remove(); onKeepDraft(); };
+  document.getElementById('geno-exit-discard').onclick = () => { el.remove(); onDiscard(); };
+  document.getElementById('geno-exit-cancel').onclick  = () => el.remove();
 }
 
 // ── 待辦事項：退出表單對話框 ──
@@ -22870,7 +23225,7 @@ window._mlBatchAcknowledge = async function() {
 // 分類對照表（唯一真相）：emoji／標題／涵蓋的 todo type。「協助系統歸類」不在此表——
 // 它不是 todosData 項目（是系所簡寫協助歸類的獨立小工具），故獨立成另一個 tab。
 const TODO_CATEGORIES = {
-  draft:    { emoji: '📝', label: '草稿備援',   types: ['record', 'initial_interview', 'psychiatrist', 'event_records', 'autosave', 'manual'] },
+  draft:    { emoji: '📝', label: '草稿備援',   types: ['record', 'initial_interview', 'psychiatrist', 'event_records', 'autosave', 'manual', 'case_draft', 'closure_draft', 'transfer_draft', 'ml_assess_draft', 'booking_draft', 'issue_draft'] },
   case:     { emoji: '📁', label: '個案',       types: ['case_assignment', 'internal_transfer', 'couple_incomplete', 'case_profile_incomplete', 'case_mainid_confirm', 'unclosed_reminder'] },
   ml:       { emoji: '💙', label: '身心調適假', types: ['ml_cumul3', 'ml_reminder', 'ml_assessment_due', 'ml_new_leave'] },
   transfer: { emoji: '🎓', label: '轉銜',       types: ['transfer_grad_counselor', 'transfer_grad_coord', 'transfer_closure_reminder', 'transfer_withdraw_coord', 'transfer_withdraw_mismatch', 'transfer_reassign_assessor', 'transfer_reassign_assessor_notify'] },
@@ -23247,7 +23602,7 @@ function renderTodosPage() {
     return;
   }
 
-  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', couple_incomplete: '個案資料待補齊', case_profile_incomplete: '個案開案資料待補齊', case_mainid_confirm: '主案號確認', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（轉銜窗口）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）', transfer_withdraw_coord: '教務處名單（轉銜窗口）', transfer_withdraw_mismatch: '教務處名單（姓名/學號不符）', transfer_reassign_assessor: '轉派評估者', transfer_reassign_assessor_notify: '轉銜評估者通知', leave_pending_review: '差勤申請（待審核）', leave_approved_notify: '差勤申請結果', issue_pending_verification: '問題回報（待您驗證）', ml_cumul3: '身心調適假累計提醒', ml_reminder: '身心調適假再次提醒', ml_assessment_due: '身心狀態評估表（待填寫）', ml_new_leave: '身心調適假（主責新請假）' };
+  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', couple_incomplete: '個案資料待補齊', case_profile_incomplete: '個案開案資料待補齊', case_mainid_confirm: '主案號確認', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（轉銜窗口）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）', transfer_withdraw_coord: '教務處名單（轉銜窗口）', transfer_withdraw_mismatch: '教務處名單（姓名/學號不符）', transfer_reassign_assessor: '轉派評估者', transfer_reassign_assessor_notify: '轉銜評估者通知', leave_pending_review: '差勤申請（待審核）', leave_approved_notify: '差勤申請結果', issue_pending_verification: '問題回報（待您驗證）', ml_cumul3: '身心調適假累計提醒', ml_reminder: '身心調適假再次提醒', ml_assessment_due: '身心狀態評估表（待填寫）', ml_new_leave: '身心調適假（主責新請假）', case_draft: '個案資料草稿', closure_draft: '結案評估草稿', transfer_draft: '轉銜評估草稿', ml_assess_draft: '身心狀態評估表草稿', booking_draft: '空間預約草稿', issue_draft: '問題回報草稿' };
 
   body.innerHTML = _todosForBody.map(t => {
     // 問題回報「待您驗證」待辦：若對應 issue 已不是 pending_verification（他人已代驗或管理者已改狀態），自動收掉此待辦
@@ -23612,6 +23967,52 @@ function _continueTodo(id) {
         : (casesData.find(x => (x.formerIds || []).some(f => f.id === t.caseId))?.id || t.caseId);
       showCaseDetail(_live);
     }
+  } else if (t.type === 'case_draft') {
+    // v185：個案資料表單草稿——重開表單（編輯既有個案或全新表單）後回填快照
+    const d = t.draftData || {};
+    _caseDraftTodoId = t.id;
+    if (d.editingCaseId && casesData.some(c => c.id === d.editingCaseId)) {
+      openEditCasePage(d.editingCaseId);
+    } else {
+      openNewCasePage();
+    }
+    setTimeout(() => { try { _restoreCaseFormSnapshot(d.snapshot); } catch (_) {} }, 300);
+  } else if (t.type === 'closure_draft') {
+    // v185：結案評估／學期評估草稿
+    const d = t.draftData || {};
+    if (d.caseId) {
+      _closureDraftTodoId = t.id;
+      openClosureEvalPage(d.caseId, d.evalType, null);
+      setTimeout(() => { try { _restoreClosureDraft(d.snapshot); } catch (_) {} }, 300);
+    }
+  } else if (t.type === 'transfer_draft') {
+    // v185：轉銜評估草稿
+    const d = t.draftData || {};
+    if (d.caseId) {
+      _teDraftTodoId = t.id;
+      openTransferEvalForm(d.caseId, d.teId || null);
+      setTimeout(() => { try { _restoreTransferEvalDraft(d.snapshot); } catch (_) {} }, 300);
+    }
+  } else if (t.type === 'ml_assess_draft') {
+    // v185：身心狀態評估表草稿
+    const d = t.draftData || {};
+    if (d.leaveId && mentalLeavesData.some(l => l.id === d.leaveId)) {
+      openMlAssessmentModal(d.leaveId);
+      _mlaDraftTodoId = t.id; // 須在 openMlAssessmentModal 呼叫「之後」設定，該函式開頭會重置此變數
+      setTimeout(() => { try { _restoreMlAssessDraft(d.snapshot); } catch (_) {} }, 300);
+    }
+  } else if (t.type === 'booking_draft') {
+    // v185：空間預約草稿
+    const d = t.draftData || {};
+    openBookingModal(d.snapshot?.caseId || '', null);
+    _bkDraftTodoId = t.id; // 須在 openBookingModal 呼叫「之後」設定，該函式開頭會重置此變數
+    setTimeout(() => { try { _restoreBookingDraft(d.snapshot); } catch (_) {} }, 300);
+  } else if (t.type === 'issue_draft') {
+    // v185：問題回報草稿
+    const d = t.draftData || {};
+    openIssueModal();
+    _issueDraftTodoId = t.id; // 須在 openIssueModal 呼叫「之後」設定，該函式開頭會重置此變數
+    setTimeout(() => { try { _restoreIssueDraft(d.snapshot); } catch (_) {} }, 300);
   } else if (t.draftData) {
     // generic autosave with draftData — best-effort restore
     if (t.caseId) openNewRecordPage(t.caseId);
@@ -28768,6 +29169,17 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-15', v: 185, title: '全站表單補齊草稿自動備援與離開防護（比照晤談紀錄等級）', isProd: false, items: [
+      item('新功能', '新增個案／編輯個案表單：5 秒自動草稿備援＋離開（取消/返回）改跳「儲存／暫存草稿至待辦／捨棄離開／取消」對話框，不再無聲直接離開；編輯模式以「回填既有資料後的基準快照」判斷是否有實際輸入，避免誤判'),
+      item('改善', '結案評估／學期評估表：原本按「取消」會無聲把草稿寫入瀏覽器本機、沒有任何提示，升級為與其他表單一致的 5 秒自動備援＋離開對話框；改用新的 scc_draft_closure_ 前綴儲存草稿，並保留一版對舊版殘留草稿（scc_closure_draft_ 前綴）的相容讀取'),
+      item('新功能', '轉銜評估表：補上 5 秒自動草稿備援＋離開防護，原本「← 返回」「取消」按鈕會直接離開、完全沒有任何提示或備援'),
+      item('新功能', '身心狀態評估表（填寫/編輯模式）：補上 5 秒自動草稿備援＋離開防護，快照涵蓋所有欄位與聯繫時間清單；檢視（唯讀）模式不受影響，維持原本直接關閉'),
+      item('新功能', '空間預約（含系列/多日重複預約）：新增/編輯/複製皆補上 5 秒自動草稿備援；視窗右上角 × 與「取消」鈕改為離開防護（有異動才詢問），儲存/刪除成功等內部關窗流程不受影響'),
+      item('新功能', '問題回報（許願池）：問題說明欄補上 5 秒自動草稿備援＋離開防護；受限於瀏覽器儲存限制，草稿僅保留文字內容，尚未上傳的附件無法一併備援，需重新選取'),
+      item('新功能', '家系圖編輯器：獨立的 5 秒草稿備援機制（不進待辦事項，因為宿主表單情境複雜）——重新開啟同一個案／同一欄位的家系圖時，若偵測到本機殘留的未存回草稿會主動詢問是否還原；關閉編輯器若有未存回的變更，改跳「存回表單／留草稿離開／捨棄離開／取消」對話框，不再無聲遺失'),
+      item('改善', '待辦事項新增 6 種草稿類型（個案資料／結案評估／轉銜評估／身心狀態評估表／空間預約／問題回報），比照既有草稿類型顯示「📝 草稿備援」分類，可從待辦頁「繼續編輯」直接回到原表單並還原內容'),
+      item('說明', '全站表單編輯自此皆有 5 秒草稿備援與離開防護（低風險短表單除外：差勤請假／補打卡／使用者管理／後台設定等操作型視窗，其編輯內容單純、誤觸成本低，暫不列入本次範圍）'),
+    ]},
     { date: '2026-07-15', v: 184, title: '問題回報系統加富文字＋全站富文字工具列仿 Word 改版', isProd: false, items: [
       item('新功能', '問題回報系統改支援富文字：回報問題的「問題說明」、新增留言、編輯留言（含編輯原問題說明）三處皆改用格式編輯器，可加粗體/斜體/底線/清單/對齊等格式；@提及使用者自動完成沿用不變'),
       item('改善', '全站富文字工具列（個案紀錄、結案評估、初談表、轉銜評估、事件處理記錄、精神科評估、問題回報等所有格式編輯欄位）統一改版為仿 Microsoft Word 的兩排式版面：上排為字級調整、項目符號清單、編號清單、減少縮排、增加縮排；下排為粗體/斜體/底線、刪除線、下標、上標、字型顏色、螢光筆底色、靠左/置中/靠右/左右對齊、清除格式，群組間以分隔線區隔，按鈕外觀改為仿 Word 小方鈕並加上 hover 說明'),
@@ -33572,6 +33984,99 @@ function _mlAssessDefault(l, mc) {
 let _mlaCurrentAnchorId = null;
 let _mlaCurrentReadOnly = false;
 let _mlaDraftContacts = []; // 聯繫時間草稿陣列（結構化，供日後統計聯繫次數）；新增/刪除直接操作此陣列＋局部重繪，避免整頁重繪遺失使用者輸入
+let _mlaDraftTodoId = null; // v185：從草稿待辦「繼續編輯」重開時記錄對應 todoId
+
+// ── v185：身心狀態評估表草稿備援與離開防護（僅編輯/新增模式；檢視唯讀模式不適用）──────────
+function _mlaFormSnapshot() {
+  const gv = id => document.getElementById(id)?.value ?? '';
+  const gr = n => document.querySelector(`[name="${n}"]:checked`)?.value || '';
+  const gchk = n => [...document.querySelectorAll(`[name="${n}"]:checked`)].map(el => el.value).sort();
+  return {
+    name: gv('mla-name'), sid: gv('mla-sid'),
+    collectDate: gv('mla-collect-date'), evalDate: gv('mla-eval-date'),
+    assessorNote: gv('mla-assessor-note'),
+    contacts: JSON.parse(JSON.stringify(_mlaDraftContacts || [])),
+    bsrs: [0,1,2,3,4].map(i => gv(`mla-bsrs-${i}`)),
+    suicide: gv('mla-suicide'),
+    medPsy: gr('mla-med-psy'), medDrug: gr('mla-med-drug'), medCounsel: gr('mla-med-counsel'),
+    family: gr('mla-family'), familyOther: gv('mla-family-other'),
+    partnerHas: gr('mla-partner-has'), partnerType: gr('mla-partner-type'), partnerOther: gv('mla-partner-other'),
+    friend: gr('mla-friend'), friendOther: gv('mla-friend-other'),
+    teacher: gr('mla-teacher'), teacherName: gv('mla-teacher-name'), teacherOther: gv('mla-teacher-other'),
+    housing: gr('mla-housing'), housingOther: gv('mla-housing-other'),
+    resultText: gv('mla-result-text'), outcome: gr('mla-outcome'), outcomeCounselor: gv('mla-outcome-counselor'),
+    nocaseReasons: gchk('mla-nocase-reason'),
+  };
+}
+function _mlaDraftKey() {
+  return `scc_draft_mlassess_${currentUser?.email || ''}_${_mlaCurrentAnchorId || ''}`;
+}
+function _startMlaDraftAutosave() {
+  _gdStartAutosave('mlassess', _mlaDraftKey(), _mlaFormSnapshot, '_mla-draft-status');
+}
+function _stopMlaDraftAutosave() { _gdStopAutosave('mlassess'); }
+
+function exitMlAssessment() {
+  if (_mlaCurrentReadOnly) { handlePrevPage(); return; } // 檢視模式無需離開防護
+  const _exit = () => {
+    _stopMlaDraftAutosave();
+    try { localStorage.removeItem(_mlaDraftKey()); } catch(_) {}
+    _mlaDraftTodoId = null;
+    handlePrevPage();
+  };
+  if (!_gdIsDirty('mlassess', _mlaFormSnapshot())) { _exit(); return; }
+  _showExitDialog('離開身心狀態評估表',
+    () => saveMlAssessment(_mlaCurrentAnchorId),
+    () => _draftMlAssessment(),
+    () => _exit()
+  );
+}
+
+function _draftMlAssessment() {
+  const snap = _mlaFormSnapshot();
+  const l = mentalLeavesData.find(x => x.id === _mlaCurrentAnchorId);
+  const existingTodo = _mlaDraftTodoId ? todosData.find(t => t.id === _mlaDraftTodoId) : null;
+  const todoId = existingTodo?.id || _genTodoId();
+  _putTodoItem({
+    id: todoId, type: 'ml_assess_draft', label: '身心狀態評估表草稿',
+    caseId: '', caseLabel: `${l?.name || snap.name || '—'}（學號 ${l?.studentId || snap.sid || '—'}）`,
+    leaveId: _mlaCurrentAnchorId,
+    draftData: { leaveId: _mlaCurrentAnchorId, snapshot: snap },
+    origin: 'manual', notifRead: false, done: false,
+    createdAt: existingTodo?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
+  });
+  _stopMlaDraftAutosave();
+  try { localStorage.removeItem(_mlaDraftKey()); } catch(_) {}
+  _mlaDraftTodoId = null;
+  showPage('page-todos', document.querySelector('[data-nav-id="page-todos"]'));
+  renderTodosPage();
+  showToast('已暫存草稿至待辦事項', 'success');
+  saveUserTodos().catch(e => console.warn('saveUserTodos failed:', e));
+}
+
+function _restoreMlAssessDraft(snap) {
+  if (!snap) return;
+  const sv = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+  const sr = (name, v) => { if (!v) return; const el = document.querySelector(`[name="${name}"][value="${v}"]`); if (el) el.checked = true; };
+  sv('mla-name', snap.name); sv('mla-sid', snap.sid);
+  sv('mla-collect-date', snap.collectDate); sv('mla-eval-date', snap.evalDate);
+  sv('mla-assessor-note', snap.assessorNote);
+  if (Array.isArray(snap.contacts)) { _mlaDraftContacts = JSON.parse(JSON.stringify(snap.contacts)); _mlaRenderContacts(); }
+  (snap.bsrs || []).forEach((v, i) => { if (v !== '' && v != null) setBsrsBtn(`mla-bsrs-${i}`, v); });
+  if (snap.suicide !== '' && snap.suicide != null) setBsrsBtn('mla-suicide', snap.suicide);
+  sr('mla-med-psy', snap.medPsy); sr('mla-med-drug', snap.medDrug); sr('mla-med-counsel', snap.medCounsel);
+  sr('mla-family', snap.family); sv('mla-family-other', snap.familyOther);
+  sr('mla-partner-has', snap.partnerHas); sr('mla-partner-type', snap.partnerType); sv('mla-partner-other', snap.partnerOther);
+  sr('mla-friend', snap.friend); sv('mla-friend-other', snap.friendOther);
+  sr('mla-teacher', snap.teacher); sv('mla-teacher-name', snap.teacherName); sv('mla-teacher-other', snap.teacherOther);
+  sr('mla-housing', snap.housing); sv('mla-housing-other', snap.housingOther);
+  sv('mla-result-text', snap.resultText); sr('mla-outcome', snap.outcome); sv('mla-outcome-counselor', snap.outcomeCounselor);
+  (snap.nocaseReasons || []).forEach(v => { const el = document.querySelector(`[name="mla-nocase-reason"][value="${v}"]`); if (el) el.checked = true; });
+  document.querySelector('[name="mla-partner-has"]:checked')?.dispatchEvent(new Event('change'));
+  document.querySelector('[name="mla-outcome"]:checked')?.dispatchEvent(new Event('change'));
+  if (typeof _mlaCalcBsrsTotal === 'function') _mlaCalcBsrsTotal();
+  _gdSetBaseline('mlassess', _mlaFormSnapshot());
+}
 // 聯繫方式／聯繫對象選項照搬「新增晤談紀錄」的介入方式／晤談對象（不含伴侶諮商，該選項為預約專用）
 const ML_CONTACT_METHOD_OPTS = ['面談','視訊','團體','電話關懷','E-mail/簡訊','外展訪視','其他'];
 const ML_CONTACT_TARGET_OPTS = ['學生本人','家屬','朋友','伴侶','教職員工生','資源網絡人員'];
@@ -33822,10 +34327,11 @@ function _mlaRenderPageBody(anchor, mc, a, ro) {
 
     ${a.filledAt ? `<div style="font-size:.78rem;color:#a0aec0;margin-bottom:10px;">填表人：${escHtml(configData?.users?.[a.filledBy]?.name || a.filledByName || a.filledBy || '—')}　填表時間：${escHtml((a.filledAt||'').replace('T',' ').slice(0,16))}${a.updatedAt && a.updatedAt !== a.filledAt ? `　最後更新：${escHtml((a.updatedAt||'').replace('T',' ').slice(0,16))}` : ''}</div>` : ''}
 
+    ${ro ? '' : `<div id="_mla-draft-status" style="font-size:.8rem;color:#718096;margin-bottom:6px;"></div>`}
     <div style="display:flex;gap:10px;flex-wrap:wrap;">
       ${ro ? '' : `<button class="btn btn-primary" onclick="saveMlAssessment('${escHtml(anchor.id)}')">儲存</button>`}
       ${anchor.assessment ? `<button class="btn btn-secondary" onclick="printMlAssessment('${escHtml(anchor.id)}')">列印</button>` : ''}
-      <button class="btn btn-secondary" onclick="handlePrevPage()">${ro?'關閉':'取消'}</button>
+      <button class="btn btn-secondary" onclick="${ro ? 'handlePrevPage()' : 'exitMlAssessment()'}">${ro?'關閉':'取消'}</button>
     </div>
   `;
 }
@@ -33840,6 +34346,7 @@ function openMlAssessmentModal(recordId, readOnly) {
   _mlaCurrentAnchorId = anchor.id;
   _mlaCurrentReadOnly = ro;
   _mlaDraftContacts = JSON.parse(JSON.stringify(a.contacts || []));
+  _mlaDraftTodoId = null; // v185：重置——若由「繼續編輯」草稿待辦重開，呼叫端會在本函式呼叫後另外設回對應 todoId
   const titleEl = document.getElementById('mla-page-title');
   if (titleEl) titleEl.textContent = `${ro ? '檢視' : (anchor.assessment ? '編輯' : '填寫')}身心狀態評估表${ro ? '（唯讀）' : ''}`;
   document.getElementById('mla-page-body').innerHTML = _mlaRenderPageBody(anchor, mc, a, ro);
@@ -33876,6 +34383,11 @@ function openMlAssessmentModal(recordId, readOnly) {
       ['input', 'change', 'click'].forEach(evt => pageBodyEl.addEventListener(evt, (e) => {
         e.target.closest?.('.mla-vsec')?.classList.remove('form-section-error');
       }));
+    }
+    // v185：欄位（含下拉初始值）皆已就緒後才取基準快照；檢視唯讀模式不需要草稿備援
+    if (!ro) {
+      _gdSetBaseline('mlassess', _mlaFormSnapshot());
+      _startMlaDraftAutosave();
     }
   }, 0);
 }
@@ -33992,6 +34504,15 @@ async function saveMlAssessment(recordId) {
   if (isNew) { a.filledBy = currentUser?.email; a.filledByName = updaterName; a.filledAt = now; }
 
   l.assessment = a;
+  // v185：確定會儲存——停止草稿備援、清掉草稿 key；若是從草稿待辦繼續編輯，標記該待辦完成
+  _stopMlaDraftAutosave();
+  try { localStorage.removeItem(_mlaDraftKey()); } catch(_) {}
+  if (_mlaDraftTodoId) {
+    const _mladt = todosData.find(t => t.id === _mlaDraftTodoId);
+    if (_mladt) { _mladt.done = true; _mladt.doneAt = now; }
+    _mlaDraftTodoId = null;
+    saveUserTodos().catch(() => {});
+  }
   const _mlaCase = (casesData || []).find(c => !c.deleted && c.studentId === l.studentId);
   const _mlaOnCaseDetail = _mlaCase && _detailCaseId === _mlaCase.id && document.getElementById('page-case-detail')?.classList.contains('active');
   handlePrevPage(); // 回到來時頁（身心調適假管理列表 或 個案詳細頁）
@@ -37234,6 +37755,10 @@ function openBookingModal(prefillCaseId, prefill) {
   document.getElementById('booking-modal').style.display = 'flex';
   _bkModalResizeSetup();
   _bkUpdateScopeInfo();
+  _bkDraftTodoId = null; // v185：一般新增預約——重置（由「繼續編輯」草稿待辦重開時會在呼叫後另外設回）
+  _gdSetBaseline('booking', _bkFormSnapshot());
+  _startBkDraftAutosave();
+  const _bkds0 = document.getElementById('_bk-draft-status'); if (_bkds0) _bkds0.textContent = '';
   // 背景重讀最新預約，回來後（若仍停在此新增視窗）重跑衝突檢查，兼顧即時性與撞期偵測。
   loadBookings().then(() => {
     const modalOpen = document.getElementById('booking-modal')?.style.display === 'flex';
@@ -37284,6 +37809,10 @@ function editBooking(id) {
   }
   _resetBkOverrideUi(b.bkOverrideColor || '');
   _bkEditScope = 'this';
+  _bkDraftTodoId = null; // v185：一般編輯——重置（由「繼續編輯」草稿待辦重開時會在呼叫後另外設回）
+  _gdSetBaseline('booking', _bkFormSnapshot());
+  _startBkDraftAutosave();
+  const _bkds1 = document.getElementById('_bk-draft-status'); if (_bkds1) _bkds1.textContent = '';
   // 若屬系列，先選範圍；v162：若是從「檢視此系列預約」清單點選進入（_bkSeriesViewReturn 記錄同一
   // 系列），代表使用者已明確選定這一筆，略過範圍選擇、直接進入編輯畫面（範圍鎖定為僅此筆）。
   const _fromSeriesView = !!(b.seriesId && _bkSeriesViewReturn && _bkSeriesViewReturn.seriesId === b.seriesId);
@@ -37596,6 +38125,10 @@ function _bkCopyOpenModal() {
   _bkModalResizeSetup();
   _bkUpdateScopeInfo();
   _checkBkConflict();
+  _bkDraftTodoId = null; // v185：複製預約——重置
+  _gdSetBaseline('booking', _bkFormSnapshot());
+  _startBkDraftAutosave();
+  const _bkds2 = document.getElementById('_bk-draft-status'); if (_bkds2) _bkds2.textContent = '';
 }
 
 function _bkCopyToNextWeek() {
@@ -37654,7 +38187,98 @@ async function _bkCopyToNextWeekConfirm() {
   }
 }
 
+// ── v185：空間預約表單草稿備援與離開防護（含系列/多日）────────────────────
+let _bkDraftTodoId = null; // 從草稿待辦「繼續編輯」重開時記錄對應 todoId
+function _bkFormSnapshot() {
+  const gv = id => document.getElementById(id)?.value ?? '';
+  return {
+    room: _bkSelectedRoom || '', date: gv('bk-date'), period: gv('bk-period'), start: gv('bk-start'), end: gv('bk-end'),
+    counselors: (_bkSelectedOpts || []).map(o => o?.value || '').sort(),
+    caseId: gv('bk-case-id'), notes: gv('bk-notes'),
+    repeatToggle: !!document.getElementById('bk-repeat-toggle')?.checked,
+    repeatFreq: document.querySelector('[name="bk-repeat-freq"]:checked')?.value || '',
+    repeatCount: gv('bk-repeat-count'),
+    colorOverride: _bkPickedColor || '',
+  };
+}
+function _bkDraftKey() {
+  return `scc_draft_booking_${currentUser?.email || ''}_${_editingBookingId || 'new'}`;
+}
+function _startBkDraftAutosave() {
+  _gdStartAutosave('booking', _bkDraftKey(), _bkFormSnapshot, '_bk-draft-status');
+}
+function _stopBkDraftAutosave() { _gdStopAutosave('booking'); }
+
+function _restoreBookingDraft(snap) {
+  if (!snap) return;
+  if (snap.room) { _bkSelectedRoom = snap.room; _populateBookingRoomChips(snap.room); }
+  const sv = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+  sv('bk-date', snap.date);
+  if (snap.period) {
+    sv('bk-period', snap.period);
+    const customDiv = document.getElementById('bk-custom-times');
+    if (snap.period === '其他') { if (customDiv) customDiv.style.display = ''; sv('bk-start', snap.start); sv('bk-end', snap.end); }
+    else { if (customDiv) customDiv.style.display = 'none'; }
+  }
+  sv('bk-case-id', snap.caseId); sv('bk-notes', snap.notes);
+  const toggle = document.getElementById('bk-repeat-toggle');
+  if (toggle) { toggle.checked = !!snap.repeatToggle; toggle.dispatchEvent(new Event('change')); }
+  if (snap.repeatFreq) { const r = document.querySelector(`[name="bk-repeat-freq"][value="${snap.repeatFreq}"]`); if (r) r.checked = true; }
+  sv('bk-repeat-count', snap.repeatCount);
+  if (snap.colorOverride) _resetBkOverrideUi(snap.colorOverride);
+  _checkBkConflict();
+  _gdSetBaseline('booking', _bkFormSnapshot());
+}
+
+// 使用者主動關閉（X／取消）才走離開防護；儲存成功／刪除成功等內部呼叫仍直接呼叫 closeBookingModal()，不受影響。
+function _bkExitModal() {
+  const _exit = () => {
+    _stopBkDraftAutosave();
+    try { localStorage.removeItem(_bkDraftKey()); } catch(_) {}
+    _bkDraftTodoId = null;
+    closeBookingModal();
+  };
+  if (!_gdIsDirty('booking', _bkFormSnapshot())) { _exit(); return; }
+  _showExitDialog('離開空間預約表單',
+    () => saveBooking(),
+    () => _draftBooking(),
+    () => _exit()
+  );
+}
+
+function _draftBooking() {
+  const snap = _bkFormSnapshot();
+  const existingTodo = _bkDraftTodoId ? todosData.find(t => t.id === _bkDraftTodoId) : null;
+  const todoId = existingTodo?.id || _genTodoId();
+  const c = snap.caseId ? casesData.find(x => x.id === snap.caseId) : null;
+  _putTodoItem({
+    id: todoId, type: 'booking_draft', label: '空間預約草稿',
+    caseId: snap.caseId || '', caseLabel: c ? `${c.name}（${snap.caseId}）` : (snap.room || '（未選空間）'),
+    draftData: { editingBookingId: _editingBookingId, snapshot: snap },
+    origin: 'manual', notifRead: false, done: false,
+    createdAt: existingTodo?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
+  });
+  _stopBkDraftAutosave();
+  try { localStorage.removeItem(_bkDraftKey()); } catch(_) {}
+  _bkDraftTodoId = null;
+  closeBookingModal();
+  showPage('page-todos', document.querySelector('[data-nav-id="page-todos"]'));
+  renderTodosPage();
+  showToast('已暫存草稿至待辦事項', 'success');
+  saveUserTodos().catch(e => console.warn('saveUserTodos failed:', e));
+}
+
 function closeBookingModal() {
+  // v185：無論是使用者取消／儲存成功／刪除成功，本次編輯階段都已結束——統一在此清掉草稿備援
+  // （唯一進出口，比逐一在各成功分支插入更不易漏）；若是從草稿待辦繼續編輯，順便標記該待辦完成。
+  _stopBkDraftAutosave();
+  try { localStorage.removeItem(_bkDraftKey()); } catch(_) {}
+  if (_bkDraftTodoId) {
+    const _bkdt = todosData.find(t => t.id === _bkDraftTodoId);
+    if (_bkdt) { _bkdt.done = true; _bkdt.doneAt = new Date().toISOString(); }
+    _bkDraftTodoId = null;
+    saveUserTodos().catch(() => {});
+  }
   document.getElementById('booking-modal').style.display = 'none';
   // v162：若本次編輯是從「檢視此系列預約」清單進入，離開編輯畫面（無論儲存成功或取消／關閉）
   // 一律回到該系列的檢視清單。用 setTimeout(0) 讓呼叫端接下來對 bookingsData 的樂觀更新（若有，
@@ -41526,6 +42150,49 @@ function printTransferEval(caseId, teId, mode = 'print') {
 
 let _teFormCaseId = null;
 let _teFormTeId   = null;
+let _teDraftTodoId = null; // v185：從草稿待辦「繼續編輯」重開時記錄對應 todoId
+
+// ── v185：轉銜評估表單草稿備援與離開防護 ──────────────────────────────────
+function _teFormSnapshot() {
+  const gv = id => document.getElementById(id)?.value ?? '';
+  const gr = n => document.querySelector(`[name="${n}"]:checked`)?.value || '';
+  return {
+    mainIssue: getRichTextValue('te-main-issue'),
+    intervention: getRichTextValue('te-intervention'),
+    assessment: getRichTextValue('te-assessment'),
+    rec: gr('te-rec'),
+    ccType: gr('te-cc-type'), ccReason: gr('te-cc-reason'), ccOther: gv('te-cc-other'),
+    ccStudent: gr('te-cc-student'), ccGuardian: gr('te-cc-guardian'),
+    dims: (CLOSURE_DIMS || []).map((_, i) => document.querySelector(`[name="te-dim-${i}"]:checked`)?.value || ''),
+    filledBy: gv('te-filled-by'), evalDate: gv('te-eval-date'), counselor: gv('te-counselor'),
+  };
+}
+function _teDraftKey() {
+  return `scc_draft_transfer_${currentUser?.email || ''}_${_teFormCaseId || ''}_${_teFormTeId || 'new'}`;
+}
+function _startTeDraftAutosave() {
+  _gdStartAutosave('transfer', _teDraftKey(), _teFormSnapshot, '_te-draft-status');
+}
+function _stopTeDraftAutosave() { _gdStopAutosave('transfer'); }
+
+function _restoreTransferEvalDraft(snap) {
+  if (!snap) return;
+  if (snap.mainIssue != null)    setRichTextValue('te-main-issue', snap.mainIssue);
+  if (snap.intervention != null) setRichTextValue('te-intervention', snap.intervention);
+  if (snap.assessment != null)   setRichTextValue('te-assessment', snap.assessment);
+  if (snap.rec) { const r = document.querySelector(`[name="te-rec"][value="${snap.rec}"]`); if (r) r.checked = true; }
+  if (snap.ccType) { const r = document.querySelector(`[name="te-cc-type"][value="${snap.ccType}"]`); if (r) { r.checked = true; _teClientConsentChange(); } }
+  if (snap.ccReason) { const r = document.querySelector(`[name="te-cc-reason"][value="${snap.ccReason}"]`); if (r) r.checked = true; }
+  const ccOtherEl = document.getElementById('te-cc-other'); if (ccOtherEl && snap.ccOther) ccOtherEl.value = snap.ccOther;
+  if (snap.ccStudent) { const r = document.querySelector(`[name="te-cc-student"][value="${snap.ccStudent}"]`); if (r) r.checked = true; }
+  if (snap.ccGuardian) { const r = document.querySelector(`[name="te-cc-guardian"][value="${snap.ccGuardian}"]`); if (r) r.checked = true; }
+  (snap.dims || []).forEach((level, i) => { if (!level) return; const r = document.querySelector(`[name="te-dim-${i}"][value="${level}"]`); if (r) r.checked = true; });
+  const byEl = document.getElementById('te-filled-by'); if (byEl && snap.filledBy) byEl.value = snap.filledBy;
+  const evEl = document.getElementById('te-eval-date'); if (evEl && snap.evalDate) evEl.value = snap.evalDate;
+  const coEl = document.getElementById('te-counselor'); if (coEl && snap.counselor) coEl.value = snap.counselor;
+  _teUpdateSections();
+  _gdSetBaseline('transfer', _teFormSnapshot());
+}
 
 function _teClientConsentChange() {
   const type = document.querySelector('[name="te-cc-type"]:checked')?.value;
@@ -41742,12 +42409,50 @@ function openTransferEvalForm(caseId, teId) {
       if (m) byEl.value = m.value;
     }
     if (coEl) coEl.value = existing?.counselorEmail || c.counselorEmail || '';
+    // v185：欄位（含 rich text／下拉，這兩者要等這個 setTimeout 才真正就緒）填完後才取基準快照
+    _gdSetBaseline('transfer', _teFormSnapshot());
+    _startTeDraftAutosave();
+    const _teds0 = document.getElementById('_te-draft-status'); if (_teds0) _teds0.textContent = '';
   }, 0);
 }
 
 function cancelTransferEvalForm() {
-  if (_teFormCaseId) showCaseDetail(_teFormCaseId);
-  else showPage('page-cases', document.querySelector('[data-nav-id="page-cases"]'));
+  const _exit = () => {
+    _stopTeDraftAutosave();
+    try { localStorage.removeItem(_teDraftKey()); } catch(_) {}
+    _teDraftTodoId = null;
+    if (_teFormCaseId) showCaseDetail(_teFormCaseId);
+    else showPage('page-cases', document.querySelector('[data-nav-id="page-cases"]'));
+  };
+  if (!document.getElementById('page-transfer-eval')?.classList.contains('active') || !_gdIsDirty('transfer', _teFormSnapshot())) {
+    _exit(); return;
+  }
+  _showExitDialog('離開轉銜評估表',
+    () => saveTransferEval(),
+    () => _draftTransferEval(),
+    () => _exit()
+  );
+}
+
+function _draftTransferEval() {
+  const snap = _teFormSnapshot();
+  const c = casesData.find(x => x.id === _teFormCaseId);
+  const existingTodo = _teDraftTodoId ? todosData.find(t => t.id === _teDraftTodoId) : null;
+  const todoId = existingTodo?.id || _genTodoId();
+  _putTodoItem({
+    id: todoId, type: 'transfer_draft', label: '轉銜評估草稿',
+    caseId: _teFormCaseId, caseLabel: c ? `${c.name}（${_teFormCaseId}）` : (_teFormCaseId || ''),
+    draftData: { caseId: _teFormCaseId, teId: _teFormTeId, snapshot: snap },
+    origin: 'manual', notifRead: false, done: false,
+    createdAt: existingTodo?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
+  });
+  _stopTeDraftAutosave();
+  try { localStorage.removeItem(_teDraftKey()); } catch(_) {}
+  _teDraftTodoId = null;
+  showPage('page-todos', document.querySelector('[data-nav-id="page-todos"]'));
+  renderTodosPage();
+  showToast('已暫存草稿至待辦事項', 'success');
+  saveUserTodos().catch(e => console.warn('saveUserTodos failed:', e));
 }
 
 async function saveTransferEval() {
@@ -41829,6 +42534,15 @@ async function saveTransferEval() {
   }
   c.updatedAt = now;
   const _teOrigId = teIdOrNew === '__new__' ? null : teIdOrNew; // 供儲存失敗還原時重開同一筆
+  // v185：確定會儲存——停止草稿備援、清掉草稿 key；若是從草稿待辦繼續編輯，標記該待辦完成
+  _stopTeDraftAutosave();
+  try { localStorage.removeItem(_teDraftKey()); } catch(_) {}
+  if (_teDraftTodoId) {
+    const _tedt = todosData.find(t => t.id === _teDraftTodoId);
+    if (_tedt) { _tedt.done = true; _tedt.doneAt = now; }
+    _teDraftTodoId = null;
+    saveUserTodos().catch(() => {});
+  }
   showCaseDetail(caseId);
   const jobId = bgJobAdd(`儲存轉銜評估：${c.name}`);
   _armSaveFailSnapshot('轉銜評估', 'page-transfer-eval', () => openTransferEvalForm(caseId, _teOrigId), saveTransferEval, jobId);
@@ -46250,7 +46964,7 @@ function toggleNavPin(navId) {
   <div id="booking-modal-box" style="background:#fff;border-radius:12px;padding:28px 28px 20px;width:min(520px,90vw);min-width:320px;max-width:calc(100vw - 32px);max-height:90vh;overflow-y:auto;resize:horizontal;box-shadow:0 8px 32px rgba(0,0,0,.2);">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;">
       <h3 id="booking-modal-title" style="font-size:1.1rem;color:#1a202c;">新增預約</h3>
-      <button onclick="closeBookingModal()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+      <button onclick="_bkExitModal()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
     </div>
     <!-- v162：僅從「檢視此系列預約」清單進入的單筆編輯才顯示，說明本次修改只影響這一筆 -->
     <div id="bk-series-view-banner" style="display:none;margin-bottom:12px;padding:8px 12px;background:#ebf8ff;border:1px solid #90cdf4;border-radius:8px;font-size:.85rem;color:#1a5276;">
@@ -46333,10 +47047,11 @@ function toggleNavPin(navId) {
       </div>
     </div>
     <div id="booking-conflict-warn" style="display:none;margin-top:10px;" class="alert alert-warn"></div>
+    <div id="_bk-draft-status" style="font-size:.8rem;color:#718096;margin-top:8px;"></div>
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:16px;">
       <button class="btn btn-danger" id="btn-delete-booking" style="display:none;" onclick="_bkDeleteFromModal()">🗑 刪除</button>
       <div style="display:flex;gap:10px;margin-left:auto;">
-        <button class="btn btn-secondary" onclick="closeBookingModal()">取消</button>
+        <button class="btn btn-secondary" onclick="_bkExitModal()">取消</button>
         <button class="btn btn-primary" id="btn-save-booking" onclick="saveBooking()">儲存</button>
       </div>
     </div>
@@ -46530,9 +47245,10 @@ function toggleNavPin(navId) {
     <div id="issue-sys-context" style="display:none;margin-top:10px;"></div>
     <div id="attachPicker_issue_new" class="attach-picker-wrap"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
-      <button class="btn btn-secondary" type="button" onclick="document.getElementById('issue-submit-modal').style.display='none'">取消</button>
+      <button class="btn btn-secondary" type="button" onclick="_exitIssueModal()">取消</button>
       <button class="btn btn-primary" type="button" onclick="submitIssue()">送出</button>
     </div>
+    <div id="_issue-draft-status" style="font-size:.78rem;color:#718096;margin-top:8px;"></div>
   </div>
 </div>
 
@@ -47023,6 +47739,65 @@ function _recentSysErrors() {
 }
 
 let _issueSysContext = [];
+let _issueDraftTodoId = null; // v185：從草稿待辦「繼續編輯」重開時記錄對應 todoId
+
+// ── v185：問題回報表單草稿備援與離開防護 ──────────────────────────────────
+// 注意：附件（尚未上傳的檔案）無法序列化進 localStorage/todo，草稿只保留文字說明；
+// 若使用者選了附件但取消離開，重新開啟時附件需重新選取（於下方 _restoreIssueDraft 註記）。
+function _issueFormSnapshot() {
+  return { desc: getRichTextValue('issue-desc') };
+}
+function _issueDraftKey() {
+  return `scc_draft_issue_${currentUser?.email || ''}`;
+}
+function _startIssueDraftAutosave() {
+  _gdStartAutosave('issue', _issueDraftKey(), _issueFormSnapshot, '_issue-draft-status');
+}
+function _stopIssueDraftAutosave() { _gdStopAutosave('issue'); }
+
+function _restoreIssueDraft(snap) {
+  if (!snap) return;
+  if (snap.desc != null) setRichTextValue('issue-desc', snap.desc);
+  _gdSetBaseline('issue', _issueFormSnapshot());
+}
+
+function _exitIssueModal() {
+  const _exit = () => {
+    _stopIssueDraftAutosave();
+    try { localStorage.removeItem(_issueDraftKey()); } catch(_) {}
+    _issueDraftTodoId = null;
+    document.getElementById('issue-submit-modal').style.display = 'none';
+  };
+  if (!_gdIsDirty('issue', _issueFormSnapshot())) { _exit(); return; }
+  _showExitDialog('離開問題回報表單',
+    () => submitIssue(),
+    () => _draftIssue(),
+    () => _exit()
+  );
+}
+
+function _draftIssue() {
+  const snap = _issueFormSnapshot();
+  const existingTodo = _issueDraftTodoId ? todosData.find(t => t.id === _issueDraftTodoId) : null;
+  const todoId = existingTodo?.id || _genTodoId();
+  const plain = _stripHtmlToText(snap.desc || '').trim();
+  _putTodoItem({
+    id: todoId, type: 'issue_draft', label: '問題回報草稿',
+    caseId: '', caseLabel: plain ? (plain.length > 20 ? plain.slice(0, 20) + '…' : plain) : '（未輸入內容）',
+    draftData: { snapshot: snap },
+    origin: 'manual', notifRead: false, done: false,
+    createdAt: existingTodo?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString(),
+  });
+  _stopIssueDraftAutosave();
+  try { localStorage.removeItem(_issueDraftKey()); } catch(_) {}
+  _issueDraftTodoId = null;
+  document.getElementById('issue-submit-modal').style.display = 'none';
+  showPage('page-todos', document.querySelector('[data-nav-id="page-todos"]'));
+  renderTodosPage();
+  showToast('已暫存草稿至待辦事項', 'success');
+  saveUserTodos().catch(e => console.warn('saveUserTodos failed:', e));
+}
+
 function openIssueModal() {
   setRichTextValue('issue-desc', '');
   // 自動偵測最近的系統錯誤，翻成白話顯示並於送出時一併附上
@@ -47046,6 +47821,10 @@ function openIssueModal() {
   }
   document.getElementById('issue-submit-modal').style.display = 'flex';
   setTimeout(() => { attachInit('issue_new', [], { dropTargets: ['issue-desc'] }); document.getElementById('issue-desc').focus(); }, 50);
+  _issueDraftTodoId = null; // v185：一般開啟——重置（由「繼續編輯」草稿待辦重開時會在呼叫後另外設回）
+  _gdSetBaseline('issue', _issueFormSnapshot());
+  _startIssueDraftAutosave();
+  const _ids0 = document.getElementById('_issue-draft-status'); if (_ids0) _ids0.textContent = '';
 }
 
 let _issueSubmitting = false;
@@ -47091,6 +47870,15 @@ async function submitIssue() {
         .filter(([, u]) => u.role === '主任' || u.extraRole === '管理者').map(([e]) => e));
       const _mentioned = _parseIssueMentions(descHtml).filter(e => !_adminEmails.has(e));
       if (_mentioned.length) _notifyIssueEvent(issue, null, { mentioned: _mentioned });
+      // v185：確定送出成功——停止草稿備援、清掉草稿 key；若是從草稿待辦繼續編輯，標記該待辦完成
+      _stopIssueDraftAutosave();
+      try { localStorage.removeItem(_issueDraftKey()); } catch(_) {}
+      if (_issueDraftTodoId) {
+        const _idt = todosData.find(t => t.id === _issueDraftTodoId);
+        if (_idt) { _idt.done = true; _idt.doneAt = new Date().toISOString(); }
+        _issueDraftTodoId = null;
+        saveUserTodos().catch(() => {});
+      }
       document.getElementById('issue-submit-modal').style.display = 'none';
       setRichTextValue('issue-desc', '');
       renderIssuesPage();
