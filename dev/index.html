@@ -749,8 +749,12 @@
     .rt-btn.active { background:#bee3f8;border-color:#3182ce; }
     .rt-btn.rt-active { background:#bee3f8;border-color:#3182ce;box-shadow:inset 0 1px 3px rgba(49,130,206,.2); }
     /* D4: 工具列常駐顯示，隱藏 A 切換按鈕 */
-    .rt-toolbar-btns { display:flex !important; gap:3px; flex-wrap:wrap; align-items:center; }
+    /* v184：工具列改仿 Word 兩排式，rt-toolbar-btns 由橫排改直排容納 rt-toolbar-row 兩列 */
+    .rt-toolbar-btns { display:flex !important; flex-direction:column; gap:4px; }
     .rt-toolbar-toggle { display:none !important; }
+    .rt-toolbar-row { display:flex; align-items:center; gap:3px; flex-wrap:wrap; }
+    .rt-toolbar-sep { display:inline-block; width:1px; height:20px; background:#cbd5e0; margin:0 2px; flex-shrink:0; }
+    .rt-color-swatch:hover { transform:scale(1.12); }
     .rt-editor ol[data-rt-ls="paren"] { list-style-type:none;counter-reset:rt-li; }
     .rt-editor ol[data-rt-ls="paren"] > li { counter-increment:rt-li; }
     .rt-editor ol[data-rt-ls="paren"] > li::before { content:'(' counter(rt-li) ')';margin-right:.4em; }
@@ -4470,8 +4474,26 @@ function updateFloatingBackBtn(pageId) {
 
 // 富文字編輯器：取值/設值（存 HTML，但 strip 不安全標籤）
 // 主力為 DOMPurify（白名單式，防 mXSS、變形 javascript: 等黑名單漏網攻擊）。
-// 預設設定即涵蓋編輯器全部產出：b/i/u、style 屬性、data-*（清單樣式 data-rt-ls、家系圖 data-geno-*）、img 的 data: URI。
+// 預設設定即涵蓋編輯器全部產出：b/i/u、s/strike、sub/sup、ul/ol/li、blockquote、style 屬性、
+// data-*（清單樣式 data-rt-ls、家系圖 data-geno-*）、img 的 data: URI（皆為 DOMPurify 預設白名單內建標籤/屬性，
+// 已用 vendored DOMPurify 3.2.7 原始碼核對過，非本次新增）。
 // FORBID_TAGS 補禁 <style>（DOMPurify 預設放行，但本編輯器不產生、且可作 CSS 外洩管道）。
+// v184：新增 uponSanitizeAttribute hook，把 style 屬性值再過濾一層，只留下工具列會用到的必要 CSS 屬性
+// （對齊、顏色、螢光筆底色、字級、清單縮排／樣式），作為新增格式功能的縱深防禦（防經 API 直呼塞入其他 CSS）；
+// 家族圖片（img，版面樣式如尺寸/框線/游標）不受此屬性白名單限制，其餘危險 CSS 建構仍由 DOMPurify 內建規則擋下。
+const RT_ALLOWED_STYLE_PROPS = ['text-align', 'color', 'background-color', 'font-size', 'margin-left', 'padding-left', 'list-style-type'];
+if (window.DOMPurify && !window._rtStyleHookInstalled) {
+  window._rtStyleHookInstalled = true;
+  DOMPurify.addHook('uponSanitizeAttribute', (node, data) => {
+    if (data.attrName !== 'style' || !data.attrValue) return;
+    if (node.tagName === 'IMG') return; // 家族圖片版面樣式不受此白名單限制
+    const kept = data.attrValue.split(';').map(s => s.trim()).filter(Boolean).filter(decl => {
+      const prop = decl.split(':')[0].trim().toLowerCase();
+      return RT_ALLOWED_STYLE_PROPS.includes(prop);
+    });
+    data.attrValue = kept.join('; ');
+  });
+}
 function sanitizeRichHtml(html) {
   if (!html) return '';
   if (window.DOMPurify && DOMPurify.isSupported) {
@@ -4492,6 +4514,15 @@ function sanitizeRichHtml(html) {
     });
   });
   return tmp.innerHTML;
+}
+// 富文字內容 → 去標籤純文字（供摘要/截斷/@提及解析等場景使用，避免截斷切壞 HTML 或誤判提及）
+function _stripHtmlToText(html) {
+  const s = String(html || '');
+  if (!s) return '';
+  if (!/<\/?[a-z][\s\S]*?>/i.test(s)) return s;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = sanitizeRichHtml(s);
+  return (tmp.textContent || '').replace(/\s+/g, ' ').trim();
 }
 function getRichTextValue(id) {
   const el = document.getElementById(id);
@@ -4524,6 +4555,163 @@ const RT_UL_TYPES  = ['disc', 'circle', 'square', 'dash'];
 const RT_OL_LABELS = { decimal:'1.', paren:'(1)', 'upper-alpha':'A.', 'lower-alpha':'a.' };
 const RT_UL_LABELS = { disc:'•', circle:'○', square:'▪', dash:'–' };
 
+// ══════════════════════════════════════════════
+// v184：全站富文字工具列仿 Word 兩排式改版
+// 全站 20+ 處 .rt-toolbar（靜態表單欄位＋問題回報等動態渲染）不逐一手動改寫按鈕 HTML，
+// 改為共用 RT_TOOLBAR_BTNS_HTML 常數＋ MutationObserver 自動 hydrate：
+// 只要 DOM 出現 .rt-toolbar > .rt-toolbar-btns（無論靜態頁面既有或日後任何動態渲染新增），
+// 一律自動套用同一份按鈕組，確保「全站一起換」且不會漏掉任何一處。
+// ══════════════════════════════════════════════
+const RT_FONT_SIZES = [10, 10.5, 11, 12, 14, 16, 18, 20, 24, 28, 36, 48]; // pt 階梯，比照 Word 常用字級
+const RT_COLOR_SWATCHES  = ['#000000','#5a5a5a','#c0392b','#e67e22','#f1c40f','#27ae60','#16a085','#2980b9','#8e44ad','#ffffff'];
+const RT_HILITE_SWATCHES = ['#fff59d','#a7f3d0','#bae6fd','#fecaca','#fbcfe8','#e2e8f0'];
+
+function _rtBtn(cmd, title, inner, extraStyle) {
+  return `<button type="button" class="rt-btn" data-cmd="${cmd}" title="${title}" data-tip="${title}" style="min-width:26px;${extraStyle||''}">${inner}</button>`;
+}
+function _rtSep() { return '<span class="rt-toolbar-sep"></span>'; }
+function _rtColorDropdownHtml(kind, label, underlineColor) {
+  const swatches = kind === 'fore' ? RT_COLOR_SWATCHES : RT_HILITE_SWATCHES;
+  const cols = Math.min(swatches.length, 6);
+  const clearBtn = kind === 'hilite'
+    ? `<div style="margin-top:5px;"><button type="button" class="rt-btn" style="font-size:.7rem;padding:2px 6px;width:100%;" onclick="_rtApplyColor('hilite','transparent')">清除螢光底色</button></div>` : '';
+  return `<span class="rt-color-btn-wrap" style="position:relative;display:inline-block;">
+    <button type="button" class="rt-btn" title="${label}" data-tip="${label}" style="min-width:26px;" onclick="_rtToggleColorPanel(this)">
+      <span>${kind === 'fore' ? 'A' : '✎'}</span><span style="display:block;height:3px;margin-top:1px;border-radius:1px;background:${underlineColor};"></span>
+    </button>
+    <div class="rt-color-panel" data-kind="${kind}" style="display:none;position:absolute;z-index:60;top:100%;left:0;margin-top:3px;background:#fff;border:1px solid #cbd5e0;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.16);padding:6px;">
+      <div style="display:grid;grid-template-columns:repeat(${cols},18px);gap:4px;">
+        ${swatches.map(c => `<span class="rt-color-swatch" onclick="_rtApplyColor('${kind}','${c}')" title="${c}" style="width:18px;height:18px;border:1px solid #cbd5e0;border-radius:3px;cursor:pointer;background:${c};display:inline-block;transition:transform .1s;"></span>`).join('')}
+      </div>
+      ${clearBtn}
+    </div>
+  </span>`;
+}
+const RT_TOOLBAR_BTNS_HTML =
+  '<div class="rt-toolbar-row">' +
+    _rtBtn('rtShrinkFont', '縮小字型', 'A<span style="font-size:.62em;vertical-align:sub;">－</span>') +
+    _rtBtn('rtGrowFont',   '放大字型', 'A<span style="font-size:.62em;vertical-align:super;">＋</span>') +
+    _rtSep() +
+    _rtBtn('rtCycleUL', '項目符號清單（重複點擊切換符號樣式）', '•') +
+    _rtBtn('rtCycleOL', '編號清單（重複點擊切換編號樣式）', '1.') +
+    _rtSep() +
+    _rtBtn('rtOutdent', '減少縮排', '⇤') +
+    _rtBtn('rtIndent',  '增加縮排', '⇥') +
+  '</div>' +
+  '<div class="rt-toolbar-row">' +
+    _rtBtn('bold',      '粗體 (Ctrl+B)', 'B', 'font-weight:bold;') +
+    _rtBtn('italic',    '斜體 (Ctrl+I)', 'I', 'font-style:italic;') +
+    _rtBtn('underline', '底線 (Ctrl+U)', 'U', 'text-decoration:underline;') +
+    _rtSep() +
+    _rtBtn('strikeThrough', '刪除線', 'S', 'text-decoration:line-through;') +
+    _rtBtn('subscript',     '下標',   'x<span style="font-size:.7em;vertical-align:sub;">2</span>') +
+    _rtBtn('superscript',   '上標',   'x<span style="font-size:.7em;vertical-align:super;">2</span>') +
+    _rtSep() +
+    _rtColorDropdownHtml('fore',   '字型顏色', '#e53e3e') +
+    _rtColorDropdownHtml('hilite', '螢光筆（反白底色）', '#f1c40f') +
+    _rtSep() +
+    _rtBtn('justifyLeft',   '靠左對齊',   '≡◁') +
+    _rtBtn('justifyCenter', '置中對齊',   '≡=') +
+    _rtBtn('justifyRight',  '靠右對齊',   '▷≡') +
+    _rtBtn('justifyFull',   '左右對齊',   '☰') +
+    _rtSep() +
+    _rtBtn('removeFormat', '清除格式', '清') +
+  '</div>';
+// 供動態渲染（問題回報等）插入 rt-editor 時共用的工具列外殼；內容由下方 hydrate 自動填入
+function _rtToolbarStaticHtml() {
+  return '<div class="rt-toolbar" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:6px;border:1px solid #cbd5e0;border-radius:6px;background:#f7fafc;padding:4px 8px;">'
+    + '<button type="button" class="rt-btn rt-toolbar-toggle" onclick="toggleRtToolbar(this)" title="格式工具列">A</button>'
+    + '<span class="rt-toolbar-btns" style="display:none;"></span>'
+    + '</div>';
+}
+function _rtHydrateToolbar(tb) {
+  if (!tb || tb.dataset.rtBuilt) return;
+  const btns = tb.querySelector('.rt-toolbar-btns');
+  if (btns) btns.innerHTML = RT_TOOLBAR_BTNS_HTML;
+  tb.dataset.rtBuilt = '1';
+}
+function _rtHydrateToolbars(root) {
+  const scope = root || document;
+  if (scope.matches?.('.rt-toolbar')) _rtHydrateToolbar(scope);
+  scope.querySelectorAll?.('.rt-toolbar:not([data-rt-built])').forEach(_rtHydrateToolbar);
+}
+_rtHydrateToolbars(document);
+new MutationObserver(muts => {
+  muts.forEach(m => {
+    m.addedNodes.forEach(node => {
+      if (node.nodeType !== 1) return;
+      _rtHydrateToolbars(node);
+    });
+  });
+}).observe(document.body, { childList: true, subtree: true });
+
+// 字型顏色／螢光筆下拉：開關與套用
+function _rtToggleColorPanel(btn) {
+  const wrap = btn.closest('.rt-color-btn-wrap');
+  const panel = wrap?.querySelector('.rt-color-panel');
+  if (!panel) return;
+  const willOpen = panel.style.display === 'none';
+  document.querySelectorAll('.rt-color-panel').forEach(p => { p.style.display = 'none'; });
+  panel.style.display = willOpen ? 'block' : 'none';
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('.rt-color-btn-wrap')) {
+    document.querySelectorAll('.rt-color-panel').forEach(p => { p.style.display = 'none'; });
+  }
+});
+function _rtApplyColor(kind, color) {
+  document.querySelectorAll('.rt-color-panel').forEach(p => { p.style.display = 'none'; });
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return;
+  let node = sel.getRangeAt(0).commonAncestorContainer;
+  if (node.nodeType === 3) node = node.parentElement;
+  const editor = node?.closest?.('.rt-editor');
+  if (!editor) return;
+  editor.focus();
+  if (kind === 'fore') {
+    document.execCommand('foreColor', false, color);
+  } else {
+    // hiliteColor 在部分引擎可能拋例外而非回傳 false，try/catch 確保能落到 backColor 備援
+    let ok = false;
+    try { ok = document.execCommand('hiliteColor', false, color); } catch (e) {}
+    if (!ok) { try { document.execCommand('backColor', false, color); } catch (e) {} }
+  }
+  const toolbar = editor.previousElementSibling;
+  if (toolbar?.classList.contains('rt-toolbar')) _updateRtBtnStates(toolbar);
+}
+
+// 字級調整（無原生「放大/縮小字型」execCommand，比照 fontSize=7 佔位轉 style 的通用手法）
+function _rtCurrentFontSizePt(editor) {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return 12;
+  let node = sel.getRangeAt(0).startContainer;
+  if (node.nodeType === 3) node = node.parentElement;
+  if (!node || !editor.contains(node)) return 12;
+  const px = parseFloat(getComputedStyle(node).fontSize) || 16;
+  return Math.round(px * 0.75 * 10) / 10; // px → pt（96dpi：1px＝0.75pt）
+}
+function _rtStepFontSize(delta) {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount || sel.isCollapsed) {
+    if (typeof showToast === 'function') showToast('請先選取要調整大小的文字', 'warn', 1800);
+    return;
+  }
+  let node = sel.getRangeAt(0).commonAncestorContainer;
+  if (node.nodeType === 3) node = node.parentElement;
+  const editor = node?.closest?.('.rt-editor');
+  if (!editor) return;
+  const cur = _rtCurrentFontSizePt(editor);
+  let idx = 0, bestDiff = Infinity;
+  RT_FONT_SIZES.forEach((v, i) => { const d = Math.abs(v - cur); if (d < bestDiff) { bestDiff = d; idx = i; } });
+  idx = Math.max(0, Math.min(RT_FONT_SIZES.length - 1, idx + delta));
+  const target = RT_FONT_SIZES[idx];
+  document.execCommand('fontSize', false, '7');
+  editor.querySelectorAll('font[size="7"]').forEach(f => {
+    f.removeAttribute('size');
+    f.style.fontSize = target + 'pt';
+  });
+}
+
 document.addEventListener('keydown', function(e) {
   if (e.key !== 'Tab') return;
   const editor = e.target.closest?.('.rt-editor');
@@ -4550,9 +4738,12 @@ document.addEventListener('click', function (e) {
   const toolbar = btn.closest('.rt-toolbar');
   const editor = toolbar?.nextElementSibling;
   if (editor?.classList.contains('rt-editor')) editor.focus();
-  if      (cmd === 'rtCycleOL') _rtCycleList('OL');
-  else if (cmd === 'rtCycleUL') _rtCycleList('UL');
-  else if (cmd === 'rtIndent')  _rtCycleIndent();
+  if      (cmd === 'rtCycleOL')    _rtCycleList('OL');
+  else if (cmd === 'rtCycleUL')    _rtCycleList('UL');
+  else if (cmd === 'rtIndent')     _rtCycleIndent();
+  else if (cmd === 'rtOutdent')    _rtOutdent();
+  else if (cmd === 'rtGrowFont')   _rtStepFontSize(1);
+  else if (cmd === 'rtShrinkFont') _rtStepFontSize(-1);
   else document.execCommand(cmd, false, null);
   if (toolbar) _updateRtBtnStates(toolbar);
 });
@@ -4627,7 +4818,7 @@ function _updateRtBtnStates(toolbar) {
   toolbar.querySelectorAll('[data-cmd]').forEach(btn => {
     const cmd = btn.dataset.cmd;
     try {
-      if (['bold','italic','underline','justifyLeft','justifyCenter','justifyRight'].includes(cmd)) {
+      if (['bold','italic','underline','strikeThrough','subscript','superscript','justifyLeft','justifyCenter','justifyRight','justifyFull'].includes(cmd)) {
         btn.classList.toggle('rt-active', document.queryCommandState(cmd));
       } else if (cmd === 'rtCycleOL') {
         const ol = _rtFindList('OL');
@@ -4691,7 +4882,7 @@ function _rtCycleIndent() {
   }
   if (listEl) {
     const curMl = parseFloat(listEl.style.marginLeft) || 0;
-    const nextMl = curMl >= 10 ? 0 : Math.round(curMl + 2);
+    const nextMl = Math.min(10, Math.round(curMl + 2)); // v184：改為累加後於上限鎖住，不再自動歸零（歸零改由減少縮排按鈕負責）
     listEl.style.marginLeft = nextMl > 0 ? nextMl + 'em' : '';
     return;
   }
@@ -4703,7 +4894,7 @@ function _rtCycleIndent() {
   }
   if (!block) return;
   const curPl = parseFloat(block.style.paddingLeft) || 0;
-  const nextPl = curPl >= 10 ? 0 : Math.round(curPl + 2);
+  const nextPl = Math.min(10, Math.round(curPl + 2));
   block.style.paddingLeft = nextPl > 0 ? nextPl + 'em' : '';
 }
 
@@ -28577,6 +28768,13 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-15', v: 184, title: '問題回報系統加富文字＋全站富文字工具列仿 Word 改版', isProd: false, items: [
+      item('新功能', '問題回報系統改支援富文字：回報問題的「問題說明」、新增留言、編輯留言（含編輯原問題說明）三處皆改用格式編輯器，可加粗體/斜體/底線/清單/對齊等格式；@提及使用者自動完成沿用不變'),
+      item('改善', '全站富文字工具列（個案紀錄、結案評估、初談表、轉銜評估、事件處理記錄、精神科評估、問題回報等所有格式編輯欄位）統一改版為仿 Microsoft Word 的兩排式版面：上排為字級調整、項目符號清單、編號清單、減少縮排、增加縮排；下排為粗體/斜體/底線、刪除線、下標、上標、字型顏色、螢光筆底色、靠左/置中/靠右/左右對齊、清除格式，群組間以分隔線區隔，按鈕外觀改為仿 Word 小方鈕並加上 hover 說明'),
+      item('新功能', '富文字工具列新增：刪除線、下標、上標、字型顏色（色盤下拉）、螢光筆反白底色（色盤下拉＋清除底色）、左右對齊、字級放大/縮小、減少縮排（原僅有「增加縮排」單鈕循環）'),
+      item('安全', 'sanitizeRichHtml 新增 style 屬性白名單過濾（僅保留對齊、顏色、螢光筆底色、字級、清單縮排/樣式等新格式功能實際會用到的 CSS 屬性），作為新增格式功能的縱深防禦；原有 DOMPurify 預設標籤/屬性白名單（含 ul/ol/li、s/strike、sub/sup、blockquote、data-*、style 屬性）與 FORBID_TAGS 既有防線不變；問題回報的富文字內容存檔與顯示兩端皆再過一次 sanitizeRichHtml，防後端 API 被直接呼叫塞入內容'),
+      item('修正', '問題回報通知摘要、待辦提醒等截斷顯示處改為先去除 HTML 標籤再截斷純文字，避免直接對 HTML 字串截斷切壞標籤'),
+    ]},
     { date: '2026-07-15', v: 183, title: '全站必填／選填標註用詞與樣式一致化', isProd: false, items: [
       item('調整', '全站必填欄位標註統一為紅星「＊」單一寫法（原本新增個案／晤談紀錄／初談表等多數表單已是此樣式，另有申請帳號、GC 匯入等少數表單為行內樣式紅星，身心狀態評估表與 BSRS-5 區塊原用文字「（必填）」，均已改為同一寫法）；移除與紅星重複的「（必填）」文字；同時修正 .req 樣式原僅在 .field-label 容器內才會變紅的 CSS 選取器（改為全域套用），修好轉銜評估／初談表／高關懷通報等處紅星先前未顯示紅色的問題'),
       item('調整', '非必填欄位改為預設不加任何文字標註（無星即代表非必填），僅對備註／補充說明／自由文字描述等長文輸入欄位保留一個統一的括號提示，並將「選填」「非必填」等不同寫法統一為「（選填）」；移除各表單中簡短欄位（如電話、系所、年級、族群、國籍等）原本多餘的「（選填）」「（非必填）」文字'),
@@ -46324,7 +46522,11 @@ function toggleNavPin(navId) {
   <div style="background:#fff;border-radius:12px;max-width:520px;width:100%;padding:24px;box-shadow:0 8px 32px rgba(0,0,0,.18);">
     <h3 style="margin:0 0 14px;color:#1a5276;font-size:1.05rem;">回報問題或錯誤</h3>
     <label class="field-label">問題說明<span class="req">*</span></label>
-    <textarea id="issue-desc" rows="5" style="width:100%;padding:10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.88rem;resize:vertical;box-sizing:border-box;" placeholder="請描述問題，例如：在哪個頁面、做了什麼動作、出現了什麼狀況… （輸入 @ 可提及使用者）" oninput="_issueAtInput(this)" onkeydown="_issueAtKeydown(event)"></textarea>
+    <div class="rt-toolbar" style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:6px;border:1px solid #cbd5e0;border-radius:6px;background:#f7fafc;padding:4px 8px;">
+      <button type="button" class="rt-btn rt-toolbar-toggle" onclick="toggleRtToolbar(this)" title="格式工具列">A</button>
+      <span class="rt-toolbar-btns" style="display:none;"></span>
+    </div>
+    <div id="issue-desc" class="rt-editor field-input" contenteditable="true" data-placeholder="請描述問題，例如：在哪個頁面、做了什麼動作、出現了什麼狀況… （輸入 @ 可提及使用者）" style="width:100%;min-height:110px;max-height:320px;overflow:auto;resize:vertical;padding:10px;border:1px solid #cbd5e0;border-radius:6px;font-size:.88rem;line-height:1.6;box-sizing:border-box;" oninput="_issueAtInput(this)" onkeydown="_issueAtKeydown(event)"></div>
     <div id="issue-sys-context" style="display:none;margin-top:10px;"></div>
     <div id="attachPicker_issue_new" class="attach-picker-wrap"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
@@ -46503,8 +46705,11 @@ async function _checkAutoIssueReplies() {
 }
 
 // ── @提及：解析內文中 @名字，回傳符合的 email 陣列 ──
+// v184：content 現在可能是富文字 HTML（問題說明／留言改用 rt-editor），先去標籤轉純文字再解析，
+// 避免 @名字 被格式標籤從中截斷而誤判、或誤吃到標籤內容
 function _parseIssueMentions(content) {
-  const tokens = (content.match(/@([^\s@,，。！？\n]+)/g) || []).map(m => m.slice(1));
+  const text = _stripHtmlToText(content || '');
+  const tokens = (text.match(/@([^\s@,，。！？\n]+)/g) || []).map(m => m.slice(1));
   if (!tokens.length) return [];
   const result = [];
   Object.entries(configData?.users || {}).forEach(([email, u]) => {
@@ -46513,11 +46718,40 @@ function _parseIssueMentions(content) {
   });
   return [...new Set(result)];
 }
-// ── @提及：渲染文字，將 @名字 轉為帶顏色 span ──
+// ── 問題說明／留言渲染：富文字（rt-editor 產出）先再消毒一次（存取兩端都消毒，防後端被直呼塞入內容），
+// 舊格式純文字則沿用原本 escHtml＋換行轉 <br>；不論何者，皆在 @名字 前後插入帶顏色 span 做提及標示
+// （用 TreeWalker 只處理文字節點，避免正則直接對 HTML 字串操作而誤傷標籤本身）──
 function _renderIssueText(text) {
   if (!text) return '';
-  return escHtml(text).replace(/@([^\s@,，。！？\n]+)/g,
-    '<span style="color:#2b6cb0;font-weight:600;">@$1</span>');
+  const raw = String(text);
+  const isHtml = /<\/?[a-z][\s\S]*?>/i.test(raw);
+  const html = isHtml ? sanitizeRichHtml(raw) : escHtml(raw).replace(/\n/g, '<br>');
+  const container = document.createElement('div');
+  container.innerHTML = html;
+  const mentionRe = /@([^\s@,，。！？\n]+)/g;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  let n; while ((n = walker.nextNode())) textNodes.push(n);
+  textNodes.forEach(node => {
+    const t = node.nodeValue;
+    mentionRe.lastIndex = 0;
+    if (!mentionRe.test(t)) return;
+    mentionRe.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0, m;
+    while ((m = mentionRe.exec(t))) {
+      if (m.index > last) frag.appendChild(document.createTextNode(t.slice(last, m.index)));
+      const span = document.createElement('span');
+      span.style.color = '#2b6cb0';
+      span.style.fontWeight = '600';
+      span.textContent = '@' + m[1];
+      frag.appendChild(span);
+      last = m.index + m[0].length;
+    }
+    if (last < t.length) frag.appendChild(document.createTextNode(t.slice(last)));
+    node.parentNode.replaceChild(frag, node);
+  });
+  return isHtml ? '<span class="rt-html">' + container.innerHTML + '</span>' : container.innerHTML;
 }
 
 // ── 統一發送 issue 事件通知（鈴鐺 + 待辦）──
@@ -46532,7 +46766,8 @@ async function _notifyIssueEvent(issue, comment, { notifyCreator = false, mentio
   });
   if (!toNotify.size) return;
   const issueLabel = `#${String(issue.serial).padStart(3, '0')}`;
-  const snippet = (comment ? comment.content : issue.description).slice(0, 60);
+  // v184：內容可能是富文字 HTML，摘要改用去標籤純文字後再截斷，避免截斷切壞 HTML 標籤
+  const snippet = _stripHtmlToText(comment ? comment.content : issue.description).slice(0, 60);
   const authorName = configData?.users?.[myEmail]?.name || currentUser?.displayName || myEmail;
   for (const [email, { isMentioned }] of toNotify) {
     const msg = isMentioned
@@ -46620,16 +46855,27 @@ function _atScore(user, q, recentMentioned) {
   return score;
 }
 
-function _issueAtInput(textarea) {
-  const before = textarea.value.slice(0, textarea.selectionStart);
+// v184：問題回報改用 rt-editor（contenteditable）取代 textarea，@ 提及自動完成需改用 Selection/Range API
+// （textarea 用 value/selectionStart，contenteditable 沒有這兩者；el 可能是任一種，用 isContentEditable 判斷分流）
+function _issueAtInput(el) {
+  const isCE = el.isContentEditable || el.getAttribute?.('contenteditable') === 'true';
+  let before;
+  if (isCE) {
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount || !el.contains(sel.anchorNode)) { _hideAtSuggest(); return; }
+    const node = sel.anchorNode;
+    if (node.nodeType !== 3) { _hideAtSuggest(); return; } // 僅處理游標在純文字節點內的情況（多數輸入情境）
+    before = node.nodeValue.slice(0, sel.anchorOffset);
+  } else {
+    before = el.value.slice(0, el.selectionStart);
+  }
   const m = before.match(/@([^\s@,，。！？\n]*)$/);
   if (!m) { _hideAtSuggest(); return; }
-  const query   = (m[1] || '').toLowerCase();
-  const atStart = textarea.selectionStart - m[0].length;
+  const query = (m[1] || '').toLowerCase();
 
   // 從當前 issue context 取得最近提及名單（留言情境才有）
   let recentMentioned = [];
-  const idMatch = (textarea.id || '').match(/^issue-comment-(.+)$/);
+  const idMatch = (el.id || '').match(/^issue-comment-(.+)$/);
   if (idMatch) {
     const issue = issuesData.find(x => x.id === idMatch[1]);
     if (issue) {
@@ -46653,7 +46899,12 @@ function _issueAtInput(textarea) {
     .slice(0, 8);
 
   if (!users.length) { _hideAtSuggest(); return; }
-  _atSuggestMeta = { textarea, start: atStart, len: m[0].length };
+  if (isCE) {
+    const sel = window.getSelection();
+    _atSuggestMeta = { editable: true, node: sel.anchorNode, el, start: sel.anchorOffset - m[0].length, len: m[0].length };
+  } else {
+    _atSuggestMeta = { editable: false, textarea: el, start: el.selectionStart - m[0].length, len: m[0].length };
+  }
   _atSuggestIdx  = -1;
 
   let panel = document.getElementById('at-suggest-panel');
@@ -46664,8 +46915,8 @@ function _issueAtInput(textarea) {
     document.body.appendChild(panel);
   }
 
-  // 方案 A 智慧翻轉：下方空間不足時改顯示在 textarea 上方
-  const rect       = textarea.getBoundingClientRect();
+  // 方案 A 智慧翻轉：下方空間不足時改顯示在欄位上方
+  const rect       = el.getBoundingClientRect();
   const PANEL_H    = Math.min(users.length * 38 + 8, 320);
   const spaceBelow = window.innerHeight - rect.bottom - 8;
   const spaceAbove = rect.top - 8;
@@ -46718,11 +46969,26 @@ function _atSuggestMove(dir) {
 
 function _issueAtSelect(name) {
   if (!_atSuggestMeta) return;
-  const { textarea, start, len } = _atSuggestMeta;
   const insert = '@' + name + ' ';
-  textarea.value = textarea.value.slice(0, start) + insert + textarea.value.slice(start + len);
-  textarea.selectionStart = textarea.selectionEnd = start + insert.length;
-  textarea.focus();
+  if (_atSuggestMeta.editable) {
+    const { node, start, len, el } = _atSuggestMeta;
+    const text = node.nodeValue || '';
+    const s = Math.max(0, Math.min(start, text.length));
+    const e = Math.max(s, Math.min(start + len, text.length));
+    node.nodeValue = text.slice(0, s) + insert + text.slice(e);
+    const range = document.createRange();
+    range.setStart(node, Math.min(s + insert.length, node.nodeValue.length));
+    range.collapse(true);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    el?.focus();
+  } else {
+    const { textarea, start, len } = _atSuggestMeta;
+    textarea.value = textarea.value.slice(0, start) + insert + textarea.value.slice(start + len);
+    textarea.selectionStart = textarea.selectionEnd = start + insert.length;
+    textarea.focus();
+  }
   _hideAtSuggest();
 }
 
@@ -46758,7 +47024,7 @@ function _recentSysErrors() {
 
 let _issueSysContext = [];
 function openIssueModal() {
-  document.getElementById('issue-desc').value = '';
+  setRichTextValue('issue-desc', '');
   // 自動偵測最近的系統錯誤，翻成白話顯示並於送出時一併附上
   _issueSysContext = _recentSysErrors();
   const ctxEl = document.getElementById('issue-sys-context');
@@ -46785,8 +47051,8 @@ function openIssueModal() {
 let _issueSubmitting = false;
 async function submitIssue() {
   if (_issueSubmitting) return; // 防止重複點擊
-  const desc = document.getElementById('issue-desc').value.trim();
-  if (!desc) { alert('請填寫問題說明'); return; }
+  const descHtml = getRichTextValue('issue-desc'); // 富文字（已經 sanitizeRichHtml）
+  if (!_stripHtmlToText(descHtml).trim()) { alert('請填寫問題說明'); return; }
   _issueSubmitting = true;
   const submitBtn = document.querySelector('#issue-submit-modal button.btn-primary');
   const cancelBtn = document.querySelector('#issue-submit-modal button.btn-secondary');
@@ -46801,7 +47067,7 @@ async function submitIssue() {
     const issue = {
       id: 'issue_' + Date.now(),
       serial: _issueNextSerial(),
-      description: desc,
+      description: descHtml,
       attachments: _issueAttachments,
       submittedBy: currentUser?.email || '',
       submittedByName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
@@ -46823,10 +47089,10 @@ async function submitIssue() {
       // @提及通知（排除已收到 new_issue 通知的管理者，避免重複）
       const _adminEmails = new Set(Object.entries(configData?.users || {})
         .filter(([, u]) => u.role === '主任' || u.extraRole === '管理者').map(([e]) => e));
-      const _mentioned = _parseIssueMentions(desc).filter(e => !_adminEmails.has(e));
+      const _mentioned = _parseIssueMentions(descHtml).filter(e => !_adminEmails.has(e));
       if (_mentioned.length) _notifyIssueEvent(issue, null, { mentioned: _mentioned });
       document.getElementById('issue-submit-modal').style.display = 'none';
-      document.getElementById('issue-desc').value = '';
+      setRichTextValue('issue-desc', '');
       renderIssuesPage();
       showToast(`已送出問題回報 #${String(issue.serial).padStart(3,'0')}`, 'success');
     } catch (e) {
@@ -47041,22 +47307,24 @@ function editIssue(issueId) {
   const descEl = document.getElementById(`issue-desc-text-${sid}`);
   if (!descEl) return;
   descEl.innerHTML = `
-    <textarea id="issue-edit-ta-${sid}" style="width:100%;padding:5px 7px;border:1px solid #cbd5e0;border-radius:5px;font-size:.85rem;resize:vertical;box-sizing:border-box;min-height:60px;">${escHtml(issue.description)}</textarea>
+    ${_rtToolbarStaticHtml()}
+    <div id="issue-edit-ta-${sid}" class="rt-editor field-input" contenteditable="true" style="width:100%;min-height:60px;max-height:300px;overflow:auto;resize:vertical;padding:5px 7px;border:1px solid #cbd5e0;border-radius:5px;font-size:.85rem;line-height:1.6;box-sizing:border-box;"></div>
     <div style="display:flex;gap:5px;margin-top:4px;">
       <button class="btn btn-primary btn-sm" onclick="saveIssueEdit('${escHtml(issueId)}')">儲存</button>
       <button class="btn btn-secondary btn-sm" onclick="renderIssuesPage()">取消</button>
     </div>`;
-  descEl.querySelector('textarea').focus();
+  setRichTextValue(`issue-edit-ta-${sid}`, issue.description);
+  document.getElementById(`issue-edit-ta-${sid}`)?.focus();
 }
 
 async function saveIssueEdit(issueId) {
   const issue = issuesData.find(x => x.id === issueId);
   if (!issue) return;
   const sid = issueId.replace(/[^a-z0-9_]/gi, '_');
-  const newDesc = (document.getElementById(`issue-edit-ta-${sid}`)?.value || '').trim();
-  if (!newDesc) { alert('問題說明不可為空'); return; }
+  const newDescHtml = getRichTextValue(`issue-edit-ta-${sid}`);
+  if (!_stripHtmlToText(newDescHtml).trim()) { alert('問題說明不可為空'); return; }
   const prev = issue.description;
-  issue.description = newDesc;
+  issue.description = newDescHtml;
   showLoading('儲存中…');
   try {
     await _saveIssues();
@@ -47078,12 +47346,14 @@ function editIssueComment(issueId, commentId) {
   const textEl = document.getElementById(`issue-comment-text-${domId}`);
   if (!textEl) return;
   textEl.innerHTML = `
-    <textarea id="issue-comment-edit-${domId}" style="width:100%;padding:5px 7px;border:1px solid #cbd5e0;border-radius:5px;font-size:.85rem;resize:vertical;box-sizing:border-box;">${escHtml(c.content)}</textarea>
+    ${_rtToolbarStaticHtml()}
+    <div id="issue-comment-edit-${domId}" class="rt-editor field-input" contenteditable="true" style="width:100%;min-height:50px;max-height:280px;overflow:auto;resize:vertical;padding:5px 7px;border:1px solid #cbd5e0;border-radius:5px;font-size:.85rem;line-height:1.6;box-sizing:border-box;"></div>
     <div style="display:flex;gap:5px;margin-top:4px;">
       <button class="btn btn-primary btn-sm" onclick="saveIssueCommentEdit('${escHtml(issueId)}','${escHtml(commentId)}')">儲存</button>
       <button class="btn btn-secondary btn-sm" onclick="renderIssuesPage()">取消</button>
     </div>`;
-  textEl.querySelector('textarea').focus();
+  setRichTextValue(`issue-comment-edit-${domId}`, c.content);
+  document.getElementById(`issue-comment-edit-${domId}`)?.focus();
 }
 
 async function saveIssueCommentEdit(issueId, commentId) {
@@ -47091,10 +47361,10 @@ async function saveIssueCommentEdit(issueId, commentId) {
   if (!issue) return;
   const c = (issue.comments || []).find(x => x.id === commentId);
   if (!c) return;
-  const newContent = (document.getElementById(`issue-comment-edit-${issueId}-${commentId}`)?.value || '').trim();
-  if (!newContent) { alert('留言內容不可為空'); return; }
+  const newContentHtml = getRichTextValue(`issue-comment-edit-${issueId}-${commentId}`);
+  if (!_stripHtmlToText(newContentHtml).trim()) { alert('留言內容不可為空'); return; }
   const prev = { content: c.content, editedAt: c.editedAt };
-  c.content = newContent;
+  c.content = newContentHtml;
   c.editedAt = new Date().toISOString();
   showLoading('儲存中…');
   try {
@@ -47128,9 +47398,8 @@ async function deleteIssueComment(issueId, commentId) {
 }
 
 async function addIssueComment(issueId) {
-  const textarea = document.getElementById('issue-comment-' + issueId);
-  const content = (textarea?.value || '').trim();
-  if (!content) { alert('請填寫留言內容'); return; }
+  const contentHtml = getRichTextValue('issue-comment-' + issueId);
+  if (!_stripHtmlToText(contentHtml).trim()) { alert('請填寫留言內容'); return; }
   const issue = issuesData.find(x => x.id === issueId);
   if (!issue) return;
   if (!issue.comments) issue.comments = [];
@@ -47139,7 +47408,7 @@ async function addIssueComment(issueId) {
   catch(e) { alert('附件上傳失敗：' + e.message); return; }
   const comment = {
     id: 'c_' + Date.now(),
-    content,
+    content: contentHtml,
     attachments,
     authorEmail: currentUser?.email || '',
     authorName: configData?.users?.[currentUser?.email]?.name || currentUser?.displayName || '',
@@ -47149,7 +47418,7 @@ async function addIssueComment(issueId) {
   showLoading('儲存中…');
   try {
     await _saveIssues();
-    _notifyIssueEvent(issue, comment, { notifyCreator: true, mentioned: _parseIssueMentions(content) });
+    _notifyIssueEvent(issue, comment, { notifyCreator: true, mentioned: _parseIssueMentions(contentHtml) });
     renderIssuesPage();
   } catch (e) {
     issue.comments.pop();
@@ -47324,8 +47593,9 @@ function renderIssuesPage() {
 
     const commentInput = `
       <div style="margin-top:8px;">
-        <textarea id="issue-comment-${sid}" rows="2" placeholder="新增留言… （輸入 @ 可提及使用者）"
-          style="width:100%;padding:6px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;resize:vertical;box-sizing:border-box;" oninput="_issueAtInput(this)" onkeydown="_issueAtKeydown(event)"></textarea>
+        ${_rtToolbarStaticHtml()}
+        <div id="issue-comment-${sid}" class="rt-editor field-input" contenteditable="true" data-placeholder="新增留言… （輸入 @ 可提及使用者）"
+          style="width:100%;min-height:44px;max-height:260px;overflow:auto;resize:vertical;padding:6px 8px;border:1px solid #cbd5e0;border-radius:6px;font-size:.83rem;line-height:1.5;box-sizing:border-box;" oninput="_issueAtInput(this)" onkeydown="_issueAtKeydown(event)"></div>
         <div id="attachPicker_ic_${sid}" class="attach-picker-wrap"></div>
         <div style="display:flex;justify-content:flex-end;margin-top:4px;">
           <button class="btn btn-primary btn-sm" onclick="addIssueComment('${sid}')">送出</button>
