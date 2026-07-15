@@ -22699,6 +22699,15 @@ function _normalizeTodoTabOrder(saved, defaultOrder) {
   const missing = defaultOrder.filter(k => !valid.includes(k));
   return [...valid, ...missing];
 }
+// v182（B）：純函式，依分類順序把清單重新分組——每個分類內部維持原陣列相對順序（filter 穩定排序），
+// 只調整「跨分類」的先後。修「全部」頁卡片檢視主清單（todos-body）長期是攤平清單、完全不吃 tab 拖曳順序的 bug：
+// 舊寫法只對「危機稽核／待派案／身心調適假通知」等額外摘要區塊套 CSS order，個別待辦卡片本身（占畫面大宗）
+// 從未依分類分組，故重新排序 tab 對主清單觀感上等於沒作用。方塊檢視（_renderTodoTilesHtml）本來就是分類分組
+// 渲染，不受影響；這裡讓卡片檢視也採同一分組邏輯。
+function _orderTodosByCategory(list, order) {
+  if (!Array.isArray(list) || !list.length) return list || [];
+  return order.flatMap(key => list.filter(t => _todoCategoryOf(t.type) === key));
+}
 // 純函式：依目前分類順序，統計每個分類「未處理」（未完成且未封存）筆數，供 tab 徽章／方塊摘要共用。
 function _todoCategoryCounts(list) {
   const counts = {};
@@ -22944,11 +22953,14 @@ function renderTodosPage() {
     if (a.done !== b.done) return a.done ? 1 : -1;
     return (b.updatedAt || b.createdAt || '') > (a.updatedAt || a.createdAt || '') ? 1 : -1;
   });
+  // v182（B）：「全部」tab 的卡片／方塊兩種檢視都依使用者 tab 順序排列各分類內容（分類內部沿用上面
+  // done／時間排序不變，見 _orderTodosByCategory）；其他單一分類 tab 本就只含一種分類，排序不受影響。
+  const _todosForBody = _tab === 'all' ? _orderTodosByCategory(filtered, _catOrder) : filtered;
 
   // 「全部」tab＋方塊檢視：跳過逐筆清單，改渲染分類方塊 grid（封存檢視一律用卡片清單）
   if (_tab === 'all' && !_todosShowArchived && _todoViewMode() === 'grid') {
     if (document.getElementById('todos-unclosed-summary')) { /* summary 仍在上方群組區塊顯示，保持不變 */ }
-    body.innerHTML = _renderTodoTilesHtml(filtered, _catOrder);
+    body.innerHTML = _renderTodoTilesHtml(_todosForBody, _catOrder);
     const batchBtn0 = document.getElementById('todos-batch-delete-btn');
     const selectAll0 = document.getElementById('todos-select-all');
     const selectAllLabel0 = document.getElementById('todos-select-all-label');
@@ -23041,7 +23053,7 @@ function renderTodosPage() {
 
   const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', couple_incomplete: '個案資料待補齊', case_profile_incomplete: '個案開案資料待補齊', case_mainid_confirm: '主案號確認', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（轉銜窗口）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）', transfer_withdraw_coord: '教務處名單（轉銜窗口）', transfer_withdraw_mismatch: '教務處名單（姓名/學號不符）', transfer_reassign_assessor: '轉派評估者', transfer_reassign_assessor_notify: '轉銜評估者通知', leave_pending_review: '差勤申請（待審核）', leave_approved_notify: '差勤申請結果', issue_pending_verification: '問題回報（待您驗證）', ml_cumul3: '身心調適假累計提醒', ml_reminder: '身心調適假再次提醒', ml_assessment_due: '身心狀態評估表（待填寫）', ml_new_leave: '身心調適假（主責新請假）' };
 
-  body.innerHTML = filtered.map(t => {
+  body.innerHTML = _todosForBody.map(t => {
     // 問題回報「待您驗證」待辦：若對應 issue 已不是 pending_verification（他人已代驗或管理者已改狀態），自動收掉此待辦
     if (!readOnly && t.type === 'issue_pending_verification' && !t.done) {
       const relIssue = issuesData.find(x => x.id === t.issueId);
@@ -28559,6 +28571,17 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-15', v: 182, title: '身心狀態評估表第二輪修正：全欄必填＋驗證引導＋主責改下拉；修待辦「全部」頁排序 bug', isProd: false, items: [
+      item('調整', '身心狀態評估表「請假事由」欄改為唯讀顯示（資料來自信件擷取，不可編輯），其下新增「評估者備註」欄（非必填），列印一併輸出'),
+      item('調整', '評估表除「評估者備註」「評估結果自由文字描述」「主責輔導人員」與聯繫時間之備註類欄位外，全部欄位改為必填（收案日期、聯繫時間各欄、BSRS-5 五題＋自殺想法、就醫史三列、支持系統、住宿情形、評估結果……）；各選項組若含「其他」且被選中，其「其他說明」框跟著轉為必填；必填標示比照新增個案表單樣式，紅色「＊」'),
+      item('調整', '評估結果「自由文字描述」明確標示為非必填，取消先前的必填限制'),
+      item('調整', '「進入諮商輔導流程」的主責輔導人員欄由文字輸入改為啟用中輔導人員下拉選單（含空白選項）；若該筆已連結個案，開啟表單時自動帶入該案目前主責，該案本來沒有主責則留空白；此欄仍為非必填'),
+      item('調整', '選「不開案」時，其下勾選項目至少需勾選一項才能儲存'),
+      item('調整', '「＋ 增加聯繫時間」按鈕改為醒目的實心主色大按鈕；新增出的聯繫時間列，除備註與 E-mail/簡訊內容框（僅選 E-mail/簡訊時必填）外，日期／會談時間／聯繫方式／聯繫對象／經過描述皆改為必填'),
+      item('修正', '儲存驗證未通過時，表單頂部新增提醒卡片列出未填項目、自動捲動到第一個未填區塊並以紅框醒目標示，待使用者於該區塊內修正（輸入/勾選/點擊）或重新按儲存後即解除標示；舊資料開啟編輯不會提前跳錯，僅在按下「儲存」時才驗證，檢視模式不受影響'),
+      item('調整', '評估表內「其他說明」與各長文輸入框統一加上可上下調整大小（resize:vertical）'),
+      item('修正', '待辦事項「全部」頁排序 bug：上方分類 tab 拖曳出的順序，先前只讓「危機稽核／待派案／身心調適假通知」等額外摘要區塊的位置跟著調整，卡片檢視實際占畫面大宗的主清單（逐筆待辦卡片）是攤平清單、只按完成狀態與時間排序，完全沒套用分類順序，故重新排序 tab 對主清單觀感上等於沒作用（例：把「管理」拖到倒數第二，「全部」頁卻仍在前面）；修正後卡片與方塊兩種檢視的主清單皆依使用者 tab 順序分組排列，分類內部原有排序（完成狀態＋時間）不變'),
+    ]},
     { date: '2026-07-15', v: 181, title: 'v179 快速開案改小視窗＋背景開案＋BSRS-5 顯示序調整（回應 #037）', isProd: false, items: [
       item('改善', '快速開案整個重做（評估表、空間預約皆適用）：移除「尚未儲存的修改將會遺失」confirm 與導頁到新增個案頁的做法，改為跳出小視窗收集案號（預設帶入本學期下一個可用案號，可手動改）／學號／姓名／身分證字號（選填）／電話（選填），按「儲存」立即關閉視窗，實際開案轉背景工作執行，使用者全程留在原表單、已填內容不受影響；已有歷史案號（僅缺當學期開案）者則直接背景在同一案號新增本學期開案紀錄，不彈欄位視窗，維持一學生一案號'),
       item('新功能', '評估表案號欄在快速開案背景執行期間顯示「開案中…」，完成後即時換成正式案號，不需重新整理頁面'),
@@ -33330,7 +33353,8 @@ function _mlAssessDefault(l, mc) {
     friendType: '', friendOther: '',
     teacherType: '', teacherName: '', teacherOther: '',
     housing: '', housingOther: '',
-    resultText: '', resultOutcome: '', resultCounselorName: '', resultNoCaseReasons: [],
+    resultText: '', resultOutcome: '', resultCounselorName: '', resultCounselorEmail: '', resultNoCaseReasons: [],
+    assessorNote: '', // v182：評估者備註（非必填，A1）
   };
 }
 
@@ -33356,9 +33380,9 @@ function _mlaContactRowHtml(ct, idx, ro) {
       ${ro ? '' : `<button type="button" class="btn btn-secondary btn-sm" style="font-size:.72rem;padding:1px 8px;color:#c53030;" onclick="window._mlaContactRemove(${idx})">刪除</button>`}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
-      <div><label class="field-label">日期</label><input type="date" class="field-input" value="${escHtml(ct.date||'')}" ${dis} oninput="window._mlaContactSet(${idx},'date',this.value)"></div>
+      <div><label class="field-label">日期<span class="req">*</span></label><input type="date" class="field-input" value="${escHtml(ct.date||'')}" ${dis} oninput="window._mlaContactSet(${idx},'date',this.value)"></div>
       <div>
-        <label class="field-label">會談時間（節次）</label>
+        <label class="field-label">會談時間（節次）<span class="req">*</span></label>
         <select class="field-select" ${dis} onchange="window._mlaContactPeriodChange(${idx},this.value)">${_mlaPeriodOptsHtml(ct.period||'')}</select>
       </div>
       <div id="mla-ct-time-${idx}" style="display:${isCustom?'flex':'none'};gap:6px;align-items:flex-end;">
@@ -33368,24 +33392,25 @@ function _mlaContactRowHtml(ct, idx, ro) {
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px;">
       <div>
-        <label class="field-label">聯繫方式</label>
+        <label class="field-label">聯繫方式<span class="req">*</span></label>
         <select class="field-select" ${dis} onchange="window._mlaContactSet(${idx},'method',this.value);const b=document.getElementById('mla-ct-methodbox-${idx}');if(b)b.style.display=this.value==='E-mail/簡訊'?'':'none';">
           ${ML_CONTACT_METHOD_OPTS.map(o=>`<option ${ct.method===o?'selected':''}>${escHtml(o)}</option>`).join('')}
         </select>
         <div id="mla-ct-methodbox-${idx}" style="display:${methodIsEmail?'':'none'};margin-top:6px;">
-          <textarea class="field-input" rows="2" placeholder="填寫 E-mail 或簡訊內容" ${dis} oninput="window._mlaContactSet(${idx},'methodContent',this.value)">${escHtml(ct.methodContent||'')}</textarea>
+          <label class="field-label">E-mail／簡訊內容<span class="req">*</span></label>
+          <textarea class="field-input" rows="2" style="resize:vertical;" placeholder="填寫 E-mail 或簡訊內容" ${dis} oninput="window._mlaContactSet(${idx},'methodContent',this.value)">${escHtml(ct.methodContent||'')}</textarea>
         </div>
       </div>
       <div>
-        <label class="field-label">聯繫對象</label>
+        <label class="field-label">聯繫對象<span class="req">*</span></label>
         <select class="field-select" ${dis} onchange="window._mlaContactSet(${idx},'target',this.value)">
           ${ML_CONTACT_TARGET_OPTS.map(o=>`<option ${ct.target===o?'selected':''}>${escHtml(o)}</option>`).join('')}
         </select>
         <input type="text" class="field-input" style="margin-top:6px;" placeholder="備註：如○○導師（選填）" value="${escHtml(ct.targetNote||'')}" ${dis} oninput="window._mlaContactSet(${idx},'targetNote',this.value)">
       </div>
     </div>
-    <div style="margin-top:8px;"><label class="field-label">聯繫經過描述（選填）</label><textarea class="field-input" rows="2" ${dis} oninput="window._mlaContactSet(${idx},'description',this.value)">${escHtml(ct.description||'')}</textarea></div>
-    <div style="margin-top:8px;"><label class="field-label">備註（選填）</label><textarea class="field-input" rows="2" ${dis} oninput="window._mlaContactSet(${idx},'note',this.value)">${escHtml(ct.note||'')}</textarea></div>
+    <div style="margin-top:8px;"><label class="field-label">聯繫經過描述<span class="req">*</span></label><textarea class="field-input" rows="2" style="resize:vertical;" ${dis} oninput="window._mlaContactSet(${idx},'description',this.value)">${escHtml(ct.description||'')}</textarea></div>
+    <div style="margin-top:8px;"><label class="field-label">備註（選填）</label><textarea class="field-input" rows="2" style="resize:vertical;" ${dis} oninput="window._mlaContactSet(${idx},'note',this.value)">${escHtml(ct.note||'')}</textarea></div>
     ${ct.createdAt ? `<div style="margin-top:6px;font-size:.75rem;color:#a0aec0;">建立：${escHtml(configData?.users?.[ct.by]?.name || ct.byName || ct.by || '—')}　${escHtml((ct.createdAt||'').replace('T',' ').slice(0,16))}</div>` : ''}
   </div>`;
 }
@@ -33466,98 +33491,117 @@ function _mlaRenderPageBody(anchor, mc, a, ro) {
   const dis = ro ? 'disabled' : '';
   const rd = (n, v, lbl, cur) => `<label style="margin-right:14px;display:inline-flex;align-items:center;gap:3px;white-space:nowrap;"><input type="radio" name="${n}" value="${v}" ${cur===v?'checked':''} ${dis}> ${escHtml(lbl)}</label>`;
   const ck = (n, v, lbl, arr) => `<label style="margin-right:14px;display:inline-flex;align-items:center;gap:3px;white-space:nowrap;"><input type="checkbox" name="${n}" value="${v}" ${(arr||[]).includes(v)?'checked':''} ${dis}> ${escHtml(lbl)}</label>`;
+  const req = '<span style="color:#e74c3c;margin-left:2px;">*</span>'; // v182：非 .field-label 容器內的必填星號（.req 樣式需要 .field-label 祖先才會變色，見 style 458 行）
   const _mlaGroupInfo = _mlGroupAndSort(mentalLeavesData.filter(x => !x.deleted && x.studentId === anchor.studentId)).find(g => g.records.some(r => r.id === anchor.id));
   const _mlaRangeLbl = _mlaGroupInfo?.isConsec3 ? '身心調適假連請三日以上期間' : '身心調適假日期（紅燈紀錄）';
   // v179：BSRS 改仿「＋新增個案」的點選按鈕組（.bsrs-btn-group/.bsrs-opt），題目沿用 ML_ASSESS_BSRS_LABELS
   const bsrsBtnGroup = (id, cur) => `<div class="bsrs-btn-group" data-id="${id}"><button type="button" class="bsrs-opt${(cur===null||cur===undefined)?' active':''}" data-val="" ${ro?'disabled':''}>未填</button>${[0,1,2,3,4].map(v=>`<button type="button" class="bsrs-opt${cur===v?' active':''}" data-val="${v}" ${ro?'disabled':''}>${v}</button>`).join('')}<input type="hidden" id="${id}" value="${(cur===null||cur===undefined)?'':cur}"></div>`;
-  // v179：就醫史三列改整齊 grid（項目名 + 三個對齊選項欄）
+  // v179：就醫史三列改整齊 grid（項目名 + 三個對齊選項欄）；v182：全欄必填，項目名附紅星
   const medGrid = (n, cur, rowLabel) => `<div style="display:grid;grid-template-columns:170px repeat(3,1fr);gap:6px 10px;align-items:center;padding:5px 0;border-bottom:1px solid #f7fafc;">
-    <div style="font-size:.85rem;color:#2d3748;">${escHtml(rowLabel)}</div>
+    <div style="font-size:.85rem;color:#2d3748;">${escHtml(rowLabel)}${req}</div>
     ${rd(n,'none','無',cur)}${rd(n,'paused','曾經，已中斷',cur)}${rd(n,'current','持續中',cur)}
   </div>`;
+  // v182：主責輔導人員改下拉（A4）——重用 buildCounselorOptgroups（新增個案／派案表單既有的「啟用中輔導人員清單」helper），
+  // 含空白選項（傳入 placeholder=''）；初始選取值於 openMlAssessmentModal 的 setTimeout 內設定（含「已連結個案→自動帶入目前主責」邏輯）
+  const counselorSelectHtml = buildCounselorOptgroups(null, '');
 
   return `
+    <div id="mla-validation-alert" style="display:none;background:#fff5f5;border:1.5px solid #fc8181;color:#822727;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:.86rem;line-height:1.6;"></div>
     ${ro ? `<div style="background:#f7fafc;border:1px solid #cbd5e0;color:#4a5568;border-radius:6px;padding:8px 12px;margin-bottom:14px;font-size:.85rem;">此表單為唯讀檢視（僅身心調適假窗口、主任、系統管理者可編輯）。</div>` : ''}
     <div style="font-size:.8rem;color:#a0aec0;margin-bottom:10px;">${escHtml(_mlaRangeLbl)}：${escHtml(_mlaGroupInfo?.dateRange || '—')}</div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:10px;">
-      <div><label class="field-label">姓名</label><input type="text" class="field-input" id="mla-name" value="${escHtml(a.name)}" ${dis}></div>
-      <div><label class="field-label">學號</label><input type="text" class="field-input" id="mla-sid" value="${escHtml(a.studentId)}" ${dis}></div>
-      <div>
-        <label class="field-label">案號</label>
-        <div id="mla-caseid-box" style="display:flex;align-items:center;gap:6px;">
-          <div class="field-input" style="background:#f7fafc;color:#718096;flex:1;">${escHtml(mc?.id || '（尚未開案）')}</div>
-          ${!mc ? `<button type="button" class="btn btn-secondary btn-sm" style="white-space:nowrap;" onclick="window._mlaQuickOpenCase('${escHtml(anchor.id)}')">快速開案</button>` : ''}
+    <div class="mla-vsec" id="mla-sec-top">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:10px;">
+        <div><label class="field-label">姓名<span class="req">*</span></label><input type="text" class="field-input" id="mla-name" value="${escHtml(a.name)}" ${dis}></div>
+        <div><label class="field-label">學號<span class="req">*</span></label><input type="text" class="field-input" id="mla-sid" value="${escHtml(a.studentId)}" ${dis}></div>
+        <div>
+          <label class="field-label">案號</label>
+          <div id="mla-caseid-box" style="display:flex;align-items:center;gap:6px;">
+            <div class="field-input" style="background:#f7fafc;color:#718096;flex:1;">${escHtml(mc?.id || '（尚未開案）')}</div>
+            ${!mc ? `<button type="button" class="btn btn-secondary btn-sm" style="white-space:nowrap;" onclick="window._mlaQuickOpenCase('${escHtml(anchor.id)}')">快速開案</button>` : ''}
+          </div>
         </div>
+        <div><label class="field-label">收案日期<span class="req">*</span></label><input type="date" class="field-input" id="mla-collect-date" value="${escHtml(a.collectionDate)}" ${dis}></div>
+        <div><label class="field-label">評估日期<span class="req">*</span></label><input type="date" class="field-input" id="mla-eval-date" value="${escHtml(a.evalDate)}" ${dis}></div>
       </div>
-      <div><label class="field-label">收案日期</label><input type="date" class="field-input" id="mla-collect-date" value="${escHtml(a.collectionDate)}" ${dis}></div>
-      <div><label class="field-label">評估日期</label><input type="date" class="field-input" id="mla-eval-date" value="${escHtml(a.evalDate)}" ${dis}></div>
+      <div style="margin-bottom:14px;">
+        <label class="field-label">請假事由<span style="font-weight:400;font-size:.78rem;color:#a0aec0;margin-left:4px;">（資料來自信件擷取，唯讀）</span></label>
+        <input type="text" class="field-input" id="mla-reason" value="${escHtml(anchor.reason || a.reason || '')}" readonly style="background:#f7fafc;color:#718096;">
+      </div>
+      <div style="margin-bottom:14px;">
+        <label class="field-label">評估者備註（非必填）</label>
+        <textarea class="field-input" id="mla-assessor-note" rows="2" style="resize:vertical;" ${dis}>${escHtml(a.assessorNote||'')}</textarea>
+      </div>
     </div>
-    <div style="margin-bottom:14px;"><label class="field-label">請假事由</label><input type="text" class="field-input" id="mla-reason" value="${escHtml(a.reason)}" ${dis}></div>
 
-    <div style="border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:14px;">
-      <div style="font-weight:600;margin-bottom:6px;">聯繫時間<span style="font-weight:400;font-size:.8rem;color:#718096;">（可新增多筆，供日後統計聯繫次數）</span></div>
+    <div class="mla-vsec" id="mla-sec-contacts" style="border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:14px;">
+      <div style="font-weight:600;margin-bottom:6px;">聯繫時間<span style="font-weight:400;font-size:.8rem;color:#718096;">（可新增多筆，供日後統計聯繫次數；新增後除備註外皆為必填）</span></div>
       ${a.contactTime ? `<div style="font-size:.8rem;color:#a0aec0;margin-bottom:8px;">舊格式聯繫時間（唯讀）：${escHtml(a.contactTime)}</div>` : ''}
       <div id="mla-contacts-list"></div>
-      ${ro ? '' : `<button type="button" class="btn btn-secondary btn-sm" onclick="window._mlaContactAdd()">＋ 增加聯繫時間</button>`}
+      ${ro ? '' : `<button type="button" class="btn btn-primary" style="margin-top:6px;font-size:.95rem;padding:8px 20px;" onclick="window._mlaContactAdd()">＋ 增加聯繫時間</button>`}
     </div>
 
-    <div style="border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:14px;">
-      <div style="font-weight:600;margin-bottom:6px;">一、簡式健康量表（BSRS-5）<span style="font-weight:400;font-size:.8rem;color:#718096;">請圈選最近一個星期（含今天）造成困擾的嚴重程度：0 不會／1 輕微／2 中等程度／3 嚴重／4 非常嚴重</span></div>
-      ${_bsrsOrderedLabels(ML_ASSESS_BSRS_LABELS).map(({label,storageIdx},displayIdx)=>`<div style="margin-bottom:8px;"><label class="field-label">(${displayIdx+1}) ${escHtml(label)}</label>${bsrsBtnGroup(`mla-bsrs-${storageIdx}`, a.bsrs?.[storageIdx] ?? null)}</div>`).join('')}
-      <div style="margin-bottom:4px;"><label class="field-label" style="color:#c53030;">★有自殺的想法</label>${bsrsBtnGroup('mla-suicide', a.suicide ?? null)}</div>
+    <div class="mla-vsec" id="mla-sec-bsrs" style="border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:14px;">
+      <div style="font-weight:600;margin-bottom:6px;">一、簡式健康量表（BSRS-5）（必填）<span style="font-weight:400;font-size:.8rem;color:#718096;">請圈選最近一個星期（含今天）造成困擾的嚴重程度：0 不會／1 輕微／2 中等程度／3 嚴重／4 非常嚴重</span></div>
+      ${_bsrsOrderedLabels(ML_ASSESS_BSRS_LABELS).map(({label,storageIdx},displayIdx)=>`<div style="margin-bottom:8px;"><label class="field-label">(${displayIdx+1}) ${escHtml(label)}<span class="req">*</span></label>${bsrsBtnGroup(`mla-bsrs-${storageIdx}`, a.bsrs?.[storageIdx] ?? null)}</div>`).join('')}
+      <div style="margin-bottom:4px;"><label class="field-label" style="color:#c53030;">★有自殺的想法<span class="req">*</span></label>${bsrsBtnGroup('mla-suicide', a.suicide ?? null)}</div>
       <div style="margin-top:8px;font-size:.85rem;color:#4a5568;">(1) - (5) 題總分：<b id="mla-total-score">${_mlAssessBsrsTotal(a)}</b> 分　★自殺想法：<b id="mla-suicide-score">${a.suicide ?? '—'}</b> 分</div>
     </div>
 
-    <div style="border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:14px;">
-      <div style="font-weight:600;margin-bottom:6px;">二、就醫史</div>
+    <div class="mla-vsec" id="mla-sec-med" style="border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:14px;">
+      <div style="font-weight:600;margin-bottom:6px;">二、就醫史${req}</div>
       ${medGrid('mla-med-psy', a.medPsychiatry, '1、精神科就醫經驗')}
       ${medGrid('mla-med-drug', a.medMedication, '2、服用精神藥物經驗')}
       ${medGrid('mla-med-counsel', a.medCounseling, '3、諮商輔導經驗')}
     </div>
 
-    <div style="border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:14px;">
-      <div style="font-weight:600;margin-bottom:8px;">三、支持系統</div>
+    <div class="mla-vsec" id="mla-sec-support" style="border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:14px;">
+      <div style="font-weight:600;margin-bottom:8px;">三、支持系統${req}</div>
       <div class="mla-field-block">
-        <div class="mla-field-lbl">1、與家人關係</div>
-        <div class="mla-field-opts">${rd('mla-family','close','緊密',a.familyRel)}${rd('mla-family','normal','一般',a.familyRel)}${rd('mla-family','distant','疏離',a.familyRel)}${rd('mla-family','conflict','衝突',a.familyRel)}${rd('mla-family','other','其他',a.familyRel)}<input type="text" class="field-input mla-other-input" id="mla-family-other" placeholder="其他說明" value="${escHtml(a.familyRelOther)}" ${dis}></div>
+        <div class="mla-field-lbl">1、與家人關係${req}</div>
+        <div class="mla-field-opts">${rd('mla-family','close','緊密',a.familyRel)}${rd('mla-family','normal','一般',a.familyRel)}${rd('mla-family','distant','疏離',a.familyRel)}${rd('mla-family','conflict','衝突',a.familyRel)}${rd('mla-family','other','其他',a.familyRel)}<textarea rows="1" class="field-input mla-other-input" style="resize:vertical;" id="mla-family-other" placeholder="其他說明" ${dis}>${escHtml(a.familyRelOther)}</textarea></div>
       </div>
       <div class="mla-field-block">
-        <div class="mla-field-lbl">2、伴侶</div>
+        <div class="mla-field-lbl">2、伴侶${req}</div>
         <div class="mla-field-opts">${rd('mla-partner-has','yes','有',a.partnerHas)}${rd('mla-partner-has','no','無',a.partnerHas)}</div>
-        <div id="mla-partner-type-box" class="mla-field-opts" style="margin-left:16px;margin-top:4px;">${rd('mla-partner-type','close','緊密',a.partnerType)}${rd('mla-partner-type','normal','一般',a.partnerType)}${rd('mla-partner-type','distant','疏離',a.partnerType)}${rd('mla-partner-type','conflict','衝突',a.partnerType)}${rd('mla-partner-type','other','其他',a.partnerType)}<input type="text" class="field-input mla-other-input" id="mla-partner-other" placeholder="其他說明" value="${escHtml(a.partnerOther)}" ${dis}></div>
+        <div id="mla-partner-type-box" class="mla-field-opts" style="margin-left:16px;margin-top:4px;">${rd('mla-partner-type','close','緊密',a.partnerType)}${rd('mla-partner-type','normal','一般',a.partnerType)}${rd('mla-partner-type','distant','疏離',a.partnerType)}${rd('mla-partner-type','conflict','衝突',a.partnerType)}${rd('mla-partner-type','other','其他',a.partnerType)}<textarea rows="1" class="field-input mla-other-input" style="resize:vertical;" id="mla-partner-other" placeholder="其他說明" ${dis}>${escHtml(a.partnerOther)}</textarea></div>
       </div>
       <div class="mla-field-block">
-        <div class="mla-field-lbl">3、朋友</div>
-        <div class="mla-field-opts">${rd('mla-friend','withPeople','有朋友且願意讓他們陪伴',a.friendType)}${rd('mla-friend','notBother','有朋友，但不願意麻煩他們',a.friendType)}${rd('mla-friend','none','無朋友陪伴',a.friendType)}${rd('mla-friend','other','其他',a.friendType)}<input type="text" class="field-input mla-other-input" id="mla-friend-other" placeholder="其他說明" value="${escHtml(a.friendOther)}" ${dis}></div>
+        <div class="mla-field-lbl">3、朋友${req}</div>
+        <div class="mla-field-opts">${rd('mla-friend','withPeople','有朋友且願意讓他們陪伴',a.friendType)}${rd('mla-friend','notBother','有朋友，但不願意麻煩他們',a.friendType)}${rd('mla-friend','none','無朋友陪伴',a.friendType)}${rd('mla-friend','other','其他',a.friendType)}<textarea rows="1" class="field-input mla-other-input" style="resize:vertical;" id="mla-friend-other" placeholder="其他說明" ${dis}>${escHtml(a.friendOther)}</textarea></div>
       </div>
       <div class="mla-field-block">
-        <div class="mla-field-lbl">4、師長</div>
+        <div class="mla-field-lbl">4、師長${req}</div>
         <div class="mla-field-opts" style="flex-direction:column;align-items:flex-start;gap:5px;">
           ${rd('mla-teacher','know','___老師知道我的情形',a.teacherType)}
           ${rd('mla-teacher','dontWantKnow','我不願意讓___老師知道我的情形',a.teacherType)}
           ${rd('mla-teacher','dontKnow','___老師不知道我的情形',a.teacherType)}
-          <div>${rd('mla-teacher','other','其他',a.teacherType)}<input type="text" class="field-input mla-other-input" id="mla-teacher-other" placeholder="其他說明" value="${escHtml(a.teacherOther)}" ${dis}></div>
+          <div>${rd('mla-teacher','other','其他',a.teacherType)}<textarea rows="1" class="field-input mla-other-input" style="resize:vertical;" id="mla-teacher-other" placeholder="其他說明" ${dis}>${escHtml(a.teacherOther)}</textarea></div>
         </div>
-        <div style="margin-top:6px;"><label class="field-label" style="display:inline;">老師稱謂（填入上方空格）</label> <input type="text" class="field-input" id="mla-teacher-name" style="max-width:160px;display:inline-block;" value="${escHtml(a.teacherName)}" ${dis}></div>
+        <div style="margin-top:6px;"><label class="field-label" style="display:inline;">老師稱謂（填入上方空格，非必填）</label> <input type="text" class="field-input" id="mla-teacher-name" style="max-width:160px;display:inline-block;" value="${escHtml(a.teacherName)}" ${dis}></div>
       </div>
     </div>
 
-    <div style="border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:14px;">
-      <div style="font-weight:600;margin-bottom:8px;">四、住宿情形</div>
+    <div class="mla-vsec" id="mla-sec-housing" style="border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:14px;">
+      <div style="font-weight:600;margin-bottom:8px;">四、住宿情形${req}</div>
       <div class="mla-field-block">
-        <div class="mla-field-opts">${rd('mla-housing','alone','獨居',a.housing)}${rd('mla-housing','roommate','有室友',a.housing)}${rd('mla-housing','family','與家人同住',a.housing)}${rd('mla-housing','other','其他',a.housing)}<input type="text" class="field-input mla-other-input" id="mla-housing-other" placeholder="其他說明" value="${escHtml(a.housingOther)}" ${dis}></div>
+        <div class="mla-field-opts">${rd('mla-housing','alone','獨居',a.housing)}${rd('mla-housing','roommate','有室友',a.housing)}${rd('mla-housing','family','與家人同住',a.housing)}${rd('mla-housing','other','其他',a.housing)}<textarea rows="1" class="field-input mla-other-input" style="resize:vertical;" id="mla-housing-other" placeholder="其他說明" ${dis}>${escHtml(a.housingOther)}</textarea></div>
       </div>
     </div>
 
-    <div style="border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:16px;">
-      <div style="font-weight:600;margin-bottom:8px;">五、評估結果</div>
-      <input type="text" class="field-input" id="mla-result-text" placeholder="自由文字描述評估結果" value="${escHtml(a.resultText)}" style="margin-bottom:10px;" ${dis}>
+    <div class="mla-vsec" id="mla-sec-outcome" style="border-top:1px solid #e2e8f0;padding-top:12px;margin-bottom:16px;">
+      <div style="font-weight:600;margin-bottom:8px;">五、評估結果${req}</div>
+      <label class="field-label">自由文字描述（非必填）</label>
+      <textarea class="field-input" id="mla-result-text" rows="2" style="resize:vertical;margin-bottom:10px;" placeholder="自由文字描述評估結果" ${dis}>${escHtml(a.resultText)}</textarea>
       <div class="mla-field-block">
         <div class="mla-field-opts">${rd('mla-outcome','counseling','進入諮商輔導流程',a.resultOutcome)}</div>
-        <div id="mla-outcome-counseling-box" style="margin:4px 0 8px 16px;"><label class="field-label" style="display:inline;">主責輔導人員</label> <input type="text" class="field-input" id="mla-outcome-counselor" style="max-width:200px;display:inline-block;" value="${escHtml(a.resultCounselorName)}" ${dis}></div>
+        <div id="mla-outcome-counseling-box" style="margin:4px 0 8px 16px;">
+          <label class="field-label" style="display:inline;">主責輔導人員（非必填）</label>
+          <select class="field-select" id="mla-outcome-counselor" style="max-width:220px;display:inline-block;" ${dis}>${counselorSelectHtml}</select>
+        </div>
         <div class="mla-field-opts">${rd('mla-outcome','noCase','不開案',a.resultOutcome)}</div>
         <div id="mla-outcome-nocase-box" style="margin:4px 0 0 16px;">
+          <div style="font-size:.78rem;color:#718096;margin-bottom:3px;">（至少勾選一項）</div>
           ${ck('mla-nocase-reason','noRisk','暫無曝險之虞',a.resultNoCaseReasons)}<br>
           ${ck('mla-nocase-reason','riskNoWill','有風險但無意願，轉知主任或導師協助關懷',a.resultNoCaseReasons)}<br>
           ${ck('mla-nocase-reason','noContact','聯繫未果，轉知主任或導師協助關懷',a.resultNoCaseReasons)}
@@ -33604,6 +33648,24 @@ function openMlAssessmentModal(recordId, readOnly) {
     };
     document.querySelectorAll('[name="mla-outcome"]').forEach(el => el.addEventListener('change', toggleOutcome));
     toggleOutcome();
+    // v182 A4：主責輔導人員下拉初始值——已存值優先；未存過且該筆已連結個案 → 自動帶入該案目前主責；
+    // 該案本來就無主責 → 留空白（見 dropdown 的空白選項）
+    const counselorSel = document.getElementById('mla-outcome-counselor');
+    if (counselorSel) {
+      let initEmail = a.resultCounselorEmail || '';
+      if (!initEmail && mc?.counselorEmail) initEmail = mc.counselorEmail;
+      counselorSel.value = initEmail;
+    }
+    // v182 A7：驗證失敗後標示的 .form-section-error 高亮，使用者在該區塊內任何輸入/勾選/點擊都應解除標示；
+    // 用「整頁委派監聽」取代逐欄位加 handler，涵蓋 BSRS 按鈕組、radio/checkbox、文字輸入等所有互動方式。
+    // 用 dataset 旗標防止同一個常駐的 #mla-page-body 節點在多次開啟表單時重複綁定監聽。
+    const pageBodyEl = document.getElementById('mla-page-body');
+    if (pageBodyEl && !pageBodyEl.dataset.mlaErrClearBound) {
+      pageBodyEl.dataset.mlaErrClearBound = '1';
+      ['input', 'change', 'click'].forEach(evt => pageBodyEl.addEventListener(evt, (e) => {
+        e.target.closest?.('.mla-vsec')?.classList.remove('form-section-error');
+      }));
+    }
   }, 0);
 }
 
@@ -33616,27 +33678,104 @@ async function saveMlAssessment(recordId) {
   const gChk = n => [...document.querySelectorAll(`[name="${n}"]:checked`)].map(el => el.value);
   const gBsrs = id => { const v = document.getElementById(id)?.value; return (v === '' || v === undefined) ? null : parseInt(v, 10); };
 
+  const name = gV('mla-name'), studentId = gV('mla-sid');
+  const collectionDate = gV('mla-collect-date'), evalDate = gV('mla-eval-date');
+  const bsrsVals = [0,1,2,3,4].map(i => gBsrs(`mla-bsrs-${i}`));
+  const suicideVal = gBsrs('mla-suicide');
+  const medPsychiatry = gR('mla-med-psy'), medMedication = gR('mla-med-drug'), medCounseling = gR('mla-med-counsel');
+  const familyRel = gR('mla-family'), familyRelOther = gV('mla-family-other');
+  const partnerHas = gR('mla-partner-has'), partnerType = gR('mla-partner-type'), partnerOther = gV('mla-partner-other');
+  const friendType = gR('mla-friend'), friendOther = gV('mla-friend-other');
+  const teacherType = gR('mla-teacher'), teacherOther = gV('mla-teacher-other');
+  const housing = gR('mla-housing'), housingOther = gV('mla-housing-other');
+  const resultOutcome = gR('mla-outcome');
+  const resultNoCaseReasons = gChk('mla-nocase-reason');
+
+  // ── v182 A2/A5/A6/A7：儲存前驗證必填欄位。檢視模式（ro）沒有儲存按鈕，不會呼叫到此處；
+  // 舊資料開啟編輯只在按下「儲存」時才驗證，符合「不先跳錯」的相容性要求 ──
+  const missing = []; // { label, secId }：secId 供整段區塊 highlight／scroll 用
+  if (!name) missing.push({ label: '姓名', secId: 'mla-sec-top' });
+  if (!studentId) missing.push({ label: '學號', secId: 'mla-sec-top' });
+  if (!collectionDate) missing.push({ label: '收案日期', secId: 'mla-sec-top' });
+  if (!evalDate) missing.push({ label: '評估日期', secId: 'mla-sec-top' });
+
+  _mlaDraftContacts.forEach((ct, idx) => {
+    const n = idx + 1;
+    if (!ct.date) missing.push({ label: `聯繫 #${n} 日期`, secId: 'mla-sec-contacts' });
+    if (!ct.period && !(ct.timeStart && ct.timeEnd)) missing.push({ label: `聯繫 #${n} 會談時間`, secId: 'mla-sec-contacts' });
+    if (!ct.method) missing.push({ label: `聯繫 #${n} 聯繫方式`, secId: 'mla-sec-contacts' });
+    else if (ct.method === 'E-mail/簡訊' && !(ct.methodContent || '').trim()) missing.push({ label: `聯繫 #${n} E-mail／簡訊內容`, secId: 'mla-sec-contacts' });
+    if (!ct.target) missing.push({ label: `聯繫 #${n} 聯繫對象`, secId: 'mla-sec-contacts' });
+    if (!(ct.description || '').trim()) missing.push({ label: `聯繫 #${n} 經過描述`, secId: 'mla-sec-contacts' });
+  });
+
+  bsrsVals.forEach((v, i) => { if (v === null) missing.push({ label: `BSRS-5 第 ${i + 1} 題`, secId: 'mla-sec-bsrs' }); });
+  if (suicideVal === null) missing.push({ label: '★有自殺的想法', secId: 'mla-sec-bsrs' });
+
+  if (!medPsychiatry) missing.push({ label: '就醫史：精神科就醫經驗', secId: 'mla-sec-med' });
+  if (!medMedication) missing.push({ label: '就醫史：服用精神藥物經驗', secId: 'mla-sec-med' });
+  if (!medCounseling) missing.push({ label: '就醫史：諮商輔導經驗', secId: 'mla-sec-med' });
+
+  if (!familyRel) missing.push({ label: '支持系統：與家人關係', secId: 'mla-sec-support' });
+  else if (familyRel === 'other' && !familyRelOther) missing.push({ label: '與家人關係「其他」說明', secId: 'mla-sec-support' });
+  if (!partnerHas) missing.push({ label: '支持系統：伴侶', secId: 'mla-sec-support' });
+  else if (partnerHas === 'yes') {
+    if (!partnerType) missing.push({ label: '伴侶關係類型', secId: 'mla-sec-support' });
+    else if (partnerType === 'other' && !partnerOther) missing.push({ label: '伴侶關係「其他」說明', secId: 'mla-sec-support' });
+  }
+  if (!friendType) missing.push({ label: '支持系統：朋友', secId: 'mla-sec-support' });
+  else if (friendType === 'other' && !friendOther) missing.push({ label: '朋友「其他」說明', secId: 'mla-sec-support' });
+  if (!teacherType) missing.push({ label: '支持系統：師長', secId: 'mla-sec-support' });
+  else if (teacherType === 'other' && !teacherOther) missing.push({ label: '師長「其他」說明', secId: 'mla-sec-support' });
+
+  if (!housing) missing.push({ label: '住宿情形', secId: 'mla-sec-housing' });
+  else if (housing === 'other' && !housingOther) missing.push({ label: '住宿情形「其他」說明', secId: 'mla-sec-housing' });
+
+  if (!resultOutcome) missing.push({ label: '評估結果', secId: 'mla-sec-outcome' });
+  else if (resultOutcome === 'noCase' && !resultNoCaseReasons.length) missing.push({ label: '不開案原因（至少勾選一項）', secId: 'mla-sec-outcome' });
+
+  document.querySelectorAll('#mla-page-body .mla-vsec.form-section-error').forEach(el => el.classList.remove('form-section-error'));
+  const alertEl = document.getElementById('mla-validation-alert');
+  if (missing.length) {
+    if (alertEl) {
+      alertEl.style.display = '';
+      alertEl.innerHTML = `請填寫必填欄位：${missing.map(m => escHtml(m.label)).join('、')}`;
+      alertEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    const secIds = [...new Set(missing.map(m => m.secId))];
+    secIds.forEach(id => document.getElementById(id)?.classList.add('form-section-error'));
+    const firstErrEl = secIds.length ? document.getElementById(secIds[0]) : null;
+    if (firstErrEl) firstErrEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
+  if (alertEl) { alertEl.style.display = 'none'; alertEl.innerHTML = ''; }
+
+  // v182 A4：主責輔導人員下拉存 email，換算對應姓名寫回 resultCounselorName（相容既有列印/顯示均讀名稱字串）
+  const counselorEmail = gV('mla-outcome-counselor');
+  const counselorName = counselorEmail ? (configData?.users?.[counselorEmail]?.name || formatCounselorLabel(counselorEmail) || '') : '';
+
   const isNew = !l.assessment;
   const prev = l.assessment ? JSON.parse(JSON.stringify(l.assessment)) : null;
   const now = new Date().toISOString();
   const updaterName = configData?.users?.[currentUser?.email]?.name || currentUser?.name || currentUser?.email || '';
   const a = {
     ...(l.assessment || {}),
-    name: gV('mla-name'), studentId: gV('mla-sid'),
-    collectionDate: gV('mla-collect-date'), evalDate: gV('mla-eval-date'),
+    name, studentId,
+    collectionDate, evalDate,
     reason: gV('mla-reason'),
+    assessorNote: gV('mla-assessor-note'), // v182 A1：評估者備註（非必填）
     // v179：contactTime 舊字串欄位維持唯讀顯示、不因本次儲存被清空；聯繫時間改存結構化 contacts 陣列（供日後統計聯繫次數）
     contacts: _mlaDraftContacts.map(ct => ({ ...ct })),
-    bsrs: [0,1,2,3,4].map(i => gBsrs(`mla-bsrs-${i}`)), suicide: gBsrs('mla-suicide'),
-    medPsychiatry: gR('mla-med-psy'), medMedication: gR('mla-med-drug'), medCounseling: gR('mla-med-counsel'),
-    familyRel: gR('mla-family'), familyRelOther: gV('mla-family-other'),
-    partnerHas: gR('mla-partner-has'), partnerType: gR('mla-partner-type'), partnerOther: gV('mla-partner-other'),
-    friendType: gR('mla-friend'), friendOther: gV('mla-friend-other'),
-    teacherType: gR('mla-teacher'), teacherName: gV('mla-teacher-name'), teacherOther: gV('mla-teacher-other'),
-    housing: gR('mla-housing'), housingOther: gV('mla-housing-other'),
+    bsrs: bsrsVals, suicide: suicideVal,
+    medPsychiatry, medMedication, medCounseling,
+    familyRel, familyRelOther,
+    partnerHas, partnerType, partnerOther,
+    friendType, friendOther,
+    teacherType, teacherName: gV('mla-teacher-name'), teacherOther,
+    housing, housingOther,
     resultText: gV('mla-result-text'),
-    resultOutcome: gR('mla-outcome'), resultCounselorName: gV('mla-outcome-counselor'),
-    resultNoCaseReasons: gChk('mla-nocase-reason'),
+    resultOutcome, resultCounselorName: counselorName, resultCounselorEmail: counselorEmail,
+    resultNoCaseReasons,
     updatedAt: now, updatedBy: currentUser?.email, updatedByName: updaterName,
   };
   if (isNew) { a.filledBy = currentUser?.email; a.filledByName = updaterName; a.filledAt = now; }
@@ -33722,6 +33861,7 @@ function printMlAssessment(recordId) {
     <tr><td style="width:33%;">姓名：${escHtml(a.name||'')}</td><td style="width:33%;">學號：${escHtml(a.studentId||'')}</td><td>案號：${escHtml(mc?.id||'')}</td></tr>
     <tr><td>收案日期：${rocDate(a.collectionDate)}</td><td colspan="2">評估日期：${rocDate(a.evalDate)}</td></tr>
     <tr><td colspan="3">請假事由：${escHtml(a.reason||'')}</td></tr>
+    ${a.assessorNote ? `<tr><td colspan="3">評估者備註：${escHtml(a.assessorNote)}</td></tr>` : ''}
     ${a.contactTime ? `<tr><td colspan="3">舊格式聯繫時間：${escHtml(a.contactTime)}</td></tr>` : ''}
   </table>
   <div class="sec-title">一、簡式健康量表（BSRS-5）</div>
