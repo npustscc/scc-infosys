@@ -13,7 +13,7 @@ const { load } = require('./harness');
 
 const TODO_CATEGORIES = {
   draft:    { emoji: '📝', label: '草稿備援',   types: ['record', 'initial_interview', 'psychiatrist', 'event_records', 'autosave', 'manual'] },
-  case:     { emoji: '📁', label: '個案',       types: ['case_assignment', 'internal_transfer', 'couple_incomplete', 'case_mainid_confirm', 'unclosed_reminder'] },
+  case:     { emoji: '📁', label: '個案',       types: ['case_assignment', 'internal_transfer', 'couple_incomplete', 'case_profile_incomplete', 'case_mainid_confirm', 'unclosed_reminder'] },
   ml:       { emoji: '💙', label: '身心調適假', types: ['ml_cumul3', 'ml_reminder', 'ml_assessment_due', 'ml_new_leave'] },
   transfer: { emoji: '🎓', label: '轉銜',       types: ['transfer_grad_counselor', 'transfer_grad_coord', 'transfer_closure_reminder', 'transfer_withdraw_coord', 'transfer_withdraw_mismatch', 'transfer_reassign_assessor', 'transfer_reassign_assessor_notify'] },
   leave:    { emoji: '🕐', label: '差勤',       types: ['leave_pending_review', 'leave_approved_notify'] },
@@ -40,11 +40,12 @@ test('_todoCategoryOf：舊格式 autosave/manual 字面型別（localStorage �
   assert.equal(S._todoCategoryOf('manual'), 'draft');
 });
 
-test('_todoCategoryOf：個案類（待派案／內部轉案／伴侶資料待補／主案號確認／未結案提醒）→ case', () => {
+test('_todoCategoryOf：個案類（待派案／內部轉案／伴侶資料待補／快速開案資料待補／主案號確認／未結案提醒）→ case', () => {
   const S = loadTodoCat(['_todoCategoryOf']);
   assert.equal(S._todoCategoryOf('case_assignment'), 'case');
   assert.equal(S._todoCategoryOf('internal_transfer'), 'case');
   assert.equal(S._todoCategoryOf('couple_incomplete'), 'case');
+  assert.equal(S._todoCategoryOf('case_profile_incomplete'), 'case'); // v181：快速開案儲存後提醒「列為待辦」
   assert.equal(S._todoCategoryOf('case_mainid_confirm'), 'case');
   assert.equal(S._todoCategoryOf('unclosed_reminder'), 'case');
 });
