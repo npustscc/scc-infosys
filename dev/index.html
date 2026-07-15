@@ -1432,17 +1432,17 @@
           <button class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="resetCaseFilters()">清除篩選</button>
           <button id="btn-sort-lock" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="toggleSortLock()"></button>
           <button id="btn-cases-compact" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;" onclick="toggleCasesCompact()" data-tip="切換緊湊顯示模式">緊湊：關</button>
-          <button id="btn-archive-non-current" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;display:none;" onclick="archiveNonCurrentOpenCases()" data-tip="將本學期沒有開案中的個案全部封存，使其成為 cold data（驗證 Hot/Cold 載入用）">封存非本學期開案</button>
+          <button id="btn-archive-non-current" class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px;display:none;" onclick="archiveNonCurrentOpenCases()" data-tip="將本學期沒有開案中的個案全部封存，使其成為 cold data（驗證 Hot/Cold 載入用）">📦 封存非本學期開案</button>
           <div id="fp-panel-cf" class="fp-panel" style="display:none;flex-basis:100%;width:100%;order:99;box-sizing:border-box;background:#f7fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin-top:8px;"></div>
         </div>
         <div id="cases-batch-bar" style="display:none;padding:8px 16px;background:#ebf8ff;border-bottom:1px solid #bee3f8;align-items:center;gap:10px;">
           <span id="cases-batch-count" style="font-size:.87rem;color:#2b6cb0;font-weight:600;"></span>
           <button id="btn-batch-archive" class="btn btn-secondary btn-sm"
             data-tip="將所有勾選個案封存。封存後可透過篩選「已封存」查閱，統計分析仍計入。"
-            onclick="batchArchiveCases([..._casesSelected])">批次封存</button>
+            onclick="batchArchiveCases([..._casesSelected])">📦 批次封存</button>
           <button id="btn-batch-unarchive" class="btn btn-secondary btn-sm"
             data-tip="將所有勾選個案解除封存，使其重新出現在未封存列表中。"
-            onclick="batchUnarchiveCases([..._casesSelected])">批次解封</button>
+            onclick="batchUnarchiveCases([..._casesSelected])">♻️ 批次解封</button>
           <button class="btn btn-secondary btn-sm" onclick="_casesSelected.clear();renderCases()">取消選取</button>
         </div>
         <div id="cases-table-wrap" style="overflow-x:auto;">
@@ -3585,7 +3585,7 @@
         <button class="btn btn-secondary btn-sm" onclick="_resetTodosFilter()">重置</button>
         <div style="flex:1;"></div>
         <label id="todos-select-all-label" style="font-size:.85rem;cursor:pointer;user-select:none;"><input type="checkbox" id="todos-select-all" onchange="_toggleTodosSelectAll(this)"> 全選</label>
-        <button class="btn btn-sm" id="todos-batch-delete-btn" style="display:none;" onclick="_batchArchiveTodos()" data-tip="將選取的待辦事項移至封存列表">封存選取</button>
+        <button class="btn btn-sm" id="todos-batch-delete-btn" style="display:none;" onclick="_batchArchiveTodos()" data-tip="將選取的待辦事項移至封存列表">📦 封存選取</button>
         <button class="btn btn-sm" id="todos-show-archived-btn" onclick="_toggleTodosArchived()" style="background:#f7fafc;border-color:#cbd5e0;color:#4a5568;" data-tip="查看已封存的待辦事項">📦 封存紀錄</button>
       </div>
       <div id="todos-access-audit-section"></div>
@@ -4369,6 +4369,7 @@ function _upgradeFromClockMode() {
     _migrateLocalStorageDrafts();
     _syncPendingRecordsToTodos();
     _checkMlCumulativeTodos();
+    _checkMlNewLeaveTodos().catch(() => {});
     _checkPastSemUnclosedForDirectors();
     _cleanupDeletedEvals();
     _checkTransferGradTodos();
@@ -6022,6 +6023,7 @@ async function afterLogin() {
       _migrateLocalStorageDrafts();
       _syncPendingRecordsToTodos();
       _checkMlCumulativeTodos();
+      _checkMlNewLeaveTodos().catch(() => {});
       _checkPastSemUnclosedForDirectors();
       _cleanupDeletedEvals();
       _checkTransferGradTodos();
@@ -6620,6 +6622,36 @@ function _caseLatestAbType(c) {
   const sems = (Array.isArray(c.semesters) && c.semesters.length ? [...c.semesters] : [openDateToSemPrefix(c.openDate)].filter(Boolean)).sort().reverse();
   for (const s of sems) { const snap = c.basicInfoSnapshots?.[s]; if (snap?.abType) return snap.abType; }
   return c.abType || '';
+}
+// C：A/B 案設定時間戳記——把 c.abTypeHistory（見 saveCase）組成一行純文字顯示句。
+// 無 abTypeHistory（舊案，此功能上線前建立）→ 回傳固定的舊案註記；
+// 有 change 但無 open（舊案上線後才第一次發生轉換）→ 舊案註記＋後續轉換紀錄並存；
+// 有 open → 「{民國日期} 開案設定 X」，每筆 change 接「，{民國日期} 轉為 Y（{byName}）」。
+function _abTypeHistoryLine(c) {
+  const hist = Array.isArray(c && c.abTypeHistory) ? c.abTypeHistory : [];
+  const LEGACY = '舊案，無 A/B 案開案/登錄/轉換時間戳記';
+  const rocDot = (iso) => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const yy = d.getFullYear() - 1911;
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yy}.${mm}.${dd}`;
+  };
+  if (!hist.length) return LEGACY;
+  const opens = hist.filter(h => h && h.kind === 'open');
+  const changes = hist.filter(h => h && h.kind === 'change');
+  const parts = [];
+  if (opens.length) parts.push(`${rocDot(opens[0].at)} 開案設定 ${opens[0].to}`);
+  changes.forEach(ch => parts.push(`${rocDot(ch.at)} 轉為 ${ch.to}（${ch.byName || ch.by || ''}）`));
+  if (!opens.length) return parts.length ? `${LEGACY}；${parts.join('，')}` : LEGACY;
+  return parts.join('，');
+}
+// C：是否需要在「案別紀錄」上附加舊案 hover 說明——無 open 條目時（含完全無歷史、或舊案後才首次轉換）
+function _abTypeHistoryIsLegacy(c) {
+  const hist = Array.isArray(c && c.abTypeHistory) ? c.abTypeHistory : [];
+  return !hist.some(h => h && h.kind === 'open');
 }
 function _getLatestCounselorEmail(c) {
   const sems = (Array.isArray(c.semesters) && c.semesters.length
@@ -7597,14 +7629,14 @@ function renderCases() {
         ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();restoreCaseAdmin('${cid}')">復原個案</button>`
         : '';
     } else if (c.archived) {
-      actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();unarchiveCase('${cid}')" title="解除封存後，此個案將重新出現在個案列表的預設檢視中。">解除封存</button>`;
+      actionBtn = `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();unarchiveCase('${cid}')" title="解除封存後，此個案將重新出現在個案列表的預設檢視中。">♻️ 解除封存</button>`;
     } else {
       const mainBtn = c.status === 'closed'
         ? `<button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();reopenCase('${cid}')" data-tip="重新開立此學期個案，將狀態從已結案改回進行中。">重開案</button>`
         : `<button class="btn btn-danger btn-sm" onclick="event.stopPropagation();closeCaseConfirm('${cid}')">結案</button>`;
       const canArchive = isAdmin || c.counselorEmail === currentUser?.email;
       const archiveBtn = canArchive
-        ? `<button class="btn btn-secondary btn-sm" style="margin-left:4px;" onclick="event.stopPropagation();archiveCase('${cid}')" title="封存後，此個案將在個案列表中預設隱藏（可透過篩選「已封存」查閱）。適用於不再需要主動服務的個案，統計分析仍會計入。">封存個案</button>`
+        ? `<button class="btn btn-secondary btn-sm" style="margin-left:4px;" onclick="event.stopPropagation();archiveCase('${cid}')" title="封存後，此個案將在個案列表中預設隱藏（可透過篩選「已封存」查閱）。適用於不再需要主動服務的個案，統計分析仍會計入。">📦 封存個案</button>`
         : '';
       actionBtn = mainBtn + archiveBtn;
     }
@@ -10696,9 +10728,9 @@ async function showCaseDetail(caseId) {
     const canArchive = isAdminUser || c.counselorEmail === currentUser?.email;
     if (canArchive) {
       if (c.archived) {
-        actionsHtml += ` <button class="btn btn-secondary" onclick="unarchiveCase('${cid}')" data-tip="解除封存後，此個案將重新出現在個案列表的預設檢視中。">解除封存</button>`;
+        actionsHtml += ` <button class="btn btn-secondary" onclick="unarchiveCase('${cid}')" data-tip="解除封存後，此個案將重新出現在個案列表的預設檢視中。">♻️ 解除封存</button>`;
       } else {
-        actionsHtml += ` <button class="btn btn-secondary" onclick="archiveCase('${cid}')" data-tip="封存後，此個案將在個案列表中預設隱藏（可透過篩選「已封存」查閱）。適用於不再需要主動服務的個案，統計分析仍會計入。">封存個案</button>`;
+        actionsHtml += ` <button class="btn btn-secondary" onclick="archiveCase('${cid}')" data-tip="封存後，此個案將在個案列表中預設隱藏（可透過篩選「已封存」查閱）。適用於不再需要主動服務的個案，統計分析仍會計入。">📦 封存個案</button>`;
       }
     }
     if (isAdminUser) {
@@ -11052,7 +11084,7 @@ async function showCaseDetail(caseId) {
     </div>`;
 
   const recordCards = totalRecCount === 0
-    ? `<div class="empty-state" style="padding:30px;"><div class="icon">📝</div><p>尚無晤談紀錄</p></div>`
+    ? `<div class="empty-state" style="padding:30px;"><div class="icon">📝</div><p>尚無服務歷程</p></div>`
     : pagedRecords.map(item => item.type === 'psychiatrist' ? renderPsyTimelineCard(item.ref) : item.type === 'mlAssessment' ? renderMlAssessTimelineCard(item.ref) : renderRecordCard(item.ref)).join('') + paginationHtml;
 
   // 學期 tab 已移至頁面頂部 detail-student-sem-nav，此處留空
@@ -11200,8 +11232,8 @@ async function showCaseDetail(caseId) {
     countLabel = '所有學期紀錄';
   } else {
     countLabel = (isAdminUser && deletedCount > 0
-      ? `晤談紀錄（${activeCount} 筆，含 ${deletedCount} 筆已刪除）`
-      : `晤談紀錄（${activeCount} 筆）`) + (_visiblePsyForTimeline.length ? `・含 ${_visiblePsyForTimeline.length} 筆精神科評估` : '');
+      ? `服務歷程（${activeCount} 筆，含 ${deletedCount} 筆已刪除）`
+      : `服務歷程（${activeCount} 筆）`) + (_visiblePsyForTimeline.length ? `・含 ${_visiblePsyForTimeline.length} 筆精神科評估` : '');
     listContent = recordCards;
   }
 
@@ -11495,7 +11527,10 @@ async function showCaseDetail(caseId) {
       </select>
       <button class="btn btn-primary btn-sm" onclick="_detailChangeCounselor('${escHtml(caseId)}')" data-tip="點選後將建立轉案待辦，需至待辦頁確認後才會正式變更主責。">儲存變更</button>
     </div>
-    ${_mgrEditSection}`) +
+    ${_mgrEditSection}
+    <div style="margin-top:10px;padding-top:10px;border-top:1px solid #e2e8f0;font-size:.82rem;color:#4a5568;"${
+      _abTypeHistoryIsLegacy(c) ? ` data-tip="${escHtml('此處顯示 A/B 案的設定與轉換時間紀錄；本案建立於此功能上線前，未留存設定時間戳記與設定者。日後若變更案別，將自動記錄並顯示如：115.04.25 開案設定 B 案，115.09.20 轉為 A 案（陳幸只）')}"` : ''
+    }><strong>案別紀錄：</strong>${escHtml(_abTypeHistoryLine(c))}</div>`) +
     mkSection('bg', '背景資料', `<div class="form-grid">
       ${_cd('abType') ? field('案別', _cd('abType') + (_cd('abType') === 'B案' && Array.isArray(_cd('bCaseReasons')) && _cd('bCaseReasons').length ? `<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:4px;">${_cd('bCaseReasons').map(r => `<span style="display:inline-block;background:#fffaf0;color:#7c2d12;border:1px solid #fbd38d;border-radius:10px;padding:1px 8px;font-size:.75rem;">${escHtml(r)}</span>`).join('')}</div>` : '')) : ''}
       ${field('對象類別', _cd('caseType'))}
@@ -15717,10 +15752,10 @@ function renderCaseNums(resetPage) {
         <span id="cn-batch-count" style="font-size:.87rem;color:#2b6cb0;font-weight:600;"></span>
         <button class="btn btn-secondary btn-sm"
           data-tip="將所有勾選個案封存。封存後可透過篩選「已封存」查閱，統計分析仍計入。"
-          onclick="batchArchiveCases([..._cnSelected])">批次封存</button>
+          onclick="batchArchiveCases([..._cnSelected])">📦 批次封存</button>
         <button class="btn btn-secondary btn-sm"
           data-tip="將所有勾選個案解除封存，使其重新出現在未封存列表中。"
-          onclick="batchUnarchiveCases([..._cnSelected])">批次解封</button>
+          onclick="batchUnarchiveCases([..._cnSelected])">♻️ 批次解封</button>
         <button class="btn btn-secondary btn-sm" onclick="_cnSelected.clear();renderCaseNums()">取消選取</button>
       </div>
       <div id="cn-pagination-top">${paginationHtml}</div>
@@ -20390,6 +20425,7 @@ async function saveCase() {
       const idx = casesData.findIndex(x => x.id === _editingCaseId);
       const prev = casesData[idx];
       const oldCounselorEmail = prev.counselorEmail;
+      const _oldAbTypeForHistory = _caseLatestAbType(prev); // C：A/B 案設定時間戳記——編輯前的有效案別
       // Save per-semester snapshot when editing
       const _editSem = _caseDetailActiveSem || openDateToSemPrefix(openDate);
       const _prevSnaps = prev.basicInfoSnapshots || {};
@@ -20400,6 +20436,15 @@ async function saveCase() {
         : {};
       casesData[idx] = { ...prev, ...newCase, ..._alertUpdate,
         basicInfoSnapshots: _editSem ? { ..._prevSnaps, [_editSem]: _editSnap } : _prevSnaps };
+      // C：A/B 案設定時間戳記——newCase 不含 abTypeHistory 鍵，故上面 spread 已自動保留 prev.abTypeHistory；
+      // 案別實際變更時才另外 push 一筆 change 紀錄（沿用 prev 的既有歷史陣列，不覆蓋/清空）。
+      if (abType !== _oldAbTypeForHistory) {
+        casesData[idx].abTypeHistory = [...(prev.abTypeHistory || []), {
+          kind: 'change', from: _oldAbTypeForHistory, to: abType, at: now,
+          by: currentUser.email, byName: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
+          sem: _editSem,
+        }];
+      }
       // syncManagersFromForm 必須在案號改名前跑：它用「舊案號」判斷現有管理員名單（wasManager），
       // 若先改名，allowedCases 已被 remap 成新案號，會讓既有管理員全部誤判為「非既有管理員」，
       // 使用者在此表單取消勾選的管理員將不會被正確移除。
@@ -20432,6 +20477,7 @@ async function saveCase() {
       // ── 再次開案：一學生一案號，同案號新增本學期開案紀錄（回應 2026-07-06 個案架構重構 Slice 1）──
       const target = _reopenTarget;
       const semKey = _reopenSemKey;
+      const _oldAbTypeForHistory = _caseLatestAbType(target); // C：A/B 案設定時間戳記——本次新學期快照寫入前的有效案別
       Object.entries(_reopenFieldUpdates).forEach(([k, v]) => { target[k] = v; });
       if (!Array.isArray(target.semesters)) target.semesters = _caseSems(target);
       if (!target.semesters.includes(semKey)) target.semesters.push(semKey);
@@ -20454,6 +20500,14 @@ async function saveCase() {
        'program','disability','department','college','grade','classNo','phone','email','residence','address',
        'emergencyName','emergencyPhone','emergencyRelation','source','pastRecords','topics',
        'abType','bCaseReasons','isTransferCase'].forEach(f => { if (newCase[f] !== undefined) target[f] = newCase[f]; });
+      // C：A/B 案設定時間戳記——案別實際變更時 push 一筆 change 紀錄（sem 用本次新開的學期 key）
+      if (abType !== _oldAbTypeForHistory) {
+        target.abTypeHistory = [...(target.abTypeHistory || []), {
+          kind: 'change', from: _oldAbTypeForHistory, to: abType, at: now,
+          by: currentUser.email, byName: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
+          sem: semKey,
+        }];
+      }
       target.openDate = target.openDate || openDate; // 保留最早開案日期，不覆寫
       target.bsrs = bsrs; target.bsrs6 = bsrs6; target.bsrsTotal = bsrsTotal; target.bsrsUnfilled = bsrsUnfilled;
       const oldCounselorEmail = _getLatestCounselorEmail(target);
@@ -20542,6 +20596,11 @@ async function saveCase() {
           showToast(`已自動帶入 ${toAdd.length} 筆心理測驗資料`, 'info');
         }
       }
+      // C：A/B 案設定時間戳記——新案建立時記錄開案設定
+      newCase.abTypeHistory = [{
+        kind: 'open', to: abType, at: now,
+        by: currentUser.email, byName: configData?.users?.[currentUser.email]?.name || currentUser.name || '',
+      }];
       casesData.push(newCase);
       _assignChunkForNewCase(newCase.id); // Slice 3：已重新分塊時分配 active chunk，否則不動作（legacy fallback）
       await saveCasesChunks(newCase.id);
@@ -22307,7 +22366,7 @@ function _renderMlNotifSection() {
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;">
         ${mc ? `<button onclick="showCaseDetail('${escHtml(mc.id)}')" style="padding:3px 10px;background:#2b6cb0;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;">前往個案</button>` : ''}
-        <button onclick="window._mlAcknowledge('${escHtml(l.id)}')" style="padding:3px 10px;background:#276749;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;" data-tip="封存此通知，表示已確認此筆身心調適假">封存</button>
+        <button onclick="window._mlAcknowledge('${escHtml(l.id)}')" style="padding:3px 10px;background:#276749;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:.78rem;" data-tip="封存此通知，表示已確認此筆身心調適假">📦 封存</button>
       </div>
     </div>`;
   };
@@ -22326,7 +22385,7 @@ function _renderMlNotifSection() {
         <div style="font-weight:700;color:#276749;font-size:.95rem;">${titleText}</div>
         <div style="display:flex;gap:6px;align-items:center;">
           ${!isCollapsed ? `<label style="font-size:.8rem;color:#276749;cursor:pointer;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="ml-cb-all" onchange="_mlToggleAllCb(this)">全選</label>
-          <button id="ml-batch-btn" class="btn btn-sm" style="display:none;font-size:.78rem;background:#276749;color:#fff;border-color:#276749;" onclick="_mlBatchAcknowledge()">批次封存</button>` : ''}
+          <button id="ml-batch-btn" class="btn btn-sm" style="display:none;font-size:.78rem;background:#276749;color:#fff;border-color:#276749;" onclick="_mlBatchAcknowledge()">📦 批次封存</button>` : ''}
           <button onclick="_mlToggleSection()" style="background:none;border:none;cursor:pointer;font-size:.88rem;color:#276749;padding:0 2px;" data-tip="${isCollapsed?'展開':'收束'}身心調適假區塊">${isCollapsed?'▶':'▼'}</button>
         </div>
       </div>
@@ -22736,7 +22795,7 @@ function renderTodosPage() {
     return;
   }
 
-  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（轉銜窗口）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）', transfer_withdraw_coord: '教務處名單（轉銜窗口）', transfer_withdraw_mismatch: '教務處名單（姓名/學號不符）', transfer_reassign_assessor: '轉派評估者', transfer_reassign_assessor_notify: '轉銜評估者通知', leave_pending_review: '差勤申請（待審核）', leave_approved_notify: '差勤申請結果', issue_pending_verification: '問題回報（待您驗證）', ml_cumul3: '身心調適假累計提醒', ml_reminder: '身心調適假再次提醒', ml_assessment_due: '身心狀態評估表（待填寫）' };
+  const typeLabels = { record: '晤談記錄', initial_interview: '初談表', psychiatrist: '精神科評估', event_records: '事件處理記錄', autosave: '自動備援', manual: '手動', case_assignment: '待派案', internal_transfer: '內部轉案派案', unclosed_reminder: '未結案提醒', transfer_grad_counselor: '轉銜：主責轉出學生', transfer_grad_coord: '轉銜管理（轉銜窗口）', transfer_closure_reminder: '轉銜結案追蹤', admin_verify_new_user: '使用者管理（待確認）', transfer_withdraw_coord: '教務處名單（轉銜窗口）', transfer_withdraw_mismatch: '教務處名單（姓名/學號不符）', transfer_reassign_assessor: '轉派評估者', transfer_reassign_assessor_notify: '轉銜評估者通知', leave_pending_review: '差勤申請（待審核）', leave_approved_notify: '差勤申請結果', issue_pending_verification: '問題回報（待您驗證）', ml_cumul3: '身心調適假累計提醒', ml_reminder: '身心調適假再次提醒', ml_assessment_due: '身心狀態評估表（待填寫）', ml_new_leave: '身心調適假（主責新請假）' };
 
   body.innerHTML = filtered.map(t => {
     // 問題回報「待您驗證」待辦：若對應 issue 已不是 pending_verification（他人已代驗或管理者已改狀態），自動收掉此待辦
@@ -22767,7 +22826,7 @@ function renderTodosPage() {
     const _isReassignNotifyTodo = t.type === 'transfer_reassign_assessor_notify';
     const _isLeaveTodo = t.type === 'leave_pending_review' || t.type === 'leave_approved_notify';
     const _isIssueVerifyTodo = t.type === 'issue_pending_verification';
-    const _isMlCumulTodo = t.type === 'ml_cumul3' || t.type === 'ml_reminder' || t.type === 'ml_assessment_due';
+    const _isMlCumulTodo = t.type === 'ml_cumul3' || t.type === 'ml_reminder' || t.type === 'ml_assessment_due' || t.type === 'ml_new_leave';
     const _mlAssessDueChip = (t.type === 'ml_assessment_due' && !t.done) ? _mlAssessCountdownChip(t.dueDate, '') : '';
     const _continueBtnLabel = (_isTransferTodo || _isReassignNotifyTodo) ? '前往轉銜管理' : (_isAdminUserTodo ? '前往設定' : _isLeaveTodo ? '前往差勤管理' : _isIssueVerifyTodo ? '前往驗證' : _isMlCumulTodo ? '前往身心調適假' : '繼續編輯');
     const continueBtn = !readOnly && !t.done && !_isMismatchTodo && !_isReassignInitiatorTodo && !(_isLeaveTodo && t.type === 'leave_approved_notify') ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_continueTodo('${t.id}')">${_continueBtnLabel}</button>` : '';
@@ -22783,10 +22842,10 @@ function renderTodosPage() {
     const _isDraftTodo = !!(t.label && t.label.includes('草稿'));
     const deleteBtn = (!readOnly && !_isLocked)
       ? (_todosShowArchived
-        ? `<button class="btn btn-sm" style="font-size:.78rem;" onclick="_unarchiveTodo('${t.id}')" data-tip="取消封存，重新顯示於待辦列表">取消封存</button>`
+        ? `<button class="btn btn-sm" style="font-size:.78rem;" onclick="_unarchiveTodo('${t.id}')" data-tip="取消封存，重新顯示於待辦列表">♻️ 取消封存</button>`
         : (_isDraftTodo
           ? `<button class="btn btn-sm" style="font-size:.78rem;" onclick="_deleteDraftTodo('${t.id}')" data-tip="放棄此草稿並直接刪除（不可復原）">放棄草稿</button>`
-          : `<button class="btn btn-sm" style="font-size:.78rem;" onclick="_archiveTodo('${t.id}')" data-tip="封存＝消除此待辦事項，可在「封存紀錄」中查閱">封存</button>`))
+          : `<button class="btn btn-sm" style="font-size:.78rem;" onclick="_archiveTodo('${t.id}')" data-tip="封存＝消除此待辦事項，可在「封存紀錄」中查閱">📦 封存</button>`))
       : '';
     const mismatchDetailHtml = _isMismatchTodo && !t.done ? `
       <div style="margin-top:8px;background:#fff8e1;border:1px solid #fcd34d;border-radius:6px;padding:8px 12px;font-size:.82rem;">
@@ -23052,7 +23111,7 @@ function _continueTodo(id) {
     showPage('page-issues', navEl);
     markIssuesSeen();
     renderIssuesPage();
-  } else if (t.type === 'ml_cumul3' || t.type === 'ml_reminder' || t.type === 'ml_assessment_due') {
+  } else if (t.type === 'ml_cumul3' || t.type === 'ml_reminder' || t.type === 'ml_assessment_due' || t.type === 'ml_new_leave') {
     const navEl = document.querySelector('[data-nav-id="page-mental-leave"]');
     showPage('page-mental-leave', navEl);
     renderMentalLeavePage();
@@ -23128,7 +23187,7 @@ function _evrSearch(q) {
       <div>
         <div style="font-weight:600;">${escHtml(c.name)}
           ${c.status === 'closed' ? '<span style="font-size:.72rem;background:#f0f4f8;color:#718096;border-radius:4px;padding:1px 5px;margin-left:6px;">已結案</span>' : ''}
-          ${c.archived ? '<span style="font-size:.72rem;background:#fefcbf;color:#744210;border-radius:4px;padding:1px 5px;margin-left:6px;">已封存</span>' : ''}
+          ${c.archived ? '<span style="font-size:.72rem;background:#fefcbf;color:#744210;border-radius:4px;padding:1px 5px;margin-left:6px;">📦 已封存</span>' : ''}
         </div>
         <div style="font-size:.82rem;color:#718096;">${escHtml(c.id)}${c.studentId ? ' ‧ ' + escHtml(c.studentId) : ''}</div>
       </div>
@@ -28223,6 +28282,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-15', v: 178, title: '晤談紀錄卡片更名服務歷程＋封存圖示全站統一＋A/B 案設定時間紀錄＋主責新請假待辦提醒', isProd: false, items: [
+      item('改善', '個案詳細資料頁的紀錄卡片標題由「晤談紀錄」改名為「服務歷程」（僅此卡片標題與空狀態文案，其餘如新增晤談紀錄頁、晤談紀錄表等維持原名不變）'),
+      item('改善', '全站封存相關按鈕與切換統一加圖示：封存動作與「顯示已封存」一律加 📦，解除封存／取消封存／批次解封一律加 ♻️（個案列表、案號查詢與管理、待辦頁、身心調適假通知等皆已補上）'),
+      item('新功能', '個案詳細資料頁「個案基本資料」卡新增「案別紀錄」：記錄 A/B 案開案設定與每次轉換的時間、經手人（如「115.04.25 開案設定 B 案，115.09.20 轉為 A 案（陳幸只）」）；此功能上線前建立的舊案無此時間戳記，顯示舊案註記並附 hover 說明'),
+      item('新功能', '主責個案新增身心調適假時，自動建立待辦通知該案主責（若主責為本人則直接顯示），並計入待辦鈴鐺提醒'),
+    ]},
     { date: '2026-07-14', v: 177, title: '實習生晚班班表：逐人設定晚班日', isProd: true, items: [
       item('新功能', '差勤管理後台「假別與額度」tab 改名「假別與班表」，新增「實習生晚班班表」卡片：卡片頂部可設定全中心統一的晚班時段（如 12:00–21:00），下方逐一實習生勾選一週中哪幾天算晚班日'),
       item('改善', '晚班日的請假時數計算、以及請假申請表單的預設起訖時間，整天都改依該生的晚班時段計算（例：晚班日整天請假＝12:00–21:00，午休 16:00–17:00 照常扣除），非晚班日則不受影響、照常以一般上班時段計算'),
@@ -33329,7 +33394,7 @@ function _mlRenderRecordsTab(el, studentIdFilter = null) {
       </label>
       <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;" data-tip="切換後只顯示已封存的紀錄，可於此找回並解除封存">
         <input type="checkbox" ${_mlShowArchived?'checked':''} onchange="_mlShowArchived=this.checked;_mlPage=1;renderMentalLeavePage();" style="margin:0;">
-        🗄 顯示已封存
+        📦 顯示已封存
       </label>
       <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;">每頁
         <select id="ml-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;" onchange="_mlPageSize=parseInt(this.value);_mlPage=1;renderMentalLeavePage();">
@@ -33727,6 +33792,7 @@ window._mlFetch = async (isAuto) => {
           if (lastBatch < BATCH_SIZE) break; // 信件已耗盡
         }
         _checkMlCumulativeTodos();
+        await _checkMlNewLeaveTodos().catch(() => {});
         // 身心狀態評估表（#030-⑤）：新紀錄符合「非受輔生＋紅燈/連請三日」→ 通知所有窗口填寫（防重複由紀錄標記把關）
         await _mlNotifyAssessmentDue().catch(() => {});
         renderMentalLeavePage();
@@ -40052,6 +40118,53 @@ function _checkMlCumulativeTodos() {
     saveUserTodos().catch(() => {});
     if (document.getElementById('page-todos')?.classList.contains('active')) renderTodosPage();
   }
+}
+
+// D：主責個案新增身心調適假 → 建立待辦通知主責＋鈴鐺提醒（notifRead:false 已自動計入 _syncBellBadge／_syncTodoBadge）。
+// 防重複：與 ml_cumul3 不同，本函式的通知對象未必是目前登入者（ml_cumul3 只查「我的」個案、靠 todoId
+// 比對自己本機 todosData 即可去重），故無法沿用 id 比對法；比照同檔 _mlNotifyAssessmentDue 的既有作法，
+// 改在身心調適假紀錄本身寫 mainNotifiedAt 標記欄位去重。
+async function _checkMlNewLeaveTodos() {
+  const pending = (mentalLeavesData || []).filter(l => !l.deleted && l.studentId && !l.mainNotifiedAt);
+  if (!pending.length) return;
+  const now = new Date().toISOString();
+  // 防洪閘：功能上線前的既有紀錄（建立超過 3 天）只補 mainNotifiedAt 標記、不發待辦——
+  // 否則首次執行會把全部歷史紀錄一口氣灌成待辦。主責已按過「收到」的也視同已知悉、只標記不發。
+  const _cutoffMs = Date.now() - 3 * 86400000;
+  const _isStale = (l) => {
+    const t = new Date(l.createdAt || l.leaveDate || '').getTime();
+    return isNaN(t) ? true : t < _cutoffMs;
+  };
+  let ownChanged = false;
+  let recordChanged = false;
+  for (const l of pending) {
+    const mc = (casesData || []).find(c => !c.deleted && c.studentId === l.studentId);
+    const email = mc?.counselorEmail;
+    if (_isStale(l)) { l.mainNotifiedAt = now; recordChanged = true; continue; }
+    if (email && (l.acknowledgedBy || []).includes(email)) { l.mainNotifiedAt = now; recordChanged = true; continue; }
+    if (!mc || !email) continue; // 尚未開案或無主責 → 暫不標記，待資料補齊後下次掃描再補發通知（3 天內有效）
+    const { from, to } = _mlParseDateRange(l);
+    const dateLbl = from ? (from !== to ? `${from} ~ ${to}` : from) : (l.leaveDate || '');
+    const mkTodo = () => ({
+      id: _genTodoId(), type: 'ml_new_leave',
+      label: `主責個案新增身心調適假：${mc.name}（${mc.id}）${dateLbl}`,
+      leaveId: l.id, studentId: l.studentId, caseId: mc.id,
+      createdAt: now, done: false, notifRead: false,
+    });
+    try {
+      if (email === currentUser?.email) {
+        // 主責＝本人：直接寫本機 todosData，比照 ml_cumul3 的本人寫入路徑，省去對自己檔案的 RMW 網路往返
+        todosData.push(mkTodo());
+        ownChanged = true;
+      } else {
+        await _appendTodoToUser(email, mkTodo());
+      }
+      l.mainNotifiedAt = now;
+      recordChanged = true;
+    } catch (_) { /* 個別主責寫入失敗不阻斷其他人，未標記 mainNotifiedAt，下次掃描重試 */ }
+  }
+  if (ownChanged) { _syncTodoBadge(); saveUserTodos().catch(() => {}); }
+  if (recordChanged) { try { await saveMentalLeaves(); } catch (_) {} }
 }
 
 // ── 所有學期轉銜評估卡片（個案詳細頁，不限學期） ──
