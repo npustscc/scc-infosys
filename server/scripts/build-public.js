@@ -1,31 +1,41 @@
 #!/usr/bin/env node
-// server/scripts/build-public.js — 把 dev/index.html 複製到 server/public/index.html，
+// server/scripts/build-public.js — 把前端 index.html 複製到 server/public/index.html，
 // 只改 APPS_SCRIPT_URL 這一行常數（DRIVE_FOLDER_ID 保持不變——見計畫核心可行性依據：前端只需
 // 改一個常數）。比對模式沿用 scripts/check-env-constants.mjs 的 regex 手法，只鎖定該行避免誤改。
 //
-// 用法：node scripts/build-public.js [目標 URL]（預設 http://localhost:<PORT>/exec，取自 .env）
+// 用法：
+//   node scripts/build-public.js [目標 URL]          （預設來源 dev/index.html，行為不變）
+//   node scripts/build-public.js --prod [目標 URL]    （來源改為 repo 根目錄的 index.html，正式版前端）
+// 目標 URL 預設 http://localhost:<PORT>/exec（取自 .env）。
+// 動機：scc-prod 實例若誤用 dev/index.html 建置，會把 dev 版的 DRIVE_FOLDER_ID 一併帶進來，
+// 導致對打 Node 後端時因 rootFolderId 不在白名單而全面 Unauthorized rootFolderId。
 'use strict';
 
 const fs = require('node:fs');
 const path = require('node:path');
 const config = require('../src/config');
 
-const DEV_HTML = path.join(__dirname, '..', '..', 'dev', 'index.html');
+const isProd = process.argv[2] === '--prod';
+const urlArg = isProd ? process.argv[3] : process.argv[2];
+
+const SRC_HTML = isProd
+  ? path.join(__dirname, '..', '..', 'index.html')
+  : path.join(__dirname, '..', '..', 'dev', 'index.html');
 const OUT_DIR = path.join(__dirname, '..', 'public');
 const OUT_HTML = path.join(OUT_DIR, 'index.html');
 
 function main() {
-  const targetUrl = process.argv[2] || `http://localhost:${config.PORT}/exec`;
-  if (!fs.existsSync(DEV_HTML)) {
-    console.error(`找不到 ${DEV_HTML}`);
+  const targetUrl = urlArg || `http://localhost:${config.PORT}/exec`;
+  if (!fs.existsSync(SRC_HTML)) {
+    console.error(`找不到 ${SRC_HTML}`);
     process.exit(1);
   }
-  const html = fs.readFileSync(DEV_HTML, 'utf8');
+  const html = fs.readFileSync(SRC_HTML, 'utf8');
 
   const RE = /^const APPS_SCRIPT_URL = '([^']*)';$/m;
   const m = RE.exec(html);
   if (!m) {
-    console.error('找不到 APPS_SCRIPT_URL 常數，dev/index.html 結構可能已改變——請確認後手動調整本腳本的 regex。');
+    console.error(`找不到 APPS_SCRIPT_URL 常數，${path.basename(SRC_HTML)} 結構可能已改變——請確認後手動調整本腳本的 regex。`);
     process.exit(1);
   }
   const patched = html.replace(RE, `const APPS_SCRIPT_URL = '${targetUrl}';`);
