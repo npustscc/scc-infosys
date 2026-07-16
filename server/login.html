@@ -809,9 +809,22 @@ const setupCode = document.getElementById('setupCode');
 const confirmBtn = document.getElementById('confirmBtn');
 const useEmailInsteadBtn = document.getElementById('useEmailInsteadBtn');
 const skipBtn = document.getElementById('skipBtn');
+const emailSetupBox = document.getElementById('emailSetupBox');
+const otpEmail1 = document.getElementById('otpEmail1');
+const otpEmail2 = document.getElementById('otpEmail2');
+const otpEmail3 = document.getElementById('otpEmail3');
+const confirmEmailSetupBtn = document.getElementById('confirmEmailSetupBtn');
+const cancelEmailSetupBtn = document.getElementById('cancelEmailSetupBtn');
 const msg = document.getElementById('msg');
 
 let sessionToken = null; // 登入成功後才有值，setup 流程需要它呼叫已授權 action
+
+// emailSetupBox 有兩種觸發來源，共用同一個小表單（見下方 confirmEmailSetupBtn 的處理邏輯）：
+//   'switch' — totpBox 內「改用 Email 驗證碼」：登入尚在中途、沒有 session，確認後要帶著帳密
+//              重打一次 sessionStart（switchToEmailOtp+otpEmails）。
+//   'setup'  — setupBox 內「我不方便用驗證器 App」：已有完整 session，確認後直接呼叫已授權的
+//              twofaSetMethod。
+let emailSetupMode = null;
 
 // Email 驗證碼 60 秒防重寄倒數計時（純前端 UX——真正的節流在後端 auth/local.js 的
 // canResendEmailOtp，前端這個計時器只是避免使用者連點「重新寄送」浪費請求，不是安全邊界）。
@@ -927,6 +940,12 @@ async function handleAuthResponse(d) {
     setMsg('驗證信寄送失敗，請聯絡系統管理者', 'err');
     return true;
   }
+  if (d.error === 'otp_emails_required' || d.error === 'too_many_otp_emails' || d.error === 'invalid_otp_email') {
+    // 來自 switchToEmailOtp 的 otpEmails 驗證失敗——emailSetupBox 仍開著讓使用者修正，不動它的
+    // 顯示狀態（見 emailSetupErrorMessage，同一套訊息也給 twofaSetMethod 的 setup 模式用）。
+    setMsg(emailSetupErrorMessage(d.error), 'err');
+    return true;
+  }
   if (d.error === 'invalid_credentials') {
     setMsg('帳號或密碼錯誤', 'err');
     return true;
@@ -975,20 +994,35 @@ loginForm.addEventListener('submit', async (e) => {
   }
 });
 
-// 「改用 Email 驗證碼」（totpBox 內）：登入尚在中途（密碼已對、還沒通過第二因素，沒有 session）。
-// 讓 sessionStart 這一次呼叫順便把 twofa_method 切成 'email' 並立刻寄送驗證碼——見
-// auth/local.js 的 switchToEmailOtp 參數與其檔頭註解，這是專為此雞生蛋問題設計的參數。
-switchToEmailBtn.addEventListener('click', async () => {
-  switchToEmailBtn.disabled = true;
-  setMsg('切換中…');
-  try {
-    const d = await attemptLogin({ switchToEmailOtp: true });
-    await handleAuthResponse(d);
-  } catch (err) {
-    setMsg('切換失敗：' + err.message, 'err');
-  } finally {
-    switchToEmailBtn.disabled = false;
-  }
+// 收集 emailSetupBox 三個輸入欄的值：trim、濾掉空白欄位（後端 normalizeOtpEmails 也會做同樣的
+// trim/去空/去重/小寫正規化，這裡不重複做完整驗證，只負責「湊出陣列」，格式對錯交給後端判斷）。
+function collectOtpEmails() {
+  return [otpEmail1.value, otpEmail2.value, otpEmail3.value]
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+// 開啟 emailSetupBox：mode 決定確認後的行為（見上方 emailSetupMode 變數說明），prefillEmail 帶入
+// 第一欄預設值（switch 模式帶目前登入表單填的帳號 email；setup 模式同理，因為 loginForm 雖被
+// loginBox.hide 藏起來，DOM 值仍保留）。
+function openEmailSetupBox(mode, prefillEmail) {
+  emailSetupMode = mode;
+  totpBox.classList.remove('show');
+  otpEmail1.value = prefillEmail || '';
+  otpEmail2.value = '';
+  otpEmail3.value = '';
+  emailSetupBox.classList.add('show');
+  setMsg('');
+  otpEmail1.focus();
+}
+
+// 「改用 Email 驗證碼」（totpBox 內）：登入尚在中途（密碼已對、還沒通過第二因素，沒有
+// session）——先讓使用者填 1~3 個收件信箱，確認後才真正送出 switchToEmailOtp（見下方
+// confirmEmailSetupBtn），讓 sessionStart 這一次呼叫順便把 twofa_method 切成 'email'、
+// otp_emails 存好並立刻寄送驗證碼——見 auth/local.js 的 switchToEmailOtp 參數與其檔頭註解，
+// 這是專為此雞生蛋問題設計的參數。
+switchToEmailBtn.addEventListener('click', () => {
+  openEmailSetupBox('switch', loginForm.email.value);
 });
 
 resendEmailOtpBtn.addEventListener('click', async () => {
@@ -1058,23 +1092,59 @@ confirmBtn.addEventListener('click', async () => {
 });
 
 // 「我不方便用驗證器 App，改用 Email 驗證碼」（setupBox 內）：此時已有完整 session
-// （sessionToken 已賦值，setupBox 只會在登入成功、totpEnrolled===false 之後才顯示），
-// 直接呼叫已授權的 twofaSetMethod 即可，不需要像 totpBox 那樣繞 switchToEmailOtp 參數。
-useEmailInsteadBtn.addEventListener('click', async () => {
-  useEmailInsteadBtn.disabled = true;
-  setMsg('設定中…');
-  try {
-    await callAuthed('twofaSetMethod', { method: 'email' });
-    setMsg('已改用 Email 驗證碼，正在跳轉…', 'ok');
-    redirectHome();
-  } catch (err) {
-    setMsg('設定失敗：' + err.message, 'err');
-    useEmailInsteadBtn.disabled = false;
-  }
+// （sessionToken 已賦值，setupBox 只會在登入成功、totpEnrolled===false 之後才顯示）——同樣先讓
+// 使用者填 1~3 個收件信箱，確認後直接呼叫已授權的 twofaSetMethod 即可，不需要像 totpBox 那樣繞
+// switchToEmailOtp 參數。
+useEmailInsteadBtn.addEventListener('click', () => {
+  openEmailSetupBox('setup', loginForm.email.value);
 });
 
 skipBtn.addEventListener('click', () => {
   redirectHome();
+});
+
+// emailSetupBox 確認：依 emailSetupMode 決定要嘛帶著帳密重打一次 sessionStart（switch 模式，
+// 登入尚在中途沒有 session），要嘛直接呼叫已授權的 twofaSetMethod（setup 模式，已有 session）。
+confirmEmailSetupBtn.addEventListener('click', async () => {
+  const emails = collectOtpEmails();
+  if (emails.length === 0) { setMsg('請至少填一個 Email', 'err'); return; }
+  confirmEmailSetupBtn.disabled = true;
+  setMsg(emailSetupMode === 'switch' ? '切換中…' : '設定中…');
+  try {
+    if (emailSetupMode === 'switch') {
+      const d = await attemptLogin({ switchToEmailOtp: true, otpEmails: emails });
+      await handleAuthResponse(d);
+    } else {
+      const d = await callAuthed('twofaSetMethod', { method: 'email', emails });
+      if (d.error) {
+        setMsg(emailSetupErrorMessage(d.error), 'err');
+        return;
+      }
+      emailSetupBox.classList.remove('show');
+      setMsg('已改用 Email 驗證碼，正在跳轉…', 'ok');
+      redirectHome();
+    }
+  } catch (err) {
+    setMsg('設定失敗：' + err.message, 'err');
+  } finally {
+    confirmEmailSetupBtn.disabled = false;
+  }
+});
+
+// otp_emails 正規化失敗的三種代碼（見 auth/local.js normalizeOtpEmails／actions/twofa.js）
+// 對映成中文訊息，比照既有 totp_required／invalid_totp 前端寫死中文對映的風格。
+function emailSetupErrorMessage(errorCode) {
+  if (errorCode === 'otp_emails_required') return '請至少填一個 Email';
+  if (errorCode === 'too_many_otp_emails') return '最多只能填 3 個 Email';
+  if (errorCode === 'invalid_otp_email') return 'Email 格式不正確，請檢查';
+  return '設定失敗：' + errorCode;
+}
+
+cancelEmailSetupBtn.addEventListener('click', () => {
+  emailSetupBox.classList.remove('show');
+  setMsg('');
+  if (emailSetupMode === 'switch') totpBox.classList.add('show');
+  emailSetupMode = null;
 });
 </script>
 </body>
