@@ -1696,6 +1696,19 @@
         </div>
       </div>
 
+      <!-- Phase 3b：信任裝置清單（僅本地帳密＋TOTP 後端顯示，見 IS_LOCAL_BACKEND；預設隱藏，
+           由 window load handler 的本地模式分支切換顯示，見該處註解）。 -->
+      <div class="card" id="pref-trusted-devices-card" style="display:none;">
+        <div class="card-header"><h3>信任裝置</h3></div>
+        <div style="padding:16px 20px;">
+          <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">已註冊雙因素驗證（TOTP）的帳號，在下列裝置上登入時可免輸入驗證碼（效期 30 天，過期或撤銷後該裝置需重新輸入驗證碼）。若發現不熟悉的裝置，請立即撤銷。</p>
+          <div id="pref-trusted-devices-body" style="font-size:.85rem;color:#4a5568;">載入中…</div>
+          <div style="margin-top:12px;">
+            <button class="btn btn-secondary btn-sm" onclick="_renderMyDevices()">重新整理</button>
+          </div>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-header"><h3>輔導人員選單排序</h3></div>
         <div style="padding:16px 20px;max-width:520px;">
@@ -6075,6 +6088,9 @@ window.addEventListener('load', () => {
     }
     const fallback = document.getElementById('login-fallback');
     if (fallback) fallback.style.display = 'none';
+    // Phase 3b：信任裝置清單卡片只在本地帳密＋TOTP 後端顯示（Pages＋GAS 環境沒有裝置憑證概念）。
+    const tdCard = document.getElementById('pref-trusted-devices-card');
+    if (tdCard) tdCard.style.display = '';
 
     try { sessionStorage.removeItem('scc_user'); sessionStorage.removeItem('scc_idtoken'); } catch (_) {}
 
@@ -21722,6 +21738,59 @@ async function _logoutAllDevices() {
   }
 }
 
+// Phase 3b：信任裝置清單——載入本帳號的裝置憑證並渲染（僅本地帳密＋TOTP 後端，見
+// IS_LOCAL_BACKEND）。裝置憑證本身是 httpOnly cookie，前端讀不到也不需要讀，只需呼叫
+// listMyDevices／revokeDevice 兩個 action（後端從 Cookie header 解出 deviceToken 判斷「目前這台」）。
+async function _renderMyDevices() {
+  const body = document.getElementById('pref-trusted-devices-body');
+  if (!body) return;
+  body.textContent = '載入中…';
+  let list = [];
+  try {
+    const r = await proxyCall('listMyDevices');
+    list = (r && r.devices) || [];
+  } catch (e) {
+    body.innerHTML = `<span style="color:#c53030;">信任裝置清單載入失敗：${escHtml(e.message)}</span>`;
+    return;
+  }
+  if (!list.length) { body.innerHTML = '<span style="color:#718096;">目前沒有信任裝置（下次已註冊 TOTP 的登入通過驗證碼後會自動建立）。</span>'; return; }
+  const fmt = iso => { try { return new Date(iso).toLocaleString('zh-TW', { hour12: false }); } catch (_) { return iso || ''; } };
+  const uaShort = ua => {
+    if (!ua) return '（未知裝置）';
+    let os = /Windows/.test(ua) ? 'Windows' : /iPhone|iPad|iOS/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Mac/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : '其他';
+    let br = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : '瀏覽器';
+    return `${os}・${br}`;
+  };
+  body.innerHTML = list.map(d => {
+    const statusBadge = d.revoked
+      ? '<span style="font-size:.72rem;color:#822727;background:#fff5f5;border:1px solid #feb2b2;border-radius:4px;padding:1px 6px;">已撤銷</span>'
+      : d.current
+        ? '<span style="font-size:.72rem;font-weight:700;color:#276749;background:#f0fff4;border:1px solid #9ae6b4;border-radius:4px;padding:1px 6px;">目前裝置</span>'
+        : '<span style="font-size:.72rem;font-weight:700;color:#2b6cb0;background:#ebf8ff;border:1px solid #bee3f8;border-radius:4px;padding:1px 6px;">信任中</span>';
+    const revokeBtn = d.revoked ? '' : `<button class="btn btn-danger btn-sm" style="padding:2px 10px;font-size:.78rem;" onclick="_revokeMyDevice('${d.id}')">撤銷</button>`;
+    return `<div style="padding:8px 0;border-bottom:1px solid #edf2f7;display:flex;flex-direction:column;gap:2px;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <strong>${escHtml(uaShort(d.ua))}</strong>${statusBadge}
+        <span style="margin-left:auto;">${revokeBtn}</span>
+      </div>
+      <div style="color:#718096;font-size:.8rem;">建立時間：${escHtml(fmt(d.createdAt))}</div>
+      <div style="color:#718096;font-size:.8rem;">最近使用：${escHtml(fmt(d.lastSeenAt))}</div>
+    </div>`;
+  }).join('');
+}
+
+// 撤銷單一信任裝置：撤銷後該裝置下次登入需重新輸入 TOTP，其他裝置不受影響。
+async function _revokeMyDevice(deviceId) {
+  if (!confirm('確定要撤銷這個裝置嗎？\n\n該裝置下次登入將需要重新輸入驗證碼。')) return;
+  try {
+    await proxyCall('revokeDevice', { deviceId });
+    showToast('已撤銷該裝置。', 'success', 2000);
+    _renderMyDevices();
+  } catch (e) {
+    alert('撤銷裝置失敗：' + e.message);
+  }
+}
+
 // ══════════════════════════════════════════════
 //  Google Drive API helpers
 // ══════════════════════════════════════════════
@@ -31040,6 +31109,9 @@ function renderPrefsPage() {
 
   // 登入紀錄（#6）：背景載入，不阻塞頁面渲染
   _renderMySessions().catch(() => {});
+  // Phase 3b：信任裝置清單，同樣背景載入（僅本地帳密＋TOTP 後端顯示，見 IS_LOCAL_BACKEND；
+  // 卡片本身預設 display:none，非本地後端呼叫 listMyDevices 也只是白做工不影響畫面，故不特別判斷）。
+  if (IS_LOCAL_BACKEND) _renderMyDevices().catch(() => {});
 
   // 空間預約顯示顏色 grid（INFOSYS 預設色／GC 預設色／其他使用者一覽）
   _renderBkColorGrid();

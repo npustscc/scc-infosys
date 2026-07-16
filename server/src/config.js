@@ -49,6 +49,9 @@ const GC_CALENDAR_NAME = process.env.GC_CALENDAR_NAME || 'SCC 空間預約';
 const GAS_BRIDGE_URL = process.env.GAS_BRIDGE_URL || '';
 const GAS_BRIDGE_KEY = process.env.GAS_BRIDGE_KEY || '';
 const CASE_AUTHZ_MODE = process.env.CASE_AUTHZ_MODE || 'shadow';
+// 信任裝置憑證效期（天，Phase 3b，見 auth/deviceTrust.js）：非機密設定值，缺值用預設 30 即可
+// 安全啟動，不用 required()。
+const TRUSTED_DEVICE_DAYS = Number(process.env.TRUSTED_DEVICE_DAYS || 30);
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
@@ -66,6 +69,7 @@ module.exports = {
   GAS_BRIDGE_URL,
   GAS_BRIDGE_KEY,
   CASE_AUTHZ_MODE,
+  TRUSTED_DEVICE_DAYS,
   NODE_ENV,
   PUBLIC_DIR,
 };

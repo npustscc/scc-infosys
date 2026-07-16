@@ -8,6 +8,7 @@
 const vdrive = require('../storage/vdrive');
 const sessionAuth = require('../auth/session');
 const local = require('../auth/local');
+const deviceTrust = require('../auth/deviceTrust');
 const gate = require('../authz/gate');
 
 const SESSIONS_PATH = 'sessions.json';
@@ -49,11 +50,25 @@ function readConfigUsers(db, ctx) {
 }
 
 // 回傳 { kind: 'invalid_credentials' | 'totp_required' | 'invalid_totp' | 'unauthorized' | 'ok',
-//        ...(ok 時附 sessionToken/exp/email/mailSent/totpEnrolled) }
+//        ...(ok 時附 sessionToken/exp/email/mailSent/totpEnrolled/newDeviceToken?) }
 // totp_required／invalid_totp 只在密碼已驗證正確時才會出現（見 local.verifyLocalCredentialsDetailed
 // 的 kind 語意註解）——帳密錯誤一律回 invalid_credentials，不洩漏帳密是否正確以外的資訊。
-async function sessionStart(db, { email, password, otp, ua, ip, geo, cc }, ctx, secret) {
-  const authResult = await local.verifyLocalCredentialsDetailed(db, email, password, otp);
+//
+// Phase 3b 信任裝置：deviceToken（由 index.js 從 Cookie header 注入 payload，見該檔頭註解）若為
+// 該帳號目前有效的裝置憑證，等同第二因素（TOTP）已滿足——密碼正確、已註冊 TOTP、本次未附 otp
+// 的情境（即原本會回 totp_required）改為直接放行。deviceDays＝config.TRUSTED_DEVICE_DAYS。
+async function sessionStart(db, { email, password, otp, ua, ip, geo, cc, deviceToken }, ctx, secret, deviceDays) {
+  const revokedBefore = sessionAuth.getRevokedBefore(db, email);
+  const deviceValid = !!(email && deviceToken
+    && deviceTrust.verifyDeviceToken(db, deviceToken, email, revokedBefore, deviceDays));
+
+  let authResult = await local.verifyLocalCredentialsDetailed(db, email, password, otp);
+  if (authResult.kind === 'totp_required' && deviceValid) {
+    // 裝置信任放行：比照一般登入成功重置鎖定計數（verifyLocalCredentialsDetailed 在
+    // totp_required 分支不會呼叫內部的 registerSuccess，見 local.registerLoginSuccess 註解）。
+    local.registerLoginSuccess(db, email);
+    authResult = { kind: 'ok', email, totpEnrolled: true };
+  }
   if (authResult.kind !== 'ok') return { kind: authResult.kind };
   const authedEmail = authResult.email;
 
@@ -74,9 +89,20 @@ async function sessionStart(db, { email, password, otp, ua, ip, geo, cc }, ctx, 
     });
   } catch (_e) { /* 登入紀錄寫入失敗不阻斷登入，同 GAS 版行為 */ }
 
+  // 裝置憑證：既有裝置有效則沿用（verifyDeviceToken 已順手更新 last_seen_at），否則視為新裝置／
+  // 無痕首登／裝置信任已過期／已被撤銷／尚未註冊 TOTP 的帳號首次登入，一律簽發新憑證——
+  // 未註冊 TOTP 的帳號簽發裝置 cookie 目前無實際「免 TOTP」效果，但簽發本身無害；刻意選擇單一
+  // 路徑（不為「已註冊/未註冊 TOTP」分岔兩套簽發邏輯），實作與後續維護都更簡單（見任務回報）。
+  let newDeviceToken;
+  if (!deviceValid) {
+    const issuedDevice = deviceTrust.issueDevice(db, authedEmail, ua);
+    newDeviceToken = issuedDevice.cookieValue;
+  }
+
   return {
     kind: 'ok', sessionToken: issued.token, exp: issued.exp, email: authedEmail, mailSent: false,
     totpEnrolled: !!authResult.totpEnrolled,
+    ...(newDeviceToken ? { newDeviceToken } : {}),
   };
 }
 

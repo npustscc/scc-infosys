@@ -10,8 +10,15 @@ const { URLSearchParams } = require('node:url');
 const config = require('./config');
 const { openDb } = require('./db');
 const { handleRequest } = require('./dispatch');
+const cookies = require('./util/cookies');
 
 const db = openDb(config.DB_PATH);
+
+// 信任裝置憑證 cookie 名稱以 ROOT_FOLDER_ID 命名空間化（比照前端 localStorage 的
+// scc_session_<ROOT_FOLDER_ID> 慣例）：cookie 不像 fetch 那樣自然依 port 隔離，若 dev/prod
+// 兩個 Node 實例跑在同一主機的不同 port，不加此命名空間會讓兩邊互相覆蓋彼此的 cookie
+// （後果僅止於「裝置憑證失效、退回要求 TOTP」，不是安全漏洞，但仍應避免這種 UX 劣化）。
+const DEVICE_COOKIE_NAME = `scc_device_${config.ROOT_FOLDER_ID}`;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -124,7 +131,23 @@ const server = http.createServer(async (req, res) => {
     try {
       const rawBody = await readBody(req);
       const payload = parsePayload(rawBody, req.headers['content-type'] || '');
+      // Phase 3b 信任裝置：把 Cookie header 內的裝置憑證注入 payload.deviceToken——dispatch/
+      // actions 層維持純函式（不碰 req/res），HTTP 專屬的 Cookie 解析只在這裡做一次。所有
+      // action 皆注入（不限 sessionStart），listMyDevices 用它標記「目前這台」。
+      const cookieMap = cookies.parseCookieHeader(req.headers.cookie);
+      if (cookieMap[DEVICE_COOKIE_NAME]) payload.deviceToken = cookieMap[DEVICE_COOKIE_NAME];
+
       const result = await handleRequest(db, config, payload);
+
+      // sessionStart 簽發/沿用了新裝置憑證時，dispatch 回應會附 data.newDeviceToken——轉成
+      // Set-Cookie 後從 JSON 回應剝除（機密紀律：裝置 token 明文只出現在 Set-Cookie，不落
+      // JSON 回應／log／vdrive）。不加 Secure：見 util/cookies.js buildSetCookieHeader 註解。
+      if (result && result.success && result.data && typeof result.data.newDeviceToken === 'string') {
+        const maxAgeSec = config.TRUSTED_DEVICE_DAYS * 24 * 3600;
+        res.setHeader('Set-Cookie', cookies.buildSetCookieHeader(DEVICE_COOKIE_NAME, result.data.newDeviceToken, maxAgeSec));
+        delete result.data.newDeviceToken;
+      }
+
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       res.end(JSON.stringify(result));
     } catch (err) {

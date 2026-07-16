@@ -85,6 +85,14 @@ async function verifyLocalCredentials(db, email, password, otp, nowMs = Date.now
   return result.kind === 'ok' ? result.email : null;
 }
 
+// Phase 3b：信任裝置憑證放行（免 TOTP）比照一般登入成功——重置鎖定計數。供
+// actions/session.js 的裝置信任分支呼叫，該分支只走到 verifyLocalCredentialsDetailed 回
+// 'totp_required' 就中止（未附 otp），不會自動觸發內部的 registerSuccess(user)。
+function registerLoginSuccess(db, email) {
+  const user = getUser(db, email);
+  if (user) registerSuccess(db, user);
+}
+
 // scripts/create-user.js 用：新建或更新帳號（upsert）。totpSecret 若提供，視為直接以「已註冊」
 // 狀態灌入（管理者代為設定的情境）；不提供則不動 totp_enrolled/totp_pending_secret 既有值，
 // 只在該欄位當前為 NULL/0 的新建情境下維持未註冊——**注意**：此函式為整欄覆寫工具，
@@ -118,6 +126,7 @@ module.exports = {
   isLocked,
   verifyLocalCredentials,
   verifyLocalCredentialsDetailed,
+  registerLoginSuccess,
   upsertUser,
   MAX_FAILED_ATTEMPTS,
   LOCK_DURATION_SEC,
