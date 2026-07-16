@@ -21,6 +21,7 @@ const audit = require('./audit');
 const sessionActions = require('./actions/session');
 const trustedDeviceActions = require('./actions/trustedDevices');
 const totpSetupActions = require('./actions/totpSetup');
+const twofaActions = require('./actions/twofa');
 const storageActions = require('./actions/storage');
 const commitActions = require('./actions/commit');
 const mailActions = require('./actions/mail');
@@ -112,9 +113,13 @@ async function handleRequest(db, config, payload) {
     }
     const ctx = { root: config.ROOT_FOLDER_ID };
 
-    // ── sessionStart：本地帳密＋TOTP 認證＋授權閘（在 actions/session.js 內部一次做完）──
-    // totp_required／invalid_totp 對映前端 TOTP 欄位顯示（見 login.html）：totp_required＝
-    // 帳密正確但該帳號已註冊 TOTP、本次未附 otp（前端滑出輸入框重送）；invalid_totp＝已附但錯誤。
+    // ── sessionStart：本地帳密＋TOTP／Email 驗證碼認證＋授權閘（在 actions/session.js 內部一次
+    //      做完）── totp_required／invalid_totp 對映前端 TOTP 欄位顯示（見 login.html）：
+    //      totp_required＝帳密正確但該帳號選用 TOTP、本次未附 otp（前端滑出輸入框重送）；
+    //      invalid_totp＝已附但錯誤。email_otp_sent／invalid_email_otp／email_otp_unavailable
+    //      為 Email 驗證碼後備第二因素的對應三態（見 actions/session.js 檔頭註解）——
+    //      email_otp_sent 不是「錯誤」而是請求中間態，比照 totp_required 的模式回 bizError，
+    //      額外帶 resent 供前端判斷要不要重置 60 秒倒數計時器（見 login.html）。
     if (action === 'sessionStart') {
       const result = await sessionActions.sessionStart(db, params, ctx, config);
       outcomeEmail = params.email || null;
@@ -129,6 +134,24 @@ async function handleRequest(db, config, payload) {
       if (result.kind === 'invalid_totp') {
         outcome = 'denied';
         return envelope.bizError('invalid_totp');
+      }
+      if (result.kind === 'email_otp_sent') {
+        outcome = 'denied';
+        return envelope.bizError('email_otp_sent', { resent: !!result.resent });
+      }
+      if (result.kind === 'invalid_email_otp') {
+        outcome = 'denied';
+        return envelope.bizError('invalid_email_otp');
+      }
+      if (result.kind === 'email_otp_unavailable') {
+        outcome = 'denied';
+        return envelope.bizError('email_otp_unavailable');
+      }
+      // switchToEmailOtp 生效時 otpEmails 未通過正規化（見 auth/local.js normalizeOtpEmails）——
+      // 與 twofaSetMethod('email', emails) 共用同一套三種 error 代碼。
+      if (result.kind === 'otp_emails_required' || result.kind === 'too_many_otp_emails' || result.kind === 'invalid_otp_email') {
+        outcome = 'denied';
+        return envelope.bizError(result.kind);
       }
       if (result.kind === 'unauthorized') {
         outcome = 'denied';
@@ -229,6 +252,9 @@ async function handleRequest(db, config, payload) {
       case 'totpSetupStart': result = totpSetupActions.totpSetupStart(db, userEmail); break;
       case 'totpSetupConfirm': result = totpSetupActions.totpSetupConfirm(db, userEmail, params.code); break;
       case 'totpStatus': result = totpSetupActions.totpStatus(db, userEmail); break;
+      // ── 第二因素方法選擇（Email 驗證碼後備）：userEmail 一律來自已驗證 session，同上原則。──
+      case 'twofaSetMethod': result = twofaActions.twofaSetMethod(db, userEmail, params.method, params.emails); break;
+      case 'twofaStatus': result = twofaActions.twofaStatus(db, userEmail); break;
       case 'readJson': result = storageActions.readJson(db, params, ctx, userEmail, config.CASE_AUTHZ_MODE, onShadowStrip); break;
       case 'updateJson': result = storageActions.updateJson(db, params, ctx); break;
       case 'readJsonById': result = storageActions.readJsonById(db, params, ctx, userEmail, config.CASE_AUTHZ_MODE, onShadowStrip); break;

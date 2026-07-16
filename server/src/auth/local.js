@@ -1,19 +1,31 @@
-// server/src/auth/local.js — 本地帳密＋TOTP 認證 provider（取代 Google ID token 登入）。
+// server/src/auth/local.js — 本地帳密＋TOTP／Email 驗證碼認證 provider（取代 Google ID token 登入）。
 // 設計為可插拔（未來若要接校內 SSO，換掉這支即可，dispatcher/gate 不需改動）。
-// 失敗一律回 null，不透露原因（帳號不存在／密碼錯／OTP 錯／已鎖定，外部觀察者看到的都一樣，
-// 呼叫端一律回應 {error:'invalid_credentials'}）——避免帳號枚舉與鎖定狀態外洩。
+// 失敗一律回 null（精簡版 verifyLocalCredentials），不透露原因（帳號不存在／密碼錯／OTP 錯／
+// 已鎖定，外部觀察者看到的都一樣，呼叫端一律回應 {error:'invalid_credentials'}）——避免帳號
+// 枚舉與鎖定狀態外洩。
 //
 // TOTP 驗證邏輯 Phase 3a 起改用本專案手刻的 auth/totp.js（RFC 6238，零新 npm 依賴），取代 Phase 1
 // 骨架暫時借用的 otplib——base32 secret 格式與預設參數（SHA1／30 秒／6 位數／window=1）相容，
 // 既有資料（users.totp_secret）與既有測試（本檔／auth-local.test.js 用 otplib 交叉產碼）不受影響。
+//
+// Email 驗證碼（第二因素後備，migration 004）：本檔只負責「決定要不要寄／寄什麼碼／驗證碼是否
+// 正確」這些純 DB 操作，不觸網——實際寄信（需要 config/mailer）由 actions/session.js 負責，比照
+// v166 登入通知信既有的分工（本檔決策、actions 層執行 I/O）。
 'use strict';
 
+const crypto = require('node:crypto');
 const argon2 = require('argon2');
 const totp = require('./totp');
 
 const ARGON2_OPTS = { type: argon2.argon2id, memoryCost: 65536, timeCost: 3 }; // m=64MiB, t=3
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCK_DURATION_SEC = 15 * 60;
+
+// Email 驗證碼參數：10 分鐘效期、60 秒防重寄冷卻、單一碼最多試 5 次（碼本身的用盡上限，
+// 與下方共用的帳號級 failed_attempts/locked_until 是兩層不同的節流——見 migration 004 檔頭註解）。
+const EMAIL_OTP_TTL_MIN = 10;
+const EMAIL_OTP_RESEND_COOLDOWN_SEC = 60;
+const EMAIL_OTP_MAX_ATTEMPTS = 5;
 
 async function hashPassword(password) {
   return argon2.hash(password, ARGON2_OPTS);
@@ -47,17 +59,139 @@ function registerSuccess(db, user) {
     .run(new Date().toISOString(), user.email);
 }
 
-// 詳細版：回傳 {kind, email?, totpEnrolled?}，供 sessionStart 分辨「未輸入 TOTP」與「TOTP 錯誤」——
+// ── Email 驗證碼（第二因素後備，migration 004）──
+
+function hashEmailOtp(code) {
+  return crypto.createHash('sha256').update(String(code), 'utf8').digest('hex');
+}
+
+// 決定該帳號登入時要用哪種第二因素：'totp' | 'email' | null（未設定，照舊放行）。
+// twofa_method 為 NULL 但已註冊 TOTP → 視為選了 'totp'：本欄位是本次新增（migration 004），既有
+// 已註冊 TOTP 的帳號在欄位補上之前的預設值就是 NULL，不能因為欄位新增就讓這些帳號突然「未設定
+// 第二因素」而失去既有保護，故以 totp_enrolled 補位判斷。
+function resolveTwofaMethod(user) {
+  if (user.twofa_method === 'totp' || user.twofa_method === 'email') return user.twofa_method;
+  if (user.totp_enrolled) return 'totp';
+  return null;
+}
+
+// 60 秒防重寄：email_otp_sent_at 為 NULL（從未寄過／已清空）視為可寄。
+function canResendEmailOtp(user, nowMs = Date.now()) {
+  if (!user.email_otp_sent_at) return true;
+  const lastMs = Date.parse(user.email_otp_sent_at);
+  if (!Number.isFinite(lastMs)) return true;
+  return (nowMs - lastMs) >= EMAIL_OTP_RESEND_COOLDOWN_SEC * 1000;
+}
+
+// 產生新碼＋存雜湊＋重置本輪嘗試次數＋更新寄送時間戳，回傳明文碼（唯一會出現明文的地方——
+// 呼叫端(actions/session.js) 只能把它放進要寄出的信件內文，不可落地／log，見任務機密紀律）。
+function issueEmailOtp(db, email, nowMs = Date.now()) {
+  const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+  const now = new Date(nowMs).toISOString();
+  const expiresAt = new Date(nowMs + EMAIL_OTP_TTL_MIN * 60 * 1000).toISOString();
+  db.prepare(
+    `UPDATE users SET email_otp_hash = ?, email_otp_expires_at = ?, email_otp_attempts = 0,
+       email_otp_sent_at = ?, updated_at = ? WHERE email = ?`
+  ).run(hashEmailOtp(code), expiresAt, now, now, email);
+  return code;
+}
+
+// 驗證：未過期、本輪嘗試次數未達上限、雜湊比對相符（常數時間比對，比照 auth/deviceTrust.js
+// 對 token 雜湊的比對手法）。任何一項不符一律回 false，不細分原因（呼叫端統一回 invalid_email_otp）。
+function checkEmailOtp(user, code, nowMs = Date.now()) {
+  if (!user.email_otp_hash || !user.email_otp_expires_at) return false;
+  const expiresMs = Date.parse(user.email_otp_expires_at);
+  if (!Number.isFinite(expiresMs) || nowMs > expiresMs) return false;
+  if ((user.email_otp_attempts || 0) >= EMAIL_OTP_MAX_ATTEMPTS) return false;
+  const expected = Buffer.from(user.email_otp_hash, 'hex');
+  const actual = Buffer.from(hashEmailOtp(code), 'hex');
+  if (expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(expected, actual);
+}
+
+function bumpEmailOtpAttempts(db, email) {
+  db.prepare('UPDATE users SET email_otp_attempts = email_otp_attempts + 1 WHERE email = ?').run(email);
+}
+
+// ── 收驗證碼用的 Email 清單（1~3 個，migration 004 otp_emails 欄）──
+
+const OTP_EMAIL_MAX = 3;
+const OTP_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// 驗證＋正規化：trim → 去空字串 → 小寫＋去重 → 數量須 1~3 → 逐一格式檢查（含 @ 與 .）。
+// 回傳 { emails } 或 { error }（error 為業務錯誤代碼，供 actions/twofa.js／sessionStart 直接
+// 當 kind／bizError 用，風格比照既有的 'totp_not_enrolled'）：
+//   'otp_emails_required'  — 正規化後 0 個（未附 emails，或全部是空字串）
+//   'too_many_otp_emails'  — 正規化後（去重）仍超過 3 個
+//   'invalid_otp_email'    — 有任一項不符基本 email 格式
+function normalizeOtpEmails(rawList) {
+  if (!Array.isArray(rawList)) return { error: 'otp_emails_required' };
+  const trimmed = rawList.map((e) => String(e == null ? '' : e).trim()).filter(Boolean);
+  if (trimmed.length === 0) return { error: 'otp_emails_required' };
+  const deduped = Array.from(new Set(trimmed.map((e) => e.toLowerCase())));
+  if (deduped.length > OTP_EMAIL_MAX) return { error: 'too_many_otp_emails' };
+  for (const e of deduped) {
+    if (!OTP_EMAIL_RE.test(e)) return { error: 'invalid_otp_email' };
+  }
+  return { emails: deduped };
+}
+
+// 讀出目前設定的收件清單（JSON 解析失敗／欄位為 NULL 一律視為空陣列，不拋錯）。
+function parseOtpEmails(user) {
+  if (!user || !user.otp_emails) return [];
+  try {
+    const arr = JSON.parse(user.otp_emails);
+    return Array.isArray(arr) ? arr.filter((e) => typeof e === 'string' && e) : [];
+  } catch (_e) {
+    return [];
+  }
+}
+
+// 實際寄送目標：otp_emails 有值就用它，空（理論上不會發生，twofaSetMethod 已擋 0 個的情境）則
+// 防禦性 fallback 回帳號本身 email——帳號名本身就是 email，永遠有值，確保「寄不出去」不會發生在
+// 這一層（真正寄不出去只會是 mailer/Gmail API 的問題，見 actions/session.js 的 email_otp_unavailable）。
+function emailOtpRecipients(user) {
+  const list = parseOtpEmails(user);
+  return list.length > 0 ? list : [user.email];
+}
+
+// 單次有效：驗證通過後清空，同一碼不能重放；也讓下次「需要第二因素」時的 60 秒防重寄冷卻歸零
+// （不留上一輪的 sent_at 卡住下一輪首次寄送）。
+function clearEmailOtp(db, email) {
+  db.prepare(
+    `UPDATE users SET email_otp_hash = NULL, email_otp_expires_at = NULL,
+       email_otp_attempts = 0, email_otp_sent_at = NULL WHERE email = ?`
+  ).run(email);
+}
+
+// 詳細版：回傳 {kind, email?, totpEnrolled?, ...}，供 sessionStart 分辨各種「還差一步」的狀態——
 // 但僅在密碼已驗證正確的前提下才進一步分辨；帳號不存在/停用/鎖定/密碼錯一律回同一種
 // kind:'invalid_credentials'（不透露原因，避免帳號枚舉與鎖定狀態外洩，維持本檔頭註解的既有原則）。
-//   kind: 'invalid_credentials' — 密碼／帳號本身有問題
-//   kind: 'totp_required'       — 密碼正確、該帳號已註冊 TOTP，但本次未附 otp
-//   kind: 'invalid_totp'        — 密碼正確、已註冊 TOTP，但 otp 錯誤
-//   kind: 'ok'                  — 通過（未註冊 TOTP，或已註冊且 otp 正確）
-async function verifyLocalCredentialsDetailed(db, email, password, otp, nowMs = Date.now()) {
+//   kind: 'invalid_credentials'  — 密碼／帳號本身有問題
+//   kind: 'totp_required'        — 密碼正確、該帳號選用 TOTP，但本次未附 otp
+//   kind: 'invalid_totp'         — 密碼正確、選用 TOTP，但 otp 錯誤
+//   kind: 'email_otp_required'   — 密碼正確、該帳號選用 Email 驗證碼，但本次未附 emailOtp——
+//                                   附帶 emailOtpCode（null 表示 60 秒防重寄冷卻中，不寄新碼）、
+//                                   resent（是否本次真的產生了新碼）、emailOtpRecipients（要寄去
+//                                   的 1~3 個地址，見 emailOtpRecipients），供 actions/session.js
+//                                   決定是否觸網寄信、寄給誰（本函式不觸網，見檔頭註解）。
+//   kind: 'invalid_email_otp'    — 密碼正確、選用 Email 驗證碼，但 emailOtp 錯誤／過期／已用盡次數
+//   kind: 'otp_emails_required'  — switchToEmailOtp 生效時，otpEmails 正規化後 0 個
+//   kind: 'too_many_otp_emails'  — switchToEmailOtp 生效時，otpEmails 正規化後仍超過 3 個
+//   kind: 'invalid_otp_email'    — switchToEmailOtp 生效時，otpEmails 內有格式不正確的項目
+//   kind: 'ok'                   — 通過（未設定第二因素，或 TOTP／Email 驗證碼其中一種驗證通過）
+//
+// switchToEmailOtp：密碼已驗證正確後才會生效（見任務回報「email OTP 狀態機的邊界情況決策」）——
+// 使用者登入到一半（已知密碼正確、尚未通過第二因素）想從 TOTP 改用 Email 驗證碼時，讓本次呼叫
+// 順便把 twofa_method 切成 'email' 並立刻進入寄送流程，不需要另開一個「已登入」的中繼狀態，
+// 也杜絕越權竄改他人 2FA 設定（密碼必須正確，等同本人在操作自己的帳號）。otpEmails 在此情境下
+// 必附（比照 twofaSetMethod('email', emails) 的規則，用同一支 normalizeOtpEmails 驗證）——驗證
+// 失敗時直接回對應 kind，不切換 twofa_method、不動任何欄位（避免帳號被切到一個「選了 email 但
+// 收件清單是垃圾」的半殘狀態）。
+async function verifyLocalCredentialsDetailed(db, email, password, otp, emailOtp, switchToEmailOtp, otpEmails, nowMs = Date.now()) {
   const nowSec = Math.floor(nowMs / 1000);
   if (!email || !password) return { kind: 'invalid_credentials' };
-  const user = getUser(db, email);
+  let user = getUser(db, email);
   if (!user) return { kind: 'invalid_credentials' };
   if (user.disabled) return { kind: 'invalid_credentials' };
   if (isLocked(user, nowSec)) return { kind: 'invalid_credentials' };
@@ -66,22 +200,56 @@ async function verifyLocalCredentialsDetailed(db, email, password, otp, nowMs = 
   try { passwordOk = await argon2.verify(user.password_hash, password); } catch (_e) { passwordOk = false; }
   if (!passwordOk) { registerFailure(db, user, nowSec); return { kind: 'invalid_credentials' }; }
 
-  if (user.totp_enrolled && user.totp_secret) {
+  if (switchToEmailOtp === true) {
+    const normalized = normalizeOtpEmails(otpEmails);
+    if (normalized.error) return { kind: normalized.error };
+    db.prepare('UPDATE users SET twofa_method = ?, otp_emails = ?, updated_at = ? WHERE email = ?')
+      .run('email', JSON.stringify(normalized.emails), new Date(nowMs).toISOString(), user.email);
+    user = getUser(db, email); // 重讀最新 twofa_method/otp_emails，下面才看得到
+  }
+
+  const method = resolveTwofaMethod(user);
+
+  if (method === 'totp') {
     const otpStr = String(otp == null ? '' : otp).trim();
     if (!otpStr) return { kind: 'totp_required' };
     let otpOk = false;
     try { otpOk = totp.verifyTotp(user.totp_secret, otpStr); } catch (_e) { otpOk = false; }
     if (!otpOk) { registerFailure(db, user, nowSec); return { kind: 'invalid_totp' }; }
+    registerSuccess(db, user);
+    return { kind: 'ok', email: user.email, totpEnrolled: !!user.totp_enrolled };
+  }
+
+  if (method === 'email') {
+    const codeStr = String(emailOtp == null ? '' : emailOtp).trim();
+    if (!codeStr) {
+      const resent = canResendEmailOtp(user, nowMs);
+      const emailOtpCode = resent ? issueEmailOtp(db, user.email, nowMs) : null;
+      return {
+        kind: 'email_otp_required', email: user.email, totpEnrolled: !!user.totp_enrolled,
+        emailOtpCode, resent, emailOtpRecipients: emailOtpRecipients(user),
+      };
+    }
+    const ok = checkEmailOtp(user, codeStr, nowMs);
+    if (!ok) {
+      registerFailure(db, user, nowSec);
+      bumpEmailOtpAttempts(db, user.email);
+      return { kind: 'invalid_email_otp' };
+    }
+    clearEmailOtp(db, user.email);
+    registerSuccess(db, user);
+    return { kind: 'ok', email: user.email, totpEnrolled: !!user.totp_enrolled };
   }
 
   registerSuccess(db, user);
   return { kind: 'ok', email: user.email, totpEnrolled: !!user.totp_enrolled };
 }
 
-// 精簡版（既有呼叫端／測試相容）：驗證通過回 email；任何失敗（帳號不存在/停用/鎖定/密碼錯/OTP 錯）
-// 一律回 null，語意等同 verifyLocalCredentialsDetailed 的 kind !== 'ok'。
+// 精簡版（既有呼叫端／測試相容）：驗證通過回 email；任何失敗（帳號不存在/停用/鎖定/密碼錯/
+// TOTP 或 Email 驗證碼錯／還差一步)一律回 null，語意等同 verifyLocalCredentialsDetailed 的
+// kind !== 'ok'。不支援 emailOtp／switchToEmailOtp（既有呼叫端只用帳密＋TOTP，見 auth-local.test.js）。
 async function verifyLocalCredentials(db, email, password, otp, nowMs = Date.now()) {
-  const result = await verifyLocalCredentialsDetailed(db, email, password, otp, nowMs);
+  const result = await verifyLocalCredentialsDetailed(db, email, password, otp, undefined, false, undefined, nowMs);
   return result.kind === 'ok' ? result.email : null;
 }
 
@@ -128,6 +296,14 @@ module.exports = {
   verifyLocalCredentialsDetailed,
   registerLoginSuccess,
   upsertUser,
+  resolveTwofaMethod,
+  normalizeOtpEmails,
+  parseOtpEmails,
+  emailOtpRecipients,
   MAX_FAILED_ATTEMPTS,
   LOCK_DURATION_SEC,
+  EMAIL_OTP_TTL_MIN,
+  EMAIL_OTP_RESEND_COOLDOWN_SEC,
+  EMAIL_OTP_MAX_ATTEMPTS,
+  OTP_EMAIL_MAX,
 };
