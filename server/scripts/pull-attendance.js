@@ -20,13 +20,12 @@
 //  走一次互動式授權取得後，另存一份唯讀 scope 的 refresh_token 到此檔，chmod 600。）
 'use strict';
 
-const fs = require('node:fs');
 const config = require('../src/config');
 const { openDb } = require('../src/db');
 const vdrive = require('../src/storage/vdrive');
+const googleAuth = require('../src/google/auth');
 
 const ATTENDANCE_PATH = 'attendance.json';
-const TOKEN_URI = 'https://oauth2.googleapis.com/token';
 
 // ── 純函式：合併邏輯（單元測試對象，不觸網）──────────────────────────
 // localData：本地 vdrive 現有的 attendance.json 內容，可能為 null（尚無此檔）。
@@ -64,47 +63,10 @@ function mergeAttendance(localData, driveRecords) {
   };
 }
 
-// ── OAuth：refresh_token 換 access_token（headless，無需互動授權）───────
-async function tokenFromRefresh(creds, refreshToken) {
-  const res = await fetch(TOKEN_URI, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: creds.client_id,
-      client_secret: creds.client_secret,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token',
-    }),
-  });
-  if (!res.ok) {
-    // 不印出回應內容——refresh 失敗訊息可能夾帶敏感細節，且我們無法保證裡面沒有憑證片段。
-    throw new Error('refresh token 交換失敗（HTTP ' + res.status + '）');
-  }
-  const json = await res.json();
-  if (!json || typeof json.access_token !== 'string' || !json.access_token) {
-    throw new Error('refresh token 交換回應格式異常（缺 access_token）');
-  }
-  return json.access_token;
-}
-
-function loadCreds(credsPath) {
-  let raw;
-  try {
-    raw = fs.readFileSync(credsPath, 'utf8');
-  } catch (e) {
-    throw new Error('讀取憑證檔失敗：' + credsPath + '（' + e.code + '）');
-  }
-  let j;
-  try {
-    j = JSON.parse(raw);
-  } catch (_e) {
-    throw new Error('憑證檔內容不是合法 JSON：' + credsPath);
-  }
-  if (!j || typeof j.client_id !== 'string' || typeof j.client_secret !== 'string' || typeof j.refresh_token !== 'string') {
-    throw new Error('憑證檔格式不符，需含 client_id/client_secret/refresh_token（字串）：' + credsPath);
-  }
-  return j;
-}
+// ── OAuth：refresh_token 換 access_token、憑證檔讀取 ─────────────────────
+// 抽到 src/google/auth.js 供 scripts/pull-mental-leaves.js／src/actions/mail.js 共用
+// （行為不變：loadCreds 錯誤訊息逐字相同；googleAuth.tokenFromRefresh 回傳形狀從純字串改為
+// { accessToken, expiresIn } 物件，呼叫端已同步調整，見下方 main()）。
 
 // ── Drive API（唯讀）──────────────────────────────────────────────────
 async function driveFetch(url, accessToken) {
@@ -156,7 +118,7 @@ async function main() {
 
   let creds;
   try {
-    creds = loadCreds(credsPath);
+    creds = googleAuth.loadCreds(credsPath);
   } catch (e) {
     console.error('[pull-attendance] ' + e.message);
     process.exit(1);
@@ -165,7 +127,7 @@ async function main() {
 
   let accessToken;
   try {
-    accessToken = await tokenFromRefresh(creds, creds.refresh_token);
+    accessToken = (await googleAuth.tokenFromRefresh(creds, creds.refresh_token)).accessToken;
   } catch (e) {
     console.error('[pull-attendance] 換取 access token 失敗：' + e.message);
     process.exit(1);

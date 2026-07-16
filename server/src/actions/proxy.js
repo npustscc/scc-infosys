@@ -1,23 +1,23 @@
-// server/src/actions/proxy.js — Phase 2 GAS 瘦身橋接掛點（日曆同步 7 個 + npust5 信件解析 4 個 action）。
+// server/src/actions/proxy.js — Phase 2 GAS 瘦身橋接掛點（日曆同步 7 個 action）。
 // Phase 1 骨架範圍不含轉發本體實作（見計畫「關鍵實作提醒」：GAS_PROXY_URL 設定時才轉發，
 // 本階段不實作轉發本體，留清楚的 TODO 掛點）——一律回傳 not-implemented 業務錯誤，即使
 // GAS_PROXY_URL 已設定也一樣（避免半成品轉發邏輯在骨架階段被誤用於生產）。
 'use strict';
 
-// 日曆同步（Phase 2 仍留在 GAS，見 CLAUDE.md 定案：日曆同步與信件解析留在瘦身 GAS）。
+// 日曆同步（Phase 2 仍留在 GAS，見 CLAUDE.md 定案：日曆同步留在瘦身 GAS）。
 const CALENDAR_ACTIONS = new Set([
   'createCalendarEvent', 'updateCalendarEvent', 'deleteCalendarEvent', 'listCalendarEvents',
   'shareCalendarWriters', 'gcAnnotateEvent', 'getCalendarMeta',
 ]);
 
-// npust5 信件解析／身心調適假窗口相關（同樣留在瘦身 GAS，依賴 Gmail API／OAuth2 code exchange）。
-// 註（偏差記錄）：計畫文字只寫「信件 4 個 action」未逐一列名；此處依「依賴 npust5 Gmail
-// OAuth／信件解析」的實質判準選出 4 個。countMentalLeavesUnprocessed_ 不在此列——它只是對
-// mental_leaves.json（已在 vdrive 內的一般 JSON 檔）計數，不涉及外部信件擷取，歸入一般
-// not-implemented（可用既有 readJson 邏輯之後補上，不需 GAS 代理）。
-const MAIL_ACTIONS = new Set([
-  'getNpust5AuthUrl', 'exchangeNpust5OAuthCode', 'fetchMentalLeaves', 'clearMentalLeaves',
-]);
+// npust5 信件解析／身心調適假窗口相關 4 個 action（getNpust5AuthUrl／exchangeNpust5OAuthCode／
+// fetchMentalLeaves／clearMentalLeaves）已改走本機 Gmail REST 直連（src/google/gmail.js＋
+// src/mail/mentalLeaves.js＋src/actions/mail.js，OAuth 用伺服器端憑證檔 GMAIL_SYNC_CREDS，
+// 不再需要網頁授權流程），故不再落在 proxy stub——直接在 dispatch.js 分派到對應實作／固定業務錯誤。
+// 保留空集合（而非整段刪除 MAIL_ACTIONS 概念）是為了 isProxyAction 呼叫端在誤用這 4 個名稱時，
+// 仍會被下方 CALENDAR_ACTIONS 之外的「一般 not-implemented」分支接住（見 dispatch.js default 分支），
+// 不會意外變成走到本檔的日曆代理邏輯。
+const MAIL_ACTIONS = new Set([]);
 
 const PROXY_ACTIONS = new Set([...CALENDAR_ACTIONS, ...MAIL_ACTIONS]);
 

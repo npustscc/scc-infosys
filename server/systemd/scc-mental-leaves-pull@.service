@@ -1,0 +1,21 @@
+# scc-mental-leaves-pull@.service — 身心調適假信箱解析拉取器（單次執行，由 .timer 觸發）。
+#
+# templated unit：實例名（%i）為環境代號，例如 dev / prod，對應
+# /home/scc-s-admin/scc-dev/server、/home/scc-s-admin/scc-prod/server 兩份獨立部署。
+#
+# 安裝方式與參數說明見同目錄 README.md。
+
+[Unit]
+Description=scc-infosys 身心調適假信箱解析拉取器（%i）
+# 只在網路就緒後才跑（要打 Google OAuth/Gmail API）；DB 由 server 主服務或本 unit 自行 migrate，
+# 兩者對同一 SQLite 檔案的寫入已靠 better-sqlite3 transaction/WAL 序列化，不需宣告啟動順序相依。
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=scc-s-admin
+WorkingDirectory=/home/scc-s-admin/scc-%i/server
+ExecStart=/usr/bin/node scripts/pull-mental-leaves.js
+# 失敗只印訊息給 journal 判定，不在 unit 層級重試——重試交給 .timer 的下一次排程（每 10 分鐘），
+# 避免短時間內對 Google OAuth/Gmail 端點重複打錯誤請求觸發速率限制。

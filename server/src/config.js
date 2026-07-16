@@ -25,6 +25,15 @@ const GAS_PROXY_URL = process.env.GAS_PROXY_URL || '';
 // （{client_id, client_secret, refresh_token}，scope 為 drive.readonly）。選填——server 主程式
 // 不需要它，故不可用 required()，缺值時交由呼叫端（pull-attendance.js）自行 fail-fast。
 const DRIVE_SYNC_CREDS = process.env.DRIVE_SYNC_CREDS || '';
+// 身心調適假信箱解析（scripts/pull-mental-leaves.js＋dispatch fetchMentalLeaves/clearMentalLeaves
+// action）專用：指向 OAuth 憑證 JSON 檔路徑（{client_id, client_secret, refresh_token}，scope 為
+// gmail.modify）。選填——server 主程式不需要它，缺值時交由呼叫端（scripts/pull-mental-leaves.js／
+// src/actions/mail.js）自行 fail-fast/回業務錯誤，故不可用 required()。
+const GMAIL_SYNC_CREDS = process.env.GMAIL_SYNC_CREDS || '';
+// Gmail 已處理信件 label 名稱：對映 dev/Code.gs ALLOWED_ROOTS[root].gmailLabel（dev＝
+// ml-processed-dev、prod＝ml-processed）。Node 版單一 root，故用環境變數直接指定，不比照 GAS
+// 用 rootFolderId 查表。
+const ML_GMAIL_LABEL = process.env.ML_GMAIL_LABEL || 'ml-processed-dev';
 const CASE_AUTHZ_MODE = process.env.CASE_AUTHZ_MODE || 'shadow';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -36,6 +45,8 @@ module.exports = {
   ROOT_FOLDER_ID,
   GAS_PROXY_URL,
   DRIVE_SYNC_CREDS,
+  GMAIL_SYNC_CREDS,
+  ML_GMAIL_LABEL,
   CASE_AUTHZ_MODE,
   NODE_ENV,
   PUBLIC_DIR,

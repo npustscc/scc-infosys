@@ -5,7 +5,10 @@
 //   3. 授權閘（isAuthorizedUser_ 對映：AUTHZ_EXEMPT 之外，email 須在 vdrive config.json 的
 //      users 且未停用；sessionStart 由 actions/session.js 內部自行判斷，不重複走此閘）
 //   4. admin/細部閘（config.json 整檔寫入保護、ROOT_GUARDED、query 白名單）
-//   5. ACTION_TABLE 分派；日曆 7＋信件 4 個 action → proxy stub；其餘未實作 action → 明確業務錯誤
+//   5. ACTION_TABLE 分派；日曆 7 個 action → proxy stub；npust5 信件解析 4 個 action 已實作
+//      （fetchMentalLeaves/clearMentalLeaves 走 actions/mail.js＋本機 Gmail REST，
+//      getNpust5AuthUrl/exchangeNpust5OAuthCode 回固定業務錯誤，見 NPUST5_WEB_AUTH_RETIRED_MSG）；
+//      其餘未實作 action → 明確業務錯誤
 // 每個請求無論成功/拒絕/例外都寫一筆 audit_log（見 audit.js，content 類參數只記長度）。
 'use strict';
 
@@ -18,6 +21,11 @@ const audit = require('./audit');
 const sessionActions = require('./actions/session');
 const storageActions = require('./actions/storage');
 const commitActions = require('./actions/commit');
+const mailActions = require('./actions/mail');
+
+// npust5 Gmail 網頁 OAuth 授權流程在 Node 版已被伺服器端憑證檔（GMAIL_SYNC_CREDS）取代，
+// getNpust5AuthUrl／exchangeNpust5OAuthCode 一律回這則固定業務錯誤（不再導向 Google 同意頁）。
+const NPUST5_WEB_AUTH_RETIRED_MSG = '本地後端改用伺服器端憑證檔，毋需網頁授權';
 
 const STORAGE_ACTIONS = new Set([
   'readJson', 'updateJson', 'readJsonById', 'updateContentById',
@@ -56,11 +64,12 @@ async function handleRequest(db, config, payload) {
   let strippedNote = ''; // R1 caseAuthz shadow 模式：本應剝除幾筆的稽核備註（見下方 onShadowStrip）
 
   try {
-    // exchangeNpust5OAuthCode：OAuth2 code exchange 不需要 idToken/sessionToken（同 GAS 版，
-    // code 本身即為授權證明）；Phase 1 未實作轉發本體，直接回業務錯誤，不吃身分/授權閘。
+    // exchangeNpust5OAuthCode：GAS 版不需要 idToken/sessionToken（code 本身即為授權證明），故沿用
+    // 同樣「不吃身分/授權閘」的位置；Node 版已改用伺服器端憑證檔（GMAIL_SYNC_CREDS），此網頁授權
+    // 流程整個退場，直接回固定業務錯誤。
     if (action === 'exchangeNpust5OAuthCode') {
       outcome = 'denied';
-      responseEnvelope = envelope.bizError(`Not implemented (phase 2 GAS proxy): ${action}`);
+      responseEnvelope = envelope.bizError(NPUST5_WEB_AUTH_RETIRED_MSG);
       return responseEnvelope;
     }
 
@@ -134,6 +143,19 @@ async function handleRequest(db, config, payload) {
       }
     }
 
+    // ── 4a-2. clearMentalLeaves：清空 mental_leaves.json（破壞性）；限 admin 或身心調適假窗口聯絡人
+    //      （config.json 該使用者 isMentalLeaveContact === true）。對映 GAS doPost (c)（L108-114）。──
+    if (action === 'clearMentalLeaves') {
+      const users = getConfigUsersSafe(db, ctx);
+      if (!gate.adminDecision(users, userEmail)) {
+        const u = users && users[userEmail];
+        if (!u || u.isMentalLeaveContact !== true) {
+          outcome = 'denied';
+          return envelope.bizError('Forbidden: admin or mental-leave contact only');
+        }
+      }
+    }
+
     // ── 4b. config.json 整檔寫入保護：非管理者不得變動 users ──
     const cfgFileId = getConfigFileIdSafe(db, ctx);
     if (gate.isConfigWrite(action, params, cfgFileId)) {
@@ -183,6 +205,13 @@ async function handleRequest(db, config, payload) {
       case 'bookingsCommit': result = commitActions.bookingsCommit(db, params, ctx); break;
       case 'listCommit': result = commitActions.listCommit(db, params, ctx); break;
       case 'notifCommit': result = commitActions.notifCommit(db, params, ctx); break;
+      case 'fetchMentalLeaves': result = await mailActions.fetchMentalLeaves(db, config, ctx, params); break;
+      case 'countMentalLeavesUnprocessed': result = await mailActions.countMentalLeavesUnprocessed(config); break;
+      case 'clearMentalLeaves': result = await mailActions.clearMentalLeaves(db, config, ctx); break;
+      case 'getNpust5AuthUrl': {
+        outcome = 'denied';
+        return envelope.bizError(NPUST5_WEB_AUTH_RETIRED_MSG);
+      }
       default: {
         if (proxy.isProxyAction(action)) {
           outcome = 'denied';
