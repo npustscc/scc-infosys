@@ -1,8 +1,12 @@
 // server/src/actions/session.js — sessionStart／sessionLogout／listMySessions 垂直切片。
 // 對映 dev/Code.gs sessionStart_/sessionLogout_/sessionsListForUser_（L410-456、L711-736），
-// 差異：身分來源由 Google idToken 改為本地帳密＋TOTP（auth/local.js），寄信在 Phase 1 落為
-// audit only（mailSent 恆為 false，見計畫「關鍵實作提醒」）；v166 異常偵測/geo 鎖定/7 天保底信
-// 等 GAS 版通知邏輯本階段不移植（純本地開發環境驗證用，非公網部署，之後接 Phase 2 SMTP 時再補）。
+// 差異：身分來源由 Google idToken 改為本地帳密＋TOTP（auth/local.js）。
+// v166 登入異常偵測（熟識裝置/位置降噪＋7 天保底信）已移植：決策見 src/mail/loginNotify.js
+// 的 loginMailDecision，寄送經 src/mail/mailer.js（缺 MAIL_SEND_CREDS 時降級為 audit-only，
+// mailSent 恆為 false）。v167 非台灣登入自動鎖定（geoLockDecision_/_sendGeoLockMail_）與定位
+// 失敗雙向提醒（geoEmptyNoticeDecision_/_sendGeoEmptyMail_）尚未移植——這兩則通知依附的「帳號
+// 自動鎖定」整套行為本身在本檔還沒有對應分支，屬於獨立的安全功能移植，非本次「补真寄信」範圍，
+// 留待後續排入（見任務回報）。
 'use strict';
 
 const vdrive = require('../storage/vdrive');
@@ -10,6 +14,8 @@ const sessionAuth = require('../auth/session');
 const local = require('../auth/local');
 const deviceTrust = require('../auth/deviceTrust');
 const gate = require('../authz/gate');
+const loginNotify = require('../mail/loginNotify');
+const mailer = require('../mail/mailer');
 
 const SESSIONS_PATH = 'sessions.json';
 const MAX_SESSIONS_PER_USER = 15;
@@ -57,7 +63,14 @@ function readConfigUsers(db, ctx) {
 // Phase 3b 信任裝置：deviceToken（由 index.js 從 Cookie header 注入 payload，見該檔頭註解）若為
 // 該帳號目前有效的裝置憑證，等同第二因素（TOTP）已滿足——密碼正確、已註冊 TOTP、本次未附 otp
 // 的情境（即原本會回 totp_required）改為直接放行。deviceDays＝config.TRUSTED_DEVICE_DAYS。
-async function sessionStart(db, { email, password, otp, ua, ip, geo, cc, deviceToken }, ctx, secret, deviceDays) {
+//
+// config：整包 config 物件（見 src/config.js），本函式取用 SESSION_SECRET／TRUSTED_DEVICE_DAYS／
+// MAIL_SEND_CREDS（經 mailer.sendMail 間接使用）／GC_CALENDAR_NAME（經 loginNotify.mailEnvPrefix
+// 間接使用）——改用整包物件而非逐一列參數，避免每新增一個寄信/決策所需的 config 欄位就要再加一個
+// 位置參數。
+async function sessionStart(db, { email, password, otp, ua, ip, geo, cc, deviceToken }, ctx, config) {
+  const secret = config.SESSION_SECRET;
+  const deviceDays = config.TRUSTED_DEVICE_DAYS;
   const revokedBefore = sessionAuth.getRevokedBefore(db, email);
   const deviceValid = !!(email && deviceToken
     && deviceTrust.verifyDeviceToken(db, deviceToken, email, revokedBefore, deviceDays));
@@ -76,16 +89,40 @@ async function sessionStart(db, { email, password, otp, ua, ip, geo, cc, deviceT
   if (!gate.authzDecision(users, authedEmail)) return { kind: 'unauthorized' };
 
   const issued = sessionAuth.issueSessionToken(authedEmail, secret);
+  const uaStr = String(ua || '').slice(0, 200) || '（未提供）';
+  const ipStr = String(ip || '').slice(0, 64);
+  const geoStr = String(geo || '').slice(0, 120);
+  const ccStr = String(cc || '').slice(0, 8);
+
+  // v166 異常偵測＋寄信：對映 dev/Code.gs sessionsAppendRecordWithMailDecision_（L784-828）——
+  // 依該帳號既有登入紀錄（history）判斷本次是否需寄送通知信，決策/組信/寄送任一步驟失敗都不可
+  // 阻斷登入（GAS 版整段包在 try/catch 內，Logger.log 後繼續往下走）。
+  let mailSent = false;
+  let mailReason = '';
+  try {
+    const history = readSessionsData(db, ctx).sessions.filter((s) => s && s.email === authedEmail);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const decision = loginNotify.loginMailDecision(history, uaStr, ipStr, geoStr, nowSec);
+    mailReason = decision.reason || '';
+    if (decision.mail) {
+      const envPrefix = loginNotify.mailEnvPrefix(config);
+      const { subject, textBody } = loginNotify.buildLoginNotifyMail({
+        ua: uaStr, ip: ipStr, geo: geoStr, reason: decision.reason, nowMs: Date.now(), envPrefix,
+      });
+      const sendResult = await mailer.sendMail(config, db, { to: authedEmail, subject, textBody }, {
+        email: authedEmail, action: 'sessionStart.loginMail',
+      });
+      mailSent = !!(sendResult && sendResult.mailSent);
+    }
+  } catch (_e) { /* 異常偵測決策/寄信失敗不阻斷登入 */ }
+
   try {
     appendSessionRecord(db, ctx, {
       jti: issued.jti, email: authedEmail,
-      ua: String(ua || '').slice(0, 200) || '（未提供）',
-      ip: String(ip || '').slice(0, 64),
-      geo: String(geo || '').slice(0, 120),
-      cc: String(cc || '').slice(0, 8),
+      ua: uaStr, ip: ipStr, geo: geoStr, cc: ccStr,
       iat: issued.iat, exp: issued.exp,
       issuedAtMs: Date.now(), issuedAt: new Date().toISOString(),
-      mailSent: false, mailReason: 'phase1_no_smtp',
+      mailSent, mailReason,
     });
   } catch (_e) { /* 登入紀錄寫入失敗不阻斷登入，同 GAS 版行為 */ }
 
@@ -100,7 +137,7 @@ async function sessionStart(db, { email, password, otp, ua, ip, geo, cc, deviceT
   }
 
   return {
-    kind: 'ok', sessionToken: issued.token, exp: issued.exp, email: authedEmail, mailSent: false,
+    kind: 'ok', sessionToken: issued.token, exp: issued.exp, email: authedEmail, mailSent,
     totpEnrolled: !!authResult.totpEnrolled,
     ...(newDeviceToken ? { newDeviceToken } : {}),
   };

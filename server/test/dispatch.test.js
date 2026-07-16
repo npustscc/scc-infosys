@@ -280,6 +280,12 @@ test('audit_log 筆數 == 請求數（含拒絕/例外的請求）', async () =>
   ];
   for (const r of requests) await r();
 
-  const count = db.prepare('SELECT COUNT(*) AS c FROM audit_log').get().c;
-  assert.equal(count, requests.length);
+  // dispatch.handleRequest 每個請求恰寫一筆（本測試對象）；src/mail/mailer.js 的寄信嘗試（本例：
+  // 第一次成功登入為 first_login，觸發登入通知信決策）另記一筆獨立的稽核紀錄（action=
+  // 'sessionStart.loginMail'），語意上屬於「寄信元件自己的稽核軌跡」而非 dispatch 請求稽核，
+  // 排除後單獨核對，兩者互不干擾。
+  const dispatchCount = db.prepare("SELECT COUNT(*) AS c FROM audit_log WHERE action != 'sessionStart.loginMail'").get().c;
+  assert.equal(dispatchCount, requests.length);
+  const mailCount = db.prepare("SELECT COUNT(*) AS c FROM audit_log WHERE action = 'sessionStart.loginMail'").get().c;
+  assert.equal(mailCount, 1); // 唯一一次成功登入（first_login）觸發一次寄信嘗試（無 MAIL_SEND_CREDS → skipped）
 });

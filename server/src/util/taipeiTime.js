@@ -46,4 +46,18 @@ function taipeiYmdHm(input) {
   return `${p.year}/${pad2(p.month)}/${pad2(p.day)} ${pad2(p.hour)}:${pad2(p.minute)}`;
 }
 
-module.exports = { OFF_MS, pad2, taipeiParts, taipeiYmd, taipeiHm, taipeiYmdHm };
+// HH:mm:ss（台北時區）——對映 dev/Code.gs 打卡彙整信 fmtT 用的
+// `Utilities.formatDate(new Date(iso), 'Asia/Taipei', 'HH:mm:ss')`。
+function taipeiHms(input) {
+  const p = taipeiParts(input);
+  return `${pad2(p.hour)}:${pad2(p.minute)}:${pad2(p.second)}`;
+}
+
+// yyyy/MM/dd HH:mm:ss（台北時區）——對映 dev/Code.gs 登入通知信 loginTime 用的
+// `Utilities.formatDate(new Date(), 'Asia/Taipei', 'yyyy/MM/dd HH:mm:ss')`。
+function taipeiYmdHms(input) {
+  const p = taipeiParts(input);
+  return `${p.year}/${pad2(p.month)}/${pad2(p.day)} ${pad2(p.hour)}:${pad2(p.minute)}:${pad2(p.second)}`;
+}
+
+module.exports = { OFF_MS, pad2, taipeiParts, taipeiYmd, taipeiHm, taipeiYmdHm, taipeiHms, taipeiYmdHms };

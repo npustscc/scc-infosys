@@ -116,7 +116,7 @@ async function handleRequest(db, config, payload) {
     // totp_required／invalid_totp 對映前端 TOTP 欄位顯示（見 login.html）：totp_required＝
     // 帳密正確但該帳號已註冊 TOTP、本次未附 otp（前端滑出輸入框重送）；invalid_totp＝已附但錯誤。
     if (action === 'sessionStart') {
-      const result = await sessionActions.sessionStart(db, params, ctx, config.SESSION_SECRET, config.TRUSTED_DEVICE_DAYS);
+      const result = await sessionActions.sessionStart(db, params, ctx, config);
       outcomeEmail = params.email || null;
       if (result.kind === 'invalid_credentials') {
         outcome = 'denied';
@@ -239,7 +239,7 @@ async function handleRequest(db, config, payload) {
       case 'query': result = storageActions.query(db, params); break;
       case 'startupBatch': result = storageActions.startupBatch(db, params, ctx); break;
       case 'casesUpsert': result = commitActions.casesUpsert(db, params, ctx); break;
-      case 'attendanceCommit': result = commitActions.attendanceCommit(db, params, ctx); break;
+      case 'attendanceCommit': result = await commitActions.attendanceCommit(db, params, ctx, config); break;
       case 'bookingsCommit': result = await gcSync.bookingsCommitWithGc(db, params, ctx, config); break;
       case 'listCommit': result = commitActions.listCommit(db, params, ctx); break;
       case 'notifCommit': result = commitActions.notifCommit(db, params, ctx); break;

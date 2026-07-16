@@ -40,6 +40,13 @@ const ML_GMAIL_LABEL = process.env.ML_GMAIL_LABEL || 'ml-processed-dev';
 // 缺值時交由呼叫端（src/sync/gcSync.js 的 requireCalendarClient／bookingsCommitWithGc）自行
 // fail-fast/回業務錯誤或靜默維持 Phase 1.5 行為，故不可用 required()。
 const CALENDAR_SYNC_CREDS = process.env.CALENDAR_SYNC_CREDS || '';
+// 寄信（登入通知信／打卡彙整信，見 src/mail/mailer.js）專用：指向 OAuth 憑證 JSON 檔路徑
+// （{client_id, client_secret, refresh_token}，refresh_token 的 scope 需含
+// https://www.googleapis.com/auth/gmail.send，npust.scc 帳號）。可與 CALENDAR_SYNC_CREDS 指向
+// 同一檔——npust.scc 憑證可同時含 calendar 與 gmail.send scope，不需為每種用途各辦一份憑證。
+// 選填——server 主程式不需要它，缺值時 mailer.sendMail 降級為 audit-only（記稽核、mailSent:false，
+// 不寄信、不阻斷呼叫端主流程），故不可用 required()。
+const MAIL_SEND_CREDS = process.env.MAIL_SEND_CREDS || '';
 // 日曆名稱：對映 dev/Code.gs CALENDAR_NAME（dev='[DEV] SCC 空間預約'／prod='SCC 空間預約'）。
 const GC_CALENDAR_NAME = process.env.GC_CALENDAR_NAME || 'SCC 空間預約';
 // 打卡權杖管理橋接（actions/clockBridge.js）：GAS_BRIDGE_URL＝對應環境 GAS 部署的 /exec 網址
@@ -65,6 +72,7 @@ module.exports = {
   GMAIL_SYNC_CREDS,
   ML_GMAIL_LABEL,
   CALENDAR_SYNC_CREDS,
+  MAIL_SEND_CREDS,
   GC_CALENDAR_NAME,
   GAS_BRIDGE_URL,
   GAS_BRIDGE_KEY,

@@ -13,7 +13,9 @@
 'use strict';
 
 const vdrive = require('../storage/vdrive');
-const audit = require('../audit');
+const mailer = require('../mail/mailer');
+const punchSummary = require('../mail/punchSummary');
+const loginNotify = require('../mail/loginNotify');
 
 // 共用讀檔：path 解析不到 → 回傳 fileId=null（呼叫端建立預設空殼）；解析到但檔案列消失/已在回收桶
 // （理論上因整段包在同一交易內、不會有其他交易能在讀後但寫前把它 trash 掉，這裡仍保留防呆）→ 用
@@ -98,10 +100,12 @@ function casesUpsert(db, { path, upserts, removes }, ctx) {
 
 // ── attendanceCommit：attendance.json 併發安全打卡寫入 ──
 // 對映 dev/Code.gs attendanceCommit_（L2660）。修 2026-07-09 事故：前端整檔覆寫多人同時打卡互相蓋掉。
-// v168 彙整信：GAS 版鎖釋放後 MailApp 寄信；Node Phase 1 無 SMTP，改落 audit_log 紀錄
-// （action='attendanceCommit.punchMail', outcome='skipped', detail 含 mailSent=false），
-// 回傳形狀不受影響（GAS 版 attendanceCommit_ 的回傳本就不含 mailSent 欄位——寄信是鎖外的純副作用）。
-function attendanceCommit(db, { upserts, removes }, ctx) {
+// v168 彙整信：GAS 版鎖（交易）釋放後才 MailApp 寄信——本函式比照，交易同步完成後才 await 寄信，
+// 寄信本身透過 mailer.sendMail 統一入口（缺 MAIL_SEND_CREDS 時降級為 audit-only）。改為 async
+// 函式是 Node 版與 GAS 版行為對齊的必要代價（GAS 單執行緒同步阻塞直到寄信完成或失敗才回應呼叫端，
+// Node 版用 await 達成同等語意，而非 fire-and-forget——寄信失敗與否不影響回傳形狀，GAS 版
+// attendanceCommit_ 的回傳本就不含 mailSent 欄位，寄信是交易外的純副作用）。
+async function attendanceCommit(db, { upserts, removes }, ctx, config) {
   const newPunches = [];
   const result = db.transaction(() => {
     const { fileId, data: loaded } = readExistingOrNull(
@@ -136,20 +140,22 @@ function attendanceCommit(db, { upserts, removes }, ctx) {
     return { ok: true, records: data.records, count: data.records.length };
   }).immediate();
 
-  // 鎖（交易）已釋放：逐筆記錄「本應寄送彙整信」，失敗不得影響打卡主流程或回傳值。
+  // 鎖（交易）已釋放：逐筆寄送當日彙整信給打卡當事人，失敗不得影響打卡主流程或回傳值
+  // （mailer.sendMail 內部已 try/catch 吞錯並記 audit，此處再包一層是防禦 punchSummary 組信本身
+  // 拋錯——如 date/timestamp 格式異常——同樣不可讓其他人的彙整信或打卡主流程受影響）。
   if (newPunches.length) {
-    newPunches.forEach((rec) => {
+    const envPrefix = loginNotify.mailEnvPrefix(config);
+    for (const rec of newPunches) {
       try {
-        audit.appendAuditLog(db, {
-          email: rec.email || null,
-          action: 'attendanceCommit.punchMail',
-          target: rec.date || null,
-          outcome: 'skipped',
-          latencyMs: null,
-          detail: 'mailSent=false;reason=phase1_no_smtp',
+        const { subject, textBody } = punchSummary.buildPunchSummaryMail({
+          email: rec.email, name: rec.name, date: rec.date, punchTs: rec.timestamp,
+          records: result.records, envPrefix,
         });
-      } catch (_e) { /* 稽核寫入失敗不可影響打卡主流程 */ }
-    });
+        await mailer.sendMail(config, db, { to: rec.email, subject, textBody }, {
+          email: rec.email || null, action: 'attendanceCommit.punchMail',
+        });
+      } catch (_e) { /* 組信/寄信失敗不可影響打卡主流程 */ }
+    }
   }
 
   return result;
