@@ -91,6 +91,20 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // login.html：正式登入頁（Phase 3a，取代 Google 登入），與 dev-login.html 一樣獨立於 public/
+  // 之外、直接從 server/ 根目錄供應。內含 __ROOT_FOLDER_ID__ 佔位字串，serve 時代入
+  // config.ROOT_FOLDER_ID——同一份檔案 dev/prod 兩個 Node 實例（各自 .env 不同）都能直接用，
+  // 不需要為每個環境各維護一份 login.html。
+  if (req.method === 'GET' && urlPath === '/login.html') {
+    fs.readFile(path.join(__dirname, '..', 'login.html'), 'utf8', (err, data) => {
+      if (err) { res.writeHead(404).end('Not found'); return; }
+      const html = data.replace(/__ROOT_FOLDER_ID__/g, config.ROOT_FOLDER_ID);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+    });
+    return;
+  }
+
   if (req.method === 'GET' && urlPath === '/') {
     if (fs.existsSync(path.join(config.PUBLIC_DIR, 'index.html'))) {
       serveStatic(req, res, '/');

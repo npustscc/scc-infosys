@@ -19,6 +19,7 @@ const gate = require('./authz/gate');
 const proxy = require('./actions/proxy');
 const audit = require('./audit');
 const sessionActions = require('./actions/session');
+const totpSetupActions = require('./actions/totpSetup');
 const storageActions = require('./actions/storage');
 const commitActions = require('./actions/commit');
 const mailActions = require('./actions/mail');
@@ -111,6 +112,8 @@ async function handleRequest(db, config, payload) {
     const ctx = { root: config.ROOT_FOLDER_ID };
 
     // ── sessionStart：本地帳密＋TOTP 認證＋授權閘（在 actions/session.js 內部一次做完）──
+    // totp_required／invalid_totp 對映前端 TOTP 欄位顯示（見 login.html）：totp_required＝
+    // 帳密正確但該帳號已註冊 TOTP、本次未附 otp（前端滑出輸入框重送）；invalid_totp＝已附但錯誤。
     if (action === 'sessionStart') {
       const result = await sessionActions.sessionStart(db, params, ctx, config.SESSION_SECRET);
       outcomeEmail = params.email || null;
@@ -118,12 +121,23 @@ async function handleRequest(db, config, payload) {
         outcome = 'denied';
         return envelope.bizError('invalid_credentials');
       }
+      if (result.kind === 'totp_required') {
+        outcome = 'denied';
+        return envelope.bizError('totp_required');
+      }
+      if (result.kind === 'invalid_totp') {
+        outcome = 'denied';
+        return envelope.bizError('invalid_totp');
+      }
       if (result.kind === 'unauthorized') {
         outcome = 'denied';
         return envelope.bizError('Unauthorized user');
       }
       outcomeEmail = result.email;
-      return envelope.ok({ sessionToken: result.sessionToken, exp: result.exp, email: result.email, mailSent: result.mailSent });
+      return envelope.ok({
+        sessionToken: result.sessionToken, exp: result.exp, email: result.email,
+        mailSent: result.mailSent, totpEnrolled: result.totpEnrolled,
+      });
     }
 
     // ── 3. 授權閘（AUTHZ_EXEMPT={ping, submitUserApplication, sessionStart} 之外，
@@ -203,6 +217,11 @@ async function handleRequest(db, config, payload) {
       case 'ping': result = { ok: true, email: userEmail }; break;
       case 'sessionLogout': result = sessionActions.sessionLogout(db, userEmail); break;
       case 'listMySessions': result = sessionActions.listMySessions(db, userEmail, params, ctx); break;
+      // ── TOTP 註冊／輪替（Phase 3a）：userEmail 來自已驗證 session，不吃 params 裡的 email，
+      //    杜絕越權改別人的 2FA 設定。──
+      case 'totpSetupStart': result = totpSetupActions.totpSetupStart(db, userEmail); break;
+      case 'totpSetupConfirm': result = totpSetupActions.totpSetupConfirm(db, userEmail, params.code); break;
+      case 'totpStatus': result = totpSetupActions.totpStatus(db, userEmail); break;
       case 'readJson': result = storageActions.readJson(db, params, ctx, userEmail, config.CASE_AUTHZ_MODE, onShadowStrip); break;
       case 'updateJson': result = storageActions.updateJson(db, params, ctx); break;
       case 'readJsonById': result = storageActions.readJsonById(db, params, ctx, userEmail, config.CASE_AUTHZ_MODE, onShadowStrip); break;

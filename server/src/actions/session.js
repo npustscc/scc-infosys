@@ -48,10 +48,14 @@ function readConfigUsers(db, ctx) {
   }
 }
 
-// 回傳 { kind: 'invalid_credentials' | 'unauthorized' | 'ok', ...(ok 時附 sessionToken/exp/email/mailSent) }
+// 回傳 { kind: 'invalid_credentials' | 'totp_required' | 'invalid_totp' | 'unauthorized' | 'ok',
+//        ...(ok 時附 sessionToken/exp/email/mailSent/totpEnrolled) }
+// totp_required／invalid_totp 只在密碼已驗證正確時才會出現（見 local.verifyLocalCredentialsDetailed
+// 的 kind 語意註解）——帳密錯誤一律回 invalid_credentials，不洩漏帳密是否正確以外的資訊。
 async function sessionStart(db, { email, password, otp, ua, ip, geo, cc }, ctx, secret) {
-  const authedEmail = await local.verifyLocalCredentials(db, email, password, otp);
-  if (!authedEmail) return { kind: 'invalid_credentials' };
+  const authResult = await local.verifyLocalCredentialsDetailed(db, email, password, otp);
+  if (authResult.kind !== 'ok') return { kind: authResult.kind };
+  const authedEmail = authResult.email;
 
   const users = readConfigUsers(db, ctx);
   if (!gate.authzDecision(users, authedEmail)) return { kind: 'unauthorized' };
@@ -70,7 +74,10 @@ async function sessionStart(db, { email, password, otp, ua, ip, geo, cc }, ctx, 
     });
   } catch (_e) { /* 登入紀錄寫入失敗不阻斷登入，同 GAS 版行為 */ }
 
-  return { kind: 'ok', sessionToken: issued.token, exp: issued.exp, email: authedEmail, mailSent: false };
+  return {
+    kind: 'ok', sessionToken: issued.token, exp: issued.exp, email: authedEmail, mailSent: false,
+    totpEnrolled: !!authResult.totpEnrolled,
+  };
 }
 
 function sessionLogout(db, userEmail) {

@@ -4047,6 +4047,11 @@ function recordCounselorUsage(...emails) {
   syncUserPref_({ counselorFreqs: freqs });
 }
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwQjkuKkKn33XlMCNtt-Al3x1jkkxk1fdawb64lozIZ6rwSeGZUGhQ1gujXN8k9hPlDlw/exec';
+// 本地模式偵測（Phase 3a）：scripts/build-public.js 部署到 Node 後端時，只改上面這一行 APPS_SCRIPT_URL
+// 成本地 /exec 路徑（不含 script.google.com）；藉此判斷是否為「本地帳密＋TOTP」登入模式——本地模式
+// 不初始化 GSI/One Tap，登入按鈕與 session 過期重登流程改導向 /login.html（見 window load handler 與
+// _refreshIdToken）。Pages＋GAS 環境（本判斷恆為 false）行為完全不變。
+const IS_LOCAL_BACKEND = !APPS_SCRIPT_URL.includes('script.google.com');
 // 實習生免登入打卡頁（獨立公開 repo scc-clock；主網站日後轉私有/下線不影響打卡網址）——環境常數，
 // promote 時須改回正式版值（check-env-constants.mjs 有守門）
 const CLOCK_PAGE_URL = 'https://npustscc.github.io/scc-clock/dev/';
@@ -6058,6 +6063,35 @@ window.addEventListener('load', () => {
     return;
   }
 
+  // ── 本地模式（Phase 3a：本地帳密＋TOTP，見 IS_LOCAL_BACKEND）：完全不碰 GSI/One Tap ──
+  // 登入畫面按鈕改導向 /login.html；session 恢復/過期判斷邏輯與 Google 模式相同（純看
+  // localStorage 自簽 session，非 Google 專屬），差別只在「session 已過期時如何重新取得」——
+  // Google 模式靠 One Tap 靜默重登，本地模式沒有等價機制，直接導向登入頁（不可迴圈：
+  // location.href 導頁後本頁 JS 執行即終止，不會再次觸發自己）。
+  if (IS_LOCAL_BACKEND) {
+    const gBtn = document.getElementById('g-signin-btn');
+    if (gBtn) {
+      gBtn.innerHTML = '<button onclick="location.href=\'/login.html\'" style="padding:10px 24px;background:#4f6ef2;color:#fff;border:none;border-radius:6px;font-size:.95rem;cursor:pointer;width:100%;">登入</button>';
+    }
+    const fallback = document.getElementById('login-fallback');
+    if (fallback) fallback.style.display = 'none';
+
+    try { sessionStorage.removeItem('scc_user'); sessionStorage.removeItem('scc_idtoken'); } catch (_) {}
+
+    const sess = _getSession();
+    let storedUser = null;
+    try { storedUser = JSON.parse(localStorage.getItem(_USER_LS_KEY)); } catch (_) {}
+    if (sess && storedUser && storedUser.email) {
+      currentUser = storedUser;
+      showLoading('自動登入中…');
+      afterLogin();
+    } else if (storedUser && storedUser.email) {
+      try { localStorage.removeItem(_SESSION_LS_KEY); localStorage.removeItem(_USER_LS_KEY); } catch (_) {}
+      location.href = '/login.html';
+    }
+    return;
+  }
+
   if (CLIENT_ID === 'YOUR_CLIENT_ID') {
     document.getElementById('g-signin-btn').innerHTML =
       '<div class="alert alert-warn" style="text-align:left;">' +
@@ -6176,6 +6210,15 @@ function _resolveTokenRefresh(ok) {
 // 重新走「Google 登入 → sessionStart 換發今日 session」：只在 session 過期時被呼叫。
 // One Tap auto_select 多半可靜默完成；8 秒未完成或被封鎖 → 顯示重新登入 modal。
 function _refreshIdToken() {
+  // 本地模式：沒有 One Tap 靜默重登機制，直接導向 /login.html 重新登入——proxyCall 的三個呼叫點
+  // （sessionStart 前置檢查／401／Session expired 重試，見 L26266 一帶）都經由本函式換發，
+  // 故只需在此一處分流即可涵蓋，proxyCall 本身不需改動。回傳一個永不 resolve 的 Promise 純粹是
+  // 因為導頁後本頁 JS 即將卸載，呼叫端不會等到結果（不可迴圈：不會再次呼叫回自己）。
+  if (IS_LOCAL_BACKEND) {
+    try { localStorage.removeItem(_SESSION_LS_KEY); localStorage.removeItem(_USER_LS_KEY); } catch (_) {}
+    location.href = '/login.html';
+    return new Promise(() => {});
+  }
   if (_tokenRefreshPromise) return _tokenRefreshPromise;
   _tokenRefreshPromise = new Promise(resolve => { _tokenRefreshResolve = resolve; });
   const p = _tokenRefreshPromise;
@@ -21558,7 +21601,9 @@ async function runInitialization() {
 //  登出
 // ══════════════════════════════════════════════
 function signOut() {
-  google.accounts.id.disableAutoSelect();
+  // 本地模式從未呼叫 google.accounts.id.initialize()，GSI 客戶端腳本（<head> 內 async 載入）
+  // 也可能因校內網路無法連外而根本沒載入成功——防禦性略過，不可讓登出流程因此中斷。
+  if (!IS_LOCAL_BACKEND) { try { google.accounts.id.disableAutoSelect(); } catch (_) {} }
   try { localStorage.removeItem(_SESSION_LS_KEY); localStorage.removeItem(_USER_LS_KEY); } catch (_) {}
   // R5（資安）：登出清除個案個資快取，避免共用裝置殘留敏感資料。清除失敗不可阻斷登出。
   try {
@@ -26353,9 +26398,14 @@ function _checkInitialPage() {
 // ── 申請帳號流程 ──
 function showApplyScreen() {
   if (!gIdToken) {
-    // 尚未完成 Google 登入，需先登入後系統才能驗證身份
-    // 觸發 Google One-Tap；若成功且帳號未授權，afterLogin() 會自動呼叫此函式
+    // 尚未完成登入，需先登入後系統才能驗證身份。本地模式沒有 idToken 概念（一律走
+    // sessionToken），也沒有 Google One-Tap 可觸發——導向 /login.html；Google 模式行為不變。
     const msg = document.getElementById('login-popup-blocked');
+    if (IS_LOCAL_BACKEND) {
+      if (msg) { msg.textContent = '請先登入後再申請帳號。'; msg.style.display = ''; }
+      return;
+    }
+    // 觸發 Google One-Tap；若成功且帳號未授權，afterLogin() 會自動呼叫此函式
     if (msg) {
       msg.textContent = '請先點上方「以 Google 帳號登入」完成登入後，再申請帳號。';
       msg.style.display = '';

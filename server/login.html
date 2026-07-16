@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SCC 資訊系統 — 登入</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(180deg, #f4f6fb 0%, #e9edf5 100%);
+    color: #1f2430;
+  }
+  .card {
+    width: 100%; max-width: 380px; margin: 1rem; padding: 2rem 1.75rem;
+    background: #fff; border-radius: 14px; box-shadow: 0 8px 28px rgba(30, 40, 70, .12);
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 .3rem; text-align: center; }
+  .sub { font-size: .8rem; color: #6b7280; text-align: center; margin: 0 0 1.4rem; }
+  label { display: block; margin-top: .9rem; font-size: .85rem; color: #374151; }
+  input[type="email"], input[type="password"], input[type="text"] {
+    width: 100%; margin-top: .3rem; padding: .55rem .65rem; font-size: 1rem;
+    border: 1px solid #d1d5db; border-radius: 8px; outline: none;
+  }
+  input:focus { border-color: #4f6ef2; box-shadow: 0 0 0 3px rgba(79,110,242,.15); }
+  button {
+    width: 100%; margin-top: 1.3rem; padding: .65rem; font-size: 1rem; font-weight: 600;
+    border: none; border-radius: 8px; background: #4f6ef2; color: #fff; cursor: pointer;
+  }
+  button:hover { background: #3d5adf; }
+  button:disabled { background: #9aa8e8; cursor: default; }
+  button.secondary { background: transparent; color: #6b7280; font-weight: 400; margin-top: .6rem; }
+  button.secondary:hover { background: #f3f4f6; }
+  #msg { margin-top: 1rem; font-size: .85rem; text-align: center; min-height: 1.1em; white-space: pre-wrap; }
+  #msg.err { color: #c0392b; }
+  #msg.ok { color: #1e8e3e; }
+  .totp-box { display: none; }
+  .totp-box.show { display: block; }
+  .setup-box { display: none; }
+  .setup-box.show { display: block; }
+  .login-box.hide { display: none; }
+  .key-display {
+    margin-top: .8rem; padding: .7rem; background: #f5f6fa; border-radius: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 1rem;
+    letter-spacing: .05em; text-align: center; word-break: break-all;
+  }
+  .otpauth-link { display: block; text-align: center; margin-top: .5rem; font-size: .82rem; }
+  .hint { font-size: .78rem; color: #6b7280; margin-top: .5rem; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>學生諮商中心資訊系統</h1>
+  <p class="sub">請使用帳號密碼登入</p>
+
+  <div id="loginBox" class="login-box">
+    <form id="loginForm">
+      <label>電子郵件<input type="email" name="email" required autocomplete="username" /></label>
+      <label>密碼<input type="password" name="password" required autocomplete="current-password" /></label>
+      <div id="totpBox" class="totp-box">
+        <label>驗證器 6 位數驗證碼
+          <input type="text" name="otp" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" />
+        </label>
+      </div>
+      <button type="submit" id="loginBtn">登入</button>
+    </form>
+  </div>
+
+  <div id="setupBox" class="setup-box">
+    <p class="hint">此帳號尚未設定雙因素驗證（TOTP）。請用驗證器 App（如 Google Authenticator／Authy）
+      掃描或手動輸入以下密鑰完成設定；也可以先跳過，之後再到設定頁補設定。</p>
+    <a id="otpauthLink" class="otpauth-link" href="#">點此於行動裝置直接加入驗證器 App</a>
+    <div class="key-display" id="manualKey">----</div>
+    <label>輸入驗證器目前顯示的 6 位數碼以完成設定
+      <input type="text" id="setupCode" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" />
+    </label>
+    <button type="button" id="confirmBtn">確認啟用</button>
+    <button type="button" id="skipBtn" class="secondary">稍後再說</button>
+  </div>
+
+  <div id="msg"></div>
+</div>
+
+<script>
+// ROOT_FOLDER_ID 由伺服器供應本檔時代入（同源部署，dev/prod 各自 .env 的 ROOT_FOLDER_ID 不同，
+// 見 server/src/index.js 的 /login.html route——不可寫死，寫死會讓其中一個環境的 localStorage
+// 命名空間對不上前端 DRIVE_FOLDER_ID，登入後被判定為未登入）。
+const ROOT_FOLDER_ID = '__ROOT_FOLDER_ID__';
+const SESSION_LS_KEY = 'scc_session_' + ROOT_FOLDER_ID;
+const USER_LS_KEY = 'scc_user_' + ROOT_FOLDER_ID;
+
+const loginForm = document.getElementById('loginForm');
+const loginBox = document.getElementById('loginBox');
+const totpBox = document.getElementById('totpBox');
+const loginBtn = document.getElementById('loginBtn');
+const setupBox = document.getElementById('setupBox');
+const otpauthLink = document.getElementById('otpauthLink');
+const manualKeyEl = document.getElementById('manualKey');
+const setupCode = document.getElementById('setupCode');
+const confirmBtn = document.getElementById('confirmBtn');
+const skipBtn = document.getElementById('skipBtn');
+const msg = document.getElementById('msg');
+
+let sessionToken = null; // 登入成功後才有值，setup 流程需要它呼叫已授權 action
+let needsTotpNextSubmit = false;
+
+function setMsg(text, cls) {
+  msg.textContent = text || '';
+  msg.className = cls || '';
+}
+
+// 同源打 /exec（wire contract 與 dev-login.html／proxyCall 相同：urlencoded 單欄位 payload）。
+async function callExec(action, params) {
+  const payload = JSON.stringify(Object.assign({ action, rootFolderId: ROOT_FOLDER_ID }, params || {}));
+  const body = new URLSearchParams();
+  body.append('payload', payload);
+  const r = await fetch('/exec', { method: 'POST', body });
+  const data = await r.json();
+  if (!data.success) throw new Error(data.error || '未知錯誤');
+  return data.data || {};
+}
+
+function callAuthed(action, params) {
+  return callExec(action, Object.assign({ sessionToken }, params || {}));
+}
+
+function redirectHome() {
+  location.href = '/';
+}
+
+loginForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  loginBtn.disabled = true;
+  setMsg('登入中…');
+  const fd = new FormData(loginForm);
+  try {
+    const d = await callExec('sessionStart', {
+      email: fd.get('email'),
+      password: fd.get('password'),
+      otp: fd.get('otp') || '',
+      ua: navigator.userAgent,
+    });
+
+    if (d.error === 'totp_required') {
+      needsTotpNextSubmit = true;
+      totpBox.classList.add('show');
+      setMsg('請輸入驗證器目前顯示的 6 位數碼', '');
+      loginForm.otp.focus();
+      return;
+    }
+    if (d.error === 'invalid_totp') {
+      totpBox.classList.add('show');
+      setMsg('驗證碼錯誤，請重新輸入', 'err');
+      loginForm.otp.value = '';
+      loginForm.otp.focus();
+      return;
+    }
+    if (d.error === 'invalid_credentials') {
+      setMsg('帳號或密碼錯誤', 'err');
+      return;
+    }
+    if (d.error === 'Unauthorized user') {
+      setMsg('此帳號尚未取得系統使用權限，請聯絡管理者', 'err');
+      return;
+    }
+    if (d.error) {
+      setMsg('登入失敗：' + d.error, 'err');
+      return;
+    }
+    if (!d.sessionToken) {
+      setMsg('登入失敗：伺服器回應異常', 'err');
+      return;
+    }
+
+    // 成功：寫入與 dev-login.html 相同的 localStorage keys，未改造的前端會直接撿到 session。
+    sessionToken = d.sessionToken;
+    localStorage.setItem(SESSION_LS_KEY, d.sessionToken);
+    const email = d.email || String(fd.get('email') || '');
+    localStorage.setItem(USER_LS_KEY, JSON.stringify({ email, name: email.split('@')[0], picture: '' }));
+
+    if (d.totpEnrolled === false) {
+      // 尚未註冊 TOTP：先引導設定（可跳過，強制政策留待 Phase 3b 信任裝置一起收緊）。
+      await enterSetupFlow();
+    } else {
+      setMsg('登入成功，正在跳轉…', 'ok');
+      redirectHome();
+    }
+  } catch (err) {
+    setMsg('登入失敗：' + err.message, 'err');
+  } finally {
+    loginBtn.disabled = false;
+  }
+});
+
+async function enterSetupFlow() {
+  setMsg('');
+  loginBox.classList.add('hide');
+  setupBox.classList.add('show');
+  try {
+    const d = await callAuthed('totpSetupStart', {});
+    otpauthLink.href = d.otpauthUri;
+    manualKeyEl.textContent = d.manualKey;
+  } catch (err) {
+    setMsg('無法產生驗證器設定：' + err.message, 'err');
+  }
+}
+
+confirmBtn.addEventListener('click', async () => {
+  const code = setupCode.value.trim();
+  if (!/^\d{6}$/.test(code)) { setMsg('請輸入 6 位數驗證碼', 'err'); return; }
+  confirmBtn.disabled = true;
+  setMsg('確認中…');
+  try {
+    const d = await callAuthed('totpSetupConfirm', { code });
+    if (d.error) {
+      setMsg(d.error === 'invalid_totp' ? '驗證碼錯誤，請重新輸入' : '設定失敗：' + d.error, 'err');
+      confirmBtn.disabled = false;
+      return;
+    }
+    setMsg('雙因素驗證設定完成，正在跳轉…', 'ok');
+    redirectHome();
+  } catch (err) {
+    setMsg('設定失敗：' + err.message, 'err');
+    confirmBtn.disabled = false;
+  }
+});
+
+skipBtn.addEventListener('click', () => {
+  redirectHome();
+});
+</script>
+</body>
+</html>
