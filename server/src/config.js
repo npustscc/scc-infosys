@@ -42,6 +42,12 @@ const ML_GMAIL_LABEL = process.env.ML_GMAIL_LABEL || 'ml-processed-dev';
 const CALENDAR_SYNC_CREDS = process.env.CALENDAR_SYNC_CREDS || '';
 // 日曆名稱：對映 dev/Code.gs CALENDAR_NAME（dev='[DEV] SCC 空間預約'／prod='SCC 空間預約'）。
 const GC_CALENDAR_NAME = process.env.GC_CALENDAR_NAME || 'SCC 空間預約';
+// 打卡權杖管理橋接（actions/clockBridge.js）：GAS_BRIDGE_URL＝對應環境 GAS 部署的 /exec 網址
+// （dev 對 dev、prod 對 prod，不可交叉），GAS_BRIDGE_KEY＝GAS setupBridgeKey() 產生的共享密鑰
+// （Script Properties BRIDGE_KEY）。選填——缺值時 clockTokenIssue/Revoke/List 回業務錯誤，
+// 其餘功能不受影響。
+const GAS_BRIDGE_URL = process.env.GAS_BRIDGE_URL || '';
+const GAS_BRIDGE_KEY = process.env.GAS_BRIDGE_KEY || '';
 const CASE_AUTHZ_MODE = process.env.CASE_AUTHZ_MODE || 'shadow';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -57,6 +63,8 @@ module.exports = {
   ML_GMAIL_LABEL,
   CALENDAR_SYNC_CREDS,
   GC_CALENDAR_NAME,
+  GAS_BRIDGE_URL,
+  GAS_BRIDGE_KEY,
   CASE_AUTHZ_MODE,
   NODE_ENV,
   PUBLIC_DIR,

@@ -23,6 +23,7 @@ const storageActions = require('./actions/storage');
 const commitActions = require('./actions/commit');
 const mailActions = require('./actions/mail');
 const gcSync = require('./sync/gcSync');
+const clockBridge = require('./actions/clockBridge');
 
 // npust5 Gmail 網頁 OAuth 授權流程在 Node 版已被伺服器端憑證檔（GMAIL_SYNC_CREDS）取代，
 // getNpust5AuthUrl／exchangeNpust5OAuthCode 一律回這則固定業務錯誤（不再導向 Google 同意頁）。
@@ -218,6 +219,14 @@ async function handleRequest(db, config, payload) {
       case 'notifCommit': result = commitActions.notifCommit(db, params, ctx); break;
       case 'fetchMentalLeaves': result = await mailActions.fetchMentalLeaves(db, config, ctx, params); break;
       case 'countMentalLeavesUnprocessed': result = await mailActions.countMentalLeavesUnprocessed(config); break;
+      // ── 打卡權杖管理（Phase 2c）：橋接轉發至 GAS（打卡系統永久留 GAS＋Drive，簽發/停用只能由
+      //    GAS 執行——權杖用 GAS 的 SESSION_SECRET 簽、登記檔在 Drive）。本地授權閘（上方步驟 3）
+      //    已確認 userEmail 在 config.users 且未停用；角色閘（_clockTokenAdminGate_）由 GAS 權威
+      //    判定，見 actions/clockBridge.js 檔頭。──
+      case 'clockTokenIssue':
+      case 'clockTokenRevoke':
+      case 'clockTokenList':
+        result = await clockBridge.forwardClockAction(config, action, userEmail, params); break;
       case 'clearMentalLeaves': result = await mailActions.clearMentalLeaves(db, config, ctx); break;
       case 'getNpust5AuthUrl': {
         outcome = 'denied';
