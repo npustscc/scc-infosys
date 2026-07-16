@@ -53,7 +53,9 @@ function main() {
   let expectedDiff = 1;
   let folderMsg = 'DRIVE_FOLDER_ID 未變動';
   if (mode === 'prod-from-dev') {
-    const RE_FOLDER = /^const DRIVE_FOLDER_ID = '([^']*)';$/m;
+    // 注意：dev/index.html 該行帶行尾註解（// 測試版資料夾），regex 不可用 ;$ 錨定行尾；
+    // 置換時連註解一併改掉，避免 prod 建置產物裡殘留「測試版」字樣誤導。
+    const RE_FOLDER = /^const DRIVE_FOLDER_ID = '([^']*)';[^\n]*$/m;
     const mFolder = RE_FOLDER.exec(patched);
     if (!mFolder) {
       console.error('找不到 DRIVE_FOLDER_ID 常數——請確認後手動調整本腳本的 regex。');
@@ -63,7 +65,7 @@ function main() {
       console.error(`來源 DRIVE_FOLDER_ID（${mFolder[1]}）不是預期的 dev 值——來源檔可能已被改動，已中止。`);
       process.exit(1);
     }
-    patched = patched.replace(RE_FOLDER, `const DRIVE_FOLDER_ID = '${PROD_DRIVE_FOLDER_ID}';`);
+    patched = patched.replace(RE_FOLDER, `const DRIVE_FOLDER_ID = '${PROD_DRIVE_FOLDER_ID}'; // 正式版資料夾（build-public --prod-from-dev 置換）`);
     expectedDiff = 2;
     folderMsg = `DRIVE_FOLDER_ID：${DEV_DRIVE_FOLDER_ID} → ${PROD_DRIVE_FOLDER_ID}`;
   }
