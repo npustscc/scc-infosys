@@ -22,13 +22,19 @@ const EXPECT = {
     file: 'index.html',
     DRIVE_FOLDER_ID: '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP',
     APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycby9ZDT7NO7Jso3mbzbMaOzN0mdfgREbxoHRLC3NEbulGtKwp9eTibpD0XwKJCeC9wlh/exec',
+    CLOCK_PAGE_URL: 'https://npustscc.github.io/scc-clock/',
   },
   dev: {
     file: 'dev/index.html',
     DRIVE_FOLDER_ID: '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx',
     APPS_SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbwQjkuKkKn33XlMCNtt-Al3x1jkkxk1fdawb64lozIZ6rwSeGZUGhQ1gujXN8k9hPlDlw/exec',
+    CLOCK_PAGE_URL: 'https://npustscc.github.io/scc-clock/dev/',
   },
 };
+
+// v192 起才有的常數：檔案裡沒有時「略過」不算失敗（prod 在 v192 promote 前沒有此常數；
+// 一旦存在——promote 會把 dev 值帶進來——就必須是對的那組）
+const OPTIONAL_IF_ABSENT = new Set(['CLOCK_PAGE_URL']);
 
 function readConst(html, name) {
   const m = html.match(new RegExp('^const ' + name + " = '([^']*)'", 'm'));
@@ -45,8 +51,12 @@ for (const [env, spec] of Object.entries(EXPECT)) {
     failed = true;
     continue;
   }
-  for (const key of ['DRIVE_FOLDER_ID', 'APPS_SCRIPT_URL']) {
+  for (const key of ['DRIVE_FOLDER_ID', 'APPS_SCRIPT_URL', 'CLOCK_PAGE_URL']) {
     const actual = readConst(html, key);
+    if (actual === null && OPTIONAL_IF_ABSENT.has(key)) {
+      console.log(`- [${env}] ${spec.file} ${key}（尚無此常數，略過）`);
+      continue;
+    }
     if (actual === spec[key]) {
       console.log(`✓ [${env}] ${spec.file} ${key}`);
     } else {
