@@ -15,20 +15,34 @@ const MIGRATIONS_DIR = path.join(__dirname, '..', 'migrations');
 // 天生 idempotent、不需要這張表也能每次啟動重跑；但 002 起開始出現 ALTER TABLE ADD COLUMN
 // （TOTP 註冊欄位），SQLite 的 ADD COLUMN 沒有 IF NOT EXISTS 語法、重跑會噴 duplicate column，
 // 故補一張追蹤表，讓每個 migration 檔一生只執行一次（filename 當主鍵，寫入即代表套用完成）。
-function runMigrations(db) {
+// 每個 migration 檔包在 BEGIN IMMEDIATE 交易內執行（SQLite 的 ALTER TABLE 可在交易內回滾）：
+//   1. 原子性：檔內任一句失敗整檔回滾，絕不留下「欄位加了、紀錄沒寫」的半套用狀態
+//      （事故 2026-07-16：service 重啟與 attendance-pull timer 同時開 DB 各跑一次無交易的
+//      migrations，dev DB 卡在半套用、服務 duplicate column 崩潰循環）。
+//   2. 併發互斥＋鎖內二次檢查：IMMEDIATE 先取寫鎖（busy_timeout 內等待），取得後重查
+//      schema_migrations——另一個進程若已在我們等鎖期間套用完成，這裡直接跳過。
+function runMigrations(db, migrationsDir = MIGRATIONS_DIR) {
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
     filename    TEXT PRIMARY KEY,
     applied_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
   )`);
-  const applied = new Set(db.prepare('SELECT filename FROM schema_migrations').all().map((r) => r.filename));
-  const files = fs.readdirSync(MIGRATIONS_DIR)
+  const isApplied = (f) => !!db.prepare('SELECT 1 FROM schema_migrations WHERE filename = ?').get(f);
+  const files = fs.readdirSync(migrationsDir)
     .filter((f) => f.endsWith('.sql'))
     .sort();
   for (const f of files) {
-    if (applied.has(f)) continue;
-    const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8');
-    db.exec(sql);
-    db.prepare('INSERT INTO schema_migrations (filename) VALUES (?)').run(f);
+    if (isApplied(f)) continue;
+    const sql = fs.readFileSync(path.join(migrationsDir, f), 'utf8');
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      if (isApplied(f)) { db.exec('ROLLBACK'); continue; } // 鎖內二次檢查
+      db.exec(sql);
+      db.prepare('INSERT INTO schema_migrations (filename) VALUES (?)').run(f);
+      db.exec('COMMIT');
+    } catch (e) {
+      try { db.exec('ROLLBACK'); } catch (_e) { /* 已回滾/連線失效 */ }
+      throw e;
+    }
   }
 }
 
@@ -47,4 +61,4 @@ function openDb(dbPath) {
   return db;
 }
 
-module.exports = { openDb };
+module.exports = { openDb, runMigrations };
