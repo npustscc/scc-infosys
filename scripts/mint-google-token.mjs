@@ -16,8 +16,8 @@ import { fileURLToPath } from 'node:url';
 const PROFILES = {
   gmail: {
     scopes: ['https://www.googleapis.com/auth/gmail.modify'],
-    loginHint: '', // npust5 帳號（收假單信件的信箱），執行時提示使用者自選
-    note: '請用「收身心調適假信件」的帳號（GAS 裡的 npust5 帳號）完成授權（scope：Gmail 讀取＋標籤）。',
+    loginHint: 'npust5@gmail.com', // 收身心調適假信件的信箱（對映 GAS npust5GetAccessToken_）
+    note: '請用 npust5@gmail.com（收身心調適假信件的信箱）完成授權（scope：Gmail 讀取＋標籤）。',
   },
   calendar: {
     scopes: ['https://www.googleapis.com/auth/calendar', 'https://www.googleapis.com/auth/gmail.send'],
