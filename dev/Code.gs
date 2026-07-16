@@ -27,7 +27,7 @@ const BOOTSTRAP_ADMINS = ['npust.scc@heartnpust.tw', 'linkinlol528101@gmail.com'
 function doPost(e) {
   try {
     const payload = JSON.parse(e.parameter.payload);
-    const { idToken, sessionToken, action, rootFolderId, ...params } = payload;
+    const { idToken, sessionToken, clockToken, action, rootFolderId, ...params } = payload;
 
     // OAuth2 code exchange 不需要 idToken（code 本身即為授權證明）
     if (action === 'exchangeNpust5OAuthCode') {
@@ -35,13 +35,17 @@ function doPost(e) {
     }
 
     // 身分解析：優先走自簽 session token（純 HMAC 運算、無外部 HTTP），
-    // 無 session 才走 Google ID token（sessionStart、申請帳號流程、舊前端相容）。
+    // 其次是打卡權杖（clockToken，見「打卡權杖」章節；scope 極窄，僅供免登入打卡專屬網址使用），
+    // 都沒有才走 Google ID token（sessionStart、申請帳號流程、舊前端相容）。
     let userEmail;
+    let isClockToken = false; // clockToken 驗證需要 ctx（登記檔位置），延後到 ctx 解出後再做（見下方）
     if (sessionToken) {
       userEmail = verifySessionToken_(sessionToken);
       if (!userEmail) return jsonResp_({ error: 'Session expired' });
       // sessionStart 只收 idToken：不允許拿舊 session 換新 session（每日重登為設計目標）
       if (action === 'sessionStart') return jsonResp_({ error: 'Session expired' });
+    } else if (clockToken) {
+      isClockToken = true;
     } else {
       userEmail = verifyIdToken_(idToken);
       if (!userEmail) return jsonResp_({ error: 'Unauthorized' });
@@ -62,6 +66,20 @@ function doPost(e) {
         if (!issuesExceptionAllowed_(rootFolderId, p, ISSUES_FOLDER_ID)) return jsonResp_({ error: 'Unauthorized rootFolderId' });
         ctx = { root: rootFolderId, configOverride: null, calendarName: CALENDAR_NAME };
       }
+    }
+
+    // ── 打卡權杖二階段驗證：ctx（登記檔 clock_tokens.json 所在 root）解出後才能比對 jti ──
+    // verifyClockToken_ 內會重驗簽章/scope('s'==='clock')/效期，再比對登記檔內該 email 目前登記的
+    // jti 是否相符——重新產生／停用會覆寫或刪除登記，舊權杖即使簽章/效期仍合法也會在此被擋下。
+    if (isClockToken) {
+      userEmail = verifyClockToken_(clockToken, ctx);
+      if (!userEmail) return jsonResp_({ error: 'Unauthorized' });
+    }
+
+    // ── 打卡權杖 action 白名單：只允許 clockContext／clockPunch，其餘一律拒絕（含 ping/sessionStart
+    // 等全部）。這是打卡權杖唯一的權限邊界——絕不可讓它經由任何其他 action 讀寫非打卡資料。
+    if (isClockToken && action !== 'clockContext' && action !== 'clockPunch') {
+      return jsonResp_({ error: 'Forbidden: clock token scope' });
     }
 
     // ── 使用者授權閘：email 必須存在於 config.users 且未停用（少數 action 例外）──
@@ -198,6 +216,13 @@ function doPost(e) {
       case 'notifCommit':          result = notifCommit_(params, ctx); break;
       case 'configSelfPatch':      result = configSelfPatch_(params, ctx, userEmail); break;
       case 'configCasesPatch':     result = configCasesPatch_(params, ctx, userEmail); break;
+      // ── 實習生專屬打卡網址（免登入，見「打卡權杖」章節）──
+      case 'clockContext':         result = clockContext_(userEmail, ctx); break;
+      case 'clockPunch':           result = clockPunch_(userEmail, params, ctx); break;
+      // 權杖簽發/停用/列表：一般 session 授權（clockToken 呼叫這三個 action 已被上方白名單擋下）。
+      case 'clockTokenIssue':      result = clockTokenIssue_(userEmail, params, ctx); break;
+      case 'clockTokenRevoke':     result = clockTokenRevoke_(userEmail, params, ctx); break;
+      case 'clockTokenList':       result = clockTokenList_(userEmail, params, ctx); break;
       default: return jsonResp_({ error: 'Unknown action: ' + action });
     }
     return jsonResp_(result);
@@ -320,11 +345,264 @@ function verifySessionToken_(token) {
     var padded = parts[0] + '='.repeat((4 - parts[0].length % 4) % 4);  // 簽發時去掉的 padding 補回再 decode
     var payload = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(padded)).getDataAsString());
     if (!payload || !payload.e) return null;
+    // ⚠️ 安全必要（打卡權杖 scope 邊界）：payload 含 's' 欄位＝非一般登入 session（目前唯一用途是
+    // 打卡權杖，payload.s === 'clock'，見「打卡權杖」章節）。一律拒收，絕不可讓 scope 受限的權杖
+    // 被當成完整 session 接受——否則打卡權杖（效期長達 180 天、且不受 sessionRevokeAllDevices_/
+    // 登出即註銷機制保護）就能冒充完整登入身分，取得遠超「僅打卡」的存取權。
+    if (payload.s) return null;
     if (Number(payload.exp) <= Math.floor(Date.now() / 1000)) return null;
     var rb = sessionRevokedBeforeMap_()[payload.e];  // 登出註銷檢查（全部裝置）
     if (rb && Number(payload.iat) < Number(rb)) return null;
     return payload.e;
   } catch (e) { return null; }
+}
+
+// ── 打卡權杖（Clock Token）──────────────────────────────────────────────────
+// 給實習生的免登入打卡專屬網址使用（?page=clock#ct=<token>）。與一般 session token 共用同一把
+// SESSION_SECRET／同一簽章格式（base64url(payload) + '.' + HMAC-SHA256），但 payload 多帶
+// s:'clock' 做 scope 標記——verifySessionToken_ 見到 payload.s 一律拒收，故打卡權杖絕對無法冒充
+// 完整 session。效期 180 天（供實習生長期使用同一個網址打卡，不必每天登入）。
+//
+// 「網址可被隨時撤銷」不是靠密鑰輪替（那會波及全站所有 session），而是登記檔 clock_tokens.json
+// （存於 ctx.root，與 attendance.json 同層）：{ tokens: { [email]: { jti, iat, exp, issuedBy } } }。
+// 只存 jti、不存權杖本體——jti 沒有密鑰簽不出合法 token，檔案即使被一般授權使用者 readJson 讀到
+// 也無法偽造打卡權杖。簽發/重新產生會覆寫該 email 的 jti（舊網址的 jti 對不上→立即失效），
+// 停用會直接刪除該筆登記；驗證時比對 payload.jti 是否等於登記檔目前該 email 的 jti。
+
+// 簽發一枚打卡權杖（純運算＋簽章，不寫檔——寫登記檔是呼叫端 clockTokenIssue_ 的責任）。
+function issueClockToken_(email, jti) {
+  var secret = sessionSecret_();
+  if (!secret) throw new Error('SESSION_SECRET 未設定，請於 GAS 編輯器執行 setupSessionSecret()');
+  var now = Math.floor(Date.now() / 1000);
+  var exp = now + 180 * 86400; // 180 天
+  var payload = { e: email, s: 'clock', jti: jti, iat: now, exp: exp };
+  var payloadB64 = Utilities.base64EncodeWebSafe(JSON.stringify(payload)).replace(/=+$/, '');
+  return { token: payloadB64 + '.' + signSessionPayload_(payloadB64, secret), exp: exp, iat: now };
+}
+
+// clock_tokens.json 的 CacheService 快取 key（綁定 ctx.root，避免跨環境快取汙染）。
+function _clockTokensCacheKey_(root) { return 'clocktok:' + root; }
+
+// 讀登記檔的 tokens map（CacheService 快取 60 秒）。fail-closed：檔案存在但讀取/內容異常一律回
+// null（供 verifyClockToken_ 判定「無法確認→拒絕」）；檔案尚未建立（尚無人領過打卡網址）視為
+// 合法的空狀態，回傳 {}（並非 fail-open——任何 email 在空 map 中都查無登記，驗證仍會被拒）。
+function clockTokensRead_(ctx) {
+  var cache = CacheService.getScriptCache();
+  var CK = _clockTokensCacheKey_(ctx.root);
+  try { var hit = cache.get(CK); if (hit) return JSON.parse(hit); } catch (_) {}
+  try {
+    var fileId = null;
+    try { fileId = resolvePathToId_('clock_tokens.json', ctx); } catch (_) { fileId = null; }
+    if (!fileId) {
+      try { cache.put(CK, JSON.stringify({}), 60); } catch (_) {}
+      return {};
+    }
+    var res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() >= 400) return null; // fail-closed
+    var data = JSON.parse(res.getContentText());
+    var tokens = (data && typeof data.tokens === 'object' && data.tokens && !Array.isArray(data.tokens)) ? data.tokens : null;
+    if (!tokens) return null; // 內容異常 fail-closed
+    try { cache.put(CK, JSON.stringify(tokens), 60); } catch (_) {}
+    return tokens;
+  } catch (e) { return null; }
+}
+
+function _clockTokensClearCache_(root) {
+  try { CacheService.getScriptCache().remove(_clockTokensCacheKey_(root)); } catch (_) {}
+}
+
+// LockService 鎖內讀-改-寫登記檔（比照 attendanceCommit_/listCommit_ 慣例）：mutateFn 直接修改
+// tokens map（傳入的是「目前最新版」，非快取）。fail-closed：檔案存在但讀取/內容異常一律中止，
+// 絕不以空殼覆寫。寫入成功或失敗都會清快取，確保下一次讀取拿到最新狀態。
+function _clockTokensWrite_(ctx, mutateFn) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(15000);
+  try {
+    var fileId = null;
+    var data = { tokens: {} };
+    try { fileId = resolvePathToId_('clock_tokens.json', ctx); } catch (_) { fileId = null; /* 檔不存在，稍後建立 */ }
+    if (fileId) {
+      var res = UrlFetchApp.fetch(
+        'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+        { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+      );
+      if (res.getResponseCode() >= 400) {
+        throw new Error('clock_tokens.json 讀取失敗（HTTP ' + res.getResponseCode() + '），已中止寫入以保護資料');
+      }
+      data = JSON.parse(res.getContentText());
+      if (!data || typeof data.tokens !== 'object' || !data.tokens || Array.isArray(data.tokens)) {
+        throw new Error('clock_tokens.json 內容異常（tokens 非物件），已中止寫入以保護資料');
+      }
+    }
+    mutateFn(data.tokens);
+    if (fileId) {
+      driveUpdateContent_(fileId, data);
+    } else {
+      var pn = resolvePathToParentAndName_('clock_tokens.json', ctx);
+      driveUpload_(pn.fileName, data, pn.parentId);
+    }
+    return data.tokens;
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+    _clockTokensClearCache_(ctx.root);
+  }
+}
+
+// 驗證打卡權杖：簽章、scope（payload.s === 'clock'）、效期，再比對登記檔內該 email 目前登記的
+// jti 是否相符。回傳 email，否則 null（fail-closed：任何解析/讀檔失敗、jti 不符、登記已過期皆為 null）。
+function verifyClockToken_(token, ctx) {
+  try {
+    var secret = sessionSecret_();
+    if (!secret || !token || typeof token !== 'string') return null;
+    var parts = token.split('.');
+    if (parts.length !== 2) return null;
+    if (signSessionPayload_(parts[0], secret) !== parts[1]) return null;
+    var padded = parts[0] + '='.repeat((4 - parts[0].length % 4) % 4);
+    var payload = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(padded)).getDataAsString());
+    if (!payload || !payload.e || payload.s !== 'clock' || !payload.jti) return null;
+    if (Number(payload.exp) <= Math.floor(Date.now() / 1000)) return null;
+    var tokens = clockTokensRead_(ctx);
+    if (!tokens) return null; // fail-closed：登記檔讀取失敗，無法確認 jti 是否仍有效
+    var entry = tokens[payload.e];
+    if (!entry || entry.jti !== payload.jti) return null; // 已重新產生或停用，舊 jti 對不上
+    if (Number(entry.exp) <= Math.floor(Date.now() / 1000)) return null;
+    return payload.e;
+  } catch (e) { return null; }
+}
+
+// 打卡日期字串所需的「N 天前」台北時區 yyyy-MM-dd（供 clockContext_/clockPunch_ 篩選近期紀錄）。
+function _clockCutoffDateStr_(days) {
+  return Utilities.formatDate(new Date(Date.now() - days * 86400000), 'Asia/Taipei', 'yyyy-MM-dd');
+}
+
+// 參數轉有限數字，否則 null（clockPunch_ 用來驗證前端傳入的定位參數，拒絕 NaN/Infinity/非數字）。
+function _clockFiniteNum_(v) {
+  if (v === undefined || v === null || v === '') return null;
+  var n = Number(v);
+  return isFinite(n) ? n : null;
+}
+
+// 打卡權杖簽發/停用/列表的權限閘：isAdminUser_ 或 config 中 role==='主任'／extraRole 為
+// 「實習生行政督導」／「實習生專業督導」。fail-closed：config 讀不到或帳號停用一律拒絕
+// （BOOTSTRAP_ADMINS 已由 isAdminUser_ 涵蓋）。這是後端硬閘，不能只靠前端隱藏按鈕。
+function _clockTokenAdminGate_(email) {
+  if (isAdminUser_(email)) return true;
+  var u = (localConfigUsers_() || {})[email];
+  if (!u || u.disabled === true) return false;
+  return u.role === '主任' || u.extraRole === '實習生行政督導' || u.extraRole === '實習生專業督導';
+}
+
+// ── 打卡權杖 actions ──
+
+// clockContext：回傳打卡頁所需的最小資料（不含其他人資料、不含任何個案資料）。
+// attendance.json 讀取失敗須 throw（比照 attendanceCommit_ 慣例），不可回空陣列誤導前端「今天沒打卡」。
+function clockContext_(userEmail, ctx) {
+  var cfg = readConfigFresh_();
+  var u = (cfg && cfg.users && cfg.users[userEmail]) || {};
+  var name = u.name || '';
+  var geoFence = (cfg && cfg.attendanceGeoFence) || null;
+
+  var fileId = null;
+  try { fileId = resolvePathToId_('attendance.json', ctx); } catch (_) { fileId = null; /* 尚無任何打卡紀錄 */ }
+  var records = [];
+  if (fileId) {
+    var res = UrlFetchApp.fetch(
+      'https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true',
+      { headers: { Authorization: 'Bearer ' + tok_() }, muteHttpExceptions: true }
+    );
+    if (res.getResponseCode() >= 400) {
+      throw new Error('clockContext: 讀取 attendance.json 失敗（HTTP ' + res.getResponseCode() + '）');
+    }
+    var data = JSON.parse(res.getContentText());
+    if (!data || !Array.isArray(data.records)) {
+      throw new Error('clockContext: attendance.json 內容異常（records 非陣列）');
+    }
+    var cutoff = _clockCutoffDateStr_(62);
+    records = data.records.filter(function (r) { return r && r.email === userEmail && r.date >= cutoff; });
+  }
+  return { email: userEmail, name: name, geoFence: geoFence, records: records };
+}
+
+// clockPunch：完全不信任前端身分——record 的 email/name 一律由打卡權杖驗證出的 userEmail 與
+// config 決定；params 只收 lat/lng/accuracy（須為有限數字才採用）。走既有 attendanceCommit_
+// （LockService 併發安全 upsert，自動觸發打卡彙整信），取代任何自行寫檔的路徑。
+function clockPunch_(userEmail, params, ctx) {
+  var cfg = readConfigFresh_();
+  var u = (cfg && cfg.users && cfg.users[userEmail]) || {};
+  var name = u.name || '';
+
+  var lat = _clockFiniteNum_(params && params.lat);
+  var lng = _clockFiniteNum_(params && params.lng);
+  var accuracy = _clockFiniteNum_(params && params.accuracy);
+  var hasLoc = lat !== null && lng !== null;
+
+  var now = new Date();
+  var record = {
+    id: 'att_' + userEmail + '_' + now.getTime(),
+    email: userEmail,
+    name: name,
+    type: 'punch',
+    timestamp: now.toISOString(),
+    date: Utilities.formatDate(now, 'Asia/Taipei', 'yyyy-MM-dd'),
+  };
+  if (hasLoc) {
+    record.lat = lat;
+    record.lng = lng;
+    if (accuracy !== null) {
+      record.accuracy = accuracy;
+      record.accuracyLow = accuracy > 200;
+    }
+  }
+
+  var commitResult = attendanceCommit_({ upserts: [record] }, ctx);
+  var cutoff = _clockCutoffDateStr_(62);
+  var records = (commitResult.records || []).filter(function (r) { return r && r.email === userEmail && r.date >= cutoff; });
+  return { ok: true, record: record, records: records };
+}
+
+// clockTokenIssue：簽發（或重新簽發，覆蓋舊 jti＝舊網址立即失效）一枚打卡權杖。
+// 只能發給 config.users 中未停用、role==='實習諮商心理師' 的帳號，或發給自己（管理者/督導測試用）。
+// token 只在此回應出現一次，不落地（登記檔只存 jti）。
+function clockTokenIssue_(requesterEmail, params, ctx) {
+  if (!_clockTokenAdminGate_(requesterEmail)) return { error: 'Forbidden' };
+  var email = params && params.email;
+  if (!email) return { error: 'Forbidden' };
+  var users = localConfigUsers_() || {};
+  var u = users[email];
+  if (!u || u.disabled === true) return { error: 'Forbidden' };
+  if (!(u.role === '實習諮商心理師' || email === requesterEmail)) return { error: 'Forbidden' };
+
+  var jti = Utilities.getUuid();
+  var issued = issueClockToken_(email, jti);
+  _clockTokensWrite_(ctx, function (tokens) {
+    tokens[email] = { jti: jti, iat: issued.iat, exp: issued.exp, issuedBy: requesterEmail };
+  });
+  return { token: issued.token, exp: issued.exp, email: email };
+}
+
+// clockTokenRevoke：刪除該 email 的登記（該打卡網址立即失效）。
+function clockTokenRevoke_(requesterEmail, params, ctx) {
+  if (!_clockTokenAdminGate_(requesterEmail)) return { error: 'Forbidden' };
+  var email = params && params.email;
+  if (!email) return { error: 'Forbidden' };
+  _clockTokensWrite_(ctx, function (tokens) { delete tokens[email]; });
+  return { ok: true };
+}
+
+// clockTokenList：回傳目前登記狀態（不含 jti，避免無謂外流——jti 本身雖無密鑰簽不出 token，
+// 仍無必要在列表 API 回傳）。
+function clockTokenList_(requesterEmail, params, ctx) {
+  if (!_clockTokenAdminGate_(requesterEmail)) return { error: 'Forbidden' };
+  var tokens = clockTokensRead_(ctx) || {};
+  var out = {};
+  Object.keys(tokens).forEach(function (email) {
+    var t = tokens[email] || {};
+    out[email] = { iat: t.iat, exp: t.exp, issuedBy: t.issuedBy };
+  });
+  return { tokens: out };
 }
 
 // 登入通知「異常偵測」純決策函式（v166）：熟識裝置/位置降噪，但保底 7 天必寄一次。

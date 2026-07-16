@@ -2089,6 +2089,17 @@
           </div>
         </div>
       </div>
+      <!-- 實習生專屬打卡網址（靜態，不被 renderAttendancePage 覆寫） -->
+      <div class="card" id="clock-token-card" style="margin-top:20px;display:none;">
+        <div class="card-header"><h3>📱 專屬打卡網址（免登入）<span class="chip-admin-only" data-tip="此功能僅主任／系統管理者／實習生行政與專業督導可見">🔒 管理</span></h3></div>
+        <div style="padding:16px 20px;">
+          <p style="font-size:.85rem;color:#718096;margin-bottom:14px;line-height:1.6;">
+            可為每位實習生產生一條專屬打卡網址，手機打開不需登入即可打卡（僅能打卡，無法使用其他功能）。
+            網址效期 180 天；「重新產生」會使舊網址立即失效；實習生帳號被停用時，其打卡網址也會自動失效。
+          </p>
+          <div id="clock-token-body"></div>
+        </div>
+      </div>
     </div>
 
     <!-- 結案評估表 -->
@@ -4260,6 +4271,10 @@ let _caseChunkMap = new Map();
 // 本次載入是否持有「全體完整資料」；非管理者 scoped 載入時為 false，用來擋掉全量重建共享檔（否則會用少量本地資料覆蓋全體 index/hot）
 let _loadedFullDataset = false;
 let _clockOnlyMode = false;  // ?page=clock 快速啟動時為 true；使用者離開打卡頁時觸發完整載入
+// 打卡權杖免登入模式（?page=clock#ct=<token>）：與上面「已登入快速打卡模式」互斥且更嚴格——
+// 完全不經 GIS/Google 登入，只能打卡，UI 上不提供任何導向其他頁面的入口（見 _bootClockTokenMode）。
+let _clockTokenMode = false;
+let _clockToken = null;
 let _bulkLoadedAllOnce = false; // 已 bulk load 過所有 cold cases（重頁面用）
 function currentSemesterPrefix() {
   const now = new Date();
@@ -6032,6 +6047,14 @@ function openGenogramEditor(fieldId,caseId,storeKey){
 //  Google Identity Services 初始化
 // ══════════════════════════════════════════════
 window.addEventListener('load', () => {
+  // ── 打卡權杖免登入模式（?page=clock#ct=<token>）：完全跳過 GIS 初始化／自動登入等既有流程 ──
+  // 必須放在 load handler 最前面，優先於下方所有既有登入/session 邏輯。
+  const _ctMatch = /(?:^|[#&])ct=([^&]+)/.exec(location.hash);
+  if (_ctMatch) {
+    _bootClockTokenMode(decodeURIComponent(_ctMatch[1]));
+    return;
+  }
+
   if (CLIENT_ID === 'YOUR_CLIENT_ID') {
     document.getElementById('g-signin-btn').innerHTML =
       '<div class="alert alert-warn" style="text-align:left;">' +
@@ -8934,6 +8957,10 @@ ${PRINT_RICH_LIST_CSS}
 }
 
 async function pollNotifications() {
+  // 打卡權杖免登入模式：currentUser/configData 雖已填入最小資料，但沒有 session/idToken，
+  // proxyCall 會因缺登入憑證而觸發 _refreshIdToken()（可能跳出 Google 登入 modal）——
+  // 打卡頁不應該出現任何登入 UI，直接跳過。
+  if (_clockTokenMode) return;
   if (!currentUser?.email || !configData) return;
   try {
     // 主路徑：notifications.json 獨立輪詢（v154），檔案小、頻率不變
@@ -26733,11 +26760,14 @@ function renderAttendanceMgr() {
     }).join('');
   }
   const geo = document.getElementById('geo-fence-card');
+  const clockTokenCard = document.getElementById('clock-token-card');
   if (_attMgrTab === 'punch') {
     renderAttendancePage();
     if (typeof _initGeoFenceCard === 'function') _initGeoFenceCard();
+    if (typeof _initClockTokenCard === 'function') _initClockTokenCard();
   } else {
     if (geo) geo.style.display = 'none';
+    if (clockTokenCard) clockTokenCard.style.display = 'none';
     if (_attMgrTab === 'summary') renderAttendanceSummary();
     else if (_attMgrTab === 'review') renderLeaveReview();
     else if (_attMgrTab === 'types') renderLeaveTypesAdmin();
@@ -27589,6 +27619,74 @@ function _punchLabel(r, allRecords) {
   return { icon: '🔵', text: '打卡', color: '#2b6cb0' };
 }
 
+// ══════════════════════════════════════════════
+//  打卡權杖免登入模式（?page=clock#ct=<token>）
+//  給實習生的專屬打卡網址：手機打開不需登入即可打卡，但只能打卡——不提供任何導向其他頁面的入口。
+// ══════════════════════════════════════════════
+
+// 獨立輕量的 proxy call：不共用 proxyCall 的 session 換發/重登/稽核細節記錄邏輯（那些假設使用者
+// 已登入）。404/429/503 暫時性錯誤仍比照 proxyCall 重試最多 4 次。
+// 安全注意：_clockToken 絕不可寫入 _syslog（那是系統管理者可見的除錯紀錄，token 外流即可冒充打卡）。
+async function _clockProxyCall(action, params = {}, _retry = 0) {
+  const payload = JSON.stringify({ clockToken: _clockToken, action, rootFolderId: DRIVE_FOLDER_ID, ...params });
+  const form = new URLSearchParams();
+  form.append('payload', payload);
+  const r = await fetch(APPS_SCRIPT_URL, { method: 'POST', body: form, redirect: 'follow' });
+  if (!r.ok) {
+    if ((r.status === 404 || r.status === 429 || r.status === 503) && _retry < 4) {
+      await new Promise(res => setTimeout(res, 1200 * (_retry + 1)));
+      return _clockProxyCall(action, params, _retry + 1);
+    }
+    throw new Error(`Apps Script 呼叫失敗 (${r.status})`);
+  }
+  const data = await r.json();
+  if (!data.success) throw new Error(data.error || 'Apps Script 回應錯誤');
+  if (data.data && typeof data.data === 'object' && data.data.error) throw new Error(data.data.error);
+  return data.data;
+}
+
+// 免登入打卡模式啟動：隱藏側欄與登入畫面、只顯示打卡頁，向後端要打卡所需的最小資料。
+// 失敗（權杖失效/停用/網路問題）時顯示明確錯誤訊息＋登入連結，不留在空白畫面。
+async function _bootClockTokenMode(token) {
+  _clockTokenMode = true;
+  _clockToken = token;
+  _clockOnlyMode = false; // 與既有「已登入快速打卡模式」互斥，避免其升級路徑（假設已登入）誤觸發
+  const loginScreen = document.getElementById('login-screen');
+  const mainLayout  = document.getElementById('main-layout');
+  const appHeader   = document.getElementById('app-header');
+  const sidebar     = document.getElementById('sidebar');
+  if (loginScreen) loginScreen.style.display = 'none';
+  if (appHeader)   appHeader.style.display   = 'none';
+  if (mainLayout)  mainLayout.style.display  = 'flex';
+  if (sidebar)     sidebar.style.display     = 'none'; // 務必隱藏：使用者不可導向打卡以外的任何頁面
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const pageEl = document.getElementById('page-clock');
+  if (pageEl) pageEl.classList.add('active');
+
+  try {
+    const ctx = await _clockProxyCall('clockContext');
+    currentUser = { email: ctx.email, name: ctx.name || ctx.email };
+    configData = { users: { [ctx.email]: { name: ctx.name || '' } }, ...(ctx.geoFence ? { attendanceGeoFence: ctx.geoFence } : {}) };
+    attendanceData = { records: ctx.records || [] };
+    renderClockPage();
+  } catch (e) {
+    _renderClockTokenError();
+  }
+}
+
+function _renderClockTokenError() {
+  const body = document.getElementById('clock-body');
+  if (!body) return;
+  const loginUrl = location.origin + location.pathname + location.search; // 去掉 hash（權杖），保留其餘網址
+  body.innerHTML = `
+    <div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px 16px;text-align:center;background:#f0f4f8;">
+      <div style="font-size:2.4rem;margin-bottom:14px;">⚠️</div>
+      <div style="font-size:1.05rem;font-weight:700;color:#c53030;margin-bottom:8px;">此打卡網址已失效或無法連線</div>
+      <div style="font-size:.88rem;color:#4a5568;margin-bottom:22px;line-height:1.6;">可能原因：網址已被重新產生或停用、帳號已停用、或暫時性網路問題。<br>請聯繫中心同仁重新產生打卡網址。</div>
+      <a href="${loginUrl}" style="color:#3182ce;font-size:.9rem;font-weight:600;">使用帳號登入 →</a>
+    </div>`;
+}
+
 // ── 打卡頁面 ──
 // ns：容器 id 前綴。目前僅「差勤打卡」頁／?page=clock 使用（''，id 完全不變）；前綴機制保留，
 // 供未來再有內嵌他頁的需求時避免 id 重複（v130 曾內嵌「我的差勤」打卡分頁、v133 依使用者決定移除）。
@@ -27600,7 +27698,7 @@ function renderClockPage(ns) {
   const id = s => _clockNs + s;
   const isIntern = currentRole === '實習諮商心理師';
   const _isAdmin = currentRole === '主任' || extraRole === '管理者';
-  const canPunch = isIntern || _isAdmin || isInternAdminSupervisor || isInternProSupervisor;
+  const canPunch = _clockTokenMode || isIntern || _isAdmin || isInternAdminSupervisor || isInternProSupervisor;
   const today = _fmtDate(new Date());
   const allRecords = attendanceData?.records || [];
   const myRecords = allRecords
@@ -27627,7 +27725,7 @@ function renderClockPage(ns) {
                 const locTag = r.lat
                   ? `<span style="font-size:.75rem;color:${r.locationUpdated?'#3182ce':r.accuracyLow?'#c05621':'#a0aec0'};cursor:pointer;" onclick="_showClockMap(${r.lat},${r.lng})">📍 ${_isNearCampus(r.lat,r.lng)?'校區內':'校區外'}${r.accuracyLow&&!r.locationUpdated?' ⚠️':''}${r.locationUpdated?' ✏️':''}</span>`
                   : `<span style="font-size:.75rem;color:#a0aec0;">📍 無定位</span>`;
-                const updBtn = r.locationUpdated ? '' : `<button class="btn btn-secondary btn-sm" style="font-size:.72rem;padding:2px 8px;" onclick="updateAttendanceLoc('${r.id}')">更新定位</button>`;
+                const updBtn = (r.locationUpdated || _clockTokenMode) ? '' : `<button class="btn btn-secondary btn-sm" style="font-size:.72rem;padding:2px 8px;" onclick="updateAttendanceLoc('${r.id}')">更新定位</button>`;
                 const hint = r.accuracyLow && !r.locationUpdated ? `<div style="font-size:.72rem;color:#c05621;margin-top:2px;padding-left:4px;">⚠️ 定位精度不足（可能為電腦 IP 定位），建議手機重新打卡或點「更新定位」</div>` : '';
                 const origHint = r.locationUpdated && r.origLat != null ? `<div style="font-size:.72rem;color:#a0aec0;margin-top:2px;padding-left:4px;">原始：📍 ${_isNearCampus(r.origLat,r.origLng)?'校區內':'校區外'}${r.origAccuracy?`（誤差 ${r.origAccuracy}m）`:''}</div>` : '';
                 return `
@@ -27646,14 +27744,14 @@ function renderClockPage(ns) {
 
         <div id="${id('clock-geo-status')}" style="font-size:.8rem;color:#718096;text-align:center;margin-bottom:12px;"></div>
 
-        ${isIntern && !_clockNs ? `
+        ${isIntern && !_clockNs && !_clockTokenMode ? `
         <div style="display:flex;gap:8px;align-items:center;justify-content:center;margin-bottom:16px;">
           <input id="clock-print-month" type="month" value="${today.slice(0, 7)}" style="padding:6px 8px;border:1px solid #cbd5e0;border-radius:8px;font-size:.85rem;">
           <button class="btn btn-secondary btn-sm" onclick="printAttendanceMonthlyReport(currentUser.email, document.getElementById('clock-print-month').value)">🖨️ 列印月報表</button>
         </div>` : ''}
 
         ${canPunch ? `
-        ${!isIntern ? '<div class="alert alert-info" style="margin-bottom:12px;">您以管理者／督導身分檢視；打卡將以您的帳號建立（供驗證用）。</div>' : ''}
+        ${!isIntern && !_clockTokenMode ? '<div class="alert alert-info" style="margin-bottom:12px;">您以管理者／督導身分檢視；打卡將以您的帳號建立（供驗證用）。</div>' : ''}
         <button id="${id('clock-punch-btn')}" onclick="clockAction()" style="width:100%;padding:18px;font-size:1.1rem;font-weight:700;border:none;border-radius:12px;cursor:pointer;background:#3182ce;color:#fff;margin-bottom:16px;">
           ⏱ 打卡
         </button>` : '<div class="alert alert-info" style="margin-bottom:16px;">您目前不是實習生身分，僅可查看差勤紀錄。</div>'}
@@ -27663,6 +27761,11 @@ function renderClockPage(ns) {
         <div id="${id('clock-map-wrap')}" style="display:none;border-radius:12px;overflow:hidden;margin-top:16px;">
           <div id="${id('clock-map')}" style="height:200px;"></div>
         </div>
+
+        ${_clockTokenMode ? `
+        <div style="text-align:center;font-size:.78rem;color:#a0aec0;margin-top:22px;">
+          專屬打卡網址（免登入，僅供打卡）・<a href="${location.origin + location.pathname + location.search}" style="color:#3182ce;">使用完整功能請登入</a>
+        </div>` : ''}
       </div>
     </div>`;
 
@@ -27699,6 +27802,27 @@ async function clockAction() {
     document.getElementById(_clockNs + 'clock-geo-status').textContent = `定位成功（誤差約 ${accuracy} 公尺）`;
   } catch (e) {
     document.getElementById(_clockNs + 'clock-geo-status').textContent = '⚠️ 無法取得定位（仍可繼續打卡）';
+  }
+
+  // 打卡權杖免登入模式：不信任前端身分，record 完全由後端依權杖驗證出的 email 與 config 決定，
+  // 前端只送定位；不呼叫 _attendanceCommit/auditLog（那些走一般 session 授權）。
+  if (_clockTokenMode) {
+    try {
+      const locParams = lat !== null ? { lat, lng, accuracy } : {};
+      const resp = await _clockProxyCall('clockPunch', locParams);
+      attendanceData = { records: resp.records || [] };
+      msgEl.className = 'alert alert-success';
+      msgEl.textContent = '✅ 打卡成功！ ' + _fmtTime(resp.record.timestamp);
+      msgEl.style.display = '';
+      setTimeout(() => renderClockPage(), 800);
+    } catch (e) {
+      msgEl.className = 'alert alert-error';
+      msgEl.textContent = '打卡失敗：' + e.message;
+      msgEl.style.display = '';
+      document.getElementById(_clockNs + 'clock-geo-status').textContent = '';
+      if (btn) btn.disabled = false;
+    }
+    return;
   }
 
   const now = new Date();
@@ -28332,6 +28456,146 @@ function _initGeoFenceCard() {
   document.getElementById('geo-lat').value    = gc.lat;
   document.getElementById('geo-lng').value    = gc.lng;
   document.getElementById('geo-radius').value = gc.radius;
+}
+
+// ══════════════════════════════════════════════
+//  實習生專屬打卡網址（免登入）── 差勤管理後台卡片
+//  後端硬閘（見 Code.gs _clockTokenAdminGate_）才是真正的權限邊界；此處判斷只決定 UI 是否顯示，
+//  不是安全邊界——攻擊者呼叫 proxyCall('clockTokenIssue', ...) 一樣會被後端擋下。
+// ══════════════════════════════════════════════
+function _isClockTokenMgr() {
+  return currentRole === '主任' || extraRole === '管理者' || isInternAdminSupervisor || isInternProSupervisor;
+}
+
+let _clockTokenListCache = null; // null＝尚未載入完成；載入後為 {email:{iat,exp,issuedBy}} 物件（可能為空物件）
+
+function _initClockTokenCard() {
+  const isMgr = _isClockTokenMgr();
+  const card = document.getElementById('clock-token-card');
+  if (!card) return;
+  card.style.display = isMgr ? '' : 'none';
+  if (!isMgr) return;
+  _clockTokenListCache = null;
+  _renderClockTokenList();
+  proxyCall('clockTokenList').then(res => {
+    _clockTokenListCache = res?.tokens || {};
+    _renderClockTokenList();
+  }).catch(e => {
+    console.warn('[clockTokenList] 失敗:', e.message);
+    _clockTokenListCache = {};
+    _renderClockTokenList();
+  });
+}
+
+function _ctSafeId(email) { return String(email).replace(/[^a-zA-Z0-9]/g, '_'); }
+
+function _clockTokenInterns() {
+  const users = configData?.users || {};
+  return Object.entries(users)
+    .filter(([, u]) => u.role === '實習諮商心理師' && u.disabled !== true)
+    .map(([email, u]) => ({ email, name: u.name || email }))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'zh-Hant'));
+}
+
+function _clockTokenRowStatusHtml(email) {
+  if (_clockTokenListCache === null) return '<span style="color:#a0aec0;">載入中…</span>';
+  const info = _clockTokenListCache[email];
+  if (!info) return '<span style="color:#a0aec0;">未產生</span>';
+  const expStr = info.exp ? _fmtDate(new Date(info.exp * 1000)) : '—';
+  return `<span style="color:#276749;">已產生（到期 ${escHtml(expStr)}・由 ${escHtml(_userName(info.issuedBy))} 產生）</span>`;
+}
+
+function _clockTokenRowButtonsHtml(email) {
+  const hasInfo = !!(_clockTokenListCache && _clockTokenListCache[email]);
+  return `
+    <button class="btn btn-secondary btn-sm" onclick="_clockTokenGenerate('${email}')">${hasInfo ? '重新產生' : '產生'}</button>
+    ${hasInfo ? `<button class="btn btn-danger btn-sm" onclick="_clockTokenRevokeClick('${email}')">停用</button>` : ''}`;
+}
+
+function _renderClockTokenList() {
+  const body = document.getElementById('clock-token-body');
+  if (!body) return;
+  const interns = _clockTokenInterns();
+  if (!interns.length) {
+    body.innerHTML = '<div style="color:#a0aec0;font-size:.88rem;padding:8px 0;">目前沒有「實習諮商心理師」身分的使用者。</div>';
+    return;
+  }
+  body.innerHTML = interns.map(({ email, name }) => {
+    const sid = _ctSafeId(email);
+    return `
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid #f7fafc;">
+      <div style="min-width:140px;">
+        <div style="font-weight:600;color:#2d3748;">${escHtml(name)}</div>
+        <div style="font-size:.74rem;color:#a0aec0;">${escHtml(email)}</div>
+      </div>
+      <div id="ct-status-${sid}" style="flex:1;min-width:180px;font-size:.85rem;">${_clockTokenRowStatusHtml(email)}</div>
+      <div id="ct-btns-${sid}" style="display:flex;gap:6px;flex-shrink:0;">${_clockTokenRowButtonsHtml(email)}</div>
+      <div id="ct-url-wrap-${sid}" style="width:100%;"></div>
+    </div>`;
+  }).join('');
+}
+
+async function _clockTokenGenerate(email) {
+  const isRegenerate = !!(_clockTokenListCache && _clockTokenListCache[email]);
+  if (isRegenerate && !confirm(`確定要重新產生「${_userName(email)}」的打卡網址嗎？\n重新產生後，舊網址將立即失效。`)) return;
+  const sid = _ctSafeId(email);
+  try {
+    const res = await proxyCall('clockTokenIssue', { email });
+    const url = location.origin + location.pathname + '?page=clock#ct=' + res.token;
+    if (!_clockTokenListCache) _clockTokenListCache = {};
+    _clockTokenListCache[email] = { iat: Math.floor(Date.now() / 1000), exp: res.exp, issuedBy: currentUser.email };
+    const statusEl = document.getElementById('ct-status-' + sid);
+    const btnsEl  = document.getElementById('ct-btns-' + sid);
+    const urlWrap = document.getElementById('ct-url-wrap-' + sid);
+    if (statusEl) statusEl.innerHTML = _clockTokenRowStatusHtml(email);
+    if (btnsEl)  btnsEl.innerHTML  = _clockTokenRowButtonsHtml(email);
+    if (urlWrap) urlWrap.innerHTML = `
+      <div style="width:100%;margin-top:8px;padding:10px;background:#fffaf0;border:1px solid #fbd38d;border-radius:8px;">
+        <div style="font-size:.76rem;color:#c05621;font-weight:600;margin-bottom:6px;">⚠️ 網址僅此刻顯示，請當場複製傳給實習生；遺失請重新產生。</div>
+        <div style="display:flex;gap:6px;">
+          <input type="text" readonly value="${escHtml(url)}" style="flex:1;font-size:.8rem;padding:6px 8px;border:1px solid #cbd5e0;border-radius:6px;" onclick="this.select()">
+          <button class="btn btn-secondary btn-sm" onclick="_clockTokenCopyUrl(this)">📋 複製</button>
+        </div>
+      </div>`;
+    // 稽核不記錄 token 本體，只記姓名/email（去識別化原則不適用此處——本來就是留痕給誰產生過網址）
+    auditLog(isRegenerate ? '重新產生專屬打卡網址' : '產生專屬打卡網址', null, null, _userName(email));
+    showToast(`✅ 已${isRegenerate ? '重新' : ''}產生打卡網址，請立即複製傳給實習生`, 'success');
+  } catch (e) {
+    showToast('產生失敗：' + e.message, 'error');
+  }
+}
+
+function _clockTokenCopyUrl(btn) {
+  const input = btn.previousElementSibling;
+  if (!input) return;
+  input.select();
+  const done = () => showToast('已複製網址', 'success');
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(input.value).then(done).catch(() => {
+      try { document.execCommand('copy'); done(); } catch (_) { showToast('複製失敗，請手動選取複製', 'error'); }
+    });
+  } else {
+    try { document.execCommand('copy'); done(); } catch (_) { showToast('複製失敗，請手動選取複製', 'error'); }
+  }
+}
+
+async function _clockTokenRevokeClick(email) {
+  if (!confirm(`確定要停用「${_userName(email)}」的打卡網址嗎？\n停用後該網址將立即失效。`)) return;
+  const sid = _ctSafeId(email);
+  try {
+    await proxyCall('clockTokenRevoke', { email });
+    if (_clockTokenListCache) delete _clockTokenListCache[email];
+    const statusEl = document.getElementById('ct-status-' + sid);
+    const btnsEl  = document.getElementById('ct-btns-' + sid);
+    const urlWrap = document.getElementById('ct-url-wrap-' + sid);
+    if (statusEl) statusEl.innerHTML = _clockTokenRowStatusHtml(email);
+    if (btnsEl)  btnsEl.innerHTML  = _clockTokenRowButtonsHtml(email);
+    if (urlWrap) urlWrap.innerHTML = '';
+    auditLog('停用專屬打卡網址', null, null, _userName(email));
+    showToast('已停用打卡網址', 'success');
+  } catch (e) {
+    showToast('停用失敗：' + e.message, 'error');
+  }
 }
 
 function previewGeoFence() {
@@ -29512,6 +29776,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-16', v: 191, title: '實習生專屬打卡網址（免登入）＋差勤管理後台產生/停用介面', isProd: false, items: [
+      item('新功能', '差勤管理頁「打卡紀錄」分頁新增「📱 專屬打卡網址（免登入）」卡片：主任／系統管理者／實習生行政與專業督導可為任一「實習諮商心理師」身分的使用者產生專屬打卡網址（效期 180 天），手機打開網址不需登入即可直接打卡（僅能打卡，無法使用其他功能）；可隨時「重新產生」（舊網址立即失效）或「停用」（帳號停用時網址亦自動失效）；網址僅在產生當下顯示一次，需當場複製傳給實習生'),
+      item('技術', '後端新增打卡專屬權杖（clock token）：與一般登入 session 共用同一把密鑰簽章，payload 額外帶 s:\'clock\' 做 scope 標記；`verifySessionToken_` 改為見到含 s 欄位的 payload 一律拒收，避免打卡權杖被當成完整登入 session 冒用；新增登記檔（僅存權杖識別碼、不存權杖本體）供隨時撤銷，`doPost` 對打卡權杖的 action 白名單僅開放「取得打卡頁資料」與「打卡」兩項，其餘一律拒絕'),
+    ]},
     { date: '2026-07-15', v: 190, title: '個案紀錄表列印再微調：基本資料貼近粗線＋移除段落間灰色分隔線', isProd: true, items: [
       item('改善', '個案紀錄表列印：基本資料區塊（姓名/電話/出生年月日那兩列）與上方粗分隔線的間距收窄'),
       item('改善', '個案紀錄表列印：移除「二、主述與會談資料」「三、問題評估」「五、後續處遇計畫」內容區塊下方的灰色分隔線（即二與三之間、三與四之間、五與晤談人員之間的灰線）'),
