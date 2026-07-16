@@ -5,10 +5,10 @@
 //   3. 授權閘（isAuthorizedUser_ 對映：AUTHZ_EXEMPT 之外，email 須在 vdrive config.json 的
 //      users 且未停用；sessionStart 由 actions/session.js 內部自行判斷，不重複走此閘）
 //   4. admin/細部閘（config.json 整檔寫入保護、ROOT_GUARDED、query 白名單）
-//   5. ACTION_TABLE 分派；日曆 7 個 action → proxy stub；npust5 信件解析 4 個 action 已實作
-//      （fetchMentalLeaves/clearMentalLeaves 走 actions/mail.js＋本機 Gmail REST，
-//      getNpust5AuthUrl/exchangeNpust5OAuthCode 回固定業務錯誤，見 NPUST5_WEB_AUTH_RETIRED_MSG）；
-//      其餘未實作 action → 明確業務錯誤
+//   5. ACTION_TABLE 分派；日曆 7 個 action 已實作（走 actions/sync/gcSync.js＋本機 Calendar REST，
+//      見 CALENDAR_SYNC_CREDS）；npust5 信件解析 4 個 action 已實作（fetchMentalLeaves/
+//      clearMentalLeaves 走 actions/mail.js＋本機 Gmail REST，getNpust5AuthUrl/exchangeNpust5OAuthCode
+//      回固定業務錯誤，見 NPUST5_WEB_AUTH_RETIRED_MSG）；其餘未實作 action → 明確業務錯誤
 // 每個請求無論成功/拒絕/例外都寫一筆 audit_log（見 audit.js，content 類參數只記長度）。
 'use strict';
 
@@ -22,6 +22,7 @@ const sessionActions = require('./actions/session');
 const storageActions = require('./actions/storage');
 const commitActions = require('./actions/commit');
 const mailActions = require('./actions/mail');
+const gcSync = require('./sync/gcSync');
 
 // npust5 Gmail 網頁 OAuth 授權流程在 Node 版已被伺服器端憑證檔（GMAIL_SYNC_CREDS）取代，
 // getNpust5AuthUrl／exchangeNpust5OAuthCode 一律回這則固定業務錯誤（不再導向 Google 同意頁）。
@@ -143,6 +144,16 @@ async function handleRequest(db, config, payload) {
       }
     }
 
+    // ── 4a-1b. shareCalendarWriters：管理者可授權/撤銷任何人；非管理者僅能對「自己」（自助日曆連結，
+    //      專任諮商師亦適用，非僅管理者），杜絕非管理者把日曆編輯權授予任意 email。對映 GAS doPost (b)。──
+    if (action === 'shareCalendarWriters') {
+      const users = getConfigUsersSafe(db, ctx);
+      if (!gate.adminDecision(users, userEmail) && !gate.shareToSelfOnly(params.emails, userEmail)) {
+        outcome = 'denied';
+        return envelope.bizError('Forbidden: non-admin may only share to self');
+      }
+    }
+
     // ── 4a-2. clearMentalLeaves：清空 mental_leaves.json（破壞性）；限 admin 或身心調適假窗口聯絡人
     //      （config.json 該使用者 isMentalLeaveContact === true）。對映 GAS doPost (c)（L108-114）。──
     if (action === 'clearMentalLeaves') {
@@ -202,7 +213,7 @@ async function handleRequest(db, config, payload) {
       case 'startupBatch': result = storageActions.startupBatch(db, params, ctx); break;
       case 'casesUpsert': result = commitActions.casesUpsert(db, params, ctx); break;
       case 'attendanceCommit': result = commitActions.attendanceCommit(db, params, ctx); break;
-      case 'bookingsCommit': result = commitActions.bookingsCommit(db, params, ctx); break;
+      case 'bookingsCommit': result = await gcSync.bookingsCommitWithGc(db, params, ctx, config); break;
       case 'listCommit': result = commitActions.listCommit(db, params, ctx); break;
       case 'notifCommit': result = commitActions.notifCommit(db, params, ctx); break;
       case 'fetchMentalLeaves': result = await mailActions.fetchMentalLeaves(db, config, ctx, params); break;
@@ -212,6 +223,17 @@ async function handleRequest(db, config, payload) {
         outcome = 'denied';
         return envelope.bizError(NPUST5_WEB_AUTH_RETIRED_MSG);
       }
+      // ── Phase 2b：日曆同步 7 個 action，改走本機 Calendar REST 直連（src/sync/gcSync.js）。
+      //      對映 dev/Code.gs doPost switch L194-200。CALENDAR_SYNC_CREDS 未設定時
+      //      gcSync.requireCalendarClient 會 throw，落入外層 catch → envelope.fail（同
+      //      fetchMentalLeaves 對 GMAIL_SYNC_CREDS 未設定的處理方式，見 actions/mail.js）。
+      case 'createCalendarEvent': result = await gcSync.createGcEvent(gcSync.requireCalendarClient(config), params); break;
+      case 'updateCalendarEvent': result = await gcSync.updateGcEvent(gcSync.requireCalendarClient(config), params); break;
+      case 'deleteCalendarEvent': result = await gcSync.deleteGcEvent(gcSync.requireCalendarClient(config), params); break;
+      case 'listCalendarEvents': result = await gcSync.listGcEventsNormalized(gcSync.requireCalendarClient(config), params); break;
+      case 'shareCalendarWriters': result = await gcSync.shareCalendarWriters(gcSync.requireCalendarClient(config), params); break;
+      case 'gcAnnotateEvent': result = await gcSync.annotateGcEvent(gcSync.requireCalendarClient(config), params); break;
+      case 'getCalendarMeta': result = await gcSync.getCalendarMeta(gcSync.requireCalendarClient(config)); break;
       default: {
         if (proxy.isProxyAction(action)) {
           outcome = 'denied';

@@ -312,13 +312,16 @@ function notifCommit(db, params, ctx) {
 }
 
 // ── bookingsCommit：bookings.json 併發安全批次寫入＋寫入當下撞房/撞人檢查 ──
-// 對映 dev/Code.gs bookingsCommit_（L3317）＋ _bkFindConflictGs_/_bkNormalizeCounselorsGs_（L3243-3281）。
-// 與 GAS 版的刻意差異（Phase 1.5 範圍）：GAS 版 Phase 2/3 在鎖外呼叫 createCalendarEvent_/
-// updateCalendarEvent_/deleteCalendarEvent_ 做 Google 日曆同步、成功後再次鎖內補寫 calendarEventId；
-// Node 後端的日曆同步 action 仍是 Phase 2 GAS 代理 stub（見 actions/proxy.js，尚未實作轉發本體），
-// 故本函式只做 Phase 1（RMW＋衝突檢查＋calendarEventId 重複匯入防護），不嘗試呼叫日曆——不是「嘗試
-// 失敗」，是本階段尚未整合，因此 gcErrors 恆為空陣列（沿用回傳形狀，前端本就把 gcErrors 當 best-effort
-// 附加資訊處理，不會因為是空陣列而改變行為）。
+// 對映 dev/Code.gs bookingsCommit_（L3317）＋ _bkFindConflictGs_/_bkNormalizeCounselorsGs_（L3243-3281）
+// 的 **Phase 1（鎖內 RMW＋衝突檢查＋calendarEventId 重複匯入防護）** 部分。
+// 本函式本身刻意不做 GAS 版 Phase 2/3（鎖外呼叫 createCalendarEvent_/updateCalendarEvent_/
+// deleteCalendarEvent_ 做 Google 日曆同步、成功後再次鎖內補寫 calendarEventId）——保持同步、
+// 純 RMW 語意，維持既有單元測試（test/commit-actions.test.js）的直接同步呼叫假設不變。
+// GC 整合改在 src/sync/gcSync.js 的 bookingsCommitWithGc 這層 wrapper 做（Phase 2b）：
+// 它會先呼叫本函式完成 Phase 1，再視 config.CALENDAR_SYNC_CREDS 是否已設定決定要不要接著跑
+// Phase 2/3；dispatch.js 的 'bookingsCommit' action 呼叫的是 bookingsCommitWithGc，不是本函式。
+// 未設定 CALENDAR_SYNC_CREDS 時 bookingsCommitWithGc 會直接回傳本函式的結果（gcErrors 恆為空陣列，
+// 等同 Phase 1.5 時期的舊行為，不觸網）。
 function bkNormalizeCounselors(b) {
   if (b && Array.isArray(b.counselors) && b.counselors.length) return b.counselors;
   if (b && (b.counselorEmail || b.counselorName)) return [{ value: b.counselorEmail || b.counselorName }];

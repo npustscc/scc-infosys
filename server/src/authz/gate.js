@@ -137,6 +137,12 @@ function queryParentsAllowed(q, checkUnderRoot) {
   return true;
 }
 
+// shareCalendarWriters 的非管理者路徑：emails 必須恰為「自己一人」（自助日曆連結，杜絕非管理者
+// 把日曆編輯權授予任意 email）。對映 dev/Code.gs shareToSelfOnly_（L1098）。
+function shareToSelfOnly(emails, userEmail) {
+  return Array.isArray(emails) && emails.length === 1 && !!userEmail && emails[0] === userEmail;
+}
+
 // P1：moveFile 目的地檢查（Node 版未實作 moveFile，保留供未來沿用）。
 function moveFileDestAllowed(addParents, checkUnderRoot) {
   if (!addParents) return false;
@@ -158,4 +164,5 @@ module.exports = {
   qHasForbiddenOp,
   queryParentsAllowed,
   moveFileDestAllowed,
+  shareToSelfOnly,
 };

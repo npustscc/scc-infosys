@@ -1,0 +1,24 @@
+# scc-gc-sync@.service — GC 日曆同步 tick（單次執行，由 .timer 觸發）。
+#
+# templated unit：實例名（%i）為環境代號，例如 dev / prod，對應
+# /home/scc-s-admin/scc-dev/server、/home/scc-s-admin/scc-prod/server 兩份獨立部署。
+#
+# timer 固定每 5 分鐘觸發，實際要不要同步由 scripts/gc-sync-tick.js 內的時段閘決定
+# （上班時段每 5 分、其餘僅整點附近），對映 GAS runGcSyncTick 的 _gcSyncShouldRun。
+#
+# 安裝方式與參數說明見同目錄 README.md。
+
+[Unit]
+Description=scc-infosys GC 日曆同步 tick（%i）
+# 只在網路就緒後才跑（要打 Google OAuth/Calendar API）；DB 寫入與 server 主服務靠
+# better-sqlite3 transaction/WAL 序列化，不需宣告啟動順序相依。
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=scc-s-admin
+WorkingDirectory=/home/scc-s-admin/scc-%i/server
+ExecStart=/usr/bin/node scripts/gc-sync-tick.js
+# 失敗只印訊息給 journal 判定，不在 unit 層級重試——重試交給 .timer 的下一次排程（每 5 分鐘），
+# 避免短時間內對 Google OAuth/Calendar 端點重複打錯誤請求觸發速率限制。

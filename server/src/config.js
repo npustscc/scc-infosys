@@ -34,6 +34,14 @@ const GMAIL_SYNC_CREDS = process.env.GMAIL_SYNC_CREDS || '';
 // ml-processed-dev、prod＝ml-processed）。Node 版單一 root，故用環境變數直接指定，不比照 GAS
 // 用 rootFolderId 查表。
 const ML_GMAIL_LABEL = process.env.ML_GMAIL_LABEL || 'ml-processed-dev';
+// 日曆同步（scripts/gc-sync-tick.js＋dispatch 7 個日曆 action＋bookingsCommit 的 gc 參數）專用：
+// 指向 OAuth 憑證 JSON 檔路徑（{client_id, client_secret, refresh_token}，refresh_token 的 scope
+// 需含 https://www.googleapis.com/auth/calendar，npust.scc 帳號）。選填——server 主程式不需要它，
+// 缺值時交由呼叫端（src/sync/gcSync.js 的 requireCalendarClient／bookingsCommitWithGc）自行
+// fail-fast/回業務錯誤或靜默維持 Phase 1.5 行為，故不可用 required()。
+const CALENDAR_SYNC_CREDS = process.env.CALENDAR_SYNC_CREDS || '';
+// 日曆名稱：對映 dev/Code.gs CALENDAR_NAME（dev='[DEV] SCC 空間預約'／prod='SCC 空間預約'）。
+const GC_CALENDAR_NAME = process.env.GC_CALENDAR_NAME || 'SCC 空間預約';
 const CASE_AUTHZ_MODE = process.env.CASE_AUTHZ_MODE || 'shadow';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -47,6 +55,8 @@ module.exports = {
   DRIVE_SYNC_CREDS,
   GMAIL_SYNC_CREDS,
   ML_GMAIL_LABEL,
+  CALENDAR_SYNC_CREDS,
+  GC_CALENDAR_NAME,
   CASE_AUTHZ_MODE,
   NODE_ENV,
   PUBLIC_DIR,
