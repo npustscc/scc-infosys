@@ -120,6 +120,13 @@ function revokeDevice(db, email, deviceId) {
   return true;
 }
 
+// 撤銷該帳號「全部」裝置憑證（管理者重設 2FA 用，見 actions/adminUsers.js adminResetTwofa）——
+// 與 revokeDevice 不同：不檢查呼叫者身分（呼叫端須自行確認具備管理者權限，此函式本身不做授權
+// 判斷）。重設 2FA 卻留著既有裝置免第二因素，等同白重設，故本函式是 adminResetTwofa 的必要配套。
+function revokeAllForUser(db, email) {
+  db.prepare('UPDATE trusted_devices SET revoked = 1 WHERE email = ?').run(email);
+}
+
 module.exports = {
   newId,
   newToken,
@@ -131,4 +138,5 @@ module.exports = {
   touchLastSeen,
   listDevices,
   revokeDevice,
+  revokeAllForUser,
 };

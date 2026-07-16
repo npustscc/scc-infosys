@@ -59,33 +59,48 @@ function readConfigUsers(db, ctx) {
   }
 }
 
-// 回傳 { kind: 'invalid_credentials' | 'totp_required' | 'invalid_totp' | 'email_otp_sent' |
-//        'invalid_email_otp' | 'email_otp_unavailable' | 'otp_emails_required' |
-//        'too_many_otp_emails' | 'invalid_otp_email' | 'unauthorized' | 'ok',
-//        ...(email_otp_sent 時附 resent；ok 時附 sessionToken/exp/email/mailSent/totpEnrolled/
-//        newDeviceToken?) }
-// totp_required／invalid_totp／email_otp_sent／invalid_email_otp 只在密碼已驗證正確時才會出現
-// （見 local.verifyLocalCredentialsDetailed 的 kind 語意註解）——帳密錯誤一律回 invalid_credentials，
-// 不洩漏帳密是否正確以外的資訊。
+// 回傳 { kind: 'invalid_credentials' | 'password_change_required' | 'weak_new_password' |
+//        'totp_required' | 'invalid_totp' | 'email_otp_sent' | 'invalid_email_otp' |
+//        'email_otp_unavailable' | 'otp_emails_required' | 'too_many_otp_emails' |
+//        'invalid_otp_email' | 'unauthorized' | 'ok',
+//        ...(weak_new_password 時附 reason；email_otp_sent 時附 resent；ok 時附
+//        sessionToken/exp/email/mailSent/totpEnrolled/newDeviceToken?) }
+// totp_required／invalid_totp／email_otp_sent／invalid_email_otp／password_change_required／
+// weak_new_password 只在密碼已驗證正確時才會出現（見 local.verifyLocalCredentialsDetailed 的
+// kind 語意註解）——帳密錯誤一律回 invalid_credentials，不洩漏帳密是否正確以外的資訊。
+//
+// email 參數（wire 相容，前端欄位名不變）：migration 005 起語意改為「登入帳號」（login_name），
+// 與內部身分 email 脫鉤（見 auth/local.js getUserByLogin／DEFAULT_INITIAL_PASSWORD 檔頭註解）——
+// 一經 local.verifyLocalCredentialsDetailed 解析出 user 後，本函式其餘邏輯（授權閘／session
+// token／裝置憑證／寄信）一律改用解析出的內部 email（authResult.email／authedEmail），不再使用
+// 呼叫端傳入的 email 參數本身。既有帳號 backfill 後 login_name=lower(email)，故既有前端仍以
+// email 登入不受影響（wire 相容性見任務回報）。
 //
 // Phase 3b 信任裝置：deviceToken（由 index.js 從 Cookie header 注入 payload，見該檔頭註解）若為
 // 該帳號目前有效的裝置憑證，等同第二因素（TOTP／Email 驗證碼皆算）已滿足——密碼正確、本次未附
 // otp/emailOtp 的情境（即原本會回 totp_required／email_otp_required）改為直接放行，且不會觸發
 // email 寄送（見下方判斷順序：deviceValid 短路發生在寄信分支之前）。deviceDays＝
-// config.TRUSTED_DEVICE_DAYS。
+// config.TRUSTED_DEVICE_DAYS。裝置憑證比對需要「內部 email」（trusted_devices.email 存的是
+// 內部身分，見 deviceTrust.issueDevice 呼叫處），故在呼叫 verifyLocalCredentialsDetailed 之前
+// 先用 getUserByLogin 查一次，只為了取得內部 email 做裝置比對用（真正的帳密/第二因素驗證仍全權
+// 交給 verifyLocalCredentialsDetailed，這裡查到 user 也不代表密碼正確）。
 //
 // config：整包 config 物件（見 src/config.js），本函式取用 SESSION_SECRET／TRUSTED_DEVICE_DAYS／
 // MAIL_SEND_CREDS（經 mailer.sendMail 間接使用）／GC_CALENDAR_NAME（經 loginNotify.mailEnvPrefix
 // 間接使用）——改用整包物件而非逐一列參數，避免每新增一個寄信/決策所需的 config 欄位就要再加一個
 // 位置參數。
-async function sessionStart(db, { email, password, otp, emailOtp, switchToEmailOtp, otpEmails, ua, ip, geo, cc, deviceToken }, ctx, config) {
+async function sessionStart(db, { email, password, otp, emailOtp, switchToEmailOtp, otpEmails, newPassword, ua, ip, geo, cc, deviceToken }, ctx, config) {
   const secret = config.SESSION_SECRET;
   const deviceDays = config.TRUSTED_DEVICE_DAYS;
-  const revokedBefore = sessionAuth.getRevokedBefore(db, email);
-  const deviceValid = !!(email && deviceToken
-    && deviceTrust.verifyDeviceToken(db, deviceToken, email, revokedBefore, deviceDays));
+  const loginUser = email ? local.getUserByLogin(db, email) : null;
+  const internalEmailForDevice = loginUser ? loginUser.email : null;
+  const revokedBefore = sessionAuth.getRevokedBefore(db, internalEmailForDevice);
+  const deviceValid = !!(internalEmailForDevice && deviceToken
+    && deviceTrust.verifyDeviceToken(db, deviceToken, internalEmailForDevice, revokedBefore, deviceDays));
 
-  let authResult = await local.verifyLocalCredentialsDetailed(db, email, password, otp, emailOtp, switchToEmailOtp === true, otpEmails);
+  let authResult = await local.verifyLocalCredentialsDetailed(
+    db, email, password, otp, emailOtp, switchToEmailOtp === true, otpEmails, newPassword
+  );
   if ((authResult.kind === 'totp_required' || authResult.kind === 'email_otp_required') && deviceValid) {
     // 裝置信任放行：比照一般登入成功重置鎖定計數（verifyLocalCredentialsDetailed 在
     // totp_required/email_otp_required 分支不會呼叫內部的 registerSuccess，見
@@ -93,8 +108,8 @@ async function sessionStart(db, { email, password, otp, emailOtp, switchToEmailO
     // 新碼（issueEmailOtp），這裡短路後也不會寄出（下方寄信邏輯只在 kind 仍為
     // 'email_otp_required' 時才會跑到）——多存一個當下用不到的雜湊碼是無害的，下次真的需要
     // Email 驗證碼時仍會依 60 秒冷卻規則決定是否要重新產生。
-    local.registerLoginSuccess(db, email);
-    authResult = { kind: 'ok', email, totpEnrolled: authResult.totpEnrolled };
+    local.registerLoginSuccess(db, internalEmailForDevice);
+    authResult = { kind: 'ok', email: internalEmailForDevice, totpEnrolled: authResult.totpEnrolled };
   }
 
   // Email 驗證碼待寄送：local.js 不觸網，只決定「要不要寄、寄什麼碼、寄給誰」（見
@@ -126,7 +141,15 @@ async function sessionStart(db, { email, password, otp, emailOtp, switchToEmailO
     return { kind: 'email_otp_sent', resent: !!authResult.resent };
   }
 
-  if (authResult.kind !== 'ok') return { kind: authResult.kind };
+  // 通用透傳：invalid_credentials／totp_required／invalid_totp／invalid_email_otp／
+  // otp_emails_required／too_many_otp_emails／invalid_otp_email／password_change_required 皆為
+  // 中繼態，直接透傳 kind 即可；weak_new_password 額外帶 reason（見 local.validateNewPassword）
+  // 供 dispatch.js 組成 'weak_new_password:<reason>' bizError、login.html 對映中文訊息。
+  if (authResult.kind !== 'ok') {
+    return authResult.kind === 'weak_new_password'
+      ? { kind: authResult.kind, reason: authResult.reason }
+      : { kind: authResult.kind };
+  }
   const authedEmail = authResult.email;
 
   const users = readConfigUsers(db, ctx);

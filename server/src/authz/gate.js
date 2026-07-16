@@ -25,17 +25,29 @@ function adminDecision(users, userEmail) {
   return u.role === '主任' || u.isAdmin === true || u.extraRole === '管理者';
 }
 
-// AUTHZ_EXEMPT：ping（探測）與 submitUserApplication（申請帳號流程本身即為未授權者的入口）
-// 在授權閘之前放行。submitUserApplication 在 Phase 1 骨架回 not-implemented 業務錯誤（見
-// actions/proxy.js 的開放問題），但閘門語意仍先移植好，供未來實作時直接沿用。
-const AUTHZ_EXEMPT = { ping: true, submitUserApplication: true, sessionStart: true };
+// AUTHZ_EXEMPT：ping（探測）在授權閘之前放行。
+// 註：submitUserApplication 曾經也在本表——帳號發放與管理（migration 005）改由管理者用
+// adminCreateLocalAccount 建立，申請流程已退場（見 dispatch.js 頂部的固定業務錯誤短路），該短路
+// 發生在授權閘之前，本表留著這一項也是死碼、永遠不會走到，故移除。
+const AUTHZ_EXEMPT = { ping: true, sessionStart: true };
 // 註：sessionStart 額外列入本模組的 AUTHZ_EXEMPT，是因為 Node 版 dispatcher 對 sessionStart 走
 // 獨立流程（先本地認證取得 email，再於 actions/session.js 內部自行呼叫 authzDecision 判斷是否放行、
 // 分別回應 invalid_credentials／Unauthorized user）——不透過 dispatch.js 通用閘門重複判斷一次。
 
 // deleteFile/moveFile 為純攻擊面（前端從未使用），Phase 1 骨架未實作（回 not-implemented），
 // 此表保留供未來實作時直接沿用同一份閘門語意。
-const ADMIN_ONLY_ACTIONS = { deleteFile: true, moveFile: true };
+// adminUserAuthGet/adminCreateLocalAccount/adminUpdateLocalAccount/adminResetPassword/
+// adminResetTwofa（帳號發放與管理，migration 005，見 actions/adminUsers.js）：管理者專屬，
+// 非管理者一律 Forbidden——五個 action 皆會異動他人帳密/2FA 設定，比照既有 adminDecision 語意
+// （role==='主任' 或 isAdmin===true 或 extraRole==='管理者'）。
+const ADMIN_ONLY_ACTIONS = {
+  deleteFile: true, moveFile: true,
+  adminUserAuthGet: true,
+  adminCreateLocalAccount: true,
+  adminUpdateLocalAccount: true,
+  adminResetPassword: true,
+  adminResetTwofa: true,
+};
 
 // F3：fileId/parentId 類動作限制在本次 ctx.root 子樹——Phase 1 骨架已實作的 action 對映。
 const ROOT_GUARDED = {

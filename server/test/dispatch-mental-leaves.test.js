@@ -244,3 +244,22 @@ test('exchangeNpust5OAuthCode：不需 sessionToken（同 GAS 版），直接回
   assert.equal(r.success, true);
   assert.equal(r.data.error, '本地後端改用伺服器端憑證檔，毋需網頁授權');
 });
+
+// ── submitUserApplication：帳號發放與管理（migration 005）改由管理者建立，申請流程已退場 ──────
+
+test('submitUserApplication：未登入呼叫也回固定業務錯誤（不是 Session expired）——短路在身分解析之前', async () => {
+  const db = openDb(':memory:');
+  const r = await handleRequest(db, testConfig(), { action: 'submitUserApplication', rootFolderId: ROOT });
+  assert.equal(r.success, true);
+  assert.equal(r.data.error, '帳號由管理者建立，請洽中心管理者');
+});
+
+test('submitUserApplication：已登入授權使用者呼叫同樣回固定業務錯誤', async () => {
+  const db = openDb(':memory:');
+  await setupUser(db, 'a@x.com', 'right-password');
+  const login1 = await login(db, testConfig(), 'a@x.com', 'right-password');
+  const r = await handleRequest(db, testConfig(), {
+    action: 'submitUserApplication', sessionToken: login1.data.sessionToken, rootFolderId: ROOT,
+  });
+  assert.equal(r.data.error, '帳號由管理者建立，請洽中心管理者');
+});

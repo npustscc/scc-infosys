@@ -41,8 +41,8 @@
   #msg { margin-top: 1rem; font-size: .85rem; text-align: center; min-height: 1.1em; white-space: pre-wrap; }
   #msg.err { color: #c0392b; }
   #msg.ok { color: #1e8e3e; }
-  .totp-box, .email-otp-box { display: none; }
-  .totp-box.show, .email-otp-box.show { display: block; }
+  .totp-box, .email-otp-box, .pw-change-box { display: none; }
+  .totp-box.show, .email-otp-box.show, .pw-change-box.show { display: block; }
   .setup-box { display: none; }
   .setup-box.show { display: block; }
   .login-box.hide { display: none; }
@@ -66,7 +66,7 @@
 
   <div id="loginBox" class="login-box">
     <form id="loginForm">
-      <label>電子郵件<input type="email" name="email" required autocomplete="username" /></label>
+      <label>登入帳號<input type="text" name="email" required autocomplete="username" /></label>
       <label>密碼<input type="password" name="password" required autocomplete="current-password" /></label>
 
       <div id="totpBox" class="totp-box">
@@ -81,6 +81,13 @@
           <input type="text" name="emailOtp" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" />
         </label>
         <button type="button" id="resendEmailOtpBtn" class="link">重新寄送驗證碼</button>
+      </div>
+
+      <div id="pwChangeBox" class="pw-change-box">
+        <p class="hint">首次登入，請先設定新密碼（至少 8 碼，且不可與預設密碼相同）。</p>
+        <label>新密碼<input type="password" id="newPassword" autocomplete="new-password" /></label>
+        <label>確認新密碼<input type="password" id="confirmNewPassword" autocomplete="new-password" /></label>
+        <button type="button" id="confirmPwChangeBtn">確認變更密碼</button>
       </div>
 
       <button type="submit" id="loginBtn">登入</button>
@@ -815,6 +822,10 @@ const otpEmail2 = document.getElementById('otpEmail2');
 const otpEmail3 = document.getElementById('otpEmail3');
 const confirmEmailSetupBtn = document.getElementById('confirmEmailSetupBtn');
 const cancelEmailSetupBtn = document.getElementById('cancelEmailSetupBtn');
+const pwChangeBox = document.getElementById('pwChangeBox');
+const newPasswordInput = document.getElementById('newPassword');
+const confirmNewPasswordInput = document.getElementById('confirmNewPassword');
+const confirmPwChangeBtn = document.getElementById('confirmPwChangeBtn');
 const msg = document.getElementById('msg');
 
 let sessionToken = null; // 登入成功後才有值，setup 流程需要它呼叫已授權 action
@@ -885,11 +896,29 @@ function stopResendCountdown() {
 function showTotpBox() {
   totpBox.classList.add('show');
   emailOtpBox.classList.remove('show');
+  hidePwChangeBox();
 }
 
 function showEmailOtpBox() {
   emailOtpBox.classList.add('show');
   totpBox.classList.remove('show');
+  hidePwChangeBox();
+}
+
+// 首次登入強制改密碼（帳號發放與管理，migration 005）：密碼已對、只差改密碼，此時 TOTP／Email
+// 驗證碼欄位還沒有意義（後端 auth/local.js 的 must_change_password 判斷擋在第二因素之前），故
+// 顯示 pwChangeBox 時把另外兩個盒子都收起來，並暫時藏起主要的「登入」送出鈕（避免使用者誤按
+// 原表單送出、卻沒帶 newPassword，白白再收到一次 password_change_required）。
+function showPwChangeBox() {
+  pwChangeBox.classList.add('show');
+  totpBox.classList.remove('show');
+  emailOtpBox.classList.remove('show');
+  loginBtn.style.display = 'none';
+}
+
+function hidePwChangeBox() {
+  pwChangeBox.classList.remove('show');
+  loginBtn.style.display = '';
 }
 
 // 呼叫 sessionStart（帶目前表單的 email/password，加上呼叫端指定的額外欄位）——密碼登入流程中途
@@ -907,6 +936,20 @@ async function attemptLogin(extra) {
 // 統一處理 sessionStart 的回應（無論來自表單送出、改用 Email 驗證碼、或重新寄送按鈕）。
 // 回傳 true 表示流程尚未結束（還停留在登入頁的某個中繼狀態），false 表示已經導向下一步。
 async function handleAuthResponse(d) {
+  if (d.error === 'password_change_required') {
+    showPwChangeBox();
+    setMsg('首次登入，請先設定新密碼', '');
+    newPasswordInput.focus();
+    return true;
+  }
+  if (typeof d.error === 'string' && d.error.indexOf('weak_new_password') === 0) {
+    showPwChangeBox();
+    setMsg(weakPasswordMessage(d.error), 'err');
+    newPasswordInput.value = '';
+    confirmNewPasswordInput.value = '';
+    newPasswordInput.focus();
+    return true;
+  }
   if (d.error === 'totp_required') {
     showTotpBox();
     setMsg('請輸入驗證器目前顯示的 6 位數碼', '');
@@ -1145,6 +1188,42 @@ cancelEmailSetupBtn.addEventListener('click', () => {
   setMsg('');
   if (emailSetupMode === 'switch') totpBox.classList.add('show');
   emailSetupMode = null;
+});
+
+// weak_new_password:<reason> 的三種 reason（見 auth/local.js validateNewPassword）對映成中文訊息，
+// 後端才是權威判斷（本檔下方 confirmPwChangeBtn 只做同規則的前端提前擋，減少一次無謂的往返）。
+function weakPasswordMessage(errorCode) {
+  const reason = errorCode.indexOf(':') >= 0 ? errorCode.slice(errorCode.indexOf(':') + 1) : '';
+  if (reason === 'too_short') return '新密碼至少需要 8 碼';
+  if (reason === 'same_as_default') return '新密碼不可與預設密碼相同';
+  if (reason === 'same_as_old') return '新密碼不可與目前密碼相同';
+  return '新密碼不符合規則：' + reason;
+}
+
+// 首次登入強制改密碼：前端先做同一套規則的擋（≥8 碼、不可為預設密碼 123456789），減少一次
+// 無謂往返；後端 auth/local.js validateNewPassword 才是權威判斷（額外還會擋「與目前密碼相同」，
+// 前端沒有舊密碼雜湊可比對，這條規則只能靠後端擋）。成功後這次 sessionStart 回應會自然落在
+// 下一個中繼狀態（totp_required／email_otp_sent／ok 皆有可能，取決於該帳號的第二因素設定），
+// 交給 handleAuthResponse 統一處理，不需要在這裡另外分岔。
+confirmPwChangeBtn.addEventListener('click', async () => {
+  const pw1 = newPasswordInput.value;
+  const pw2 = confirmNewPasswordInput.value;
+  if (pw1.length < 8) { setMsg('新密碼至少需要 8 碼', 'err'); return; }
+  if (pw1 === '123456789') { setMsg('新密碼不可與預設密碼相同', 'err'); return; }
+  if (pw1 !== pw2) { setMsg('兩次輸入的新密碼不一致', 'err'); return; }
+  confirmPwChangeBtn.disabled = true;
+  setMsg('變更中…');
+  try {
+    const d = await attemptLogin({
+      newPassword: pw1, otp: loginForm.otp.value || '', emailOtp: loginForm.emailOtp.value || '',
+    });
+    hidePwChangeBox();
+    await handleAuthResponse(d);
+  } catch (err) {
+    setMsg('變更失敗：' + err.message, 'err');
+  } finally {
+    confirmPwChangeBtn.disabled = false;
+  }
 });
 </script>
 </body>

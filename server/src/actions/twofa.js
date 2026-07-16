@@ -45,4 +45,18 @@ function twofaStatus(db, userEmail) {
   };
 }
 
-module.exports = { twofaSetMethod, twofaStatus };
+// 帳號發放與管理（migration 005）：只更新 otp_emails，**不**切換 twofa_method（與 twofaSetMethod
+// 的差異就在這裡）——供已選 TOTP 的使用者更新／整理備援收件清單，或尚未選定第二因素方法者先把
+// 收件清單填好，之後再用 twofaSetMethod('email', ...) 真正切換生效，兩步驟拆開不互相綁定。
+// 驗證規則同 normalizeOtpEmails（與 twofaSetMethod／sessionStart 的 switchToEmailOtp 共用一套）。
+function twofaSetEmails(db, userEmail, emails) {
+  const user = local.getUser(db, userEmail);
+  if (!user) return { error: 'user_not_found' };
+  const normalized = local.normalizeOtpEmails(emails);
+  if (normalized.error) return { error: normalized.error };
+  db.prepare('UPDATE users SET otp_emails = ?, updated_at = ? WHERE email = ?')
+    .run(JSON.stringify(normalized.emails), new Date().toISOString(), userEmail);
+  return { ok: true, otpEmails: normalized.emails };
+}
+
+module.exports = { twofaSetMethod, twofaStatus, twofaSetEmails };

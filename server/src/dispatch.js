@@ -27,10 +27,16 @@ const commitActions = require('./actions/commit');
 const mailActions = require('./actions/mail');
 const gcSync = require('./sync/gcSync');
 const clockBridge = require('./actions/clockBridge');
+const adminUsersActions = require('./actions/adminUsers');
 
 // npust5 Gmail 網頁 OAuth 授權流程在 Node 版已被伺服器端憑證檔（GMAIL_SYNC_CREDS）取代，
 // getNpust5AuthUrl／exchangeNpust5OAuthCode 一律回這則固定業務錯誤（不再導向 Google 同意頁）。
 const NPUST5_WEB_AUTH_RETIRED_MSG = '本地後端改用伺服器端憑證檔，毋需網頁授權';
+
+// 帳號發放與管理（migration 005）：帳號改由管理者用 adminCreateLocalAccount 建立，
+// submitUserApplication 申請流程退場，一律回這則固定業務錯誤（見下方於身分解析之前的短路判斷，
+// 與 gate.AUTHZ_EXEMPT 的取捨說明）。
+const SUBMIT_USER_APPLICATION_RETIRED_MSG = '帳號由管理者建立，請洽中心管理者';
 
 const STORAGE_ACTIONS = new Set([
   'readJson', 'updateJson', 'readJsonById', 'updateContentById',
@@ -75,6 +81,18 @@ async function handleRequest(db, config, payload) {
     if (action === 'exchangeNpust5OAuthCode') {
       outcome = 'denied';
       responseEnvelope = envelope.bizError(NPUST5_WEB_AUTH_RETIRED_MSG);
+      return responseEnvelope;
+    }
+
+    // submitUserApplication：帳號改由管理者建立（adminCreateLocalAccount），此申請流程退場。
+    // 刻意在身分解析（步驟 1）之前短路——若只是把 action 留在 gate.AUTHZ_EXEMPT、仰賴步驟 3 的
+    // 授權閘放行，未登入呼叫仍會在步驟 1（無 sessionToken 且 action !== 'sessionStart'）被擋下
+    // 回「Session expired」，讓本來就不該有帳號的訪客看到一句誤導的「請重新登入」；短路在此讓
+    // 未登入呼叫也能看到這句真正有用的訊息（比照 exchangeNpust5OAuthCode／getNpust5AuthUrl 的固定
+    // 業務錯誤退場寫法）。因此本 action 已從 gate.AUTHZ_EXEMPT 移除——留著也是死碼，永遠不會走到。
+    if (action === 'submitUserApplication') {
+      outcome = 'denied';
+      responseEnvelope = envelope.bizError(SUBMIT_USER_APPLICATION_RETIRED_MSG);
       return responseEnvelope;
     }
 
@@ -126,6 +144,17 @@ async function handleRequest(db, config, payload) {
       if (result.kind === 'invalid_credentials') {
         outcome = 'denied';
         return envelope.bizError('invalid_credentials');
+      }
+      // 帳號發放與管理（migration 005）：首登強制改密碼——password_change_required＝密碼正確但
+      // 還沒改過初始密碼（未附 newPassword）；weak_new_password＝附了 newPassword 但未通過政策
+      // 檢查（見 auth/local.js validateNewPassword），reason 一併帶出供 login.html 對映中文訊息。
+      if (result.kind === 'password_change_required') {
+        outcome = 'denied';
+        return envelope.bizError('password_change_required');
+      }
+      if (result.kind === 'weak_new_password') {
+        outcome = 'denied';
+        return envelope.bizError('weak_new_password:' + result.reason);
       }
       if (result.kind === 'totp_required') {
         outcome = 'denied';
@@ -255,6 +284,15 @@ async function handleRequest(db, config, payload) {
       // ── 第二因素方法選擇（Email 驗證碼後備）：userEmail 一律來自已驗證 session，同上原則。──
       case 'twofaSetMethod': result = twofaActions.twofaSetMethod(db, userEmail, params.method, params.emails); break;
       case 'twofaStatus': result = twofaActions.twofaStatus(db, userEmail); break;
+      // ── 帳號發放與管理（migration 005）：twofaSetEmails 為本人一般授權 action（不切換
+      //    twofa_method，只更新 otp_emails，見 actions/twofa.js）；其餘 5 個 adminXxx 為管理者專屬，
+      //    走 gate.ADMIN_ONLY_ACTIONS 閘門（見上方步驟 4a，非管理者一律 Forbidden，此處不重複判斷）。──
+      case 'twofaSetEmails': result = twofaActions.twofaSetEmails(db, userEmail, params.emails); break;
+      case 'adminUserAuthGet': result = adminUsersActions.adminUserAuthGet(db, params); break;
+      case 'adminCreateLocalAccount': result = await adminUsersActions.adminCreateLocalAccount(db, ctx, params, userEmail); break;
+      case 'adminUpdateLocalAccount': result = await adminUsersActions.adminUpdateLocalAccount(db, params, userEmail); break;
+      case 'adminResetPassword': result = await adminUsersActions.adminResetPassword(db, params, userEmail); break;
+      case 'adminResetTwofa': result = adminUsersActions.adminResetTwofa(db, params, userEmail); break;
       case 'readJson': result = storageActions.readJson(db, params, ctx, userEmail, config.CASE_AUTHZ_MODE, onShadowStrip); break;
       case 'updateJson': result = storageActions.updateJson(db, params, ctx); break;
       case 'readJsonById': result = storageActions.readJsonById(db, params, ctx, userEmail, config.CASE_AUTHZ_MODE, onShadowStrip); break;
