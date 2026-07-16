@@ -49,7 +49,9 @@ if [[ -f public/index.html ]]; then
   CUR_URL="$(node -e "const m=/^const APPS_SCRIPT_URL = '([^']*)';$/m.exec(require('fs').readFileSync('public/index.html','utf8'));console.log(m?m[1]:'')")"
   if [[ -z "$CUR_URL" ]]; then echo "✗ 讀不到現有前端的 APPS_SCRIPT_URL，中止。" >&2; exit 1; fi
   if [[ "$ENV" == "prod" ]]; then
-    node scripts/build-public.js --prod "$CUR_URL"
+    # cutover 起 prod 前端一律從 dev/index.html 建（換兩個環境常數）：repo 根 index.html
+    # 已改為 Pages 遷移公告頁，不再是前端來源（見 build-public.js --prod-from-dev 檔頭註解）。
+    node scripts/build-public.js --prod-from-dev "$CUR_URL"
   else
     node scripts/build-public.js "$CUR_URL"
   fi
