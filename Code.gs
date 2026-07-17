@@ -27,7 +27,7 @@ const BOOTSTRAP_ADMINS = ['npust.scc@heartnpust.tw', 'linkinlol528101@gmail.com'
 function doPost(e) {
   try {
     const payload = JSON.parse(e.parameter.payload);
-    const { idToken, sessionToken, clockToken, action, rootFolderId, ...params } = payload;
+    const { idToken, sessionToken, clockToken, bridgeKey, action, rootFolderId, ...params } = payload;
 
     // OAuth2 code exchange 不需要 idToken（code 本身即為授權證明）
     if (action === 'exchangeNpust5OAuthCode') {
@@ -46,6 +46,19 @@ function doPost(e) {
       if (action === 'sessionStart') return jsonResp_({ error: 'Session expired' });
     } else if (clockToken) {
       isClockToken = true;
+    } else if (bridgeKey) {
+      // ── 伺服器橋接（Phase 2c，2026-07-16）：本地 Node 伺服器以共享密鑰代表「已在本地通過
+      // 帳密＋授權驗證的使用者」呼叫打卡權杖管理 action（切換後同仁無 GAS session，簽發/停用
+      // 打卡網址由 Node 轉發至此）。scope 白名單限打卡權杖管理三 action，其餘一律拒絕——
+      // 絕不可讓橋接密鑰變成萬用後門。actorEmail 由 Node 伺服器擔保，但仍須通過下方
+      // isAuthorizedUser_ 授權閘與各 action 內的 _clockTokenAdminGate_ 硬閘（縱深防禦：
+      // 密鑰外洩時攻擊者仍只能以「本就有權簽發的帳號」操作打卡權杖，接觸不到個案資料）。
+      if (!verifyBridgeKey_(bridgeKey)) return jsonResp_({ error: 'Unauthorized' });
+      if (action !== 'clockTokenIssue' && action !== 'clockTokenRevoke' && action !== 'clockTokenList') {
+        return jsonResp_({ error: 'Forbidden: bridge key scope' });
+      }
+      userEmail = String(params.actorEmail || '');
+      if (!userEmail) return jsonResp_({ error: 'Unauthorized' });
     } else {
       userEmail = verifyIdToken_(idToken);
       if (!userEmail) return jsonResp_({ error: 'Unauthorized' });
@@ -483,6 +496,32 @@ function _clockFiniteNum_(v) {
   if (v === undefined || v === null || v === '') return null;
   var n = Number(v);
   return isFinite(n) ? n : null;
+}
+
+// ── 伺服器橋接密鑰（Phase 2c）──
+// 一次性設定：於 GAS 編輯器手動執行，產生並保存 BRIDGE_KEY（已存在則不覆寫）。
+// 執行後從紀錄複製整串密鑰，設定到本地伺服器 server/.env 的 GAS_BRIDGE_KEY。
+function setupBridgeKey() {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('BRIDGE_KEY')) {
+    Logger.log('BRIDGE_KEY 已存在，未覆寫。若需輪替請先手動刪除該 property 再執行。');
+    return;
+  }
+  var key = Utilities.getUuid() + Utilities.getUuid();
+  props.setProperty('BRIDGE_KEY', key);
+  Logger.log('BRIDGE_KEY 已產生，請將下行整串設定到 server/.env 的 GAS_BRIDGE_KEY：\n' + key);
+}
+
+// 驗證橋接密鑰。常數時間比較：GAS 無 timingSafeEqual，改比較兩值以隨機單次鍵計算的 HMAC——
+// 攻擊者無法預測 HMAC 輸出，字串 === 的逐字元 timing 差異不再洩漏任何有用資訊。
+// fail-closed：BRIDGE_KEY 未設定（property 不存在）時一律拒絕。
+function verifyBridgeKey_(provided) {
+  var expected = PropertiesService.getScriptProperties().getProperty('BRIDGE_KEY');
+  if (!expected || !provided) return false;
+  var onceKey = Utilities.getUuid();
+  var a = Utilities.base64Encode(Utilities.computeHmacSha256Signature(String(provided), onceKey));
+  var b = Utilities.base64Encode(Utilities.computeHmacSha256Signature(String(expected), onceKey));
+  return a === b;
 }
 
 // 打卡權杖簽發/停用/列表的權限閘：isAdminUser_ 或 config 中 role==='主任'／extraRole 為
