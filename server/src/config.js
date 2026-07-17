@@ -56,6 +56,13 @@ const GC_CALENDAR_NAME = process.env.GC_CALENDAR_NAME || 'SCC 空間預約';
 const GAS_BRIDGE_URL = process.env.GAS_BRIDGE_URL || '';
 const GAS_BRIDGE_KEY = process.env.GAS_BRIDGE_KEY || '';
 const CASE_AUTHZ_MODE = process.env.CASE_AUTHZ_MODE || 'shadow';
+// issues.json dev/prod 共用（v198，見 storage/sharedIssuesDb.js＋dispatch.js「issues.json 特例
+// 正規化」一帶）：指向共用 sqlite 檔絕對路徑，dev/prod 兩實例須設為同一個值，才能共用同一份
+// 問題回報清單（比照 GAS 時代固定 ISSUES_FOLDER_ID 的效果，但改用獨立資料庫檔而非資料夾 id，
+// 因為 Node 版 vdrive 是單一 root 骨架，沒有 GAS 版 ALLOWED_ROOTS 多環境切換機制）。留空
+// （預設）＝完全不啟用，issues.json 照舊落在各自環境自己的主庫（現行行為不變、不影響任何
+// 既有測試）。選填——不可用 required()，多數部署情境（單機開發、CI）不需要它。
+const SHARED_ISSUES_DB = process.env.SHARED_ISSUES_DB || '';
 // #035 個管派任物件級授權（configCasesPatch 各 op 的呼叫者資格驗證，見 actions/config.js
 // casesPatchOpAuthz）：'off'＝不判定；'shadow'（預設）＝判定只記稽核不阻擋，供觀察誤傷；
 // 'enforce'＝違規整批拒絕。比照 CASE_AUTHZ_MODE 的 shadow→enforce 推進模式。
@@ -82,6 +89,7 @@ module.exports = {
   GAS_BRIDGE_KEY,
   CASE_AUTHZ_MODE,
   CASES_PATCH_AUTHZ_MODE,
+  SHARED_ISSUES_DB,
   TRUSTED_DEVICE_DAYS,
   NODE_ENV,
   PUBLIC_DIR,

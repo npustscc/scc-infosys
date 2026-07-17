@@ -30,6 +30,7 @@ const clockBridge = require('./actions/clockBridge');
 const adminUsersActions = require('./actions/adminUsers');
 const passwordActions = require('./actions/password');
 const configActions = require('./actions/config');
+const sharedIssuesDb = require('./storage/sharedIssuesDb');
 
 // npust5 Gmail 網頁 OAuth 授權流程在 Node 版已被伺服器端憑證檔（GMAIL_SYNC_CREDS）取代，
 // getNpust5AuthUrl／exchangeNpust5OAuthCode 一律回這則固定業務錯誤（不再導向 Google 同意頁）。
@@ -49,6 +50,15 @@ const STORAGE_ACTIONS = new Set([
 const COMMIT_ACTIONS = new Set([
   'casesUpsert', 'attendanceCommit', 'bookingsCommit', 'listCommit', 'notifCommit',
 ]);
+
+// v198：issues.json dev/prod 共用（見 storage/sharedIssuesDb.js）呼叫面盤點——前端只會用這 4 個
+// action 碰 issues.json（readJson/updateJson/createJson/listCommit，見 dev/index.html
+// loadIssues/_saveIssuesFallback/_saveIssues），沒有 by-fileId 存取（readJsonById/
+// updateContentById 從未被前端拿來讀寫 issues.json；startupBatch 的 issues 分支另外在
+// actions/storage.js 處理，不在此表）。key＝params 內帶檔名的欄位名稱，用來判斷「這次呼叫是不是
+// 在動 issues.json」——純檔名比對，不依賴前端送來的 rootFolderId 值是否吻合本環境（見下方
+// step 2 的說明）。
+const ISSUES_ACTIONS_FILE_PARAM = { readJson: 'path', updateJson: 'path', createJson: 'name', listCommit: 'file' };
 
 function getConfigUsersSafe(db, ctx) {
   try {
@@ -126,12 +136,39 @@ async function handleRequest(db, config, payload) {
       return envelope.bizError('Session expired');
     }
 
+    // v198：本次呼叫是否為「動 issues.json」的四個 action 之一（見上方 ISSUES_ACTIONS_FILE_PARAM
+    // 檔頭註解）。純檔名比對，任何 action 皆可能檢出 true/false，與後面 rootFolderId 是否吻合
+    // 本環境無關。
+    const issuesFileParam = ISSUES_ACTIONS_FILE_PARAM[action];
+    const isIssuesFileAction = !!(issuesFileParam && params && params[issuesFileParam] === 'issues.json');
+
     // ── 2. rootFolderId → ctx（單一 root：必須等於 .env 設定的 ROOT_FOLDER_ID，不符即拒絕）──
-    if (rootFolderId && rootFolderId !== config.ROOT_FOLDER_ID) {
+    // v198 例外：issues.json 的四個 action。前端沿用 GAS 時代遺留的 ISSUES_FOLDER_ID 常數
+    // （實為正式版 Drive 資料夾 id，見 dev/index.html）標記這四個呼叫，在 Node 版單一 root
+    // 架構下這個值早已不對應本環境的任何實際資料夾，必然與 config.ROOT_FOLDER_ID 不同（dev 環境
+    // 尤其如此——prod 環境的 ROOT_FOLDER_ID 恰好與該常數同值純屬巧合，不能依賴）。這條檢查本身
+    // 只是「環境誤連」防呆信號、不是真正的授權邊界（真正邊界是 ctx.root 範圍限制與授權閘：
+    // client 只要乾脆不送 rootFolderId 參數就能繞過本檢查，見 `rootFolderId &&` 短路），因此對
+    // issues.json 這四個 action 放行不吻合的 rootFolderId 不會擴大攻擊面——是否路由到共用庫
+    // 由下方「issues.json 路由」段落純以檔名決定，rootFolderId 的值在那之後不再被使用。
+    if (rootFolderId && rootFolderId !== config.ROOT_FOLDER_ID && !isIssuesFileAction) {
       outcome = 'denied';
       return envelope.bizError('Unauthorized rootFolderId');
     }
     const ctx = { root: config.ROOT_FOLDER_ID };
+
+    // ── issues.json 路由（v198）：SHARED_ISSUES_DB 有設定時，這四個 action 改用共用庫的 db
+    // handle／ctx；未設定時 issuesDb/issuesCtx 就是原本的 db/ctx，行為與改動前完全一致。
+    // createJson 額外覆寫 params.parentId——蓋掉前端送來的 GAS 時代 ISSUES_FOLDER_ID 常數，
+    // 改成這次實際要落地的 root，避免下方 4c 的 F3 ROOT_GUARDED 誤判「parentId 不在本環境
+    // root 底下」而擋下（該檢查的目的是防止前端指定任意 parentId 逃逸出 root，這裡是伺服器端
+    // 自己覆寫、不是前端指定的值，故 4c 對 issues.json 這個分支整段跳過，見下方）。
+    const sharedDb = isIssuesFileAction ? sharedIssuesDb.getSharedIssuesDb(config.SHARED_ISSUES_DB) : null;
+    const issuesDb = sharedDb || db;
+    const issuesCtx = sharedDb ? sharedIssuesDb.SHARED_CTX : ctx;
+    if (isIssuesFileAction && action === 'createJson') {
+      params.parentId = issuesCtx.root;
+    }
 
     // ── sessionStart：本地帳密＋TOTP／Email 驗證碼認證＋授權閘（在 actions/session.js 內部一次
     //      做完）── totp_required／invalid_totp 對映前端 TOTP 欄位顯示（見 login.html）：
@@ -255,8 +292,10 @@ async function handleRequest(db, config, payload) {
     }
 
     // ── 4c. F3：ROOT_GUARDED（fileId/parentId/folderId 類動作限本次 ctx.root 子樹）──
+    // issues.json 的 createJson 已在上方「issues.json 路由」段落由伺服器端覆寫 params.parentId
+    // （不是前端提供的值），故此處對 isIssuesFileAction 整段跳過，避免誤判。
     const rgKey = gate.ROOT_GUARDED[action];
-    if (rgKey && params[rgKey] && !vdrive.isUnderRoot(db, params[rgKey], ctx.root)) {
+    if (rgKey && params[rgKey] && !isIssuesFileAction && !vdrive.isUnderRoot(db, params[rgKey], ctx.root)) {
       outcome = 'denied';
       return envelope.bizError('Forbidden: target outside root');
     }
@@ -302,21 +341,24 @@ async function handleRequest(db, config, payload) {
       case 'adminResetPassword': result = await adminUsersActions.adminResetPassword(db, params, userEmail); break;
       case 'adminResetTwofa': result = adminUsersActions.adminResetTwofa(db, params, userEmail); break;
       case 'adminListAllSessions': result = adminUsersActions.adminListAllSessions(db, ctx, params); break;
-      case 'readJson': result = storageActions.readJson(db, params, ctx, userEmail, config.CASE_AUTHZ_MODE, onShadowStrip); break;
-      case 'updateJson': result = storageActions.updateJson(db, params, ctx); break;
+      // readJson/updateJson/createJson/listCommit：issuesDb/issuesCtx 已在上方「issues.json 路由」
+      // 段落算好——目標檔非 issues.json 時就是原本的 db/ctx（行為不變），是 issues.json 時視
+      // SHARED_ISSUES_DB 是否設定而指向共用庫（v198）。
+      case 'readJson': result = storageActions.readJson(issuesDb, params, issuesCtx, userEmail, config.CASE_AUTHZ_MODE, onShadowStrip); break;
+      case 'updateJson': result = storageActions.updateJson(issuesDb, params, issuesCtx); break;
       case 'readJsonById': result = storageActions.readJsonById(db, params, ctx, userEmail, config.CASE_AUTHZ_MODE, onShadowStrip); break;
       case 'updateContentById': result = storageActions.updateContentById(db, params); break;
-      case 'createJson': result = storageActions.createJson(db, params); break;
+      case 'createJson': result = storageActions.createJson(issuesDb, params); break;
       case 'getMetadata': result = storageActions.getMetadata(db, params); break;
       case 'listFolder': result = storageActions.listFolder(db, params); break;
       case 'query': result = storageActions.query(db, params); break;
-      case 'startupBatch': result = storageActions.startupBatch(db, params, ctx); break;
+      case 'startupBatch': result = storageActions.startupBatch(db, params, ctx, config); break;
       case 'configSelfPatch': result = configActions.configSelfPatch(db, params, ctx, userEmail); break;
       case 'configCasesPatch': result = configActions.configCasesPatch(db, params, ctx, userEmail, config.CASES_PATCH_AUTHZ_MODE); break;
       case 'casesUpsert': result = commitActions.casesUpsert(db, params, ctx); break;
       case 'attendanceCommit': result = await commitActions.attendanceCommit(db, params, ctx, config); break;
       case 'bookingsCommit': result = await gcSync.bookingsCommitWithGc(db, params, ctx, config); break;
-      case 'listCommit': result = commitActions.listCommit(db, params, ctx); break;
+      case 'listCommit': result = commitActions.listCommit(issuesDb, params, issuesCtx); break;
       case 'notifCommit': result = commitActions.notifCommit(db, params, ctx); break;
       case 'fetchMentalLeaves': result = await mailActions.fetchMentalLeaves(db, config, ctx, params); break;
       case 'countMentalLeavesUnprocessed': result = await mailActions.countMentalLeavesUnprocessed(config); break;

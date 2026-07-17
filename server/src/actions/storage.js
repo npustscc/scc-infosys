@@ -5,6 +5,7 @@
 
 const vdrive = require('../storage/vdrive');
 const caseAuthz = require('../authz/caseAuthz');
+const sharedIssuesDb = require('../storage/sharedIssuesDb');
 
 // readJson_/readJsonById_ 讀完後的 R1 個案物件級授權 hook（shadow 模式）。
 // onShadowStrip：呼叫端（dispatch.js）傳入，用來把「本應剝除幾筆」寫進 audit_log。
@@ -58,9 +59,13 @@ function query(db, { q }) {
 }
 
 // ── startupBatch：前端開機唯一依賴的複合請求 ──
-// 對映 dev/Code.gs startupBatch_（L2365-2470）。單一 root 簡化：GAS 版的 issuesRootId 可能指向
-// 跨環境的固定 ISSUES_FOLDER_ID（dev/prod 共用 issues.json）；Node 版骨架單一 root，故 issuesRootId
-// 參數被忽略、issues.json 一律從 ctx.root 讀（見交付報告「與計畫的偏差」）。
+// 對映 dev/Code.gs startupBatch_（L2365-2470）。GAS 版的 issuesRootId 指向跨環境固定的
+// ISSUES_FOLDER_ID（dev/prod 共用 issues.json）；Node 版單一 root 骨架沒有多重資料夾 id 可路由，
+// 前端送來的 issuesRootId 參數本就不對應本環境任何實際資料夾，故仍不採用該參數。issues.json
+// 的 dev/prod 共用改用獨立機制：v198 起，若設定 SHARED_ISSUES_DB（見 storage/sharedIssuesDb.js），
+// 'issues' 這一個 key 改讀共用庫；ISSUES 常數以外的 TOP_LEVEL_FILES 一律維持讀本環境 ctx.root
+// （config.json 等機敏資料絕不路由進共用庫，見 sharedIssuesDb.js 檔頭安全邊界說明）。
+// 未設定 SHARED_ISSUES_DB 時行為與改動前完全一致（issues 一律從 ctx.root 讀）。
 const TOP_LEVEL_FILES = {
   config: 'config.json',
   pending_cases: 'pending_cases.json',
@@ -69,6 +74,7 @@ const TOP_LEVEL_FILES = {
   unassigned: 'unassigned_records.json',
   issues: 'issues.json',
 };
+const ISSUES_TOP_LEVEL_KEY = 'issues';
 
 function findChild(db, parentId, name) {
   return db.prepare(
@@ -77,18 +83,25 @@ function findChild(db, parentId, name) {
   ).get(parentId, name);
 }
 
-function startupBatch(db, params, ctx) {
+function startupBatch(db, params, ctx, config) {
   const userEmail = params.userEmail || '';
   const envSuffix = params.envSuffix || '';
   const usersFolderIdHint = params.usersFolderIdHint || null;
+
+  // v198：issues.json 若設定 SHARED_ISSUES_DB，改讀共用庫（見檔頭 TOP_LEVEL_FILES 註解）。
+  // config 為選填參數（既有呼叫端／測試若不傳，等同未設定 SHARED_ISSUES_DB，行為不變）。
+  const sharedDb = config ? sharedIssuesDb.getSharedIssuesDb(config.SHARED_ISSUES_DB) : null;
 
   const modTimes = {};
   const result = { usersFolderId: null, todoFileId: null, isTodoLegacy: false, modTimes };
 
   for (const [key, name] of Object.entries(TOP_LEVEL_FILES)) {
+    const isIssuesKey = key === ISSUES_TOP_LEVEL_KEY;
+    const targetDb = isIssuesKey && sharedDb ? sharedDb : db;
+    const targetCtx = isIssuesKey && sharedDb ? sharedIssuesDb.SHARED_CTX : ctx;
     try {
-      const fileId = vdrive.resolvePathToId(db, name, ctx);
-      const row = vdrive.getFileById(db, fileId);
+      const fileId = vdrive.resolvePathToId(targetDb, name, targetCtx);
+      const row = vdrive.getFileById(targetDb, fileId);
       result[key] = JSON.parse(row.content == null ? 'null' : row.content);
       modTimes[key] = row.updated_at;
     } catch (_e) {
