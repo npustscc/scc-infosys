@@ -312,7 +312,7 @@ async function handleRequest(db, config, payload) {
       case 'query': result = storageActions.query(db, params); break;
       case 'startupBatch': result = storageActions.startupBatch(db, params, ctx); break;
       case 'configSelfPatch': result = configActions.configSelfPatch(db, params, ctx, userEmail); break;
-      case 'configCasesPatch': result = configActions.configCasesPatch(db, params, ctx, userEmail); break;
+      case 'configCasesPatch': result = configActions.configCasesPatch(db, params, ctx, userEmail, config.CASES_PATCH_AUTHZ_MODE); break;
       case 'casesUpsert': result = commitActions.casesUpsert(db, params, ctx); break;
       case 'attendanceCommit': result = await commitActions.attendanceCommit(db, params, ctx, config); break;
       case 'bookingsCommit': result = await gcSync.bookingsCommitWithGc(db, params, ctx, config); break;

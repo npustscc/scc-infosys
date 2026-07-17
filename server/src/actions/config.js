@@ -10,8 +10,10 @@
 'use strict';
 
 const vdrive = require('../storage/vdrive');
+const audit = require('../audit');
 
 const CONFIG_PATH = 'config.json';
+const CASES_INDEX_PATH = 'cases-index.json';
 const MAX_PATCH_BYTES = 200 * 1024;
 
 // ── SELF PATCH 欄位白名單（對映 GAS selfPatchKeyAllowed_）──
@@ -239,20 +241,115 @@ function applyCasesPatchOps(users, ops, callerEmail) {
   return users;
 }
 
-function configCasesPatch(db, { ops }, ctx, userEmail) {
+// ── #035 個管派任物件級授權（casesPatchOpAuthz）────────────────────────
+// 政策（2026-07-18 使用者定案，shadow 先行）：對「動到個案存取名單」的 op，呼叫者須為
+// 管理者（主任/isAdmin/extraRole 管理者）、督導（實習生行政/專業督導）、轉銜窗口
+// （isTransferContact 或 extraRole 轉銜管理員）、該案現任主責（index.counselorEmail）、
+// 該案初談員（index.interviewerEmails——初談自動列管的觸發者）、或該案既有個管
+// （呼叫者自己的 allowedCases 已含該案）。selfRename 只搬呼叫者本人條目，恆放行。
+// lookupCase(caseId) 回傳 index 條目或 null；查無案（例如同批新建）在 shadow/enforce 皆
+// 記錄 reason 但放行——擋「對既有案自授」已涵蓋主要風險，不因索引時差誤殺新案流程。
+function callerPrivileged(users, callerEmail) {
+  const me = users[callerEmail];
+  if (!me) return false;
+  if (me.role === '主任' || me.isAdmin || me.extraRole === '管理者') return true;
+  if (me.extraRole === '實習生行政督導' || me.extraRole === '實習生專業督導') return true;
+  if (me.isTransferContact || me.extraRole === '轉銜管理員') return true;
+  return false;
+}
+
+function casesPatchOpAuthz(users, op, callerEmail, lookupCase) {
+  if (!op || typeof op !== 'object') return { ok: false, reason: 'bad_op' };
+  if (op.type === 'selfRename') return { ok: true, reason: 'self_scoped' };
+  if (callerPrivileged(users, callerEmail)) return { ok: true, reason: 'privileged' };
+
+  if (op.type === 'nomailAdd') return { ok: false, reason: 'nomail_requires_privileged' };
+
+  const caseId = op.type === 'caseIdRemap' ? op.fromId : op.caseId;
+  if (typeof caseId !== 'string' || !caseId) return { ok: false, reason: 'no_case_id' };
+
+  const me = users[callerEmail];
+  if (me && Array.isArray(me.allowedCases) && me.allowedCases.includes(caseId)) {
+    return { ok: true, reason: 'existing_manager' };
+  }
+  const entry = lookupCase ? lookupCase(caseId) : null;
+  if (!entry) return { ok: true, reason: 'case_not_found' };
+  if (entry.counselorEmail && entry.counselorEmail === callerEmail) {
+    return { ok: true, reason: 'main_counselor' };
+  }
+  if (Array.isArray(entry.interviewerEmails) && entry.interviewerEmails.includes(callerEmail)) {
+    return { ok: true, reason: 'interviewer' };
+  }
+  return { ok: false, reason: 'not_case_related' };
+}
+
+// 交易內讀 cases-index.json 建 caseId→條目查詢（讀不到＝索引缺失，回恆 null 的查詢，
+// authz 對查無案一律放行並記 reason，不阻斷業務）。
+function buildCaseLookup(db, ctx) {
+  let byId = null;
+  try {
+    const { data } = vdrive.readJson(db, CASES_INDEX_PATH, ctx);
+    if (data && Array.isArray(data.cases)) {
+      byId = new Map();
+      data.cases.forEach((c) => { if (c && c.id) byId.set(c.id, c); });
+    }
+  } catch (_e) { byId = null; }
+  return (caseId) => (byId ? (byId.get(caseId) || null) : null);
+}
+
+function configCasesPatch(db, { ops }, ctx, userEmail, authzMode) {
   if (!Array.isArray(ops) || !ops.length) throw new Error('configCasesPatch: ops 必須為非空陣列');
   if (JSON.stringify(ops).length > MAX_PATCH_BYTES) {
     throw new Error('configCasesPatch: ops 過大（上限 200KB）');
   }
+  const mode = authzMode || 'shadow';
 
-  return db.transaction(() => {
+  const runTx = () => db.transaction(() => {
     const { fileId, cfg } = readConfigOrThrow(db, ctx, 'configCasesPatch');
+
+    // #035 物件級授權：在套用前以「當下」users/index 判定（套用後 users 已被改動，不可用）。
+    let violations = [];
+    if (mode !== 'off') {
+      const lookupCase = buildCaseLookup(db, ctx);
+      ops.forEach((op, i) => {
+        const d = casesPatchOpAuthz(cfg.users, op, userEmail, lookupCase);
+        if (!d.ok) violations.push(`op${i}:${op && op.type}:${(op && (op.caseId || op.fromId)) || ''}:${d.reason}`);
+      });
+      if (violations.length && mode === 'enforce') {
+        // 稽核不能寫在這裡：throw 會讓整個交易 ROLLBACK 連稽核一起消失——丟帶標記的錯誤，
+        // 由外層（交易外）補寫 denied 稽核後再回拋業務錯誤。
+        const err = new Error('configCasesPatch: 呼叫者無此案派任權限');
+        err.casesPatchViolations = violations;
+        throw err;
+      }
+    }
+
     applyCasesPatchOps(cfg.users, ops, userEmail);
     stripLegacyNotifications(cfg);
     cfg.updatedAt = new Date().toISOString();
     vdrive.updateContentById(db, fileId, cfg);
+
+    // shadow：只記錄「若 enforce 會被擋」，不阻擋（觀察期用，翻 enforce 前逐筆確認皆為本該擋的）。
+    if (violations.length && mode === 'shadow') {
+      audit.appendAuditLog(db, {
+        email: userEmail, action: 'configCasesPatch.authz', target: null, outcome: 'would_deny',
+        detail: `shadow;${violations.join(';')}`.slice(0, 900),
+      });
+    }
     return { ok: true };
   }).immediate();
+
+  try {
+    return runTx();
+  } catch (e) {
+    if (e && e.casesPatchViolations) {
+      audit.appendAuditLog(db, {
+        email: userEmail, action: 'configCasesPatch.authz', target: null, outcome: 'denied',
+        detail: `enforce_deny;${e.casesPatchViolations.join(';')}`.slice(0, 900),
+      });
+    }
+    throw e;
+  }
 }
 
 module.exports = {
@@ -261,4 +358,5 @@ module.exports = {
   selfPatchKeyAllowed,
   applyCasesPatchOps,
   stripLegacyNotifications,
+  casesPatchOpAuthz,
 };

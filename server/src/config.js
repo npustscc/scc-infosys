@@ -56,6 +56,10 @@ const GC_CALENDAR_NAME = process.env.GC_CALENDAR_NAME || 'SCC 空間預約';
 const GAS_BRIDGE_URL = process.env.GAS_BRIDGE_URL || '';
 const GAS_BRIDGE_KEY = process.env.GAS_BRIDGE_KEY || '';
 const CASE_AUTHZ_MODE = process.env.CASE_AUTHZ_MODE || 'shadow';
+// #035 個管派任物件級授權（configCasesPatch 各 op 的呼叫者資格驗證，見 actions/config.js
+// casesPatchOpAuthz）：'off'＝不判定；'shadow'（預設）＝判定只記稽核不阻擋，供觀察誤傷；
+// 'enforce'＝違規整批拒絕。比照 CASE_AUTHZ_MODE 的 shadow→enforce 推進模式。
+const CASES_PATCH_AUTHZ_MODE = process.env.CASES_PATCH_AUTHZ_MODE || 'shadow';
 // 信任裝置憑證效期（天，Phase 3b，見 auth/deviceTrust.js）：非機密設定值，缺值用預設 30 即可
 // 安全啟動，不用 required()。
 const TRUSTED_DEVICE_DAYS = Number(process.env.TRUSTED_DEVICE_DAYS || 30);
@@ -77,6 +81,7 @@ module.exports = {
   GAS_BRIDGE_URL,
   GAS_BRIDGE_KEY,
   CASE_AUTHZ_MODE,
+  CASES_PATCH_AUTHZ_MODE,
   TRUSTED_DEVICE_DAYS,
   NODE_ENV,
   PUBLIC_DIR,
