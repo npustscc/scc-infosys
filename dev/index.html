@@ -349,6 +349,13 @@
       overflow: hidden;
       margin-bottom: 24px;
     }
+    /* 偏好設定頁瀑布流（見 #page-prefs 內 .prefs-masonry 容器）：scoped 到此頁，不影響全站 .card。
+       display:none 的卡片（登入安全／信任裝置，未啟用本地帳密後端時）不佔版面，不會產生空洞。 */
+    #page-prefs .prefs-masonry > .card {
+      break-inside: avoid;
+      margin-bottom: 20px;
+      width: 100%;
+    }
     .card-header {
       padding: 14px 20px;
       border-bottom: 1px solid #e2e8f0;
@@ -1507,6 +1514,34 @@
         </div>
       </div>
 
+      <!-- 批次修改登入帳號：僅本地帳密＋TOTP 後端顯示（見 IS_LOCAL_BACKEND）。掃描寫法比照
+           上方「批次建立登入帳號」（逐一 adminUserAuthGet，_silent:true）。 -->
+      <div class="card" id="admin-bulk-modify-accounts-card" style="display:none;margin-top:20px;">
+        <div class="card-header">
+          <h3>批次修改登入帳號</h3>
+          <button class="btn btn-secondary btn-sm" onclick="_bcmScan()">掃描</button>
+        </div>
+        <div style="padding:16px 20px;" id="admin-bulk-modify-accounts-body">
+          <p style="font-size:.85rem;color:#718096;margin:0;">點「掃描」載入目前已建立本地登入帳號的使用者清單，可批次修改其「登入帳號」（例如統一改成校內帳號格式）。</p>
+        </div>
+      </div>
+
+      <!-- 登入紀錄總覽：僅本地帳密＋TOTP 後端顯示（見 IS_LOCAL_BACKEND），管理者查核全體使用者登入狀況用。 -->
+      <div class="card" id="admin-sessions-overview-card" style="display:none;margin-top:20px;">
+        <div class="card-header">
+          <h3>登入紀錄總覽</h3>
+          <div style="display:flex;gap:10px;align-items:center;">
+            <label style="font-size:.82rem;color:#4a5568;display:flex;align-items:center;gap:5px;cursor:pointer;">
+              <input type="checkbox" id="admin-sessions-include-archived" style="margin:0;"> 含已封存
+            </label>
+            <button class="btn btn-secondary btn-sm" onclick="_adminSessionsLoad()">載入</button>
+          </div>
+        </div>
+        <div style="padding:16px 20px;" id="admin-sessions-overview-body">
+          <p style="font-size:.85rem;color:#718096;margin:0;">點「載入」顯示所有使用者的登入紀錄（依時間倒序）。</p>
+        </div>
+      </div>
+
       <div class="card" style="margin-top:20px;">
         <div class="card-header"><h3>資料匯入</h3></div>
         <div style="padding:16px 20px;">
@@ -1655,7 +1690,9 @@
     <!-- 偏好設定 -->
     <div id="page-prefs" class="page">
       <div class="page-title">偏好設定</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:20px;align-items:start;">
+      <!-- 用 CSS multi-column 瀑布流取代 grid：grid 逐列對齊，某張卡片較高會讓同列其他卡片下方留白；
+           columns 讓卡片依高度自然流排，消除這種垂直空白。break-inside:avoid 防止單張卡片被欄位截斷。 -->
+      <div class="prefs-masonry" style="columns:340px;column-gap:20px;">
 
       <div class="card">
         <div class="card-header"><h3>畫面鎖定（AFK）</h3></div>
@@ -1701,11 +1738,19 @@
       <div class="card">
         <div class="card-header"><h3>登入紀錄</h3></div>
         <div style="padding:16px 20px;">
-          <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">近期以你的帳號登入本系統的裝置、IP 與大致位置。若發現非本人登入，請按「登出所有裝置」使所有登入憑證即時失效，並儘速更改 Google 密碼、聯繫系統管理者。</p>
+          <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">近期以你的帳號登入本系統的裝置、IP 與大致位置。若發現非本人登入，請按「登出所有裝置」使所有登入憑證即時失效，並儘速更改 Google 密碼、聯繫系統管理者。清單只顯示未封存的紀錄，可勾選已登出／已過期的紀錄「封存」以精簡清單，封存不影響安全性、僅是收整顯示。</p>
           <div id="pref-login-history-body" style="font-size:.85rem;color:#4a5568;">載入中…</div>
           <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <button class="btn btn-danger btn-sm" onclick="_logoutAllDevices()">登出所有裝置</button>
             <button class="btn btn-secondary btn-sm" onclick="_renderMySessions()">重新整理</button>
+            <button id="pref-session-archive-btn" class="btn btn-secondary btn-sm" onclick="_archiveMySessionsChecked()" style="display:none;">封存勾選</button>
+            <button id="pref-session-archive-all-btn" class="btn btn-secondary btn-sm" onclick="_archiveMySessionsAll()" style="display:none;">全部封存</button>
+          </div>
+          <div id="pref-session-archived-wrap" style="margin-top:14px;display:none;">
+            <div style="cursor:pointer;color:#3182ce;font-size:.82rem;" onclick="_toggleArchivedSessions()">
+              <span id="pref-session-archived-toggle-icon">▶</span> <span id="pref-session-archived-toggle-label">已封存紀錄</span>
+            </div>
+            <div id="pref-session-archived-body" style="display:none;margin-top:8px;"></div>
           </div>
         </div>
       </div>
@@ -1743,6 +1788,18 @@
               <button class="btn btn-secondary btn-sm" onclick="_lsCancelTotpSetup()">取消</button>
             </div>
             <div id="pref-totp-setup-error" class="alert alert-error" style="display:none;margin-top:8px;"></div>
+          </div>
+
+          <!-- 更改密碼：changeMyPassword 只認 session 帳號，不吃 params 指定他人。 -->
+          <div style="margin-top:18px;padding-top:14px;border-top:1px solid #e2e8f0;max-width:360px;">
+            <div class="field-label" style="margin-bottom:8px;">更改密碼</div>
+            <input type="password" id="pref-pw-current" class="field-input" style="margin-bottom:6px;width:100%;" placeholder="目前密碼" autocomplete="current-password" />
+            <input type="password" id="pref-pw-new" class="field-input" style="margin-bottom:6px;width:100%;" placeholder="新密碼（至少 8 碼）" autocomplete="new-password" />
+            <input type="password" id="pref-pw-new-confirm" class="field-input" style="margin-bottom:6px;width:100%;" placeholder="再次輸入新密碼" autocomplete="new-password" />
+            <div id="pref-pw-error" class="alert alert-error" style="display:none;"></div>
+            <div style="margin-top:8px;">
+              <button class="btn btn-primary btn-sm" onclick="_lsChangePassword()">更改密碼</button>
+            </div>
           </div>
         </div>
       </div>
@@ -6168,6 +6225,11 @@ window.addEventListener('load', () => {
     // 使用者管理頁「批次建立登入帳號」卡片同樣只在本地帳密＋TOTP 後端顯示。
     const bcaCard = document.getElementById('admin-bulk-create-accounts-card');
     if (bcaCard) bcaCard.style.display = '';
+    // 使用者管理頁「批次修改登入帳號」「登入紀錄總覽」卡片同樣只在本地帳密＋TOTP 後端顯示。
+    const bcmCard = document.getElementById('admin-bulk-modify-accounts-card');
+    if (bcmCard) bcmCard.style.display = '';
+    const sessOverviewCard = document.getElementById('admin-sessions-overview-card');
+    if (sessOverviewCard) sessOverviewCard.style.display = '';
 
     try { sessionStorage.removeItem('scc_user'); sessionStorage.removeItem('scc_idtoken'); } catch (_) {}
 
@@ -8445,6 +8507,8 @@ async function dismissNewCounselorAlert(caseId) {
 let _bgJobs = [];
 let _notifTab = 'notifs';
 window.addEventListener('beforeunload', function(e) {
+  // 未登入時（例如按「登入」導向 /login.html）一律不攔，避免誤攔正常導覽
+  if (!currentUser) return;
   if (_bgJobs.some(j => j.state === 'running') || _saveFailSnapshot || _userPref_('confirmBeforeLeave', true)) {
     e.preventDefault(); e.returnValue = '';
   }
@@ -10047,6 +10111,155 @@ async function _bcaCreateAll() {
   const summaryEl = document.getElementById('bca-summary');
   if (summaryEl) summaryEl.textContent = `已完成：成功 ${success}／失敗 ${fail}`;
   showToast(`批次建立完成：成功 ${success}／失敗 ${fail}`, fail ? 'warn' : 'success', 4500);
+}
+
+// ══════════════════════════════════════════════
+//  批次修改登入帳號（使用者管理清單頁「批次修改登入帳號」卡片，僅本地帳密＋TOTP 後端，
+//  見 IS_LOCAL_BACKEND）：逐一 adminUserAuthGet 掃描出已有本地帳號者，可批次修改「登入帳號」。
+//  掃描寫法比照上方「批次建立登入帳號」；套用變更只送「新值≠目前值」的列，用背景工作顯示進度。
+// ══════════════════════════════════════════════
+let _bcmRows = []; // [{ email, name, loginName }]；僅收 hasLocalAccount=true 者
+
+async function _bcmScan() {
+  const body = document.getElementById('admin-bulk-modify-accounts-body');
+  if (!body) return;
+  const entries = Object.entries(configData?.users || {})
+    .filter(([key, info]) => !key.startsWith('nomail_') && info?.disabled !== true);
+  if (!entries.length) {
+    body.innerHTML = '<p style="font-size:.85rem;color:#718096;margin:0;">目前沒有可掃描的使用者。</p>';
+    return;
+  }
+  body.innerHTML = `<p style="font-size:.85rem;color:#718096;margin:0;">掃描中… <span id="bcm-scan-progress">0 / ${entries.length}</span></p>`;
+  const rows = [];
+  for (let i = 0; i < entries.length; i += 1) {
+    const [email, info] = entries[i];
+    try {
+      // _silent=true：批次查詢屬背景掃描動作，不逐筆記進偵錯日誌（同批次建立帳號的作法）。
+      const r = await proxyCall('adminUserAuthGet', { email }, true);
+      if (r.hasLocalAccount) rows.push({ email, name: info?.name || email, loginName: r.loginName || email });
+    } catch (e) {
+      // 單筆查詢失敗不中斷整批掃描，跳過即可（可再次掃描重試）。
+    }
+    const progressEl = document.getElementById('bcm-scan-progress');
+    if (progressEl) progressEl.textContent = `${i + 1} / ${entries.length}`;
+  }
+  _bcmRows = rows;
+  _bcmRenderTable();
+}
+
+function _bcmRenderTable() {
+  const body = document.getElementById('admin-bulk-modify-accounts-body');
+  if (!body) return;
+  if (!_bcmRows.length) {
+    body.innerHTML = '<p style="font-size:.85rem;color:#718096;margin:0;">目前沒有已建立本地登入帳號的使用者。</p>';
+    return;
+  }
+  const rows = _bcmRows.map((r, i) => `
+    <tr id="bcm-row-${i}">
+      <td style="padding:6px 10px;font-size:.85rem;">${escHtml(r.name)}</td>
+      <td style="padding:6px 10px;font-size:.85rem;color:#718096;">${escHtml(r.email)}</td>
+      <td style="padding:6px 10px;font-size:.85rem;color:#718096;">${escHtml(r.loginName)}</td>
+      <td style="padding:6px 10px;"><input type="text" id="bcm-login-${i}" class="field-input" value="${escHtml(r.loginName)}" style="width:100%;min-width:160px;" /></td>
+      <td id="bcm-status-${i}" style="padding:6px 10px;font-size:.82rem;color:#718096;"></td>
+    </tr>`).join('');
+  body.innerHTML = `
+    <p style="font-size:.85rem;color:#718096;margin:0 0 10px;">共 ${_bcmRows.length} 位使用者已建立本地登入帳號。修改「新登入帳號」欄後按「套用變更」，只有值有變動的列才會送出。</p>
+    <div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;min-width:640px;">
+      <thead><tr style="background:#f7fafc;font-size:.8rem;">
+        <th style="padding:6px 10px;text-align:left;">姓名</th>
+        <th style="padding:6px 10px;text-align:left;">內部 Email</th>
+        <th style="padding:6px 10px;text-align:left;">目前登入帳號</th>
+        <th style="padding:6px 10px;text-align:left;">新登入帳號</th>
+        <th style="padding:6px 10px;text-align:left;">狀態</th>
+      </tr></thead>
+      <tbody id="bcm-table-body">${rows}</tbody>
+    </table></div>
+    <div style="margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+      <button class="btn btn-primary" onclick="_bcmApplyAll()">套用變更</button>
+      <span id="bcm-summary" style="font-size:.85rem;color:#718096;"></span>
+    </div>`;
+}
+
+async function _bcmApplyAll() {
+  const changed = [];
+  _bcmRows.forEach((row, i) => {
+    const newVal = document.getElementById(`bcm-login-${i}`)?.value.trim();
+    if (newVal && newVal !== row.loginName) changed.push({ i, row, loginName: newVal });
+  });
+  if (!changed.length) { showToast('沒有變更的列，未送出任何請求。', 'error', 2500); return; }
+  const jobId = bgJobAdd('批次修改登入帳號', `共 ${changed.length} 筆變更`);
+  let success = 0, fail = 0;
+  for (let idx = 0; idx < changed.length; idx += 1) {
+    const { i, row, loginName } = changed[idx];
+    const statusEl = document.getElementById(`bcm-status-${i}`);
+    if (statusEl) { statusEl.textContent = '修改中…'; statusEl.style.color = '#718096'; }
+    try {
+      await proxyCall('adminUpdateLocalAccount', { email: row.email, loginName }, true);
+      success += 1;
+      row.loginName = loginName;
+      if (statusEl) { statusEl.textContent = '✓ 已修改'; statusEl.style.color = '#276749'; }
+    } catch (e) {
+      fail += 1;
+      if (statusEl) { statusEl.textContent = '失敗：' + _uesErrMsg(e.message); statusEl.style.color = '#c53030'; }
+    }
+    bgJobProgress(jobId, Math.round(((idx + 1) / changed.length) * 100));
+  }
+  bgJobDone(jobId);
+  const summaryEl = document.getElementById('bcm-summary');
+  if (summaryEl) summaryEl.textContent = `已完成：成功 ${success}／失敗 ${fail}`;
+  showToast(`批次修改完成：成功 ${success}／失敗 ${fail}`, fail ? 'warn' : 'success', 4500);
+}
+
+// ══════════════════════════════════════════════
+//  登入紀錄總覽（使用者管理清單頁「登入紀錄總覽」卡片，僅本地帳密＋TOTP 後端，見 IS_LOCAL_BACKEND）：
+//  管理者查核全體使用者登入狀況；adminListAllSessions 一次回傳所有使用者的 session（依時間倒序）。
+// ══════════════════════════════════════════════
+async function _adminSessionsLoad() {
+  const body = document.getElementById('admin-sessions-overview-body');
+  if (!body) return;
+  const includeArchived = document.getElementById('admin-sessions-include-archived')?.checked || false;
+  body.innerHTML = '<p style="font-size:.85rem;color:#718096;margin:0;">載入中…</p>';
+  let list = [];
+  try {
+    const r = await proxyCall('adminListAllSessions', { includeArchived });
+    list = (r && r.sessions) || [];
+  } catch (e) {
+    body.innerHTML = `<p style="font-size:.85rem;color:#c53030;margin:0;">載入失敗：${escHtml(e.message)}</p>`;
+    return;
+  }
+  if (!list.length) { body.innerHTML = '<p style="font-size:.85rem;color:#718096;margin:0;">目前沒有登入紀錄。</p>'; return; }
+  const fmt = iso => { try { return new Date(iso).toLocaleString('zh-TW', { hour12: false }); } catch (_) { return iso || ''; } };
+  const statusBadgeOf = s => s.archived
+    ? '<span style="font-size:.72rem;color:#718096;background:#f7fafc;border:1px solid #e2e8f0;border-radius:4px;padding:1px 6px;">已封存</span>'
+    : s.active
+      ? '<span style="font-size:.72rem;font-weight:700;color:#2b6cb0;background:#ebf8ff;border:1px solid #bee3f8;border-radius:4px;padding:1px 6px;">使用中</span>'
+      : s.revoked
+        ? '<span style="font-size:.72rem;color:#822727;background:#fff5f5;border:1px solid #feb2b2;border-radius:4px;padding:1px 6px;">已登出</span>'
+        : '<span style="font-size:.72rem;color:#718096;background:#f7fafc;border:1px solid #e2e8f0;border-radius:4px;padding:1px 6px;">已過期</span>';
+  const rows = list.map(s => `
+    <tr>
+      <td style="padding:6px 10px;font-size:.85rem;">${escHtml(configData?.users?.[s.email]?.name || s.email)}</td>
+      <td style="padding:6px 10px;font-size:.82rem;">${escHtml(_sessionUaShort(s.ua))}</td>
+      <td style="padding:6px 10px;font-size:.82rem;color:#718096;">${escHtml(s.ip || '（未取得）')}</td>
+      <td style="padding:6px 10px;font-size:.82rem;color:#718096;">${escHtml(s.geo || '—')}</td>
+      <td style="padding:6px 10px;font-size:.82rem;color:#718096;white-space:nowrap;">${escHtml(fmt(s.issuedAt))}</td>
+      <td style="padding:6px 10px;">${statusBadgeOf(s)}</td>
+    </tr>`).join('');
+  body.innerHTML = `
+    <div style="max-height:480px;overflow-y:auto;overflow-x:auto;border:1px solid #e2e8f0;border-radius:6px;">
+      <table style="width:100%;border-collapse:collapse;min-width:720px;">
+        <thead><tr style="background:#f7fafc;font-size:.8rem;position:sticky;top:0;">
+          <th style="padding:6px 10px;text-align:left;">使用者</th>
+          <th style="padding:6px 10px;text-align:left;">裝置</th>
+          <th style="padding:6px 10px;text-align:left;">IP</th>
+          <th style="padding:6px 10px;text-align:left;">位置</th>
+          <th style="padding:6px 10px;text-align:left;">登入時間</th>
+          <th style="padding:6px 10px;text-align:left;">狀態</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p style="font-size:.8rem;color:#718096;margin:8px 0 0;">共 ${list.length} 筆。</p>`;
 }
 
 async function saveUser() {
@@ -22039,6 +22252,37 @@ async function signOutClicked() {
 }
 
 // 登入紀錄頁（#6）：載入本帳號近期 session 並渲染。
+// 封存制（Phase 3c 後續）：listMySessions 回傳的每筆紀錄多了 archived 欄位；預設清單只顯示未封存項，
+// 已封存項收在下方可展開的「已封存紀錄」區塊（灰階、不可再操作）。共用 renderSessionRow 避免重複樣板。
+function _sessionUaShort(ua) {
+  if (!ua) return '（未知裝置）';
+  let os = /Windows/.test(ua) ? 'Windows' : /iPhone|iPad|iOS/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Mac/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : '其他';
+  let br = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : '瀏覽器';
+  return `${os}・${br}`;
+}
+function _renderSessionRow(s, opts) {
+  opts = opts || {};
+  const fmt = iso => { try { return new Date(iso).toLocaleString('zh-TW', { hour12: false }); } catch (_) { return iso || ''; } };
+  const statusBadge = s.current
+    ? '<span style="font-size:.72rem;font-weight:700;color:#276749;background:#f0fff4;border:1px solid #9ae6b4;border-radius:4px;padding:1px 6px;">目前裝置</span>'
+    : s.active
+      ? '<span style="font-size:.72rem;font-weight:700;color:#2b6cb0;background:#ebf8ff;border:1px solid #bee3f8;border-radius:4px;padding:1px 6px;">使用中</span>'
+      : s.revoked
+        ? '<span style="font-size:.72rem;color:#822727;background:#fff5f5;border:1px solid #feb2b2;border-radius:4px;padding:1px 6px;">已登出</span>'
+        : '<span style="font-size:.72rem;color:#718096;background:#f7fafc;border:1px solid #e2e8f0;border-radius:4px;padding:1px 6px;">已過期</span>';
+  const mailBadge = s.mailSent
+    ? `<span title="此次登入已寄出通知信${s.mailReason ? '（' + escHtml(s.mailReason) + '）' : ''}" style="font-size:.78rem;color:#3182ce;">✉</span>`
+    : '';
+  const checkable = opts.checkable && !s.current && !s.active;
+  const checkbox = checkable ? `<input type="checkbox" class="pref-session-chk" data-jti="${escHtml(s.jti)}" style="margin-right:6px;">` : '';
+  return `<div style="padding:8px 0;border-bottom:1px solid #edf2f7;display:flex;flex-direction:column;gap:2px;${opts.dim ? 'opacity:.6;' : ''}">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      ${checkbox}<strong>${escHtml(_sessionUaShort(s.ua))}</strong>${statusBadge}${mailBadge}
+    </div>
+    <div style="color:#718096;font-size:.8rem;">登入時間：${escHtml(fmt(s.issuedAt))}</div>
+    <div style="color:#718096;font-size:.8rem;">IP：${escHtml(s.ip || '（未取得）')}${s.geo ? '　位置：' + escHtml(s.geo) : ''}</div>
+  </div>`;
+}
 async function _renderMySessions() {
   const body = document.getElementById('pref-login-history-body');
   if (!body) return;
@@ -22051,33 +22295,65 @@ async function _renderMySessions() {
     body.innerHTML = `<span style="color:#c53030;">登入紀錄載入失敗：${escHtml(e.message)}</span>`;
     return;
   }
-  if (!list.length) { body.innerHTML = '<span style="color:#718096;">目前沒有登入紀錄。</span>'; return; }
-  const fmt = iso => { try { return new Date(iso).toLocaleString('zh-TW', { hour12: false }); } catch (_) { return iso || ''; } };
-  const uaShort = ua => {
-    if (!ua) return '（未知裝置）';
-    let os = /Windows/.test(ua) ? 'Windows' : /iPhone|iPad|iOS/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android' : /Mac/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : '其他';
-    let br = /Edg\//.test(ua) ? 'Edge' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : '瀏覽器';
-    return `${os}・${br}`;
-  };
-  body.innerHTML = list.map(s => {
-    const statusBadge = s.current
-      ? '<span style="font-size:.72rem;font-weight:700;color:#276749;background:#f0fff4;border:1px solid #9ae6b4;border-radius:4px;padding:1px 6px;">目前裝置</span>'
-      : s.active
-        ? '<span style="font-size:.72rem;font-weight:700;color:#2b6cb0;background:#ebf8ff;border:1px solid #bee3f8;border-radius:4px;padding:1px 6px;">使用中</span>'
-        : s.revoked
-          ? '<span style="font-size:.72rem;color:#822727;background:#fff5f5;border:1px solid #feb2b2;border-radius:4px;padding:1px 6px;">已登出</span>'
-          : '<span style="font-size:.72rem;color:#718096;background:#f7fafc;border:1px solid #e2e8f0;border-radius:4px;padding:1px 6px;">已過期</span>';
-    const mailBadge = s.mailSent
-      ? `<span title="此次登入已寄出通知信${s.mailReason ? '（' + escHtml(s.mailReason) + '）' : ''}" style="font-size:.78rem;color:#3182ce;">✉</span>`
-      : '';
-    return `<div style="padding:8px 0;border-bottom:1px solid #edf2f7;display:flex;flex-direction:column;gap:2px;">
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <strong>${escHtml(uaShort(s.ua))}</strong>${statusBadge}${mailBadge}
-      </div>
-      <div style="color:#718096;font-size:.8rem;">登入時間：${escHtml(fmt(s.issuedAt))}</div>
-      <div style="color:#718096;font-size:.8rem;">IP：${escHtml(s.ip || '（未取得）')}${s.geo ? '　位置：' + escHtml(s.geo) : ''}</div>
-    </div>`;
-  }).join('');
+  const activeList = list.filter(s => !s.archived);
+  const archivedList = list.filter(s => s.archived);
+  body.innerHTML = activeList.length
+    ? activeList.map(s => _renderSessionRow(s, { checkable: true })).join('')
+    : '<span style="color:#718096;">目前沒有（未封存的）登入紀錄。</span>';
+
+  const selectableCount = activeList.filter(s => !s.current && !s.active).length;
+  const archiveBtn = document.getElementById('pref-session-archive-btn');
+  const archiveAllBtn = document.getElementById('pref-session-archive-all-btn');
+  if (archiveBtn) archiveBtn.style.display = selectableCount ? '' : 'none';
+  if (archiveAllBtn) archiveAllBtn.style.display = selectableCount ? '' : 'none';
+
+  const archivedWrap = document.getElementById('pref-session-archived-wrap');
+  const archivedLabel = document.getElementById('pref-session-archived-toggle-label');
+  const archivedBody = document.getElementById('pref-session-archived-body');
+  if (archivedWrap) {
+    if (archivedList.length) {
+      archivedWrap.style.display = '';
+      if (archivedLabel) archivedLabel.textContent = `已封存紀錄（${archivedList.length} 筆）`;
+      if (archivedBody) archivedBody.innerHTML = archivedList.map(s => _renderSessionRow(s, { dim: true })).join('');
+    } else {
+      archivedWrap.style.display = 'none';
+    }
+  }
+}
+
+// 已封存紀錄區塊展開／收合。
+function _toggleArchivedSessions() {
+  const body = document.getElementById('pref-session-archived-body');
+  const icon = document.getElementById('pref-session-archived-toggle-icon');
+  if (!body) return;
+  const show = body.style.display === 'none';
+  body.style.display = show ? '' : 'none';
+  if (icon) icon.textContent = show ? '▼' : '▶';
+}
+
+// 封存勾選的登入紀錄；後端只封存非使用中紀錄（使用中的即使被指名也會略過，見 archiveMySessions 契約）。
+async function _archiveMySessionsChecked() {
+  const jtis = Array.from(document.querySelectorAll('#pref-login-history-body .pref-session-chk:checked')).map(el => el.dataset.jti);
+  if (!jtis.length) { showToast('請先勾選要封存的紀錄。', 'error', 2000); return; }
+  try {
+    const r = await proxyCall('archiveMySessions', { jtis });
+    showToast(`已封存 ${r.archived || 0} 筆登入紀錄${r.skipped ? '（略過 ' + r.skipped + ' 筆使用中紀錄）' : ''}。`, 'success', 3000);
+    _renderMySessions();
+  } catch (e) {
+    alert('封存失敗：' + e.message);
+  }
+}
+
+// 全部封存：封存本帳號所有非使用中的登入紀錄，只保留目前使用中的裝置。
+async function _archiveMySessionsAll() {
+  if (!confirm('將封存所有非使用中的登入紀錄，只保留目前使用中的裝置。')) return;
+  try {
+    const r = await proxyCall('archiveMySessions', { all: true });
+    showToast(`已封存 ${r.archived || 0} 筆登入紀錄${r.skipped ? '（略過 ' + r.skipped + ' 筆使用中紀錄）' : ''}。`, 'success', 3000);
+    _renderMySessions();
+  } catch (e) {
+    alert('封存失敗：' + e.message);
+  }
 }
 
 // #12：登出所有裝置——註銷該帳號全部 session token，並登出本機。
@@ -22315,6 +22591,40 @@ async function _lsConfirmTotpSetup() {
     _renderLoginSecurityCard();
   } catch (e) {
     errEl.textContent = _lsErrMsg(e.message);
+    errEl.style.display = '';
+  }
+}
+
+// changeMyPassword 業務錯誤代碼 → 中文訊息（同 _lsErrMsg 模式）；weak_new_password 帶冒號子代碼。
+function _pwErrMsg(code) {
+  const map = {
+    invalid_current_password: '目前密碼不正確。',
+    'weak_new_password:too_short': '新密碼至少 8 碼。',
+    'weak_new_password:same_as_default': '新密碼不可使用初始密碼。',
+    'weak_new_password:same_as_old': '新密碼不可與目前密碼相同。',
+    account_not_found: '找不到帳號資料。',
+  };
+  return map[code] || code;
+}
+
+// 更改密碼：前端先驗證新密碼兩次一致、長度、不得為初始密碼，其餘業務規則（同目前密碼、同初始密碼等）交後端判斷。
+async function _lsChangePassword() {
+  const currentPassword = document.getElementById('pref-pw-current').value;
+  const newPassword = document.getElementById('pref-pw-new').value;
+  const confirmPassword = document.getElementById('pref-pw-new-confirm').value;
+  const errEl = document.getElementById('pref-pw-error');
+  errEl.style.display = 'none';
+  if (newPassword !== confirmPassword) { errEl.textContent = '兩次輸入的新密碼不一致。'; errEl.style.display = ''; return; }
+  if (newPassword.length < 8) { errEl.textContent = '新密碼至少 8 碼。'; errEl.style.display = ''; return; }
+  if (newPassword === '123456789') { errEl.textContent = '新密碼不可使用初始密碼。'; errEl.style.display = ''; return; }
+  try {
+    await proxyCall('changeMyPassword', { currentPassword, newPassword });
+    document.getElementById('pref-pw-current').value = '';
+    document.getElementById('pref-pw-new').value = '';
+    document.getElementById('pref-pw-new-confirm').value = '';
+    showToast('密碼已更新', 'success', 2500);
+  } catch (e) {
+    errEl.textContent = _pwErrMsg(e.message);
     errEl.style.display = '';
   }
 }
@@ -30427,6 +30737,14 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-17', v: 193, title: '偏好設定瀑布流＋登入紀錄封存＋更改密碼＋批次修改登入帳號＋登入紀錄總覽', isProd: false, items: [
+      item('修復', '未登入狀態下點擊「登入」導向登入頁時，不再誤跳出「確定要離開此網站嗎？」的離開確認提示（僅登入後才依偏好設定判斷是否攔截）'),
+      item('改善', '偏好設定頁卡片排版改為瀑布流（依高度自然流排），不再因某張卡片較高而在同列其他卡片下方留下大片空白'),
+      item('新功能', '「登入紀錄」卡片加入封存制：預設只顯示未封存的紀錄，可勾選已登出／已過期的紀錄「封存勾選」或「全部封存」（使用中的裝置不可封存），封存紀錄收在可展開的「已封存紀錄」區塊'),
+      item('新功能', '偏好設定「登入安全」卡片新增「更改密碼」：輸入目前密碼與新密碼即可自行改密碼，前端先檢查兩次新密碼一致、至少 8 碼、不得為初始密碼，其餘規則由後端把關'),
+      item('新功能', '使用者管理頁新增「批次修改登入帳號」卡片：掃描已建立本地登入帳號的使用者，可批次修改其登入帳號（例如統一改成校內帳號格式），只送出有變動的列並顯示逐列結果'),
+      item('新功能', '使用者管理頁新增「登入紀錄總覽」卡片：管理者可一次查看所有使用者的登入紀錄（裝置、IP、位置、時間、狀態），供整體查核使用'),
+    ]},
     { date: '2026-07-16', v: 192, title: '實習生打卡網址改指向獨立打卡頁', isProd: true, items: [
       item('調整', '差勤管理後台產生的實習生專屬打卡網址，改指向獨立的打卡頁（https://npustscc.github.io/scc-clock/）；打卡功能與畫面不變（免登入、僅供打卡、定位與校區判定照舊），但網址不再依附本系統主網站，日後系統搬遷也不必更換實習生手上的打卡連結'),
       item('技術', '先前以 ?page=clock#ct= 形式產生的舊打卡網址過渡期間仍可使用；新增環境常數 CLOCK_PAGE_URL 並納入 check-env-constants.mjs 守門（prod 在本版推行前尚無此常數，守門員略過不報錯）'),
