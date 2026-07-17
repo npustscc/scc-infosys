@@ -1,4 +1,4 @@
-// v197 圖片編輯器：純函式單元測試（另存新附件檔名後綴、匯出格式決策）。
+// v197 圖片編輯器：純函式單元測試（另存新附件檔名後綴、匯出格式決策）。v199 加入 rt-editor 內嵌圖片相關。
 // 執行：node --test test/*.test.js
 // 測試對象直接從 dev/index.html 就地抽出（見 harness.js），改壞正式碼即會紅燈。
 const { test } = require('node:test');
@@ -63,4 +63,16 @@ test('_imgEdDataUrlByteLength：空值回 0，不炸', () => {
   assert.equal(S._imgEdDataUrlByteLength(''), 0);
   assert.equal(S._imgEdDataUrlByteLength(null), 0);
   assert.equal(S._imgEdDataUrlByteLength(undefined), 0);
+});
+
+// ── v199：_rtImgEmbedNeedsRecompress：rt-editor 內嵌圖片套用後是否需要改壓 JPEG（500KB 門檻）───
+test('_rtImgEmbedNeedsRecompress：500KB 以下不需重新壓縮', () => {
+  const S = load(['_rtImgEmbedNeedsRecompress']);
+  assert.equal(S._rtImgEmbedNeedsRecompress(0), false);
+  assert.equal(S._rtImgEmbedNeedsRecompress(500 * 1024), false); // 邊界：剛好 500KB 不算超過
+});
+test('_rtImgEmbedNeedsRecompress：超過 500KB 需要重新壓縮', () => {
+  const S = load(['_rtImgEmbedNeedsRecompress']);
+  assert.equal(S._rtImgEmbedNeedsRecompress(500 * 1024 + 1), true);
+  assert.equal(S._rtImgEmbedNeedsRecompress(5 * 1024 * 1024), true);
 });

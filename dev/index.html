@@ -792,6 +792,9 @@
     .rt-editor:focus { outline: none; border-color:#3182ce; }
     .rt-editor ul, .rt-editor ol { padding-left: 1.6em; margin: .3em 0; }
     .rt-editor p { margin: 0; }
+    /* v199：入口 C——rt-editor 內嵌圖片（家系圖圖片 data-geno-key 已有自己的雙擊提示/游標，此處排除避免重複視覺） */
+    .rt-editor img:not([data-geno-key]) { cursor: pointer; }
+    .rt-editor img:not([data-geno-key]):hover { outline: 2px solid #3182ce; outline-offset: 1px; }
     /* 富文字唯讀顯示（renderMaybeHtml 包 .rt-html）：全域 reset 清掉 ol/ul 縮排導致標號凸出到標題左側，這裡補回並比照編輯器還原自訂清單樣式 */
     .rt-html { display: contents; }
     .rt-html ul, .rt-html ol { padding-left: 1.6em; margin: .3em 0; }
@@ -4994,6 +4997,13 @@ document.addEventListener('dblclick', function(e) {
   const caseId = img.getAttribute('data-geno-cid') || null;
   const storeKey = img.getAttribute('data-geno-key');
   if (fieldId && storeKey) openGenogramEditor(fieldId, caseId, storeKey);
+});
+
+// v199：入口 C——rt-editor 內嵌一般圖片（非家系圖，上面那個委派已處理家系圖）雙擊開圖片編輯器
+document.addEventListener('dblclick', function(e) {
+  const img = e.target.closest('.rt-editor img');
+  if (!img || img.hasAttribute('data-geno-key')) return;
+  _rtImgEditorOpen(img);
 });
 
 document.addEventListener('click', function (e) {
@@ -30833,6 +30843,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-18', v: 199, title: '圖片編輯器（續）：富文字內嵌圖片可編輯', isProd: false, items: [
+      item('新功能', '晤談紀錄等富文字內容裡的圖片，編輯狀態下滑鼠移至圖片會顯示可編輯提示，雙擊即可進入圖片編輯器修改後就地替換，不影響其餘內容；家系圖圖片維持原有雙擊入口不受影響。唯讀顯示與列印不受影響'),
+      item('技術', '套用後的圖片若明顯偏大（>500KB）且非 JPEG，自動改壓 JPEG 存回（沿用附件子系統既有的縮放/畫質慣例），避免富文字內容進紀錄 JSON 後過度膨脹'),
+    ]},
     { date: '2026-07-18', v: 198, title: '問題回報 dev/prod 互通', isProd: false, items: [
       item('改善', '問題回報（含許願池）：測試版與正式版的問題回報合併為同一份清單，任一邊回報、回覆、驗證結案都會同步呈現於兩邊，不再各自獨立、互看不到對方的紀錄'),
     ]},
@@ -48920,6 +48934,51 @@ async function _attachEditExistingSave(pid, idx, dataUrl, mode) {
   showToast(mode === 'replace' ? '已標記取代，表單儲存時會上傳新圖並換掉原附件' : '已新增為附件，表單儲存時才會上傳', 'success', 3500);
 }
 
+// ── v199：富文字內嵌圖片編輯整合（入口 C）──────────────────────────
+// rt-editor（各表單富文字編輯區，如晤談紀錄、結案評估等）內嵌圖片雙擊開圖片編輯器，「套用變更」後
+// 就地替換該 <img> 的 src（不新增/刪除節點、不動其他內容），不需另外觸發 dirty/草稿偵測——
+// _gd 系列草稿引擎是輪詢比對（每 5 秒重新以 getRichTextValue 讀目前 innerHTML 做快照），直接改
+// DOM 即可被下一輪快照感知，比照家系圖既有作法（GenogramEditor 也是直接 img.src/replaceWith，
+// 不 dispatch input）。刻意不用 MutationObserver 幫圖片動態掛 data-tip/title 屬性做提示——那類作法
+// 會在表單載入完成、_gdSetBaseline 完成快照「之後」才以 microtask 執行，讓草稿基準快照少了這個屬性、
+// 之後每輪快照卻多了它，造成使用者尚未編輯就被誤判為「有未儲存變更」；因此可發現性提示改延伸共用的
+// 全域 data-tip 懸浮提示邏輯（見全站 _tip_el/mouseover 監聽段），用選擇器涵蓋而非寫入屬性，見該處註解。
+// v197 圖片編輯器路線圖原註記「入口 C 排在下一版（v198）」，v198 該號被問題回報遷移用掉，故本入口
+// 順延至 v199 完成。
+function _rtImgEmbedNeedsRecompress(byteLength) {
+  return byteLength > 500 * 1024;
+}
+function _rtImgEditorOpen(img) {
+  if (!img || !img.src) return;
+  if (!/^data:/i.test(img.src)) {
+    showToast('僅能編輯內嵌圖片，此圖片並非內嵌儲存，無法在此編輯', 'warning', 3000);
+    return;
+  }
+  _imgEdOpen({
+    dataUrl: img.src,
+    fileName: img.alt || '內嵌圖片',
+    sourceLabel: '編輯內嵌圖片',
+    saveActions: [{
+      label: '✓ 套用變更',
+      handler: async (url, meta) => {
+        let finalUrl = url;
+        // 套用結果若仍偏大（>500KB）且尚未是 JPEG，改壓 JPEG 存回，避免富文字內容（進 JSON 紀錄）暴肥；
+        // 沿用附件子系統既有的 dataURL→JPEG 轉檔函式（含等比縮放），長邊上限比附件縮圖（1280）寬鬆，
+        // 顧及內嵌圖片可能需要較高可讀解析度。
+        if (meta?.format !== 'jpeg' && _rtImgEmbedNeedsRecompress(_imgEdDataUrlByteLength(url))) {
+          try {
+            const conv = await _imgEdDataUrlToJpegBlob(url, 2000, 0.85);
+            finalUrl = conv.dataUrl;
+          } catch (e) { /* 轉檔失敗則保留原圖，不阻斷套用 */ }
+        }
+        img.src = finalUrl;
+        _imgEd.close();
+        showToast('已套用變更', 'success', 1500);
+      },
+    }],
+  });
+}
+
 function renderAttachChips(attachments) {
   if (!attachments || !attachments.length) return '';
   return `<div style="margin-top:7px;display:flex;flex-wrap:wrap;gap:5px;align-items:center;">
@@ -49046,8 +49105,8 @@ function _imgEdDataUrlByteLength(dataUrl) {
 //  無 dataUrl 時開空白畫布（呼叫端另外指定 width/height，白底）。
 //  saveActions 的 format 為本模組相對 spec 的小擴充（可選）：指定 'png'/'jpeg' 強制匯出格式（例如
 //  「下載 JPG」按鈕），省略時依 _imgEdExportFormat 依大小自動判斷——向下相容，不影響既有呼叫慣例。
-//  本版（v197）：編輯器核心＋左側選單獨立工具（入口A）＋附件編輯（入口B）。
-//  富文字內嵌圖片編輯（入口C）排在下一版（v198），本版不做。
+//  v197：編輯器核心＋左側選單獨立工具（入口A）＋附件編輯（入口B）。
+//  v199：富文字內嵌圖片編輯（入口C，rt-editor 內雙擊圖片，見附件編輯整合區塊 _rtImgEditorOpen）。
 //  視圖縮放（滾輪/適應視窗）改用 CSS transform:scale() 縮放 fabric 的 wrapperEl，完全不動 fabric 內部
 //  viewportTransform／zoom——getPointer 會自動依 CSS 縮放比例換算，圖層座標與匯出全程維持文件原始尺寸，
 //  故「匯出不受檢視縮放影響」是設計上天然成立，toDataURL 前仍保留 viewportTransform 重設一步作為保險。
@@ -51834,8 +51893,17 @@ function _showDataTip(el) {
 (function(){
   const tip = document.getElementById('_tip_el');
   let timer, lastEl;
+  // v199：rt-editor 內嵌圖片（雙擊可編輯，見 _rtImgEditorOpen）的提示文字，比照全站 data-tip 視覺樣式，
+  // 但刻意不寫入 data-tip 屬性到圖片本身——那類 DOM 寫入若在表單載入時發生會跟 _gd 草稿基準快照的
+  // 擷取時序打架，讓使用者一開表單就被誤判有未儲存變更（詳見 _rtImgEditorOpen 前的說明）。
+  // 家系圖圖片（data-geno-key）已有自己的雙擊入口與別的提示方式，此處排除避免文字重複/衝突。
+  const RT_IMG_TIP_SELECTOR = '.rt-editor img:not([data-geno-key])';
+  const RT_IMG_TIP_TEXT = '雙擊編輯圖片';
+  function tipTextFor(el) {
+    return el.getAttribute('data-tip') || (el.matches(RT_IMG_TIP_SELECTOR) ? RT_IMG_TIP_TEXT : '');
+  }
   function showTip(el) {
-    const text = el.getAttribute('data-tip');
+    const text = tipTextFor(el);
     if (!text) return;
     tip.textContent = text;
     tip.style.display = 'block';
@@ -51853,14 +51921,14 @@ function _showDataTip(el) {
     });
   }
   document.addEventListener('mouseover', e => {
-    const el = e.target.closest('[data-tip]');
+    const el = e.target.closest(`[data-tip], ${RT_IMG_TIP_SELECTOR}`);
     if (!el || el === lastEl) return;
     lastEl = el;
     clearTimeout(timer);
     timer = setTimeout(() => showTip(el), 700);
   });
   document.addEventListener('mouseout', e => {
-    if (!e.target.closest('[data-tip]')) return;
+    if (!e.target.closest(`[data-tip], ${RT_IMG_TIP_SELECTOR}`)) return;
     clearTimeout(timer);
     lastEl = null;
     tip.style.opacity = '0';
