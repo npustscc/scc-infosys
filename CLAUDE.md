@@ -13,40 +13,34 @@
 2. **機密與個資永不進 repo。** `creds.json`（含 OAuth client secret）、`*.csv`（個案清單）、`*.docx`/`*.xlsx`、`forsystems/` 已列入 `.gitignore`；新增這類檔案前先確認被 ignore。絕不 `git add -A` 一把梭。
 3. **去識別化**：稽核、問題回報、commit message、公開 changelog 涉及個案時，除案號外不得出現姓名/學號/身分證等（見 [[feedback_issue_deidentify]]）。修補中的漏洞在正式版尚未修好前，不在對外 changelog 描述細節。
 
-## 正式版 vs 測試版
+## 正式版 vs 測試版（2026-07-17 cutover 後：區網 server）
 
-| | 檔案 | URL | Drive 資料夾 ID | Apps Script URL（`APPS_SCRIPT_URL`） |
-|---|---|---|---|---|
-| **正式版** | `index.html` | `https://npustscc.github.io/scc-infosys/` | `1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP` | `https://script.google.com/macros/s/AKfycby9ZDT7NO7Jso3mbzbMaOzN0mdfgREbxoHRLC3NEbulGtKwp9eTibpD0XwKJCeC9wlh/exec` |
-| **測試版** | `dev/index.html` | `https://npustscc.github.io/scc-infosys/dev/` | `1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx` | `https://script.google.com/macros/s/AKfycbwQjkuKkKn33XlMCNtt-Al3x1jkkxk1fdawb64lozIZ6rwSeGZUGhQ1gujXN8k9hPlDlw/exec` |
+| | 前端來源 | URL | 後端 |
+|---|---|---|---|
+| **正式版** | `dev/index.html`（deploy 時自動置換環境常數） | `http://192.168.100.123:8787/` | `~/scc-prod/server`（Node＋sqlite，systemd `scc-prod`） |
+| **測試版** | `dev/index.html` | `http://192.168.100.123:8788/` | `~/scc-dev/server`（systemd `scc-dev`） |
 
-正式版與測試版是**兩個完全獨立的 Apps Script 後端部署**（各自的 `ALLOWED_ROOTS` 白名單只認自己的 Drive 資料夾 ID）。兩個環境專屬常數（`DRIVE_FOLDER_ID` 與 `APPS_SCRIPT_URL`）必須成對正確，帶錯任一個都會導致該版本完全無法登入（`Unauthorized` / `Unauthorized rootFolderId`）。
+- 兩實例各自獨立的 sqlite 資料庫與 `.env`；GAS 僅殘留打卡橋接等用途（軟凍結只修 bug）。舊 GitHub Pages 網址已改掛遷移公告，不再服務 app。
+- repo 根 `index.html` 現為 Pages 公告頁，**不再是正式版前端來源**；prod 前端由 `deploy.sh prod` 從 `dev/index.html` 以 `build-public.js --prod-from-dev` 自動建置（環境常數自動換），不再需要 `Copy-Item` 手動 promote。
 
-## 固定工作流程
+## 固定工作流程（cutover 後）
 
-**所有新功能、修改、Bug 修復 → 預設只改 `dev/index.html`。**
+**所有新功能、修改、Bug 修復 → 預設只改 `dev/index.html`（前端）與 `server/`（後端）。**
 
-- 動到有測試覆蓋的純邏輯（案號、學期、請假期間、系所對照等）→ 先跑 `node --test test/*.test.js`，綠燈再 commit（測試就地從 `dev/index.html` 抽函式，改壞即紅燈；見 `test/README.md`）
-- 完成後直接 `git add dev/index.html`、`git commit`、`git push origin master`
-- 使用者在 `dev/` URL 驗證
+1. 動到有測試覆蓋的純邏輯 → 先跑 `node --test test/*.test.js`；動到 server → `node --test server/test/*.test.js`。綠燈才 commit。
+2. `git commit`、`git push origin master`。
+3. **Claude 直接部署 dev（不需使用者動手）**：`ssh scc-server 'cd ~/scc-dev/server && ./scripts/deploy.sh dev'`——腳本會 pull → 跑測試（紅燈自動中止，服務不動）→ 重建前端 → 重啟 → 冒煙。
+4. 使用者在測試版 URL 眼驗。
 
-**推行到正式版（使用者明確說「推行到正式版」或「promote」）：**
+**推行到正式版（使用者明確說「推行到正式版」／「promote」／眼驗 OK 指示上 prod）：**
 
-```powershell
-Copy-Item dev\index.html index.html
-git add index.html dev/index.html
-git commit -m "推行到正式版：[功能說明]"
-git push origin master
-```
+1. 依 [[feedback_changelog_workflow]] 把該版 changelog 翻 `isProd:true`，commit＋push。
+2. `ssh scc-server 'cd ~/scc-prod/server && ./scripts/deploy.sh prod'`——prod 模式會先做 sqlite 線上備份再更新，其餘同 dev（測試紅燈自動中止）。
+3. 部署輸出確認「部署完成：scc-prod 存活、API 回應正常」。
 
-注意：`Copy-Item` 會把 dev 版的兩個環境專屬常數一起帶進來，兩個都必須改回正式版的值，缺一都會讓正式版整個無法登入：
+舊 Pages 時代的 `Copy-Item` promote、`check-env-constants.mjs` 守門員、Pages check-runs 確認，僅在需要動 Pages 公告頁或 GAS 殘留用途時才相關。
 
-- `DRIVE_FOLDER_ID` → 正式版 ID `1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP`
-- `APPS_SCRIPT_URL` → 正式版網址 `https://script.google.com/macros/s/AKfycby9ZDT7NO7Jso3mbzbMaOzN0mdfgREbxoHRLC3NEbulGtKwp9eTibpD0XwKJCeC9wlh/exec`
-
-推行後（`Copy-Item` 完、`git push` 前）**必跑環境常數守門員**：`node scripts/check-env-constants.mjs`，綠燈（exit 0）才能 push。它機械比對 prod/dev 兩檔各自的 `DRIVE_FOLDER_ID` 與 `APPS_SCRIPT_URL` 是否為對的那組（期望值取自正常運作的 index.html，不靠人工轉抄那兩串 60+ 字元字串）。push 後仍要用 check-runs API 確認 Pages 部署成功（見既有 memory）。
-
-**事故紀錄（2026-07-03）**：曾經只改了 `DRIVE_FOLDER_ID`、漏改 `APPS_SCRIPT_URL`，導致正式版請求打到測試版的 Apps Script 後端，因 `rootFolderId` 不在白名單而全面回傳 `Unauthorized rootFolderId`，正式版完全無法登入，直到下一次 hotfix 才修復。
+**事故紀錄（2026-07-03，Pages 時代，留作教訓）**：promote 只改了 `DRIVE_FOLDER_ID`、漏改 `APPS_SCRIPT_URL`，正式版全面 `Unauthorized rootFolderId` 無法登入。現行 `build-public.js` 自動置換常數即為此教訓的制度化。
 
 ## Git 設定
 
