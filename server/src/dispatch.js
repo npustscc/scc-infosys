@@ -29,6 +29,7 @@ const gcSync = require('./sync/gcSync');
 const clockBridge = require('./actions/clockBridge');
 const adminUsersActions = require('./actions/adminUsers');
 const passwordActions = require('./actions/password');
+const configActions = require('./actions/config');
 
 // npust5 Gmail 網頁 OAuth 授權流程在 Node 版已被伺服器端憑證檔（GMAIL_SYNC_CREDS）取代，
 // getNpust5AuthUrl／exchangeNpust5OAuthCode 一律回這則固定業務錯誤（不再導向 Google 同意頁）。
@@ -192,6 +193,7 @@ async function handleRequest(db, config, payload) {
       return envelope.ok({
         sessionToken: result.sessionToken, exp: result.exp, email: result.email,
         mailSent: result.mailSent, totpEnrolled: result.totpEnrolled,
+        twofaMethod: result.twofaMethod || null, loginName: result.loginName || null,
         ...(result.newDeviceToken ? { newDeviceToken: result.newDeviceToken } : {}),
       });
     }
@@ -309,6 +311,8 @@ async function handleRequest(db, config, payload) {
       case 'listFolder': result = storageActions.listFolder(db, params); break;
       case 'query': result = storageActions.query(db, params); break;
       case 'startupBatch': result = storageActions.startupBatch(db, params, ctx); break;
+      case 'configSelfPatch': result = configActions.configSelfPatch(db, params, ctx, userEmail); break;
+      case 'configCasesPatch': result = configActions.configCasesPatch(db, params, ctx, userEmail); break;
       case 'casesUpsert': result = commitActions.casesUpsert(db, params, ctx); break;
       case 'attendanceCommit': result = await commitActions.attendanceCommit(db, params, ctx, config); break;
       case 'bookingsCommit': result = await gcSync.bookingsCommitWithGc(db, params, ctx, config); break;

@@ -18,7 +18,7 @@
        base-uri 'self'：防 <base> 標籤注入劫持全頁相對路徑，零風險關閉。 -->
   <meta http-equiv="Content-Security-Policy" content="connect-src 'self' https://npustscc.github.io https://script.google.com https://script.googleusercontent.com https://accounts.google.com https://ipapi.co; img-src 'self' data: blob: https://unpkg.com https://*.tile.openstreetmap.org https://*.googleusercontent.com; object-src 'none'; base-uri 'self';" />
   <title>NPUST 諮商中心資訊系統</title>
-  <script>(function(){var p=window.location.pathname;if(p.includes('/dev/')){document.title='【測試版】NPUST 諮商中心資訊系統';}})()</script>
+  <script>(function(){var p=window.location.pathname;if(p.includes('/dev/')||window.location.port==='8788'){document.title='【測試版】NPUST 諮商中心資訊系統';}})()</script>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='14' fill='%23c05621'/><text y='.9em' font-size='80' x='10'>🧪</text></svg>" />
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -350,9 +350,19 @@
       margin-bottom: 24px;
     }
     /* 偏好設定頁瀑布流（見 #page-prefs 內 .prefs-masonry 容器）：scoped 到此頁，不影響全站 .card。
+       v194 改 JS 穩定分欄（_prefsMasonryLayout）：欄容器 flex 並排，卡片進欄後高度變化只長在
+       自己那一欄，不再像 CSS multi-column 整體重流造成卡片跨欄跳動。
        display:none 的卡片（登入安全／信任裝置，未啟用本地帳密後端時）不佔版面，不會產生空洞。 */
-    #page-prefs .prefs-masonry > .card {
-      break-inside: avoid;
+    #page-prefs .prefs-masonry {
+      display: flex;
+      gap: 20px;
+      align-items: flex-start;
+    }
+    #page-prefs .prefs-masonry-col {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+    #page-prefs .prefs-masonry .card {
       margin-bottom: 20px;
       width: 100%;
     }
@@ -1080,7 +1090,7 @@
   <span style="pointer-events:none;">🔧 測試版（dev）— 此版本的資料與正式版完全隔離，請勿用於實際業務</span>
   <button onclick="toggleSyslog()" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.5);color:#fff;font-size:.72rem;font-weight:700;cursor:pointer;padding:2px 10px;border-radius:3px;letter-spacing:.06em;">LOG</button>
 </div>
-<script>(function(){const p=window.opener?.location?.pathname??window.location.pathname;if(p.includes('/dev/')){document.getElementById('dev-banner').style.display='';document.head.insertAdjacentHTML('beforeend','<style>#app-header,#sidebar{margin-top:32px!important;}#app-header{top:32px!important;}#notif-panel{top:96px!important;}#app-header.compact~#notif-panel{top:76px!important;}#detail-student-sem-nav{top:calc(var(--hdr-h,60px)+32px)!important;}#dev-banner+*{margin-top:32px;}</style>');}})()</script>
+<script>(function(){const p=window.opener?.location?.pathname??window.location.pathname;const port=window.opener?.location?.port??window.location.port;if(p.includes('/dev/')||port==='8788'){document.getElementById('dev-banner').style.display='';document.head.insertAdjacentHTML('beforeend','<style>#app-header,#sidebar{margin-top:32px!important;}#app-header{top:32px!important;}#notif-panel{top:96px!important;}#app-header.compact~#notif-panel{top:76px!important;}#detail-student-sem-nav{top:calc(var(--hdr-h,60px)+32px)!important;}#dev-banner+*{margin-top:32px;}</style>');}})()</script>
 
 <!-- Loading overlay -->
 <div id="loading-overlay" style="display:none;">
@@ -1690,9 +1700,10 @@
     <!-- 偏好設定 -->
     <div id="page-prefs" class="page">
       <div class="page-title">偏好設定</div>
-      <!-- 用 CSS multi-column 瀑布流取代 grid：grid 逐列對齊，某張卡片較高會讓同列其他卡片下方留白；
-           columns 讓卡片依高度自然流排，消除這種垂直空白。break-inside:avoid 防止單張卡片被欄位截斷。 -->
-      <div class="prefs-masonry" style="columns:340px;column-gap:20px;">
+      <!-- v194 穩定瀑布流：進頁時 JS 量測高度貪婪分欄一次（_prefsMasonryLayout），之後卡片變高
+           （展開登入紀錄等）只影響自己那一欄，不會整體重流造成其他卡片跨欄移位；欄數只在視窗
+           寬度變化時重算。 -->
+      <div class="prefs-masonry" id="prefs-masonry">
 
       <div class="card">
         <div class="card-header"><h3>畫面鎖定（AFK）</h3></div>
@@ -1796,6 +1807,10 @@
             <input type="password" id="pref-pw-current" class="field-input" style="margin-bottom:6px;width:100%;" placeholder="目前密碼" autocomplete="current-password" />
             <input type="password" id="pref-pw-new" class="field-input" style="margin-bottom:6px;width:100%;" placeholder="新密碼（至少 8 碼）" autocomplete="new-password" />
             <input type="password" id="pref-pw-new-confirm" class="field-input" style="margin-bottom:6px;width:100%;" placeholder="再次輸入新密碼" autocomplete="new-password" />
+            <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;color:#4a5568;cursor:pointer;margin-bottom:6px;">
+              <input type="checkbox" onchange="['pref-pw-current','pref-pw-new','pref-pw-new-confirm'].forEach(id=>{const el=document.getElementById(id);if(el)el.type=this.checked?'text':'password';})" style="width:14px;height:14px;" />
+              顯示密碼
+            </label>
             <div id="pref-pw-error" class="alert alert-error" style="display:none;"></div>
             <div style="margin-top:8px;">
               <button class="btn btn-primary btn-sm" onclick="_lsChangePassword()">更改密碼</button>
@@ -1813,6 +1828,21 @@
           <div id="pref-trusted-devices-body" style="font-size:.85rem;color:#4a5568;">載入中…</div>
           <div style="margin-top:12px;">
             <button class="btn btn-secondary btn-sm" onclick="_renderMyDevices()">重新整理</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><h3>頂欄頭像</h3></div>
+        <div style="padding:16px 20px;">
+          <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">上傳自訂頭像，顯示於右上角頂欄（自動置中裁切為正方形並縮至 128×128）。未設定時顯示姓名首字。</p>
+          <div style="display:flex;align-items:center;gap:14px;">
+            <img id="pref-avatar-preview" alt="頭像預覽" style="width:64px;height:64px;border-radius:50%;object-fit:cover;border:1px solid #e2e8f0;background:#f7fafc;" />
+            <div>
+              <input type="file" id="pref-avatar-file" accept="image/*" style="display:none;" onchange="prefAvatarUpload(this)" />
+              <button class="btn btn-primary btn-sm" onclick="document.getElementById('pref-avatar-file').click()">上傳圖片</button>
+              <button class="btn btn-secondary btn-sm" onclick="prefAvatarRemove()">移除</button>
+            </div>
           </div>
         </div>
       </div>
@@ -6435,13 +6465,29 @@ function _showDisabledScreen() {
 // ══════════════════════════════════════════════
 //  登入後流程
 // ══════════════════════════════════════════════
+
+// 頂欄頭像來源優先序（v194）：自訂上傳（偏好 avatar，data URL）＞ Google 大頭貼（Pages 時代殘留，
+// 本地登入模式 picture 恆為空）＞ 姓名首字襯底 SVG（永遠有東西可畫，不再出現破圖）。
+function _applyHeaderAvatar_() {
+  const img = document.getElementById('user-avatar');
+  if (!img) return;
+  const custom = configData?.users?.[currentUser?.email]?.avatar;
+  const src = custom || currentUser?.picture;
+  if (src) { img.src = src; return; }
+  const ch = (configData?.users?.[currentUser?.email]?.name || currentUser?.name || '?').trim().charAt(0) || '?';
+  img.src = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="32" fill="#4a5568"/><text x="32" y="43" font-size="26" text-anchor="middle" fill="#ffffff" font-family="sans-serif">${ch}</text></svg>`
+  );
+}
+
 async function afterLogin() {
   showLoading('讀取使用者設定…', 0);
 
   // 更新 header（無論成功失敗都先顯示使用者資訊）
-  document.getElementById('user-avatar').src = currentUser.picture;
+  _applyHeaderAvatar_(); // 此時 configData 未載入，先落在 Google 大頭貼或姓名首字；載入後再套自訂頭像
   document.getElementById('user-name').textContent = currentUser.name;
-  document.getElementById('user-email').textContent = currentUser.email;
+  // v194：頂欄第三行改顯示「登入帳號」（login.html 存入的 loginName）；舊 session 無此欄位時退回 email
+  document.getElementById('user-email').textContent = currentUser.loginName || currentUser.email;
   document.getElementById('user-info').style.display  = 'flex';
   document.getElementById('notif-bell').style.display = 'flex';
   document.getElementById('header-lock-btn').style.display = 'flex';
@@ -6677,6 +6723,8 @@ function resolveUserRole() {
   if (_configName) document.getElementById('user-name').textContent = _configName;
   // Header 職稱顯示
   document.getElementById('user-role').textContent = currentRole || '';
+  // 頭像：configData 已載入，套自訂上傳頭像（若有）或姓名首字襯底（v194）
+  _applyHeaderAvatar_();
 
   // Sidebar 角色顯示
   document.getElementById('sb-role').textContent  = currentRole || '（未設定角色）';
@@ -9202,7 +9250,7 @@ async function pollNotifications() {
 
 async function checkForUpdate() {
   // 測試版不偵測更新（避免 GitHub Pages 批次 ETag 失效時誤報到正式版）
-  if (window.location.pathname.includes('/dev/')) return;
+  if (window.location.pathname.includes('/dev/') || window.location.port === '8788') return;
   try {
     const resp = await fetch(location.href, { method: 'HEAD', cache: 'no-store' });
     // 優先用 last-modified（per-file 準確），避免 GitHub Pages ETag 在任何 push 後全部重置
@@ -30739,6 +30787,16 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-18', v: 194, title: '偏好寫入通道修復＋Email 驗證碼登入流程修正＋打卡拉回加速＋頂欄帳號/自訂頭像', isProd: false, items: [
+      item('修復', '區網後端補齊個人設定與個案存取授權的專用寫入通道（configSelfPatch／configCasesPatch）——切換區網後這兩個通道缺席，偏好設定（PIN、顯示色、排序記憶、欄寬、待辦分類順序等）看似儲存成功、重新整理後其實沒有存進去；個案管理員派任等七個流程同受影響，均已恢復並補整合測試'),
+      item('修復', '使用 Email 驗證碼登入的帳號，輸入驗證碼通過後不再被重複詢問「要用驗證器 App 還是 Email 驗證碼」——該畫面是給尚未設定第二因素的帳號的引導，已改依帳號實際設定判斷；TOTP 帳號登入不受影響、不會重複詢問'),
+      item('修復', '測試版網頁標題「【測試版】」前綴與橘色測試版橫幅在區網網址恢復顯示（原判斷沿用 GitHub Pages 時代的 /dev/ 路徑，已加上依連接埠判斷）'),
+      item('改善', '偏好設定瀑布流改為穩定分欄：進頁時依卡片高度分欄一次，之後卡片展開變高（如登入紀錄展開已封存）只影響自己那一欄，不再造成其他卡片跨欄跳動、跟丟正在操作的卡片'),
+      item('改善', '實習生打卡拉回系統的頻率由每 10 分鐘改為每 1 分鐘，打卡後約 1 分鐘內即可在差勤管理看到紀錄'),
+      item('新功能', '更改密碼表單新增「顯示密碼」勾選，可切換明碼檢視避免打錯'),
+      item('調整', '右上角頂欄第三行改顯示「登入帳號」（原顯示內部 Email）'),
+      item('新功能', '偏好設定新增「頂欄頭像」卡片：可上傳自訂頭像（自動裁方縮圖），取代原 Google 大頭貼；未設定時顯示姓名首字'),
+    ]},
     { date: '2026-07-17', v: 193, title: '偏好設定瀑布流＋登入紀錄封存＋更改密碼＋批次修改登入帳號＋登入紀錄總覽', isProd: true, items: [
       item('修復', '未登入狀態下點擊「登入」導向登入頁時，不再誤跳出「確定要離開此網站嗎？」的離開確認提示（僅登入後才依偏好設定判斷是否攔截）'),
       item('改善', '偏好設定頁卡片排版改為瀑布流（依高度自然流排），不再因某張卡片較高而在同列其他卡片下方留下大片空白'),
@@ -31971,6 +32029,86 @@ function renderPrefsPage() {
 
   // 待辦事項分類順序（與待辦事項頁 tab 拖曳排序共用同一份偏好）
   _renderPrefTodoOrderList();
+
+  // 頂欄頭像預覽（v194）
+  _renderPrefAvatarPreview_();
+
+  // v194 穩定瀑布流：每次進頁依當下卡片高度重新分欄一次（之後停留期間不再重排）
+  _prefsMasonryLayout(true);
+}
+
+// ── 偏好設定瀑布流（v194 穩定分欄）──────────────────────────────
+// CSS multi-column 會在任一卡片高度變化時整體重流（正在操作的卡片被搬到別欄，使用者跟丟）。
+// 改為：量測當下高度 → 依原始 DOM 順序貪婪塞進最短的欄 → 之後高度變化只長在原欄。
+// 重新分欄時機：進偏好設定頁（force）、視窗縮放造成欄數改變。
+let _prefsMasonryCards = null; // 卡片原始 DOM 順序快照（首次進頁擷取，重排時維持穩定順序）
+let _prefsMasonryCols = 0;
+function _prefsMasonryLayout(force) {
+  const wrap = document.getElementById('prefs-masonry');
+  if (!wrap) return;
+  if (!_prefsMasonryCards) _prefsMasonryCards = Array.from(wrap.querySelectorAll('.card'));
+  const COL_W = 340, GAP = 20;
+  const n = Math.max(1, Math.floor((wrap.clientWidth + GAP) / (COL_W + GAP)));
+  if (!force && n === _prefsMasonryCols) return;
+  _prefsMasonryCols = n;
+  const heights = _prefsMasonryCards.map(c => c.offsetHeight || 0);
+  const cols = [], colH = [];
+  for (let i = 0; i < n; i++) {
+    const d = document.createElement('div');
+    d.className = 'prefs-masonry-col';
+    cols.push(d); colH.push(0);
+  }
+  _prefsMasonryCards.forEach((card, i) => {
+    let best = 0;
+    for (let k = 1; k < n; k++) if (colH[k] < colH[best]) best = k;
+    cols[best].appendChild(card);
+    if (heights[i] > 0) colH[best] += heights[i] + GAP; // 隱藏卡片不佔高度
+  });
+  wrap.innerHTML = '';
+  cols.forEach(d => wrap.appendChild(d));
+}
+let _prefsMasonryRzTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_prefsMasonryRzTimer);
+  _prefsMasonryRzTimer = setTimeout(() => _prefsMasonryLayout(false), 200);
+});
+
+// ── 頂欄頭像自訂上傳（v194）──────────────────────────────
+// canvas 置中裁方縮至 128×128 JPEG，dataURL 存個人偏好 avatar（後端 configSelfPatch 白名單已放行）；
+// 壓縮後仍超過 100KB 一律拒絕，防塞爆全員共用的 config.json。
+function prefAvatarUpload(input) {
+  const file = input.files && input.files[0];
+  input.value = '';
+  if (!file) return;
+  const img = new Image();
+  const url = URL.createObjectURL(file);
+  img.onload = () => {
+    URL.revokeObjectURL(url);
+    const S = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = S; canvas.height = S;
+    const cx = canvas.getContext('2d');
+    const side = Math.min(img.naturalWidth, img.naturalHeight);
+    cx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, S, S);
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+    if (dataUrl.length > 100 * 1024) { showToast('圖片壓縮後仍過大，請換一張', 'error'); return; }
+    syncUserPref_({ avatar: dataUrl });
+    _applyHeaderAvatar_();
+    _renderPrefAvatarPreview_();
+    showToast('頭像已更新', 'success', 1800);
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); showToast('無法讀取這張圖片', 'error'); };
+  img.src = url;
+}
+function prefAvatarRemove() {
+  syncUserPref_({ avatar: null });
+  _applyHeaderAvatar_();
+  _renderPrefAvatarPreview_();
+  showToast('已移除自訂頭像', 'success', 1800);
+}
+function _renderPrefAvatarPreview_() {
+  const el = document.getElementById('pref-avatar-preview');
+  if (el) el.src = document.getElementById('user-avatar')?.src || '';
 }
 
 // v187：整列可用滑鼠/觸控拖曳排序（_scdInitDrag，axis 'y'，插入預覽為水平線），↑↓ 按鈕保留

@@ -214,7 +214,10 @@ function clearEmailOtp(db, email) {
 //   kind: 'otp_emails_required'    — switchToEmailOtp 生效時，otpEmails 正規化後 0 個
 //   kind: 'too_many_otp_emails'    — switchToEmailOtp 生效時，otpEmails 正規化後仍超過 3 個
 //   kind: 'invalid_otp_email'      — switchToEmailOtp 生效時，otpEmails 內有格式不正確的項目
-//   kind: 'ok'                     — 通過（未設定第二因素，或 TOTP／Email 驗證碼其中一種驗證通過）
+//   kind: 'ok'                     — 通過（未設定第二因素，或 TOTP／Email 驗證碼其中一種驗證通過）——
+//                                     附帶 twofaMethod（'totp'|'email'|null，見 resolveTwofaMethod）與
+//                                     loginName（登入帳號，前端頂欄顯示用），供 login.html 判斷是否
+//                                     還需要引導設定第二因素（已選 email 者不再進 TOTP 設定引導）。
 //
 // loginName：使用者輸入的「登入帳號」（migration 005 起與內部身分 email 脫鉤，見 getUserByLogin
 // 檔頭註解）——一經 getUserByLogin 解析出 user 之後，本函式其餘邏輯與回傳值（含 kind:'ok' 的
@@ -283,7 +286,7 @@ async function verifyLocalCredentialsDetailed(db, loginName, password, otp, emai
     try { otpOk = totp.verifyTotp(user.totp_secret, otpStr); } catch (_e) { otpOk = false; }
     if (!otpOk) { registerFailure(db, user, nowSec); return { kind: 'invalid_totp' }; }
     registerSuccess(db, user);
-    return { kind: 'ok', email: user.email, totpEnrolled: !!user.totp_enrolled };
+    return { kind: 'ok', email: user.email, totpEnrolled: !!user.totp_enrolled, twofaMethod: method, loginName: user.login_name || null };
   }
 
   if (method === 'email') {
@@ -304,11 +307,11 @@ async function verifyLocalCredentialsDetailed(db, loginName, password, otp, emai
     }
     clearEmailOtp(db, user.email);
     registerSuccess(db, user);
-    return { kind: 'ok', email: user.email, totpEnrolled: !!user.totp_enrolled };
+    return { kind: 'ok', email: user.email, totpEnrolled: !!user.totp_enrolled, twofaMethod: method, loginName: user.login_name || null };
   }
 
   registerSuccess(db, user);
-  return { kind: 'ok', email: user.email, totpEnrolled: !!user.totp_enrolled };
+  return { kind: 'ok', email: user.email, totpEnrolled: !!user.totp_enrolled, twofaMethod: method, loginName: user.login_name || null };
 }
 
 // 精簡版（既有呼叫端／測試相容）：驗證通過回 email；任何失敗（帳號不存在/停用/鎖定/密碼錯/

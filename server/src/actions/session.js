@@ -110,7 +110,13 @@ async function sessionStart(db, { email, password, otp, emailOtp, switchToEmailO
     // 'email_otp_required' 時才會跑到）——多存一個當下用不到的雜湊碼是無害的，下次真的需要
     // Email 驗證碼時仍會依 60 秒冷卻規則決定是否要重新產生。
     local.registerLoginSuccess(db, internalEmailForDevice);
-    authResult = { kind: 'ok', email: internalEmailForDevice, totpEnrolled: authResult.totpEnrolled };
+    // twofaMethod 由原 kind 推得（totp_required→'totp'／email_otp_required→'email'）；loginName 取
+    // 先前為裝置比對查出的 loginUser（此分支必然查得到，deviceValid 已隱含 loginUser 存在）。
+    authResult = {
+      kind: 'ok', email: internalEmailForDevice, totpEnrolled: authResult.totpEnrolled,
+      twofaMethod: authResult.kind === 'email_otp_required' ? 'email' : 'totp',
+      loginName: (loginUser && loginUser.login_name) || null,
+    };
   }
 
   // Email 驗證碼待寄送：local.js 不觸網，只決定「要不要寄、寄什麼碼、寄給誰」（見
@@ -207,6 +213,8 @@ async function sessionStart(db, { email, password, otp, emailOtp, switchToEmailO
   return {
     kind: 'ok', sessionToken: issued.token, exp: issued.exp, email: authedEmail, mailSent,
     totpEnrolled: !!authResult.totpEnrolled,
+    twofaMethod: authResult.twofaMethod || null,
+    loginName: authResult.loginName || null,
     ...(newDeviceToken ? { newDeviceToken } : {}),
   };
 }
