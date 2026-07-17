@@ -20,6 +20,7 @@ const gate = require('../authz/gate');
 const loginNotify = require('../mail/loginNotify');
 const emailOtpMail = require('../mail/emailOtp');
 const mailer = require('../mail/mailer');
+const audit = require('../audit');
 
 const SESSIONS_PATH = 'sessions.json';
 const MAX_SESSIONS_PER_USER = 15;
@@ -227,8 +228,56 @@ function listMySessions(db, userEmail, params, ctx) {
     s.revoked = !!(revokedBefore && Number(s.iat) < Number(revokedBefore));
     s.active = !s.expired && !s.revoked;
     s.current = !!(curJti && s.jti === curJti);
+    s.archived = !!s.archived; // 選用欄位（見 archiveMySessions），未封存過的紀錄一律補為 false
   });
   return { sessions: mine };
 }
 
-module.exports = { sessionStart, sessionLogout, listMySessions, readConfigUsers };
+// 登入紀錄封存（不刪除，只標記 archived/archivedAt，供使用者在清單裡收起舊紀錄）：只能封存
+// 「自己」的紀錄、且只能封存「非使用中」的（active＝未過期且未註銷）——「目前這台裝置」本身就是
+// active，自然被保護，不會被誤封存。即使前端已經擋過一次（不讓使用者勾選 active 的紀錄），這裡
+// 仍需再擋一層（後端才是真正的安全邊界，見 CLAUDE.md 資安原則）。
+// params: { jtis: string[] } 指名封存；{ all: true } 封存自己所有非 active 且尚未封存的紀錄。
+// 兩者皆未附（或 jtis 為空陣列且 all 不為 true）→ 視為無事可做，回 archived:0/skipped:0。
+function archiveMySessions(db, userEmail, params, ctx) {
+  const wantAll = !!(params && params.all === true);
+  const jtiSet = new Set(
+    Array.isArray(params && params.jtis) ? params.jtis.filter((j) => typeof j === 'string' && j) : []
+  );
+  if (!wantAll && jtiSet.size === 0) return { ok: true, archived: 0, skipped: 0 };
+
+  const data = readSessionsData(db, ctx);
+  const revokedBefore = sessionAuth.getRevokedBefore(db, userEmail);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const nowIso = new Date().toISOString();
+
+  let archived = 0;
+  let skipped = 0;
+  data.sessions.forEach((s) => {
+    if (!s || s.email !== userEmail) return; // 只動自己的紀錄
+    if (s.archived) return; // 已封存過，不重複計數
+    if (!wantAll && !jtiSet.has(s.jti)) return; // 未被指名
+
+    const expired = Number(s.exp) <= nowSec;
+    const revoked = !!(revokedBefore && Number(s.iat) < Number(revokedBefore));
+    const active = !expired && !revoked;
+    if (active) { skipped++; return; } // 使用中的紀錄一律跳過，即使被指名
+
+    s.archived = true;
+    s.archivedAt = nowIso;
+    archived++;
+  });
+
+  if (archived > 0) vdrive.updateJson(db, SESSIONS_PATH, data, ctx);
+
+  audit.appendAuditLog(db, {
+    email: userEmail, action: 'archiveMySessions', target: userEmail, outcome: 'ok',
+    detail: `archived=${archived},skipped=${skipped}`,
+  });
+
+  return { ok: true, archived, skipped };
+}
+
+module.exports = {
+  sessionStart, sessionLogout, listMySessions, archiveMySessions, readConfigUsers, readSessionsData,
+};

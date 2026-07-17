@@ -112,6 +112,28 @@ test('首登強制改密碼：改完密碼仍要過第二因素（已註冊 TOTP
   assert.ok(ok.data.sessionToken);
 });
 
+test('補洞保險：must_change_password 旗標未設，但密碼字串本身就是初始密碼 123456789 → 仍視同首登', async () => {
+  const db = openDb(':memory:');
+  // 刻意不傳 mustChangePassword:true，模擬早期 create-user.js CLI 批次建帳沒有帶該旗標的情境。
+  await local.upsertUser(db, 'a@x.com', local.DEFAULT_INITIAL_PASSWORD);
+  vdrive.createJson(db, { name: 'config.json', parentId: ROOT, content: { users: { 'a@x.com': { role: '專任諮商心理師' } } } });
+
+  const row = local.getUser(db, 'a@x.com');
+  assert.equal(row.must_change_password, 0, '模擬情境：旗標本身確實未設');
+
+  const r = await handleRequest(db, testConfig(), loginPayload('a@x.com', local.DEFAULT_INITIAL_PASSWORD));
+  assert.equal(r.data.error, 'password_change_required', '即使旗標為 0，密碼＝初始密碼仍應視同首登');
+
+  const ok = await handleRequest(db, testConfig(), loginPayload('a@x.com', local.DEFAULT_INITIAL_PASSWORD, { newPassword: 'brand-new-pw-2026' }));
+  assert.ok(ok.data.sessionToken, '附合格新密碼應可完成改密碼並登入');
+
+  const rowAfter = local.getUser(db, 'a@x.com');
+  assert.equal(rowAfter.must_change_password, 0, '改密成功後旗標維持/歸零');
+
+  const withNew = await handleRequest(db, testConfig(), loginPayload('a@x.com', 'brand-new-pw-2026'));
+  assert.equal(withNew.success, true, '再登入不應再要求改密碼');
+});
+
 test('首登強制改密碼：帶有效信任裝置也不能跳過改密碼（裝置信任只免第二因素，不免強制改密碼）', async () => {
   const db = openDb(':memory:');
   const secret = totp.generateSecret();

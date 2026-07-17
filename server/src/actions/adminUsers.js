@@ -1,9 +1,10 @@
-// server/src/actions/adminUsers.js — 帳號發放與管理（migration 005）：管理者專屬五個 action：
+// server/src/actions/adminUsers.js — 帳號發放與管理（migration 005）：管理者專屬 action：
 // adminUserAuthGet／adminCreateLocalAccount／adminUpdateLocalAccount／adminResetPassword／
-// adminResetTwofa。全部走 dispatch 的 gate.ADMIN_ONLY_ACTIONS 閘門（見 authz/gate.js／
-// dispatch.js 步驟 4a），非管理者一律 Forbidden，本檔不重複判斷授權——actorEmail 一律來自已驗證
-// session（dispatch.js 解出），只用於稽核（audit_log.email 記操作者，target 記被操作帳號的內部
-// email，兩者分開存，比照既有 audit.js「target 為目標摘要」的欄位語意）。
+// adminResetTwofa／adminListAllSessions。全部走 dispatch 的 gate.ADMIN_ONLY_ACTIONS 閘門（見
+// authz/gate.js／dispatch.js 步驟 4a），非管理者一律 Forbidden，本檔不重複判斷授權——actorEmail
+// 一律來自已驗證 session（dispatch.js 解出），只用於稽核（audit_log.email 記操作者，target 記被
+// 操作帳號的內部 email，兩者分開存，比照既有 audit.js「target 為目標摘要」的欄位語意；
+// adminListAllSessions 為查詢類 action，不逐次寫 audit，見該函式註解）。
 //
 // 內部身分 email 與登入帳號（login_name）脫鉤：本檔操作對象一律用「內部 email」（config.json
 // users 的鍵、session token 的 e），login_name 只是這裡新增/修改的一個欄位，不是查找鍵——查找／
@@ -18,6 +19,7 @@
 
 const local = require('../auth/local');
 const deviceTrust = require('../auth/deviceTrust');
+const sessionAuth = require('../auth/session');
 const audit = require('../audit');
 const sessionActions = require('./session');
 
@@ -188,10 +190,41 @@ function adminResetTwofa(db, params, actorEmail) {
   return { ok: true };
 }
 
+// 管理者登入紀錄總覽：跨全部使用者列出 sessions.json 紀錄（比照 session.js listMySessions 的
+// 計算欄位方式，差別是這裡逐筆各自查該筆紀錄 email 的 revokedBefore——不能只查一次，因為每筆
+// 紀錄可能屬於不同使用者）。查詢類 action，不逐次寫 audit（同 adminUserAuthGet，見任務背景）。
+// params: { includeArchived?: boolean }（預設 false，false 時濾掉已封存紀錄）。
+function adminListAllSessions(db, ctx, params) {
+  const includeArchived = !!(params && params.includeArchived === true);
+  const data = sessionActions.readSessionsData(db, ctx);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const revokedBeforeCache = {};
+  const getRevokedBefore = (email) => {
+    if (!(email in revokedBeforeCache)) revokedBeforeCache[email] = sessionAuth.getRevokedBefore(db, email);
+    return revokedBeforeCache[email];
+  };
+
+  const sorted = data.sessions.slice().sort((a, b) => (b.issuedAtMs || 0) - (a.issuedAtMs || 0));
+  const sessions = sorted
+    .filter((s) => s && (includeArchived || !s.archived))
+    .map((s) => {
+      const revokedBefore = getRevokedBefore(s.email);
+      const expired = Number(s.exp) <= nowSec;
+      const revoked = !!(revokedBefore && Number(s.iat) < Number(revokedBefore));
+      return {
+        email: s.email, ua: s.ua, ip: s.ip, geo: s.geo, issuedAt: s.issuedAt,
+        jti: s.jti, expired, revoked, active: !expired && !revoked, archived: !!s.archived,
+      };
+    });
+
+  return { sessions };
+}
+
 module.exports = {
   adminUserAuthGet,
   adminCreateLocalAccount,
   adminUpdateLocalAccount,
   adminResetPassword,
   adminResetTwofa,
+  adminListAllSessions,
 };

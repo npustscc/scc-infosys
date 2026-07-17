@@ -198,8 +198,9 @@ function clearEmailOtp(db, email) {
 // 但僅在密碼已驗證正確的前提下才進一步分辨；帳號不存在/停用/鎖定/密碼錯一律回同一種
 // kind:'invalid_credentials'（不透露原因，避免帳號枚舉與鎖定狀態外洩，維持本檔頭註解的既有原則）。
 //   kind: 'invalid_credentials'    — 密碼／帳號本身有問題
-//   kind: 'password_change_required' — 密碼正確、must_change_password=1，但本次未附 newPassword
-//                                     （首登強制改密碼，見 DEFAULT_INITIAL_PASSWORD 檔頭註解）。
+//   kind: 'password_change_required' — 密碼正確、must_change_password=1（或密碼字串本身就是初始
+//                                     密碼，見下方補洞保險），但本次未附 newPassword（首登強制改
+//                                     密碼，見 DEFAULT_INITIAL_PASSWORD 檔頭註解）。
 //   kind: 'weak_new_password'      — 密碼正確、附了 newPassword，但未通過 validateNewPassword 政策
 //                                     檢查——附帶 reason（'too_short'|'same_as_default'|'same_as_old'）。
 //   kind: 'totp_required'          — 密碼正確、該帳號選用 TOTP，但本次未附 otp
@@ -244,7 +245,12 @@ async function verifyLocalCredentialsDetailed(db, loginName, password, otp, emai
   try { passwordOk = await argon2.verify(user.password_hash, password); } catch (_e) { passwordOk = false; }
   if (!passwordOk) { registerFailure(db, user, nowSec); return { kind: 'invalid_credentials' }; }
 
-  if (user.must_change_password) {
+  // 補洞保險：must_change_password 旗標未設（例如早期 create-user.js CLI 批次建帳沒有帶
+  // mustChangePassword: true）但這次密碼驗證通過的密碼字串本身就是固定初始密碼時，仍視同首登，
+  // 逼強制改密碼——不能只信旗標，因為驗證新密碼政策（validateNewPassword）本身已保證合法使用者
+  // 永遠不可能把密碼「改成」初始密碼（same_as_default 會擋下），故「密碼＝初始密碼」在任何情境
+  // 下都等同「這帳號還沒真的改過密碼」，用這個不變量補齊旗標可能遺漏的情況。
+  if (user.must_change_password || password === DEFAULT_INITIAL_PASSWORD) {
     if (newPassword === undefined || newPassword === null || newPassword === '') {
       return { kind: 'password_change_required' };
     }
@@ -365,6 +371,7 @@ module.exports = {
   verifyLocalCredentials,
   verifyLocalCredentialsDetailed,
   validateNewPassword,
+  registerFailure,
   registerLoginSuccess,
   upsertUser,
   resolveTwofaMethod,

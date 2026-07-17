@@ -40,6 +40,8 @@ const AUTHZ_EXEMPT = { ping: true, sessionStart: true };
 // adminResetTwofa（帳號發放與管理，migration 005，見 actions/adminUsers.js）：管理者專屬，
 // 非管理者一律 Forbidden——五個 action 皆會異動他人帳密/2FA 設定，比照既有 adminDecision 語意
 // （role==='主任' 或 isAdmin===true 或 extraRole==='管理者'）。
+// adminListAllSessions：跨全部使用者查看登入紀錄，雖不異動資料但屬敏感查詢（ip/geo/ua 等），
+// 同樣限管理者專屬。
 const ADMIN_ONLY_ACTIONS = {
   deleteFile: true, moveFile: true,
   adminUserAuthGet: true,
@@ -47,6 +49,7 @@ const ADMIN_ONLY_ACTIONS = {
   adminUpdateLocalAccount: true,
   adminResetPassword: true,
   adminResetTwofa: true,
+  adminListAllSessions: true,
 };
 
 // F3：fileId/parentId 類動作限制在本次 ctx.root 子樹——Phase 1 骨架已實作的 action 對映。

@@ -28,6 +28,7 @@ const mailActions = require('./actions/mail');
 const gcSync = require('./sync/gcSync');
 const clockBridge = require('./actions/clockBridge');
 const adminUsersActions = require('./actions/adminUsers');
+const passwordActions = require('./actions/password');
 
 // npust5 Gmail 網頁 OAuth 授權流程在 Node 版已被伺服器端憑證檔（GMAIL_SYNC_CREDS）取代，
 // getNpust5AuthUrl／exchangeNpust5OAuthCode 一律回這則固定業務錯誤（不再導向 Google 同意頁）。
@@ -272,6 +273,11 @@ async function handleRequest(db, config, payload) {
       case 'ping': result = { ok: true, email: userEmail }; break;
       case 'sessionLogout': result = sessionActions.sessionLogout(db, userEmail); break;
       case 'listMySessions': result = sessionActions.listMySessions(db, userEmail, params, ctx); break;
+      // ── 登入紀錄封存（只封存自己非使用中的紀錄，見 actions/session.js archiveMySessions 檔頭
+      //    註解）；自助改密碼（changeMyPassword，見 actions/password.js）——userEmail 皆來自已驗證
+      //    session，不吃 params 裡的 email，同上「越權」防線。──
+      case 'archiveMySessions': result = sessionActions.archiveMySessions(db, userEmail, params, ctx); break;
+      case 'changeMyPassword': result = await passwordActions.changeMyPassword(db, userEmail, params); break;
       // ── 信任裝置清單／逐台撤銷（Phase 3b）：params.deviceToken 由 index.js 從 Cookie header
       //    注入（每個 action 皆有，非 sessionStart 專屬），用於在清單標記「目前這台」。──
       case 'listMyDevices': result = trustedDeviceActions.listMyDevices(db, userEmail, params.deviceToken); break;
@@ -293,6 +299,7 @@ async function handleRequest(db, config, payload) {
       case 'adminUpdateLocalAccount': result = await adminUsersActions.adminUpdateLocalAccount(db, params, userEmail); break;
       case 'adminResetPassword': result = await adminUsersActions.adminResetPassword(db, params, userEmail); break;
       case 'adminResetTwofa': result = adminUsersActions.adminResetTwofa(db, params, userEmail); break;
+      case 'adminListAllSessions': result = adminUsersActions.adminListAllSessions(db, ctx, params); break;
       case 'readJson': result = storageActions.readJson(db, params, ctx, userEmail, config.CASE_AUTHZ_MODE, onShadowStrip); break;
       case 'updateJson': result = storageActions.updateJson(db, params, ctx); break;
       case 'readJsonById': result = storageActions.readJsonById(db, params, ctx, userEmail, config.CASE_AUTHZ_MODE, onShadowStrip); break;
