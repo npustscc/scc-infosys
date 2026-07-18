@@ -6,8 +6,9 @@
 #   ./scripts/deploy.sh prod   # ~/scc-prod/server
 #
 # 流程：身分核對（防止在 dev 目錄誤跑 prod）→ [prod] sqlite 備份 → git pull --ff-only
-#       → npm test 綠才繼續 → 前端重建（僅當 public/index.html 已存在；沿用其現有 exec URL，
-#         prod 來源用 repo 根 index.html、dev 用 dev/index.html）→ systemctl restart → 冒煙 curl。
+#       → npm install（v202 起可能有新依賴）→ npm test 綠才繼續 → 前端重建（僅當 public/index.html
+#         已存在；沿用其現有 exec URL，prod 來源用 repo 根 index.html、dev 用 dev/index.html）
+#       → systemctl restart → 冒煙 curl。
 # 任一步失敗即中止（set -e），失敗點會印在最後一行。
 set -euo pipefail
 
@@ -39,6 +40,11 @@ fi
 # ── 更新程式 ──
 git -C .. pull --ff-only origin master
 echo "== repo 現在位於：$(git -C .. log --oneline -1) =="
+
+# ── 相依套件（v202 起 package.json 可能新增依賴，如 openmail 收發信的 imapflow/nodemailer/
+#    mailparser）：pull 之後、跑測試之前先裝好，失敗即中止（服務未動）。──
+npm install --no-audit --no-fund --silent >/tmp/scc-deploy-npmci-$ENV.log 2>&1 || { tail -20 /tmp/scc-deploy-npmci-$ENV.log; echo "✗ npm install 失敗，中止部署（服務未動）。" >&2; exit 1; }
+echo "== npm install 完成 =="
 
 # ── 測試綠才繼續 ──
 npm test --silent >/tmp/scc-deploy-test-$ENV.log 2>&1 || { tail -20 /tmp/scc-deploy-test-$ENV.log; echo "✗ 測試未過，中止部署（服務未動）。" >&2; exit 1; }

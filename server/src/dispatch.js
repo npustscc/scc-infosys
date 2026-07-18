@@ -9,9 +9,12 @@
 //      見 CALENDAR_SYNC_CREDS）；npust5 信件解析 4 個 action 已實作（fetchMentalLeaves/
 //      clearMentalLeaves 走 actions/mail.js＋本機 Gmail REST，getNpust5AuthUrl/exchangeNpust5OAuthCode
 //      回固定業務錯誤，見 NPUST5_WEB_AUTH_RETIRED_MSG）；v201 起 resolveDir/listDir/createFile/
-//      trashFile 亦已接線（見下方對應 case 註解）；其餘未實作 action → 明確業務錯誤（deleteFile/
-//      moveFile＝刻意不移植的純攻擊面死碼，clockContext/clockPunch＝依定案留在 GAS）
-// 每個請求無論成功/拒絕/例外都寫一筆 audit_log（見 audit.js，content 類參數只記長度）。
+//      trashFile 亦已接線（見下方對應 case 註解）；v202 起 13 個 om* 校內 openmail 收發信 action
+//      已接線（見 openmail/actions.js，走一般授權閘，不在 AUTHZ_EXEMPT）；其餘未實作 action →
+//      明確業務錯誤（deleteFile/moveFile＝刻意不移植的純攻擊面死碼，clockContext/clockPunch＝
+//      依定案留在 GAS）
+// 每個請求無論成功/拒絕/例外都寫一筆 audit_log（見 audit.js，content 類參數只記長度；om* action
+// 另有專用摘要，見 audit.summarizeParams 的 action 參數）。
 'use strict';
 
 const envelope = require('./envelope');
@@ -28,6 +31,9 @@ const storageActions = require('./actions/storage');
 const attachmentActions = require('./actions/attachments');
 const commitActions = require('./actions/commit');
 const mailActions = require('./actions/mail');
+const openmailActions = require('./openmail/actions');
+const openmailCredStore = require('./openmail/credStore');
+const openmailClient = require('./openmail/client');
 const gcSync = require('./sync/gcSync');
 const clockBridge = require('./actions/clockBridge');
 const adminUsersActions = require('./actions/adminUsers');
@@ -315,7 +321,14 @@ async function handleRequest(db, config, payload) {
     let result;
     switch (action) {
       case 'ping': result = { ok: true, email: userEmail }; break;
-      case 'sessionLogout': result = sessionActions.sessionLogout(db, userEmail); break;
+      // ── sessionLogout：登出即清 openmail 記憶體憑證＋關閉快取的 IMAP 連線（v202，見
+      //    openmail/credStore.js 檔頭「密碼永不落地、與 session 同壽命」的最高資安要求——顯式登出
+      //    不必等到台北午夜自然過期，立即清除）。──
+      case 'sessionLogout':
+        result = sessionActions.sessionLogout(db, userEmail);
+        openmailCredStore.clear(userEmail);
+        openmailClient.closeConnection(userEmail);
+        break;
       case 'listMySessions': result = sessionActions.listMySessions(db, userEmail, params, ctx); break;
       // ── 登入紀錄封存（只封存自己非使用中的紀錄，見 actions/session.js archiveMySessions 檔頭
       //    註解）；自助改密碼（changeMyPassword，見 actions/password.js）——userEmail 皆來自已驗證
@@ -376,6 +389,23 @@ async function handleRequest(db, config, payload) {
       case 'createFolder': result = attachmentActions.createFolder(db, params); break;
       case 'uploadFile': result = attachmentActions.uploadFile(db, params); break;
       case 'downloadFileBase64': result = await attachmentActions.downloadFileBase64(db, params, ctx, config); break;
+      // ── v202：校內 openmail 收發信（Openfind Mail2000 V8.00，見 openmail/ 檔頭）。走一般授權閘
+      //    （不在 gate.AUTHZ_EXEMPT），userEmail 皆來自已驗證 session（同 twofa/password 類 action
+      //    的既有原則，不吃 params 裡的身分欄位）。openmail 帳密只存 openmail/credStore.js 記憶體，
+      //    未 omConnect 過或已過期一律回業務錯誤 'mail_not_connected'（見 actions.js withCreds）。──
+      case 'omStatus': result = openmailActions.omStatus(userEmail); break;
+      case 'omConnect': result = await openmailActions.omConnect(userEmail, config, params); break;
+      case 'omDisconnect': result = openmailActions.omDisconnect(userEmail); break;
+      case 'omListFolders': result = await openmailActions.omListFolders(userEmail, config); break;
+      case 'omListMessages': result = await openmailActions.omListMessages(userEmail, config, params); break;
+      case 'omGetMessage': result = await openmailActions.omGetMessage(userEmail, config, params); break;
+      case 'omDownloadAttachment': result = await openmailActions.omDownloadAttachment(userEmail, config, params); break;
+      case 'omMarkSeen': result = await openmailActions.omMarkSeen(userEmail, config, params); break;
+      case 'omFlag': result = await openmailActions.omFlag(userEmail, config, params); break;
+      case 'omMove': result = await openmailActions.omMove(userEmail, config, params); break;
+      case 'omDelete': result = await openmailActions.omDelete(userEmail, config, params); break;
+      case 'omSearch': result = await openmailActions.omSearch(userEmail, config, params); break;
+      case 'omSend': result = await openmailActions.omSend(userEmail, config, params); break;
       case 'configSelfPatch': result = configActions.configSelfPatch(db, params, ctx, userEmail); break;
       case 'configCasesPatch': result = configActions.configCasesPatch(db, params, ctx, userEmail, config.CASES_PATCH_AUTHZ_MODE); break;
       case 'casesUpsert': result = commitActions.casesUpsert(db, params, ctx); break;
@@ -425,7 +455,7 @@ async function handleRequest(db, config, payload) {
     return envelope.fail(err);
   } finally {
     try {
-      const detail = audit.summarizeParams(params) + (strippedNote ? `,${strippedNote}` : '');
+      const detail = audit.summarizeParams(params, action) + (strippedNote ? `,${strippedNote}` : '');
       audit.appendAuditLog(db, {
         email: outcomeEmail,
         action: action || '(none)',

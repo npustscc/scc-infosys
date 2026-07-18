@@ -86,6 +86,13 @@ const CASES_PATCH_AUTHZ_MODE = process.env.CASES_PATCH_AUTHZ_MODE || 'shadow';
 // 信任裝置憑證效期（天，Phase 3b，見 auth/deviceTrust.js）：非機密設定值，缺值用預設 30 即可
 // 安全啟動，不用 required()。
 const TRUSTED_DEVICE_DAYS = Number(process.env.TRUSTED_DEVICE_DAYS || 30);
+// v202：校內 openmail 收發信（Openfind Mail2000 V8.00，見 openmail/client.js）連線設定——使用者
+// 自行輸入自己的 openmail 帳密，密碼只存記憶體（openmail/credStore.js），此處只設定主機/port，
+// 皆為選填、缺值採實測可用的預設值（mail.npust.edu.tw，IMAPS 993／SMTPS 465）。
+const OPENMAIL_IMAP_HOST = process.env.OPENMAIL_IMAP_HOST || 'mail.npust.edu.tw';
+const OPENMAIL_IMAP_PORT = Number(process.env.OPENMAIL_IMAP_PORT || 993);
+const OPENMAIL_SMTP_HOST = process.env.OPENMAIL_SMTP_HOST || 'mail.npust.edu.tw';
+const OPENMAIL_SMTP_PORT = Number(process.env.OPENMAIL_SMTP_PORT || 465);
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
@@ -109,6 +116,10 @@ module.exports = {
   PEER_DB,
   DRIVE_LEGACY_ROOTS,
   TRUSTED_DEVICE_DAYS,
+  OPENMAIL_IMAP_HOST,
+  OPENMAIL_IMAP_PORT,
+  OPENMAIL_SMTP_HOST,
+  OPENMAIL_SMTP_PORT,
   NODE_ENV,
   PUBLIC_DIR,
 };
