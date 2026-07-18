@@ -44,6 +44,19 @@ function createFolder(db, { name, parentId }) {
   return rowToMeta(getFileById(db, id));
 }
 
+// uploadFile_ 對映（v200，見 actions/attachments.js）：附件二進位內容存於 blob 欄位（本檔案頭
+// migrations/001_init.sql 原就預留此欄位供「Phase 1.5 才會寫入」使用，見該檔案 blob 欄位註解）；
+// content 欄位留 NULL（該欄位專供 JSON 檔文字內容使用，見 createJson/updateContentById），
+// mime_type 記實際檔案類型（不套用資料表預設值 'application/json'）。
+function uploadFile(db, { parentId, name, mimeType, blob }) {
+  const id = newFileId();
+  db.prepare(
+    `INSERT INTO files (id, parent_id, name, mime_type, content, blob, trashed, created_at, updated_at)
+     VALUES (?, ?, ?, ?, NULL, ?, 0, ?, ?)`
+  ).run(id, parentId || null, name, mimeType || 'application/octet-stream', blob, nowIso(), nowIso());
+  return rowToMeta(getFileById(db, id));
+}
+
 // resolvePathToId_ 對映：path 為 'a/b/c.json' 形式，中段皆視為資料夾、逐層下鑽；末段為檔案，
 // 依 name+parent+trashed=false 找，若多筆同名取 modifiedTime（updated_at）最新一筆，其餘標記 trashed
 // （bug-for-bug：GAS 版本來就有這個「自動清多餘同名檔」的副作用，沿用以維持行為一致）。
@@ -210,6 +223,7 @@ module.exports = {
   FOLDER_MIME,
   getFileById,
   createFolder,
+  uploadFile,
   resolvePathToId,
   resolvePathToParentAndName,
   readJson,

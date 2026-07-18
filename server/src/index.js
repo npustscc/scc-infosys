@@ -35,7 +35,10 @@ function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
-    const LIMIT = 25 * 1024 * 1024; // 25MB：附件走 base64 upload 尚未實作，一般 JSON 請求遠小於此
+    // 25MB：uploadFile 走 base64 承載附件（v200，見 actions/attachments.js），單檔上限另訂 20MB
+    // （decode 後位元組數，base64 膨脹係數約 4/3），此處為整個 HTTP body 的總限，留有餘裕；
+    // 一般 JSON 請求遠小於此。
+    const LIMIT = 25 * 1024 * 1024;
     req.on('data', (c) => {
       size += c.length;
       if (size > LIMIT) { reject(new Error('Request body too large')); req.destroy(); return; }

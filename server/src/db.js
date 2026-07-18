@@ -46,10 +46,22 @@ function runMigrations(db, migrationsDir = MIGRATIONS_DIR) {
   }
 }
 
-function openDb(dbPath) {
-  if (dbPath !== ':memory:') {
+// opts.readonly（v200，附件跨環境 fallback／PEER_DB 專用）：唯讀連線——不建立目錄（假設檔案已由
+// 對方環境的正常啟動流程建立）、不執行 runMigrations（唯讀連線本就無法寫 schema_migrations，且
+// 對方環境的 schema 由它自己的部署流程負責維護，不該由本端唯讀連線代勞）、不設定 journal_mode/
+// foreign_keys（這些是需要寫入權限才能變更的資料庫層級設定；WAL 模式下唯讀連線天生就能讀到另一個
+// 行程已提交的最新資料，無需重複宣告）。檔案不存在時 fileMustExist 會直接拋錯，交由呼叫端視為
+// 「查無」處理（見 actions/attachments.js getPeerDb），不可靜默建出一個空檔案。
+function openDb(dbPath, opts) {
+  const readonly = !!(opts && opts.readonly);
+  if (dbPath !== ':memory:' && !readonly) {
     const dir = path.dirname(dbPath);
     fs.mkdirSync(dir, { recursive: true });
+  }
+  if (readonly) {
+    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    db.pragma('busy_timeout = 5000');
+    return db;
   }
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');

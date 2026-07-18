@@ -23,6 +23,7 @@ const trustedDeviceActions = require('./actions/trustedDevices');
 const totpSetupActions = require('./actions/totpSetup');
 const twofaActions = require('./actions/twofa');
 const storageActions = require('./actions/storage');
+const attachmentActions = require('./actions/attachments');
 const commitActions = require('./actions/commit');
 const mailActions = require('./actions/mail');
 const gcSync = require('./sync/gcSync');
@@ -353,6 +354,14 @@ async function handleRequest(db, config, payload) {
       case 'listFolder': result = storageActions.listFolder(db, params); break;
       case 'query': result = storageActions.query(db, params); break;
       case 'startupBatch': result = storageActions.startupBatch(db, params, ctx, config); break;
+      // ── v200：附件 action（見 actions/attachments.js 檔頭，cutover 回歸修補）。createFolder／
+      //    uploadFile 已由 gate.ROOT_GUARDED（步驟 4c，見上方）限制 parentId/parentFolderId 須在
+      //    本次 ctx.root 子樹；downloadFileBase64 不走 ROOT_GUARDED 簡單黑白名單（GAS 版亦然），
+      //    改由 attachments.downloadFileBase64 內部三層查找自行決定是否放行（本庫／PEER_DB 跨環境
+      //    附件白名單／Drive 舊附件唯讀 fallback），查無時統一拋「找不到附件」業務錯誤。──
+      case 'createFolder': result = attachmentActions.createFolder(db, params); break;
+      case 'uploadFile': result = attachmentActions.uploadFile(db, params); break;
+      case 'downloadFileBase64': result = await attachmentActions.downloadFileBase64(db, params, ctx, config); break;
       case 'configSelfPatch': result = configActions.configSelfPatch(db, params, ctx, userEmail); break;
       case 'configCasesPatch': result = configActions.configCasesPatch(db, params, ctx, userEmail, config.CASES_PATCH_AUTHZ_MODE); break;
       case 'casesUpsert': result = commitActions.casesUpsert(db, params, ctx); break;
@@ -406,7 +415,7 @@ async function handleRequest(db, config, payload) {
       audit.appendAuditLog(db, {
         email: outcomeEmail,
         action: action || '(none)',
-        target: params && (params.path || params.file || params.fileId || params.folderId || params.parentId || null),
+        target: params && (params.path || params.file || params.fileId || params.folderId || params.parentId || params.parentFolderId || null),
         outcome,
         latencyMs: Date.now() - t0,
         detail,

@@ -63,6 +63,22 @@ const CASE_AUTHZ_MODE = process.env.CASE_AUTHZ_MODE || 'shadow';
 // （預設）＝完全不啟用，issues.json 照舊落在各自環境自己的主庫（現行行為不變、不影響任何
 // 既有測試）。選填——不可用 required()，多數部署情境（單機開發、CI）不需要它。
 const SHARED_ISSUES_DB = process.env.SHARED_ISSUES_DB || '';
+// v200：附件跨環境唯讀 fallback（見 actions/attachments.js downloadFileBase64 Tier 2）——
+// 指向「對方環境」（dev 設 prod 的、prod 設 dev 的）主庫 DB_PATH 絕對路徑，Node 版以唯讀連線
+// （src/db.js openDb(path,{readonly:true})）開啟。只有在 fileId 先通過 SHARED_ISSUES_DB
+// issues.json 的附件白名單比對後才會被拿來查找，不是「本庫查無就任意翻對方整個資料庫」——
+// 兩個環境變數須搭配設定才會生效，任一留空（預設）＝此 fallback 不啟用，行為與改動前一致。
+// 選填——不可用 required()，多數部署情境（單機開發、CI、尚未啟用共用問題回報）不需要它。
+const PEER_DB = process.env.PEER_DB || '';
+// v200：附件 Drive 舊資料唯讀 fallback（見 actions/attachments.js downloadFileBase64 Tier 3）——
+// cutover 前（GAS+Drive 時代）上傳的附件，fileId 是真實 Google Drive file id，vdrive/PEER_DB
+// 皆查無屬正常。逗號分隔的允許系統根資料夾 id 清單（建議同時列入 dev／prod 兩個環境的
+// ROOT_FOLDER_ID，讓任一環境的伺服器都能唯讀開啟兩邊 cutover 前的舊附件，不受目前部署在哪個
+// 環境限制）；只有當 fileId 沿 Drive parents 鏈上溯確實能到達清單中的某個根，才會被下載，
+// 防止此 fallback 被濫用成任意 Drive 檔案 id 的探測器。搭配 DRIVE_SYNC_CREDS（唯讀 OAuth 憑證，
+// 與 scripts/pull-attendance.js 共用同一憑證檔機制）使用，兩者皆須設定才會啟用；任一留空
+// （預設）＝此 fallback 不啟用。
+const DRIVE_LEGACY_ROOTS = process.env.DRIVE_LEGACY_ROOTS || '';
 // #035 個管派任物件級授權（configCasesPatch 各 op 的呼叫者資格驗證，見 actions/config.js
 // casesPatchOpAuthz）：'off'＝不判定；'shadow'（預設）＝判定只記稽核不阻擋，供觀察誤傷；
 // 'enforce'＝違規整批拒絕。比照 CASE_AUTHZ_MODE 的 shadow→enforce 推進模式。
@@ -90,6 +106,8 @@ module.exports = {
   CASE_AUTHZ_MODE,
   CASES_PATCH_AUTHZ_MODE,
   SHARED_ISSUES_DB,
+  PEER_DB,
+  DRIVE_LEGACY_ROOTS,
   TRUSTED_DEVICE_DAYS,
   NODE_ENV,
   PUBLIC_DIR,
