@@ -249,12 +249,74 @@ test('ftSaveSchema：audit_log 記欄位 id 但不含學生資料（本就不在
   assert.match(auditRow.detail, /cols=stu_id\|name_zh/);
 });
 
-test('ftGetSheet：不支援的 sheet（尚未實作的後續切片 tab）→ 業務錯誤', async () => {
+test('ftGetSheet：不支援的 sheet（尚未實作的後續切片 tab，如導師名冊）→ 業務錯誤', async () => {
+  const db = openDb(':memory:');
+  const tok = await setupFtUser(db);
+  await handleRequest(db, testConfig(), { action: 'ftCreateSemester', sessionToken: tok, rootFolderId: ROOT, id: '114-1' });
+  const r = await handleRequest(db, testConfig(), {
+    action: 'ftGetSheet', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tutors',
+  });
+  assert.equal(r.success, false);
+});
+
+// ══════════════ v208 Slice 2：sheet 泛化（測驗資料 146 欄／Google表單 8 欄）══════════════
+
+test('ftGetSheet：新學期「測驗資料」sheet 回預設 146 欄 schema，學號/姓名為固定＋必填欄位', async () => {
   const db = openDb(':memory:');
   const tok = await setupFtUser(db);
   await handleRequest(db, testConfig(), { action: 'ftCreateSemester', sessionToken: tok, rootFolderId: ROOT, id: '114-1' });
   const r = await handleRequest(db, testConfig(), {
     action: 'ftGetSheet', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tests',
+  });
+  assert.equal(r.success, true);
+  assert.equal(r.data.schema.cols.length, 146);
+  const byId = Object.fromEntries(r.data.schema.cols.map((c) => [c.id, c]));
+  assert.equal(byId.stu_id.locked, true);
+  assert.equal(byId.stu_id.required, true);
+  assert.equal(byId.name_zh.required, true);
+  assert.deepEqual(r.data.rows, []);
+  // 欄位 id 全部唯一（無手誤重複）
+  const ids = r.data.schema.cols.map((c) => c.id);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test('ftGetSheet：新學期「Google表單」sheet 回預設 8 欄 schema', async () => {
+  const db = openDb(':memory:');
+  const tok = await setupFtUser(db);
+  await handleRequest(db, testConfig(), { action: 'ftCreateSemester', sessionToken: tok, rootFolderId: ROOT, id: '114-1' });
+  const r = await handleRequest(db, testConfig(), {
+    action: 'ftGetSheet', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'gforms',
+  });
+  assert.equal(r.success, true);
+  assert.equal(r.data.schema.cols.length, 8);
+  assert.equal(r.data.schema.cols[2].id, 'stu_id');
+  assert.equal(r.data.schema.cols[2].locked, true);
+});
+
+test('ftSaveRows：excluded 旗標往返（Google表單同學號多筆選主條目用）——未帶 excluded 預設 false', async () => {
+  const db = openDb(':memory:');
+  const tok = await setupFtUser(db);
+  await handleRequest(db, testConfig(), { action: 'ftCreateSemester', sessionToken: tok, rootFolderId: ROOT, id: '114-1' });
+  await handleRequest(db, testConfig(), {
+    action: 'ftSaveRows', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'gforms',
+    rows: [
+      { cells: { stu_id: 'B99999999', name_zh: '測試員甲' } },
+      { cells: { stu_id: 'B99999999', name_zh: '測試員甲（另一筆填寫）' }, excluded: true },
+    ],
+  });
+  const sheet = await handleRequest(db, testConfig(), {
+    action: 'ftGetSheet', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'gforms',
+  });
+  assert.equal(sheet.data.rows[0].excluded, false);
+  assert.equal(sheet.data.rows[1].excluded, true);
+});
+
+test('ftGetSheet：白名單外的 sheet 名稱（如 __proto__ 或任意字串）一律業務錯誤，不會意外回傳資料', async () => {
+  const db = openDb(':memory:');
+  const tok = await setupFtUser(db);
+  await handleRequest(db, testConfig(), { action: 'ftCreateSemester', sessionToken: tok, rootFolderId: ROOT, id: '114-1' });
+  const r = await handleRequest(db, testConfig(), {
+    action: 'ftGetSheet', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'merged',
   });
   assert.equal(r.success, false);
 });

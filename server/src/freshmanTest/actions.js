@@ -1,5 +1,8 @@
-// server/src/freshmanTest/actions.js — 新生心理測驗（v207 Slice 1）：學期資料集＋分頁資料表
-// （本切片僅「學生基本資料」，其餘四個資料 tab 為前端佔位、後端尚未實作，見 SHEETS 白名單）。
+// server/src/freshmanTest/actions.js — 新生心理測驗：學期資料集＋分頁資料表
+// v207 Slice 1 僅「學生基本資料」；v208 Slice 2 擴充「測驗資料」（146 欄，見 genTestsDefaultCols）
+// 與「Google表單」（8 欄，見 GFORMS_DEFAULT_COLS）——ftGetSheet/ftSaveSchema/ftSaveRows 本就是
+// 帶 sheet 參數的泛化實作（Slice 1 就這樣設計），本次只需擴充 SHEETS 白名單＋defaultSchema／
+// LOCKED_COL_ID 對應表，三個 action 本身完全不必改動（白名單外的 sheet 一律 assertSheetAllowed 擋下）。
 //
 // 儲存設計（vdrive JSON，路徑固定，不吃前端任意路徑）：
 //   freshman-test/semesters.json                     — 學期清單 { semesters:[{id,label,createdAt,createdBy}] }
@@ -27,11 +30,12 @@ const vdrive = require('../storage/vdrive');
 const ROOT_DIR = 'freshman-test';
 const SEMESTERS_PATH = `${ROOT_DIR}/semesters.json`;
 
-// Slice 1：僅「學生基本資料」實作到後端。測驗資料/Google表單/導師名冊/整合/統計等後續切片會擴充
-// 本白名單與 LOCKED_COL_ID／defaultSchema——刻意先只開放已完整實作的 sheet，避免前端佔位 tab
-// 意外能呼叫到尚未設計欄位/驗證規則的後端路徑（預設 deny，CLAUDE.md 資安原則 1）。
-const SHEETS = new Set(['students']);
-const LOCKED_COL_ID = { students: 'stu_id' }; // 學號欄固定不可刪（比對主鍵）
+// v208 Slice 2：導師名冊/整合/統計仍是前端佔位、後端尚未實作，白名單刻意先只開放已完整設計的
+// 三個資料 tab（預設 deny，CLAUDE.md 資安原則 1）。
+const SHEETS = new Set(['students', 'tests', 'gforms']);
+// 學號欄固定不可刪（比對主鍵）——三個 sheet 皆用同一個 colId『stu_id』代表學號欄（刻意統一命名，
+// 讓前端「依學號跨 sheet 比對」的檢核程式碼不需要為每個 sheet 另外查一次 colId 對映表）。
+const LOCKED_COL_ID = { students: 'stu_id', tests: 'stu_id', gforms: 'stu_id' };
 
 const STUDENTS_DEFAULT_COLS = [
   { id: 'stu_id', name: '學號', required: true, locked: true, width: 110 },
@@ -50,9 +54,96 @@ const STUDENTS_DEFAULT_COLS = [
   { id: 'phone_mobile', name: '學生手機' },
 ];
 
+// v208：Google表單匯出欄位——8 欄，欄名逐字對映校內 Google 表單實際題目文字（含中英夾雜、全形/
+// 半形括號不一致等原始寫法），供日後匯入比對欄名時能精確對上（見前端 _ftAoaToImportRows）。
+// 最後一欄題目文字特長（中英合一），前端 header 顯示會截斷＋hover 用 data-tip 顯示全文，欄名本身
+// 不做任何截斷處理（截斷是純顯示層考量）。
+const GFORMS_DEFAULT_COLS = [
+  { id: 'ts', name: '時間戳記' },
+  { id: 'name_zh', name: '姓名（Name）', required: true },
+  { id: 'stu_id', name: '學號（Student ID Number）', required: true, locked: true, width: 130 },
+  { id: 'dept', name: '系所（Department）' },
+  { id: 'class_name', name: '班級（Class)' },
+  { id: 'phone', name: '手機號碼（Cell Phone Number）' },
+  { id: 'email', name: '電子信箱（E-mail）' },
+  {
+    id: 'consent_mentor',
+    name: '若測驗結果顯示為高關懷，您是否同意系主任及導師知情，以讓系主任及導師了解您的狀況並適時提供關心。/ Would you agree to let your academic mentor and the department director get the test results if they show you might have some adaptive challenges? Then, your academic mentor and the department director could assist you.',
+    width: 320,
+  },
+];
+
+// v208：測驗資料——146 欄，程式化生成避免手打錯（欄位數量大、命名規律強）。順序與分組完全對映
+// 使用者裁決（見 memory project_freshman_test.md）：①基本資料+效度 19 欄 ②xxavg 19 欄 ③原始分數
+// 19 欄 ④PR 20 欄 ⑤item1~item53 共 53 欄 ⑥ALL+SxxL 13 欄 ⑦高自殺/Ver/基本資料修改註記 3 欄，
+// 合計 146。colId 與欄名脫鉤（比照 STUDENTS_DEFAULT_COLS 慣例），但盡量取有意義的英文縮寫方便
+// 除錯時人眼辨識。
+function genTestsDefaultCols() {
+  const cols = [];
+  const push = (id, name, extra) => cols.push(Object.assign({ id, name }, extra || {}));
+  const pad2 = (n) => String(n).padStart(2, '0');
+
+  // ① 基本資料 + 效度（19 欄）
+  push('test_date', '施測日期');
+  push('stu_id', '學號', { required: true, locked: true, width: 110 });
+  push('dept', '系所');
+  push('name_zh', '姓名', { required: true });
+  push('gender', '性別');
+  push('grade', '年級');
+  push('class_name', '班級');
+  push('dob', '出生日期');
+  push('edu_type', '學制類別');
+  push('admit_type', '入學方式');
+  push('identity', '身分別');
+  push('dorm', '住宿狀況');
+  push('parents_marriage', '父母婚姻狀況');
+  push('dad_edu', '父親教育程度');
+  push('mom_edu', '母親教育程度');
+  push('consent_test', '是否同意施測');
+  push('phone', '電話');
+  push('email', 'Email');
+  push('validity', '效度');
+
+  // ② xxavg（19 欄）
+  ['AL', 'D1', 'D2', 'F1', 'F2', 'F3', 'F4'].forEach((code) => push(`${code.toLowerCase()}avg`, `${code}avg`));
+  for (let i = 1; i <= 12; i++) push(`s${pad2(i)}avg`, `S${pad2(i)}avg`);
+
+  // ③ 原始分數（19 欄）
+  ['AL', 'D1', 'D2', 'F1', 'F2', 'F3', 'F4'].forEach((code) => push(code.toLowerCase(), code));
+  for (let i = 1; i <= 12; i++) push(`s${pad2(i)}`, `S${pad2(i)}`);
+
+  // ④ PR（20 欄）
+  push('vkpr', 'VKPR');
+  push('alpr', 'ALPR');
+  push('d1pr', 'D1PR');
+  push('d2pr', 'D2PR');
+  ['F1', 'F2', 'F3', 'F4'].forEach((code) => push(`${code.toLowerCase()}pr`, `${code}PR`));
+  for (let i = 1; i <= 12; i++) push(`s${pad2(i)}pr`, `S${pad2(i)}PR`);
+
+  // ⑤ item1~item53（53 欄）
+  for (let i = 1; i <= 53; i++) push(`item${i}`, `item${i}`);
+
+  // ⑥ ALL + SxxL（13 欄）
+  push('all_score', 'ALL');
+  for (let i = 1; i <= 12; i++) push(`s${pad2(i)}l`, `S${pad2(i)}L`);
+
+  // ⑦ 尾段（3 欄）
+  push('high_suicide', '高自殺');
+  push('ver', 'Ver');
+  push('basic_edit_note', '基本資料修改註記:');
+
+  return cols;
+}
+
 function defaultSchema(sheet) {
   if (sheet === 'students') {
     return { version: 1, cols: STUDENTS_DEFAULT_COLS.map((c) => ({ ...c })) };
+  }
+  if (sheet === 'tests') {
+    return { version: 1, cols: genTestsDefaultCols() };
+  }
+  if (sheet === 'gforms') {
+    return { version: 1, cols: GFORMS_DEFAULT_COLS.map((c) => ({ ...c })) };
   }
   throw new Error(`freshmanTest: 未知 sheet（${sheet}）`);
 }
@@ -255,7 +346,10 @@ function ftSaveSchema(db, params, ctx, userEmail) {
 // ── ftSaveRows：整份 rows 取代（前端維護完整陣列送出）。既有列以 _id 比對保留 _createdAt，
 //    沒有 _id 的新列由後端配發（不信任前端自報 id，避免 id 衝突/偽造），比照 vdrive.newFileId
 //    既有的隨機 id 產生器（不另外重造一套）。「匯入合併」沿用本 action：前端把匯入衝突勾選解析完的
-//    最終列陣列整包送來即可，不需要獨立的後端 merge action（減少攻擊面，CLAUDE.md 資安原則 1）。──
+//    最終列陣列整包送來即可，不需要獨立的後端 merge action（減少攻擊面，CLAUDE.md 資安原則 1）。
+//    v208：新增列層級 excluded 旗標（布林，非 cells 內的資料值）——供 Google表單 tab 同學號多筆
+//    填寫「選主條目」使用：非主條目列標 excluded:true（前端半透明/刪除線顯示，不刪資料，供日後
+//    整合 tab 只取主條目）。三個 sheet 共用同一個欄位，非 gforms 的列一律 excluded:false。──
 function ftSaveRows(db, params, ctx, userEmail) {
   const semester = params && params.semester;
   const sheet = params && params.sheet;
@@ -283,7 +377,8 @@ function ftSaveRows(db, params, ctx, userEmail) {
       const id = (r && typeof r._id === 'string' && r._id) || vdrive.newFileId();
       const old = oldById.get(id);
       const cells = (r && r.cells && typeof r.cells === 'object' && !Array.isArray(r.cells)) ? r.cells : {};
-      return { _id: id, _createdAt: (old && old._createdAt) || now, _updatedAt: now, cells };
+      const excluded = !!(r && r.excluded === true);
+      return { _id: id, _createdAt: (old && old._createdAt) || now, _updatedAt: now, cells, excluded };
     });
     const data = { rows: nextRows, updatedAt: now, updatedBy: userEmail || null };
     writeBack(db, fileId, dir, sheetFileName(sheet), data, ctx);
@@ -298,6 +393,8 @@ module.exports = {
   SHEETS,
   LOCKED_COL_ID,
   STUDENTS_DEFAULT_COLS,
+  GFORMS_DEFAULT_COLS,
+  genTestsDefaultCols,
   defaultSchema,
   assertSheetAllowed,
   assertSemesterId,

@@ -4078,7 +4078,11 @@
           <button type="button" id="ft-tabbtn-stats" class="bk-page-tabbtn" onclick="_ftSwitchTab('stats')">統計</button>
         </div>
 
-        <div id="ft-tab-students">
+        <!-- v208：students/tests/gform 三個「資料 tab」共用同一份工具列＋grid（虛擬化，見
+             _ftRenderGrid），切換 tab 只是重新指向 _ftCurrentSheet() 並重新載入資料——不再各自
+             複製一份幾乎一樣的 HTML（比照 Slice 1 檔頭「回歸測試」要求，同一份程式碼三個 tab 共用）。
+             tutors/merged/stats 仍是佔位頁（後續切片），走同一個 #ft-tab-placeholder。 -->
+        <div id="ft-sheet-tab" style="display:none;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
             <button class="btn btn-secondary btn-sm" id="ft-edit-btn" onclick="_ftEnterEdit()">✏️ 編輯</button>
             <button class="btn btn-primary btn-sm" id="ft-save-btn" style="display:none;" onclick="_ftSaveEdit()">💾 儲存</button>
@@ -4092,13 +4096,11 @@
             <button class="btn btn-secondary btn-sm" onclick="_ftShowColumnManager()">⚙ 欄位管理</button>
             <span id="ft-dirty-indicator" style="display:none;color:#c05621;font-size:.8rem;">● 有未儲存的變更</span>
           </div>
-          <div id="ft-grid-wrap" style="overflow:auto;border:1px solid #e2e8f0;border-radius:8px;max-height:70vh;"></div>
+          <!-- Google表單 tab 專用：同學號多筆填寫（重複狀態）清單，見 _ftRenderGformDupBar -->
+          <div id="ft-gform-dup-bar" style="display:none;background:#fffaf0;border:1px solid #feebc8;border-radius:6px;padding:8px 10px;margin-bottom:10px;"></div>
+          <div id="ft-grid-wrap" style="overflow:auto;border:1px solid #e2e8f0;border-radius:8px;max-height:70vh;position:relative;"></div>
         </div>
-        <div id="ft-tab-tests" style="display:none;"></div>
-        <div id="ft-tab-gform" style="display:none;"></div>
-        <div id="ft-tab-tutors" style="display:none;"></div>
-        <div id="ft-tab-merged" style="display:none;"></div>
-        <div id="ft-tab-stats" style="display:none;"></div>
+        <div id="ft-tab-placeholder" style="display:none;"></div>
       </div>
     </div>
 
@@ -31141,6 +31143,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-19', v: 208, title: '新生心理測驗（Slice 2）：測驗資料／Google表單試算表＋檢核標紅', isProd: false, items: [
+      item('新功能', '新增「測驗資料」（146 欄）與「Google表單」（8 欄）兩個資料分頁，欄位皆為系統預設；與「學生基本資料」共用同一套可就地編輯試算表（貼上/匯入/欄位管理/欄寬調整），改採列虛擬化渲染（只繪製可視範圍），大量列數捲動仍流暢，學號／姓名固定顯示於左側方便對照'),
+      item('新功能', 'Google表單同學號多筆填寫視為「重複狀態」：完全相同的重複匯入會靜默略過，內容不同的多筆填寫則保留為個別列並標色提示，可於「選主條目」挑選一筆列為主要紀錄，其餘標記為非主條目（僅顯示上淡化，不刪除資料，供日後彙整僅採用主條目）'),
+      item('新功能', '測驗資料／Google表單分頁即時檢核並標紅提示：學號空白或格式不符（含科技農業學制特例格式）、同分頁內學號重複、學號可於「學生基本資料」查到但姓名不一致；游標停留可看到標紅原因'),
+      item('技術', '後端 ft* 系列 action 擴充可存取的資料表白名單（測驗資料／Google表單），沿用既有授權閘與去識別化稽核規則；欄位定義程式化產生，避免手動輸入 146 欄時的謄打錯誤'),
+    ]},
     { date: '2026-07-18', v: 207, title: '新生心理測驗（Slice 1）：角色／頁面／學生基本資料試算表', isProd: true, items: [
       item('新功能', '新增附加身分「新生心理測驗主責」（可多人同時擔任），與轉銜窗口／身心調適假窗口同層；具此身分或管理者／主任可見左側選單新「新生心理測驗」頁'),
       item('新功能', '新生心理測驗頁：學年期資料集（如 114-1）可新增、可切換，歷史學期仍可編輯（不鎖唯讀，靠稽核詳實記錄追蹤）；下方分頁「學生基本資料」本次完整實作，其餘「測驗資料／Google表單／導師名冊／整合／統計」為後續版本佔位'),
@@ -51990,27 +51998,45 @@ async function _smsCancelClick(logId) {
 
 <script>
 // ══════════════════════════════════════════════
-//  新生心理測驗（v207 Slice 1）：學期資料集＋學生基本資料試算表
+//  新生心理測驗（v207 Slice 1 學生基本資料 → v208 Slice 2 擴充測驗資料／Google表單＋檢核標紅）
 //  ══════════════════════════════════════════════
-//  本切片只完整實作「學生基本資料」tab；測驗資料/Google表單/導師名冊/整合/統計為佔位（_ftRenderPlaceholder）。
-//  colId 機制：schema.cols 的 id 是穩定 key（前端顯示用 name 可隨意改），列資料 cells 一律以 colId
-//  存值——刪欄只是 schema 拿掉一筆，rows.json 完全不受影響（後端 schema/rows 分檔存放，見
+//  三個「資料 tab」（學生基本資料／測驗資料／Google表單）共用同一份 grid 與工具列程式碼——切換 tab
+//  只是把 _ftCurrentSheet() 指向不同的後端 sheet 名稱重新載入（見 FT_TAB_SHEET）。colId 機制：
+//  schema.cols 的 id 是穩定 key（前端顯示用 name 可隨意改），列資料 cells 一律以 colId 存值——刪欄
+//  只是 schema 拿掉一筆，rows.json 完全不受影響（後端 schema/rows 分檔存放，見
 //  server/src/freshmanTest/actions.js 檔頭）。
 //  dirty 管理：本頁自管 window._ftDirty（不掛全域 _gd 草稿引擎），showPage／beforeunload／
 //  _ftSwitchTab／_ftSwitchSemester 四處攔截，離開前若有未儲存變更一律 confirm() 二次確認
 //  （比照既有圖片編輯器 requestClose 的 confirm() 慣例）。
+//  v208 效能：測驗資料 146 欄 × ~2000 列，全量 DOM render 不可行——grid 改為「列虛擬化」（只
+//  render 可視窗口＋緩衝列，見 _ftComputeVirtualWindow／_ftRenderGrid／_ftRenderGridWindowOnly），
+//  欄位用 CSS Grid（grid-template-columns）取代 <table>，讓「只重繪可視窗口」不需要處理
+//  <tbody> 的 transform 相容性問題。學號／姓名兩欄用 position:sticky 固定在捲動容器左側
+//  （成本可控，見任務規格）。
+const FT_TAB_SHEET = { students: 'students', tests: 'tests', gform: 'gforms' };
+const FT_ROW_H = 30;        // px，虛擬化列高（固定值，簡化窗口計算）
+const FT_VWIN_BUFFER = 8;   // 可視窗口上下緩衝列數
+const FT_STICKY_COL_IDS = new Set(['stu_id', 'name_zh']); // 三個 sheet 皆用同一組 colId 代表學號/姓名
+
 let _ft = {
   semesters: [],      // [{id,label,createdAt,createdBy}]
   semester: null,     // 目前選取學期 id
-  tab: 'students',
+  tab: 'students',    // 'students' | 'tests' | 'gform' | 'tutors' | 'merged' | 'stats'
   schema: null,       // { version, cols:[{id,name,required,locked?,width?}] }
-  rows: [],           // 目前畫面上的列（含未儲存編輯），[{_id,_createdAt,_updatedAt,cells:{colId:value}}]
+  rows: [],           // 目前畫面上的列（含未儲存編輯），[{_id,_createdAt,_updatedAt,cells:{colId:value},excluded?}]
   editing: false,
   _focus: null,       // { rowIdx, colIdx } 目前聚焦儲存格（貼上起點錨點）
   _colmgrDraft: null, // 欄位管理 modal 編輯中的 cols 草稿
   importPreview: null, // 匯入預覽狀態 { detect }
   pendingColWidths: null,
+  _vwin: null,        // 目前虛擬化窗口 { startIdx, endIdx, totalHeight, offsetY }
+  _renderCtx: null,   // 上次 _ftRenderGrid 算好的渲染上下文（供 _ftRenderGridWindowOnly／欄寬拖曳共用）
+  _studentsCache: null,        // 跨 tab 檢核用：學生基本資料 rows 快取（見 _ftLoadStudentsForChecks）
+  _studentsCacheSemester: null,
+  _gformDupGroupRows: null,   // 「選主條目」modal 開啟時暫存的該組列參照
 };
+
+function _ftCurrentSheet() { return FT_TAB_SHEET[_ft.tab] || null; }
 
 // ── 純函式：貼上文字解析（\t 分欄、\n 分列，去除尾端多餘空行）──
 function _ftParsePasteText(text) {
@@ -52047,7 +52073,8 @@ function _ftGenColId(existingIds) {
   return id;
 }
 
-// ── 純函式：匯入資料以「學號」（keyColId）比對既有列，分成 新增/衝突(欄位值有差異)/無異動 三類 ──
+// ── 純函式：匯入資料以「學號」（keyColId）比對既有列，分成 新增/衝突(欄位值有差異)/無異動 三類
+//    （students／tests tab 用；Google表單 tab 走不同的重複狀態流程，見 _ftGformMergeImport）──
 function _ftDetectImportConflicts(existingRows, importRows, keyColId) {
   const byKey = new Map();
   (existingRows || []).forEach(r => {
@@ -52113,6 +52140,134 @@ function _ftAoaToImportRows(aoa, schemaCols) {
     rows.push({ cells });
   }
   return rows;
+}
+
+// ══════════════ v208 檢核（純函式）：學號格式／重複／姓名不符 ══════════════
+// 套用於「測驗資料」與「Google表單」兩個 tab 的 grid render（「學生基本資料」tab 是比對基準本身，
+// 不需要檢核自己）。純函式＋一次 O(n) 計算（見 _ftComputeCellChecks），render 逐格只查表，
+// 不得在每格 render 時重新掃全表（效能要求）。
+
+// 學號格式檢核：標準＝1 英文字母＋8 碼數字；科技農業特例＝系所欄含「科技農業」時，1字母＋4數字＋
+// A＋3數字亦視為合格（見 memory project_freshman_test.md 使用者裁決）。空白視為不合格（不是「跳過」）。
+function _ftValidateStuId(stuId, deptName) {
+  const v = String(stuId == null ? '' : stuId).trim();
+  if (!v) return { valid: false, reason: '學號空白' };
+  if (/^[A-Za-z]\d{8}$/.test(v)) return { valid: true, reason: null };
+  const isAgriDept = String(deptName || '').includes('科技農業');
+  if (isAgriDept && /^[A-Za-z]\d{4}A\d{3}$/.test(v)) return { valid: true, reason: null };
+  return { valid: false, reason: '學號格式不符（須為1英文字母+8碼數字，科技農業特例為1字母+4數字+A+3數字）' };
+}
+
+// 找出 rows 中同一 keyColId 值出現一次以上（忽略空白）的集合，供「同 tab 內學號重複」紅底標記
+// （測驗資料 tab）與 Google表單「重複狀態」判斷（_ftRenderGformDupBar／_ftRowHtml）共用。
+function _ftFindDuplicateStuIds(rows, keyColId) {
+  const count = new Map();
+  (rows || []).forEach(r => {
+    const k = String(((r && r.cells) || {})[keyColId] ?? '').trim();
+    if (!k) return;
+    count.set(k, (count.get(k) || 0) + 1);
+  });
+  const dup = new Set();
+  count.forEach((n, k) => { if (n > 1) dup.add(k); });
+  return dup;
+}
+
+// 逐列算出檢核結果：
+//  - stuIdBad/stuIdBadReason：學號格式（含科農特例）
+//  - stuIdDup：cfg.flagDuplicates 為 true 時才標記——Google表單 tab 的重複已用列底色/刪除線處理，
+//    避免雙重視覺，故 gform 呼叫時傳 false（見任務規格）；測驗資料 tab 傳 true。
+//  - nameMismatch：學號存在於「學生基本資料」但姓名不一致；students 找不到此學號＝不標（那是
+//    整合 tab 的事，見任務規格）。
+function _ftComputeCellChecks(rows, cfg) {
+  const keyColId = cfg.keyColId, nameColId = cfg.nameColId, deptColId = cfg.deptColId;
+  const dupKeys = cfg.flagDuplicates ? _ftFindDuplicateStuIds(rows, keyColId) : new Set();
+  const studentsNameByKey = new Map();
+  (cfg.studentsRows || []).forEach(r => {
+    const k = String(((r && r.cells) || {})[cfg.studentsKeyColId] ?? '').trim();
+    if (k) studentsNameByKey.set(k, String(((r && r.cells) || {})[cfg.studentsNameColId] ?? '').trim());
+  });
+  return (rows || []).map(row => {
+    const cells = (row && row.cells) || {};
+    const stuId = String(cells[keyColId] ?? '').trim();
+    const deptName = deptColId ? String(cells[deptColId] ?? '') : '';
+    const fmt = _ftValidateStuId(stuId, deptName);
+    const isDup = !!stuId && dupKeys.has(stuId);
+    let nameMismatch = false;
+    if (stuId && studentsNameByKey.has(stuId)) {
+      const expected = studentsNameByKey.get(stuId);
+      const actual = String(cells[nameColId] ?? '').trim();
+      if (expected && actual && expected !== actual) nameMismatch = true;
+    }
+    return { stuIdBad: !fmt.valid, stuIdBadReason: fmt.valid ? null : fmt.reason, stuIdDup: isDup, nameMismatch };
+  });
+}
+
+// ══════════════ v208 Google表單匯入：同學號多筆視為「重複狀態」（純函式）══════════════
+// 完全相同列（各欄皆同，含比對既有列）→ 靜默跳過；其餘（含同學號但內容不同）一律新增為新列，
+// 交由 grid 顯示層的重複偵測（_ftFindDuplicateStuIds）與「選主條目」處理，刻意不在匯入當下彈出
+// 衝突勾選（與 students/tests tab 的匯入流程不同，見任務規格第 3 節：學生可能多次填寫，每筆都是
+// 真實紀錄，不是需要人工判斷「取代或保留」的欄位衝突）。
+function _ftGformMergeImport(existingRows, importRows) {
+  const isSameCells = (a, b) => {
+    const allKeys = new Set([...Object.keys(a || {}), ...Object.keys(b || {})]);
+    for (const k of allKeys) {
+      if (String((a || {})[k] ?? '') !== String((b || {})[k] ?? '')) return false;
+    }
+    return true;
+  };
+  const result = (existingRows || []).slice();
+  let addedCount = 0, skippedCount = 0;
+  (importRows || []).forEach(incoming => {
+    const dupExact = result.some(r => isSameCells(r.cells, incoming.cells));
+    if (dupExact) { skippedCount++; return; }
+    result.push(incoming);
+    addedCount++;
+  });
+  return { rows: result, addedCount, skippedCount };
+}
+
+// 找出重複組內「有差異」的欄位（供「選主條目」modal 只顯示差異欄，而非整列全部列出）。
+function _ftGroupDiffCols(groupRows) {
+  const allCols = new Set();
+  (groupRows || []).forEach(r => Object.keys((r && r.cells) || {}).forEach(k => allCols.add(k)));
+  const diff = [];
+  allCols.forEach(col => {
+    const vals = new Set((groupRows || []).map(r => String(((r && r.cells) || {})[col] ?? '')));
+    if (vals.size > 1) diff.push(col);
+  });
+  return diff;
+}
+
+// 套用「選主條目」選擇結果：primaryRow（groupRows 其中一筆的物件參照）excluded 設為 false，
+// 同組其餘列 excluded 設為 true；組外的列完全不受影響。以物件參照比對（比照既有
+// _ftBuildImportFinalRows 的 c.existing === r 慣例），不需要額外的穩定 id 機制——呼叫端一律傳入
+// 從 _ft.rows 篩選出的同一批物件參照（見 _ftShowGformDupModal／_ftConfirmGformPrimary）。
+function _ftApplyPrimarySelection(rows, groupRows, primaryRow) {
+  const groupSet = new Set(groupRows || []);
+  return (rows || []).map(r => {
+    if (!groupSet.has(r)) return r;
+    return { ...r, excluded: r !== primaryRow };
+  });
+}
+
+// ══════════════ v208 列虛擬化：可視窗口計算（純函式）══════════════
+// 只 render 可視窗口＋緩衝列，捲動換窗（測驗資料 146 欄 × ~2000 列的效能硬需求，見任務規格第 2
+// 節）。rowHeight/buffer 若不是正數則退回安全預設值（30px／0 列緩衝），rowCount<=0 回傳空窗口。
+function _ftComputeVirtualWindow(scrollTop, viewportHeight, rowCount, rowHeight, buffer) {
+  const rh = rowHeight > 0 ? rowHeight : 30;
+  const buf = buffer > 0 ? buffer : 0;
+  const total = rowCount > 0 ? rowCount : 0;
+  const totalHeight = total * rh;
+  if (!total) return { startIdx: 0, endIdx: 0, totalHeight: 0, offsetY: 0 };
+  const st = scrollTop > 0 ? scrollTop : 0;
+  let startIdx = Math.floor(st / rh) - buf;
+  if (startIdx < 0) startIdx = 0;
+  const vh = viewportHeight > 0 ? viewportHeight : rh;
+  const visibleCount = Math.ceil(vh / rh) + buf * 2;
+  let endIdx = startIdx + visibleCount;
+  if (endIdx > total) endIdx = total;
+  if (startIdx > total) startIdx = total;
+  return { startIdx, endIdx, totalHeight, offsetY: startIdx * rh };
 }
 
 // ══════════════ 學期資料集 ══════════════
@@ -52203,6 +52358,7 @@ async function _ftSwitchSemester(id) {
     _ft.editing = false;
   }
   _ft.semester = id;
+  _ft._studentsCache = null; // 換學期，跨 tab 檢核快取失效
   await _ftSwitchTab(_ft.tab || 'students', true);
 }
 
@@ -52215,29 +52371,56 @@ async function _ftSwitchTab(tab, force) {
   _ft.tab = tab;
   ['students', 'tests', 'gform', 'tutors', 'merged', 'stats'].forEach(t => {
     document.getElementById(`ft-tabbtn-${t}`)?.setAttribute('data-active', t === tab ? '1' : '0');
-    const el = document.getElementById(`ft-tab-${t}`);
-    if (el) el.style.display = t === tab ? '' : 'none';
   });
-  if (tab === 'students') await _ftLoadStudentsSheet();
-  else _ftRenderPlaceholder(tab);
+  const sheet = _ftCurrentSheet();
+  const sheetTabEl = document.getElementById('ft-sheet-tab');
+  const placeholderEl = document.getElementById('ft-tab-placeholder');
+  const dupBarEl = document.getElementById('ft-gform-dup-bar');
+  if (sheet) {
+    if (sheetTabEl) sheetTabEl.style.display = '';
+    if (placeholderEl) placeholderEl.style.display = 'none';
+    if (dupBarEl && tab !== 'gform') { dupBarEl.style.display = 'none'; dupBarEl.innerHTML = ''; }
+    await _ftLoadActiveSheet();
+  } else {
+    if (sheetTabEl) sheetTabEl.style.display = 'none';
+    if (placeholderEl) { placeholderEl.style.display = ''; _ftRenderPlaceholder(tab); }
+  }
 }
 
 function _ftRenderPlaceholder(tab) {
-  const labels = { tests: '測驗資料', gform: 'Google表單', tutors: '導師名冊', merged: '整合', stats: '統計' };
-  const el = document.getElementById(`ft-tab-${tab}`);
+  const labels = { tutors: '導師名冊', merged: '整合', stats: '統計' };
+  const el = document.getElementById('ft-tab-placeholder');
   if (el) el.innerHTML = `<div style="padding:40px;text-align:center;color:#a0aec0;">🚧 ${escHtml(labels[tab] || tab)}開發中，敬請期待後續版本。</div>`;
 }
 
-// ══════════════ 學生基本資料 tab：讀取／grid 渲染 ══════════════
+// ══════════════ 資料 tab（學生基本資料／測驗資料／Google表單）：讀取／grid 渲染 ══════════════
 
-async function _ftLoadStudentsSheet() {
+// 跨 tab 檢核用：讀取「學生基本資料」rows（唯讀，用於測驗資料／Google表單 tab 的姓名比對），
+// 依目前學期快取，換學期或該 sheet 存檔後才重新讀取（見 _ftSwitchSemester／_ftSaveEdit）。
+async function _ftLoadStudentsForChecks() {
+  if (_ft._studentsCache && _ft._studentsCacheSemester === _ft.semester) return;
+  try {
+    const r = await proxyCall('ftGetSheet', { semester: _ft.semester, sheet: 'students' });
+    _ft._studentsCache = r.rows || [];
+  } catch (_e) {
+    _ft._studentsCache = [];
+  }
+  _ft._studentsCacheSemester = _ft.semester;
+}
+
+async function _ftLoadActiveSheet() {
+  const sheet = _ftCurrentSheet();
+  if (!sheet) return;
   const wrap = document.getElementById('ft-grid-wrap');
   if (wrap) wrap.innerHTML = `<div style="padding:20px;text-align:center;color:#a0aec0;">⏳ 讀取中…</div>`;
   try {
-    const r = await proxyCall('ftGetSheet', { semester: _ft.semester, sheet: 'students' });
+    const r = await proxyCall('ftGetSheet', { semester: _ft.semester, sheet });
     _ft.schema = r.schema;
     _ft.rows = (r.rows || []).map(row => ({ ...row, cells: { ...((row && row.cells) || {}) } }));
     _ft.editing = false;
+    _ft._vwin = null;
+    _ft._renderCtx = null;
+    if (sheet !== 'students') await _ftLoadStudentsForChecks();
     _ftSyncEditButtons();
     _ftClearDirty();
     _ftRenderGrid();
@@ -52277,22 +52460,25 @@ async function _ftDiscardEdit() {
   _ft.editing = false;
   _ftClearDirty();
   _ftSyncEditButtons();
-  await _ftLoadStudentsSheet();
+  await _ftLoadActiveSheet();
 }
 
 async function _ftSaveEdit() {
+  const sheet = _ftCurrentSheet();
+  if (!sheet) return;
   const btn = document.getElementById('ft-save-btn');
   if (btn) btn.disabled = true;
   try {
     // 完全空白的列（新增列按太多但沒填）不送出，避免留下大量真正的空列。
     const rowsToSave = _ft.rows.filter(r => Object.values((r && r.cells) || {}).some(v => String(v ?? '').trim() !== ''));
     const totalMissing = rowsToSave.reduce((sum, r) => sum + _ftRowMissingRequired(r, _ft.schema).length, 0);
-    const r = await proxyCall('ftSaveRows', { semester: _ft.semester, sheet: 'students', rows: rowsToSave });
+    const r = await proxyCall('ftSaveRows', { semester: _ft.semester, sheet, rows: rowsToSave });
     showToast(`已儲存 ${r.count} 筆${totalMissing ? `（其中 ${totalMissing} 個必填欄位仍為空，已標記醒目提示，請盡快補齊）` : ''}`, totalMissing ? 'warn' : 'success');
     _ft.editing = false;
     _ftClearDirty();
     _ftSyncEditButtons();
-    await _ftLoadStudentsSheet();
+    if (sheet === 'students') _ft._studentsCache = null; // 供測驗資料／Google表單 tab 下次重新讀取最新姓名
+    await _ftLoadActiveSheet();
   } catch (e) {
     showToast('儲存失敗：' + e.message, 'error');
   } finally {
@@ -52316,52 +52502,188 @@ function _ftOnCellInput(rowIdx, colId, value) {
   _ftMarkDirty();
 }
 
+// 儲存格失焦時才重新整理檢核標紅（不逐鍵重繪，避免游標/焦點被打斷；見任務規格「不得在每格
+// render 時重複掃全表」——這裡是「不逐鍵重繪」，檢核本身仍是離開欄位才重算一次 O(n)）。
+function _ftOnCellBlur() {
+  if (_ft.tab === 'tests' || _ft.tab === 'gform') _ftRenderGrid();
+}
+
 function _ftSetFocusCell(rowIdx, colIdx) {
   _ft._focus = { rowIdx, colIdx };
 }
 
+// ══════════════ v208：grid 渲染（CSS Grid＋列虛擬化＋sticky 欄＋檢核標紅）══════════════
+
+// 算一次會在整個渲染過程重複用到的版面/檢核資訊（欄寬、grid-template、sticky offset、檢核結果、
+// Google表單重複集合），供 _ftRenderGrid（整版重繪）與 _ftRenderGridWindowOnly（捲動時只重繪可視
+// 窗口）共用，避免捲動時重新計算一次 O(n) 檢核。
+function _ftBuildRenderCtx() {
+  const cols = _ft.schema.cols;
+  const colWidths = cols.map(c => c.width || 100);
+  const totalWidth = colWidths.reduce((a, b) => a + b, 0);
+  const gridTemplate = colWidths.map(w => w + 'px').join(' ');
+  let acc = 0;
+  const stickyOffset = {};
+  cols.forEach((c, i) => {
+    if (FT_STICKY_COL_IDS.has(c.id)) stickyOffset[c.id] = acc;
+    acc += colWidths[i];
+  });
+  const needChecks = _ft.tab === 'tests' || _ft.tab === 'gform';
+  const checks = needChecks ? _ftComputeCellChecks(_ft.rows, {
+    keyColId: 'stu_id',
+    nameColId: 'name_zh',
+    deptColId: cols.some(c => c.id === 'dept') ? 'dept' : null,
+    flagDuplicates: _ft.tab === 'tests', // Google表單的重複已用列底色/刪除線處理，避免雙重視覺
+    studentsRows: _ft._studentsCache || [],
+    studentsKeyColId: 'stu_id',
+    studentsNameColId: 'name_zh',
+  }) : null;
+  const gformDupKeys = _ft.tab === 'gform' ? _ftFindDuplicateStuIds(_ft.rows, 'stu_id') : new Set();
+  return { cols, colWidths, totalWidth, gridTemplate, stickyOffset, checks, gformDupKeys, editing: _ft.editing };
+}
+
+function _ftHeaderCellHtml(c, ctx) {
+  const stickyCss = FT_STICKY_COL_IDS.has(c.id) ? `position:sticky;left:${ctx.stickyOffset[c.id]}px;z-index:6;background:#f7fafc;` : '';
+  const longName = c.name && c.name.length > 24;
+  const dispName = longName ? escHtml(c.name.slice(0, 22)) + '…' : escHtml(c.name);
+  const tip = longName ? ` data-tip="${escHtml(c.name)}"` : '';
+  return `<div data-col-id="${escHtml(c.id)}" style="${stickyCss}position:relative;padding:6px 8px;border:1px solid #e2e8f0;font-size:.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;"${tip}>${dispName}${c.required ? '<span class="req">*</span>' : ''}</div>`;
+}
+
+function _ftRowHtml(ri, ctx) {
+  const row = _ft.rows[ri];
+  if (!row) return '';
+  const missing = new Set(_ftRowMissingRequired(row, _ft.schema));
+  const rowChecks = ctx.checks ? ctx.checks[ri] : null;
+  const stuIdVal = String((row.cells && row.cells.stu_id) ?? '').trim();
+  const isGformDup = _ft.tab === 'gform' && !!stuIdVal && ctx.gformDupKeys.has(stuIdVal);
+  const isExcluded = row.excluded === true;
+  let rowBg = '';
+  if (isGformDup) rowBg = isExcluded ? 'background:#f2f2f2;' : 'background:#fffbea;';
+  const rowStyle = `display:grid;grid-template-columns:${ctx.gridTemplate};height:${FT_ROW_H}px;box-sizing:border-box;${rowBg}${isExcluded ? 'opacity:.55;text-decoration:line-through;' : ''}`;
+  const tds = ctx.cols.map((c, ci) => {
+    const val = (row.cells && row.cells[c.id]) ?? '';
+    const isMissing = missing.has(c.id);
+    let cellBg = isMissing ? '#fff5f5' : '';
+    let tip = '';
+    if (rowChecks) {
+      if (c.id === 'stu_id' && (rowChecks.stuIdBad || rowChecks.stuIdDup)) {
+        cellBg = '#fed7d7';
+        const reasons = [rowChecks.stuIdBad ? rowChecks.stuIdBadReason : null, rowChecks.stuIdDup ? '學號重複' : null].filter(Boolean).join('；');
+        tip = ` data-tip="${escHtml(reasons)}"`;
+      }
+      if (c.id === 'name_zh' && rowChecks.nameMismatch) {
+        cellBg = '#fed7d7';
+        tip = ` data-tip="與學生基本資料姓名不一致"`;
+      }
+    }
+    const isSticky = FT_STICKY_COL_IDS.has(c.id);
+    const stickyCss = isSticky ? `position:sticky;left:${ctx.stickyOffset[c.id]}px;z-index:2;` : '';
+    // sticky 欄需要不透明底色才能遮住捲動經過的內容；非 sticky 欄沒有這個顧慮，透明即可。
+    const bg = cellBg || (isSticky ? (isGformDup ? (isExcluded ? '#f2f2f2' : '#fffbea') : '#fff') : '');
+    const cellStyle = `border:1px solid #e2e8f0;padding:0;box-sizing:border-box;overflow:hidden;${stickyCss}${bg ? `background:${bg};` : ''}`;
+    if (ctx.editing && !isExcluded) {
+      return `<div style="${cellStyle}"${tip}><input type="text" class="ft-cell-input" data-row="${ri}" data-col="${escHtml(c.id)}" value="${escHtml(String(val))}"
+        style="width:100%;height:100%;border:none;padding:5px 8px;font-size:.82rem;background:transparent;box-sizing:border-box;"
+        oninput="_ftOnCellInput(${ri},'${c.id}',this.value)"
+        onblur="_ftOnCellBlur()"
+        onfocus="_ftSetFocusCell(${ri},${ci})"></div>`;
+    }
+    return `<div style="${cellStyle}padding:5px 8px;font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"${tip}>${escHtml(String(val))}</div>`;
+  }).join('');
+  return `<div style="${rowStyle}" data-row-idx="${ri}">${tds}</div>`;
+}
+
+// 整版重繪：資料變更（載入/新增列/貼上/匯入/切換編輯模式/存檔後）呼叫。重新計算渲染上下文＋
+// 虛擬化窗口，捲動位置盡量保留（見 savedScrollTop/Left）。
 function _ftRenderGrid() {
   const wrap = document.getElementById('ft-grid-wrap');
   if (!wrap || !_ft.schema) return;
-  const cols = _ft.schema.cols;
-  const editing = _ft.editing;
-  const theadCells = cols.map(c => `<th data-col-id="${escHtml(c.id)}" style="min-width:${c.width || 100}px;width:${c.width || 100}px;position:relative;background:#f7fafc;padding:6px 8px;border:1px solid #e2e8f0;font-size:.8rem;white-space:nowrap;text-align:left;">${escHtml(c.name)}${c.required ? '<span class="req">*</span>' : ''}</th>`).join('');
-  const bodyRows = _ft.rows.map((row, ri) => {
-    const missing = new Set(_ftRowMissingRequired(row, _ft.schema));
-    const tds = cols.map((c, ci) => {
-      const val = (row.cells && row.cells[c.id]) ?? '';
-      const isMissing = missing.has(c.id);
-      const cellStyle = `border:1px solid #e2e8f0;padding:0;${isMissing ? 'background:#fff5f5;' : ''}`;
-      if (editing) {
-        return `<td style="${cellStyle}"><input type="text" class="ft-cell-input" data-row="${ri}" data-col="${escHtml(c.id)}" value="${escHtml(String(val))}"
-          style="width:100%;border:none;padding:5px 8px;font-size:.82rem;background:transparent;box-sizing:border-box;"
-          oninput="_ftOnCellInput(${ri},'${c.id}',this.value)"
-          onfocus="_ftSetFocusCell(${ri},${ci})"></td>`;
-      }
-      return `<td style="${cellStyle}padding:5px 8px;font-size:.82rem;">${escHtml(String(val))}</td>`;
-    }).join('');
-    return `<tr>${tds}</tr>`;
-  }).join('');
-  wrap.innerHTML = `<table style="border-collapse:collapse;width:max-content;min-width:100%;">
-    <thead><tr>${theadCells}</tr></thead>
-    <tbody>${bodyRows || `<tr><td colspan="${cols.length}" style="text-align:center;color:#a0aec0;padding:20px;">尚無資料，可點「＋新增列」或匯入 Excel/CSV</td></tr>`}</tbody>
-  </table>`;
-  wrap.querySelectorAll('th[data-col-id]').forEach(th => _ftInitColResize(th, th.dataset.colId));
+  const savedScrollTop = wrap.scrollTop;
+  const savedScrollLeft = wrap.scrollLeft;
+  const ctx = _ftBuildRenderCtx();
+  _ft._renderCtx = ctx;
+  const rowCount = _ft.rows.length;
+  const viewportHeight = wrap.clientHeight || 400;
+  const vwin = _ftComputeVirtualWindow(savedScrollTop, viewportHeight, rowCount, FT_ROW_H, FT_VWIN_BUFFER);
+  _ft._vwin = vwin;
+
+  const headerCellsHtml = ctx.cols.map(c => _ftHeaderCellHtml(c, ctx)).join('');
+  const rowsHtml = [];
+  for (let ri = vwin.startIdx; ri < vwin.endIdx; ri++) rowsHtml.push(_ftRowHtml(ri, ctx));
+
+  wrap.innerHTML = `
+    <div id="ft-grid-header" style="display:grid;grid-template-columns:${ctx.gridTemplate};position:sticky;top:0;z-index:5;background:#f7fafc;width:${ctx.totalWidth}px;">${headerCellsHtml}</div>
+    <div id="ft-grid-canvas" style="position:relative;width:${ctx.totalWidth}px;height:${vwin.totalHeight}px;">
+      <div id="ft-grid-window" style="position:absolute;left:0;top:${vwin.offsetY}px;width:100%;">
+        ${rowsHtml.join('') || `<div style="padding:20px;text-align:center;color:#a0aec0;">尚無資料，可點「＋新增列」或匯入 Excel/CSV</div>`}
+      </div>
+    </div>`;
+  wrap.scrollTop = savedScrollTop;
+  wrap.scrollLeft = savedScrollLeft;
+  wrap.querySelectorAll('[data-col-id]').forEach(el => _ftInitColResize(el, el.dataset.colId));
+  _ftBindGridScroll(wrap);
+  if (_ft.tab === 'gform') _ftRenderGformDupBar();
+}
+
+// 捲動時的輕量重繪：沿用上次的渲染上下文，只重新產生可視窗口內的列（不重繪表頭、不重算檢核），
+// 且窗口範圍未變時直接跳過（避免同一窗口內小幅捲動也重繪）。
+function _ftRenderGridWindowOnly(wrap) {
+  if (!_ft.schema || !_ft._renderCtx) return;
+  const ctx = _ft._renderCtx;
+  const rowCount = _ft.rows.length;
+  const viewportHeight = wrap.clientHeight || 400;
+  const vwin = _ftComputeVirtualWindow(wrap.scrollTop, viewportHeight, rowCount, FT_ROW_H, FT_VWIN_BUFFER);
+  if (_ft._vwin && _ft._vwin.startIdx === vwin.startIdx && _ft._vwin.endIdx === vwin.endIdx) return;
+  _ft._vwin = vwin;
+  const win = document.getElementById('ft-grid-window');
+  if (!win) return;
+  win.style.top = vwin.offsetY + 'px';
+  const rowsHtml = [];
+  for (let ri = vwin.startIdx; ri < vwin.endIdx; ri++) rowsHtml.push(_ftRowHtml(ri, ctx));
+  win.innerHTML = rowsHtml.join('') || `<div style="padding:20px;text-align:center;color:#a0aec0;">尚無資料，可點「＋新增列」或匯入 Excel/CSV</div>`;
+}
+
+// 捲動監聽只綁一次（用 wrap 節點上的旗標判斷，因為 wrap.innerHTML 每次整版重繪都會換掉內部節點，
+// 但 wrap 本身不會被替換）；用 requestAnimationFrame 節流，避免同一畫面更新週期內重複計算。
+function _ftBindGridScroll(wrap) {
+  if (wrap._ftScrollBound) return;
+  wrap._ftScrollBound = true;
+  let raf = null;
+  wrap.addEventListener('scroll', () => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = null;
+      _ftRenderGridWindowOnly(wrap);
+    });
+  });
 }
 
 // 欄寬拖曳調整（僅寬度，不含拖曳排序——排序在「欄位管理」modal 內用 _scdInitDrag，見下方）。
-function _ftInitColResize(th, colId) {
+// 因欄位版面改用 CSS Grid（grid-template-columns），拖曳過程直接即時更新表頭/canvas/可視列的
+// grid-template-columns 字串，放開後才呼叫 ftSaveSchema 落地寬度設定。
+function _ftInitColResize(el, colId) {
   const handle = document.createElement('div');
-  handle.style.cssText = 'position:absolute;right:0;top:0;bottom:0;width:6px;cursor:col-resize;';
-  th.appendChild(handle);
+  handle.style.cssText = 'position:absolute;right:0;top:0;bottom:0;width:6px;cursor:col-resize;z-index:7;';
+  el.appendChild(handle);
   handle.addEventListener('pointerdown', (ev) => {
     ev.preventDefault(); ev.stopPropagation();
     const startX = ev.clientX;
-    const startW = th.offsetWidth;
+    const ctx = _ft._renderCtx;
+    if (!ctx) return;
+    const idx = ctx.cols.findIndex(c => c.id === colId);
+    if (idx === -1) return;
+    const startW = ctx.colWidths[idx];
     const onMove = (e2) => {
       const w = Math.max(50, startW + (e2.clientX - startX));
-      th.style.width = w + 'px';
-      th.style.minWidth = w + 'px';
+      ctx.colWidths[idx] = w;
+      ctx.gridTemplate = ctx.colWidths.map(x => x + 'px').join(' ');
+      ctx.totalWidth = ctx.colWidths.reduce((a, b) => a + b, 0);
+      const header = document.getElementById('ft-grid-header');
+      const canvas = document.getElementById('ft-grid-canvas');
+      if (header) { header.style.gridTemplateColumns = ctx.gridTemplate; header.style.width = ctx.totalWidth + 'px'; }
+      if (canvas) canvas.style.width = ctx.totalWidth + 'px';
+      document.querySelectorAll('#ft-grid-window > [data-row-idx]').forEach(r => { r.style.gridTemplateColumns = ctx.gridTemplate; });
       _ft.pendingColWidths = _ft.pendingColWidths || {};
       _ft.pendingColWidths[colId] = w;
     };
@@ -52379,10 +52701,12 @@ async function _ftPersistColWidths() {
   if (!_ft.pendingColWidths || !_ft.schema) return;
   const widths = _ft.pendingColWidths;
   _ft.pendingColWidths = null;
+  const sheet = _ftCurrentSheet();
   const cols = _ft.schema.cols.map(c => (widths[c.id] ? { ...c, width: widths[c.id] } : c));
   try {
-    const r = await proxyCall('ftSaveSchema', { semester: _ft.semester, sheet: 'students', cols });
+    const r = await proxyCall('ftSaveSchema', { semester: _ft.semester, sheet, cols });
     _ft.schema = r.schema;
+    _ftRenderGrid();
   } catch (e) {
     showToast('欄寬儲存失敗：' + e.message, 'error');
   }
@@ -52428,10 +52752,30 @@ async function _ftHandleImportFile(input) {
     const ws = wb.Sheets[wb.SheetNames[0]];
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
     if (!aoa.length) { showToast('檔案內容為空', 'warn'); return; }
-    _ftPreviewImport(aoa);
+    if (_ft.tab === 'gform') _ftGformImportFromAoa(aoa);
+    else _ftPreviewImport(aoa);
   } catch (e) {
     showToast('匯入失敗：' + e.message, 'error');
   }
+}
+
+// Google表單 tab 專用匯入：不走衝突勾選 modal，完全相同列靜默跳過、其餘一律新增（見
+// _ftGformMergeImport 檔頭說明——同學號多筆是常態，不是需要人工判斷取代/保留的欄位衝突）。
+function _ftGformImportFromAoa(aoa) {
+  const importRows = _ftAoaToImportRows(aoa, _ft.schema.cols);
+  const keyColId = 'stu_id';
+  const missingKey = importRows.filter(r => !r.cells[keyColId]);
+  const usable = importRows.filter(r => r.cells[keyColId]);
+  if (!usable.length) {
+    showToast(`未偵測到有效資料列（共 ${missingKey.length} 列缺少學號或欄名不符），請確認標題列與現有欄位名稱一致`, 'warn');
+    return;
+  }
+  const merged = _ftGformMergeImport(_ft.rows, usable);
+  _ft.rows = merged.rows;
+  if (!_ft.editing) _ftEnterEdit();
+  _ftMarkDirty();
+  _ftRenderGrid();
+  showToast(`已新增 ${merged.addedCount} 筆、略過 ${merged.skippedCount} 筆完全重複${missingKey.length ? `，另有 ${missingKey.length} 列缺少學號已略過` : ''}。同學號但內容不同的列會標記為重複狀態，請於上方「選主條目」處理。`, 'info');
 }
 
 function _ftPreviewImport(aoa) {
@@ -52503,6 +52847,81 @@ function _ftConfirmImport() {
   _ftMarkDirty();
   _ftRenderGrid();
   showToast('匯入內容已套用到試算表，請確認後按「儲存」才會寫入伺服器', 'info');
+}
+
+// ══════════════ v208：Google表單同學號多筆填寫——選主條目 ══════════════
+
+// 上方橫幅列出所有「重複狀態」學號（groupRows.length>1），每個學號一個按鈕開啟選主條目 modal；
+// 已解決（僅一筆非 excluded）仍保留列出（淡化＋打勾），方便事後回頭調整。
+function _ftRenderGformDupBar() {
+  const bar = document.getElementById('ft-gform-dup-bar');
+  if (!bar) return;
+  const dupKeys = _ftFindDuplicateStuIds(_ft.rows, 'stu_id');
+  if (!dupKeys.size) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+  bar.style.display = '';
+  const chips = Array.from(dupKeys).map(key => {
+    const groupRows = _ft.rows.filter(r => String((r.cells || {}).stu_id || '').trim() === key);
+    const resolved = groupRows.filter(r => r.excluded !== true).length === 1;
+    return `<button type="button" class="btn btn-secondary btn-sm" style="margin:2px 6px 2px 0;${resolved ? 'opacity:.65;' : ''}" onclick="_ftShowGformDupModal('${escHtml(key)}')">${resolved ? '✓' : '⚠'} 學號 ${escHtml(key)}（${groupRows.length} 筆）選主條目</button>`;
+  }).join('');
+  bar.innerHTML = `<div style="font-size:.82rem;color:#744210;margin-bottom:4px;">偵測到下列學號有多筆填寫紀錄（重複狀態，已於表格中標色），請選擇主條目：</div>${chips}`;
+}
+
+function _ftShowGformDupModal(key) {
+  const groupRows = _ft.rows.filter(r => String((r.cells || {}).stu_id || '').trim() === key);
+  if (!groupRows.length) return;
+  _ft._gformDupGroupRows = groupRows;
+  const diffCols = _ftGroupDiffCols(groupRows);
+  const cols = _ft.schema.cols;
+  let primaryIdx = groupRows.findIndex(r => r.excluded !== true);
+  if (primaryIdx === -1) primaryIdx = 0;
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'ft-gform-dup-modal';
+  const rowsHtml = groupRows.map((r, i) => {
+    const cells = r.cells || {};
+    const diffHtml = diffCols.map(colId => {
+      const col = cols.find(c => c.id === colId);
+      const name = col ? col.name : colId;
+      return `<div><strong>${escHtml(name)}</strong>：${escHtml(String(cells[colId] ?? ''))}</div>`;
+    }).join('') || '<span style="color:#a0aec0;">（各欄皆相同）</span>';
+    return `<tr>
+      <td style="text-align:center;"><input type="radio" name="ft-gform-dup-radio" value="${i}" ${i === primaryIdx ? 'checked' : ''}></td>
+      <td>${escHtml(String(cells.ts ?? ''))}</td>
+      <td>${diffHtml}</td>
+    </tr>`;
+  }).join('');
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:720px;">
+      <div class="modal-header"><h3>選主條目（學號 ${escHtml(key)}）</h3></div>
+      <div class="modal-body" style="max-height:60vh;overflow:auto;">
+        <p style="font-size:.86rem;color:#4a5568;">此學號共有 ${groupRows.length} 筆填寫紀錄，請選擇一筆為主條目。其餘列不會被刪除，僅標記為非主條目（表格中以淡化＋刪除線顯示），日後整合僅取主條目。</p>
+        <table style="width:100%;border-collapse:collapse;font-size:.82rem;">
+          <thead><tr><th style="text-align:center;">主條目</th><th>時間戳記</th><th>差異欄位</th></tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="document.getElementById('ft-gform-dup-modal').remove();">取消</button>
+        <button class="btn btn-primary" onclick="_ftConfirmGformPrimary()">確認</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function _ftConfirmGformPrimary() {
+  const radio = document.querySelector('input[name="ft-gform-dup-radio"]:checked');
+  if (!radio) { showToast('請選擇一筆為主條目', 'warn'); return; }
+  const idx = Number(radio.value);
+  const groupRows = _ft._gformDupGroupRows || [];
+  const primaryRow = groupRows[idx];
+  if (!primaryRow) return;
+  _ft.rows = _ftApplyPrimarySelection(_ft.rows, groupRows, primaryRow);
+  document.getElementById('ft-gform-dup-modal')?.remove();
+  if (!_ft.editing) _ftEnterEdit();
+  _ftMarkDirty();
+  _ftRenderGrid();
+  showToast('已設定主條目，請記得按「儲存」寫入伺服器', 'success');
 }
 
 // ══════════════ 欄位管理 ══════════════
@@ -52582,7 +53001,8 @@ function _ftColmgrAddCol() {
 async function _ftColmgrSave() {
   if (!_ft._colmgrDraft.length) { showToast('至少須保留一個欄位', 'warn'); return; }
   try {
-    const r = await proxyCall('ftSaveSchema', { semester: _ft.semester, sheet: 'students', cols: _ft._colmgrDraft });
+    const sheet = _ftCurrentSheet();
+    const r = await proxyCall('ftSaveSchema', { semester: _ft.semester, sheet, cols: _ft._colmgrDraft });
     _ft.schema = r.schema;
     document.getElementById('ft-colmgr-modal')?.remove();
     _ftRenderGrid();
