@@ -12,9 +12,11 @@
 //      trashFile 亦已接線（見下方對應 case 註解）；v202 起 13 個 om* 校內 openmail 收發信 action
 //      已接線（見 openmail/actions.js，走一般授權閘，不在 AUTHZ_EXEMPT）；v203 起 6 個 sms*
 //      簡訊發送 action 已接線（見 sms/actions.js，三竹 Mitake／Every8D，同樣走一般授權閘）；
+//      v207 起 5 個 ft* 新生心理測驗 action 已接線（見 freshmanTest/actions.js，另外過 4a-3
+//      freshmanTestDecision 角色閘——管理者或 isFreshmenTestContact 主責）；
 //      其餘未實作 action → 明確業務錯誤（deleteFile/moveFile＝刻意不移植的純攻擊面死碼，
 //      clockContext/clockPunch＝依定案留在 GAS）
-// 每個請求無論成功/拒絕/例外都寫一筆 audit_log（見 audit.js，content 類參數只記長度；om*/sms*
+// 每個請求無論成功/拒絕/例外都寫一筆 audit_log（見 audit.js，content 類參數只記長度；om*/sms*/ft*
 // action 另有專用摘要，見 audit.summarizeParams 的 action 參數）。
 'use strict';
 
@@ -36,6 +38,7 @@ const openmailActions = require('./openmail/actions');
 const openmailCredStore = require('./openmail/credStore');
 const openmailClient = require('./openmail/client');
 const smsActions = require('./sms/actions');
+const freshmanTestActions = require('./freshmanTest/actions');
 const gcSync = require('./sync/gcSync');
 const clockBridge = require('./actions/clockBridge');
 const adminUsersActions = require('./actions/adminUsers');
@@ -292,6 +295,17 @@ async function handleRequest(db, config, payload) {
       }
     }
 
+    // ── 4a-3. 新生心理測驗（ft*，v207）：管理者或 config.json 該使用者 isFreshmenTestContact===true
+    //      （新生心理測驗主責）。所有 ft* action 一律走本閘（見 authz/gate.js freshmanTestDecision）——
+    //      比照 4a-2 clearMentalLeaves 的角色特定閘門寫法，但涵蓋一組 action 前綴而非單一 action 名稱。──
+    if (typeof action === 'string' && /^ft[A-Z]/.test(action)) {
+      const users = getConfigUsersSafe(db, ctx);
+      if (!gate.freshmanTestDecision(users, userEmail)) {
+        outcome = 'denied';
+        return envelope.bizError('Forbidden: admin or freshman-test contact only');
+      }
+    }
+
     // ── 4b. config.json 整檔寫入保護：非管理者不得變動 users ──
     const cfgFileId = getConfigFileIdSafe(db, ctx);
     if (gate.isConfigWrite(action, params, cfgFileId)) {
@@ -423,6 +437,13 @@ async function handleRequest(db, config, payload) {
       case 'smsListLog': result = smsActions.smsListLog(db, params); break;
       case 'smsQueryStatus': result = await smsActions.smsQueryStatus(db, config, params); break;
       case 'smsCancel': result = await smsActions.smsCancel(db, config, params); break;
+      // ── v207：新生心理測驗（ft*，見 freshmanTest/actions.js 檔頭）。走一般授權閘＋上方 4a-3
+      //    freshmanTestDecision 專屬閘門；userEmail 皆來自已驗證 session（同 sms*/om* 既有原則）。
+      case 'ftListSemesters': result = freshmanTestActions.ftListSemesters(db, ctx); break;
+      case 'ftCreateSemester': result = freshmanTestActions.ftCreateSemester(db, params, ctx, userEmail); break;
+      case 'ftGetSheet': result = freshmanTestActions.ftGetSheet(db, params, ctx); break;
+      case 'ftSaveSchema': result = freshmanTestActions.ftSaveSchema(db, params, ctx, userEmail); break;
+      case 'ftSaveRows': result = freshmanTestActions.ftSaveRows(db, params, ctx, userEmail); break;
       case 'configSelfPatch': result = configActions.configSelfPatch(db, params, ctx, userEmail); break;
       case 'configCasesPatch': result = configActions.configCasesPatch(db, params, ctx, userEmail, config.CASES_PATCH_AUTHZ_MODE); break;
       case 'casesUpsert': result = commitActions.casesUpsert(db, params, ctx); break;
@@ -488,7 +509,12 @@ async function handleRequest(db, config, payload) {
           result.canceled != null ? `resultCanceled=${result.canceled}` : null,
         ].filter(Boolean).map((s) => `,${s}`).join('')
         : '';
-      const detail = audit.summarizeParams(params, action) + (strippedNote ? `,${strippedNote}` : '') + smsResultNote;
+      // v207：ft* action 修改「非目前最新學期」（歷史學期）時，isHistoricalSemester 已在 ft 業務層
+      // 算好並隨結果回傳（見 freshmanTest/actions.js）——標記 historical:true 供日後通知機制掛勾
+      // （本切片不做通知，見任務規格第 3 節），不需要在這裡重新讀一次 semesters.json。
+      const isFtAction = typeof action === 'string' && /^ft[A-Z]/.test(action);
+      const ftHistoricalNote = isFtAction && result && result.historical ? ',historical:true' : '';
+      const detail = audit.summarizeParams(params, action) + (strippedNote ? `,${strippedNote}` : '') + smsResultNote + ftHistoricalNote;
       audit.appendAuditLog(db, {
         email: outcomeEmail,
         action: action || '(none)',

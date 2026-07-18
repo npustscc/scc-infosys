@@ -184,6 +184,24 @@ function listDir(db, dirPath, ctx, pageSize) {
   return listFolder(db, folderId, pageSize);
 }
 
+// ensureDirId_ 對映（v207，新生心理測驗）：resolveDirId 的「找不到就建立」版本——resolvePathToId／
+// updateJson 只在既有資料夾內找檔案，資料夾本身不存在就整段 throw，不會自動建資料夾；本函式讓呼叫端
+// （freshmanTest 模組，每學期一個子資料夾）確保 freshman-test/<semester> 這條路徑存在，之後才能對其下
+// 的 JSON 檔安全呼叫 resolvePathToId／createJson。逐段找不到就地新建，最終回傳最末層資料夾 id。
+function ensureDirId(db, dirPath, ctx) {
+  const parts = String(dirPath == null ? '' : dirPath).split('/').filter(Boolean);
+  let curId = ctx.root;
+  for (const part of parts) {
+    let folder = db.prepare(
+      `SELECT id FROM files WHERE name = ? AND parent_id = ? AND mime_type = ? AND trashed = 0
+       ORDER BY updated_at DESC LIMIT 1`
+    ).get(part, curId, FOLDER_MIME);
+    if (!folder) folder = createFolder(db, { name: part, parentId: curId });
+    curId = folder.id;
+  }
+  return curId;
+}
+
 // createFile_ 對映（v201）：GAS 版其實從未有這個 action（前端 debug_log 備份流程的 fallback 呼叫的
 // 是一個從未存在於 GAS switch 的 action 名稱，見 dispatch.js 該 case 註解），此處為新設語意——
 // 與 createJson 的差異：createJson 一律把 content 當「JS 物件」JSON.stringify 存、mime_type
@@ -293,6 +311,7 @@ module.exports = {
   getMetadata,
   listFolder,
   resolveDirId,
+  ensureDirId,
   listDir,
   createFile,
   trashFile,

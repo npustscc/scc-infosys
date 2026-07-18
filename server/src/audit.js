@@ -24,6 +24,7 @@ function summarizeParams(params, action) {
   if (!params || typeof params !== 'object') return '';
   if (action && /^om[A-Z]/.test(action)) return summarizeOpenmailParams(params);
   if (action && /^sms[A-Z]/.test(action)) return summarizeSmsParams(params);
+  if (action && /^ft[A-Z]/.test(action)) return summarizeFtParams(params);
   return Object.keys(params).filter((k) => !CONFIDENTIAL_KEYS.has(k)).map((k) => {
     const v = params[k];
     const len = typeof v === 'string' ? v.length : (v && typeof v === 'object' ? JSON.stringify(v).length : String(v).length);
@@ -74,6 +75,23 @@ function summarizeSmsParams(params) {
     if (k === 'provider') return `provider=${v}`;
     if (k === 'scheduledAt') return `scheduledAt=${v ? String(v).slice(0, 14) : ''}`;
     if (k === 'logId' || k === 'limit' || k === 'offset') return `${k}=${v}`;
+    const len = typeof v === 'string' ? v.length : (v && typeof v === 'object' ? JSON.stringify(v).length : String(v).length);
+    return `${k}_len=${len}`;
+  }).join(',');
+}
+
+// v207：新生心理測驗（ft*）action 專用摘要——學生個資明細（cells 內容）一律不落地，只記筆數／
+// 欄位名稱／學期代碼（CLAUDE.md 資安原則 3 去識別化）。cols 只記 id/name（欄位定義本身不是個資），
+// rows 只記筆數（實際學生資料在 cells 內，完全跳過）。
+function summarizeFtParams(params) {
+  return Object.keys(params).filter((k) => !CONFIDENTIAL_KEYS.has(k)).map((k) => {
+    const v = params[k];
+    if (k === 'semester' || k === 'sheet') return `${k}=${String(v).slice(0, 20)}`;
+    if (k === 'id' || k === 'label') return `${k}=${String(v).slice(0, 40)}`;
+    if (k === 'rows' && Array.isArray(v)) return `rows=${v.length}`;
+    if (k === 'cols' && Array.isArray(v)) {
+      return `cols=${v.map((c) => (c && c.id) || '').join('|').slice(0, 300)}`;
+    }
     const len = typeof v === 'string' ? v.length : (v && typeof v === 'object' ? JSON.stringify(v).length : String(v).length);
     return `${k}_len=${len}`;
   }).join(',');

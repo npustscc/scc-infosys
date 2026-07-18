@@ -25,6 +25,17 @@ function adminDecision(users, userEmail) {
   return u.role === '主任' || u.isAdmin === true || u.extraRole === '管理者';
 }
 
+// 新生心理測驗（v207）：管理者（adminDecision）或 config.json 該使用者 isFreshmenTestContact===true
+// （新生心理測驗主責——新附加身分，可多人同時擔任，與 isTransferContact/isMentalLeaveContact 同層）。
+// 所有 ft* action 一律走本閘（見 dispatch.js 對 /^ft[A-Z]/ 的統一判斷），對映前端「僅新生心理測驗
+// 主責／管理員／主任可見」的頁面/選單顯示——後端這層才是真正邊界（CLAUDE.md 資安原則 1）。
+function freshmanTestDecision(users, userEmail) {
+  if (adminDecision(users, userEmail)) return true;
+  if (!userEmail || !users) return false;
+  const u = users[userEmail];
+  return !!u && u.disabled !== true && u.isFreshmenTestContact === true;
+}
+
 // AUTHZ_EXEMPT：ping（探測）在授權閘之前放行。
 // 註：submitUserApplication 曾經也在本表——帳號發放與管理（migration 005）改由管理者用
 // adminCreateLocalAccount 建立，申請流程已退場（見 dispatch.js 頂部的固定業務錯誤短路），該短路
@@ -172,6 +183,7 @@ function moveFileDestAllowed(addParents, checkUnderRoot) {
 module.exports = {
   authzDecision,
   adminDecision,
+  freshmanTestDecision,
   AUTHZ_EXEMPT,
   ADMIN_ONLY_ACTIONS,
   ROOT_GUARDED,

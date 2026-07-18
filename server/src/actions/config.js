@@ -22,6 +22,7 @@ const MAX_PATCH_BYTES = 200 * 1024;
 const SELF_PATCH_DENY = new Set([
   'role', 'extraRole', 'isAdmin', 'disabled', 'allowedCases',
   'allowedCasesSems', 'isTransferContact', 'isMentalLeaveContact', 'leaveQuota', 'name',
+  'isFreshmenTestContact', // v207：新生心理測驗主責，授權欄位，僅管理者可經 saveUser 走 config.json 整檔寫入異動
 ]);
 const SELF_PATCH_FIXED = new Set([
   'semesterPref', 'counselorFreqs', 'sortStatusLocked', 'recPageSize', 'recSortDesc',
@@ -125,7 +126,7 @@ function nomailAddOk(key, entry) {
   if (!entry || typeof entry !== 'object') return false;
   if (entry.role === '主任' || entry.role === '系統管理者') return false;
   if (entry.isAdmin || entry.extraRole || entry.isTransferContact
-    || entry.isMentalLeaveContact || entry.leaveQuota !== undefined) return false;
+    || entry.isMentalLeaveContact || entry.isFreshmenTestContact || entry.leaveQuota !== undefined) return false;
   if (entry.disabled !== undefined && entry.disabled !== false) return false;
   return true;
 }
