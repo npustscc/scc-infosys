@@ -4108,6 +4108,13 @@
           <div id="ft-grid-wrap" style="overflow:auto;border:1px solid #e2e8f0;border-radius:8px;max-height:70vh;position:relative;"></div>
         </div>
         <div id="ft-tab-placeholder" style="display:none;"></div>
+        <!-- v210 Slice 4：統計 tab（唯讀衍生報表，5 個子分頁，見 _ftLoadStatsView／_ftRenderStatsSub）。
+             不重用 #ft-sheet-tab 的虛擬化 grid——五個子表結構差異大（樹狀分組小計列/不同欄位集），
+             改用輕量 <table>（多數表遠低於 300 列，高關懷清冊約 ~250 列亦可接受）。 -->
+        <div id="ft-stats-tab" style="display:none;">
+          <div id="ft-stats-subtabs" style="display:flex;gap:2px;border-bottom:1px solid #e2e8f0;margin-bottom:14px;flex-wrap:wrap;"></div>
+          <div id="ft-stats-content"></div>
+        </div>
       </div>
     </div>
 
@@ -31152,6 +31159,15 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-19', v: 210, title: '新生心理測驗（Slice 4）：統計 tab——高關懷清冊／無效名單／院系與學制統計／高關懷班級前N', isProd: false, items: [
+      item('新功能', '「統計」分頁新增五個子分頁，全部為唯讀衍生報表（進分頁時即時彙整同學期學生基本資料／測驗資料／Google表單／導師名冊四個分頁，不落地儲存，其他分頁資料異動後切回本分頁即反映最新）：①高關懷清冊 ②無效名單 ③院系統計 ④學制統計 ⑤高關懷班級前N'),
+      item('新功能', '①高關懷清冊可切換「全部／同意導師知情／不同意（含未填寫）」三種檢視，逐生列出學院/系所/班級/性別/測驗結果可信度/高自殺風險/19 項心理測驗指標燈號，並附「可信度分析」與「綜合分析」文字說明'),
+      item('新功能', '②無效名單合併列出「未接受測驗」與「已測但測驗結果可信度低（<61）」兩類'),
+      item('新功能', '③院系統計依學院／系所／班級三層分組，每班列出應測/已測/未測/受測率/高關懷（總數與扣除不同意）/無效人數，並提供系所與學院粗體小計列（供系主任／院長彙整數據）'),
+      item('新功能', '④學制統計依班級分類為大一新生／轉學生／碩博士新生／無法分類，並自動 join 導師名冊找出班級導師（查無以紅字提示）；大一新生班級額外標示前20高關懷排名（同人數同名次，標紅）與該班前5高議題，頁面上方另顯示全校前5高議題'),
+      item('新功能', '⑤高關懷班級前N：大一新生班級依高關懷人數排序，分別彙總前5/10/15/20班的合計高關懷人數、合計已測人數與高關懷比例'),
+      item('技術', '五個子表的所有統計指標（應測/已測/未測/受測率/高關懷/高關懷率/無效人數等）皆由同一組純函式計算（單一指標來源），不重複實作，避免不同報表數字兜不起來；高關懷判定與同意導師知情判定直接重用既有整合 tab 的計算結果，不重寫（比照 ef 原始 xlsm 修正掉的多項判準不一致 bug）'),
+    ]},
     { date: '2026-07-19', v: 209, title: '新生心理測驗（Slice 3）：導師名冊 tutorsys 同步＋整合 tab', isProd: true, items: [
       item('新功能', '新增「導師名冊」試算表分頁（學院／系所／班級簡稱／導師／導師Email，班級簡稱為固定主鍵欄），與其餘資料分頁一樣可就地編輯、貼上、匯入、欄位管理'),
       item('新功能', '導師名冊「🔄 與導師系統同步」按鈕：唯讀讀取校內導師系統（tutorsys）目前的班級與導師名單，自動組出每班一列（學院由本系統「系所與學院對照」設定或當學期學生資料反推，查無則標「無法分類」）；導師系統沒有博士班班級，會自動依學生資料掃出「博」開頭且尚未涵蓋的班級，導師欄預設帶入該系所系主任並標註「系主任（博士班預設）」'),
@@ -52652,6 +52668,501 @@ function _ftMergedSummaryStats(rows) {
   return { total, withTest, untested: total - withTest, highConcern };
 }
 
+// ══════════════ v210 Slice 4：統計 tab — 純函式（指標單一來源，全部子表共用）══════════════
+// 任務規格明定「全部從整合計算衍生，指標定義單一來源」——本節函式一律吃 _ftComputeMergedRows()
+// 算出來的 rows（{cells, _hasTest}[]），不重寫任何 high_concern／validity／consent 判定
+// （直接讀 cells.high_concern／cells.validity／cells.consent，這些欄位已由 v209 整合函式算好）。
+
+// 應測/已測/未測/受測率/高關懷(總數/扣除不同意)/高關懷率/無效人數——五個子表（院系統計／學制統計／
+// 高關懷班級前N）共用同一個彙總函式，避免各自重算造成指標不一致。
+function _ftGroupMetrics(rows) {
+  const list = rows || [];
+  let tested = 0, highConcern = 0, highConcernConsentOnly = 0, invalid = 0;
+  list.forEach(function (r) {
+    if (r && r._hasTest) tested++;
+    if (_ftInvalidCategory(r)) invalid++;
+    if (r && r.cells && r.cells.high_concern === 'v') {
+      highConcern++;
+      if (r.cells.consent === 'v') highConcernConsentOnly++;
+    }
+  });
+  const total = list.length;
+  const untested = total - tested;
+  return {
+    total: total,
+    tested: tested,
+    untested: untested,
+    testRate: total > 0 ? tested / total : 0,
+    highConcern: highConcern,
+    highConcernConsentOnly: highConcernConsentOnly,
+    highConcernRate: tested > 0 ? highConcern / tested : 0,
+    invalid: invalid,
+  };
+}
+
+// 無效類別（使用者裁決②③）：學號根本不在測驗資料（_hasTest=false）→「未接受測驗」；已測但
+// cells.validity（已套用 v209 效度/ALPR 皆為0時整組留空的 skip 規則）空白或 <61 →「測驗結果可信度
+// 低」；否則（已測且可信度足夠）回傳 null（非無效）。回傳 null 而非 false，供呼叫端直接當類別文字用。
+function _ftInvalidCategory(row) {
+  if (!row || !row._hasTest) return '未接受測驗';
+  const parsed = _ftParsePrValue(row.cells && row.cells.validity);
+  if (parsed.value == null || parsed.value < 61) return '測驗結果可信度低';
+  return null;
+}
+
+// 可信度分析文案（照 ef 三段文，見任務規格①）。
+function _ftValidityAnalysisText(validityRaw) {
+  const parsed = _ftParsePrValue(validityRaw);
+  if (parsed.value == null) return '';
+  if (parsed.value < 61) return '您似乎填答的有點倉促，結果報告可能有一點點不準。';
+  if (parsed.value <= 80) return '您填答過程可能不太專心，結果報告可信度不高。';
+  return '您很認真填答，測驗報告是準確的。';
+}
+
+// 綜合分析文案（照 ef Module4 語意，但判定改用乾淨規則：高自殺=v 或 AL 燈=紅● 為第一段；
+// AL 燈=橙◎ 為第二段；其餘（黃○/綠☆）為第三段。刻意不採 ef「是否同意導師知情用 P 欄」的 bug，
+// 本函式完全不讀 consent。）
+function _ftComprehensiveAnalysisText(cells) {
+  const c = cells || {};
+  const hs = String(c.high_suicide == null ? '' : c.high_suicide).trim().toLowerCase() === 'v';
+  const alDot = c.alpr_dot;
+  if (hs || alDot === '●') {
+    return '您最近似乎處在困擾中，甚至可能動彈不得的處境。非常建議您找尋專業人員求助，他們可以陪伴你，和你一同釐清、克服眼前的難關。';
+  }
+  if (alDot === '◎') {
+    return '您最近似乎過得有點辛苦，不知道是哪些事情讓你心煩意亂呢？建議您持續觀察自己最近的生理、心理健康狀況。若覺得需要，歡迎找尋心理專業人員求助。';
+  }
+  return '您最近似乎把自己照顧的不錯喔，繼續維持。';
+}
+
+function _ftConsentDisplay(consent) {
+  if (consent === 'v') return '同意';
+  if (consent === 'x') return '不同意';
+  return '未填寫';
+}
+
+// ①高關懷清冊：單列展開（19 個燈號欄＋可信度/綜合分析文案）。
+function _ftHighConcernListRow(row) {
+  const c = (row && row.cells) || {};
+  return {
+    stuId: c.stu_id || '',
+    nameZh: c.name_zh || '',
+    college: c.college || '',
+    deptName: c.dept_name || '',
+    classAbbr: c.class_abbr || '',
+    gender: c.gender || '',
+    validity: c.validity || '',
+    highSuicide: c.high_suicide || '',
+    highConcern: c.high_concern || '',
+    consent: c.consent || '',
+    consentDisplay: _ftConsentDisplay(c.consent),
+    dots: FT_MERGED_PR_IDS.map(function (id) { return { id: id, dot: c[id + '_dot'] || '' }; }),
+    validityAnalysis: _ftValidityAnalysisText(c.validity),
+    comprehensiveAnalysis: _ftComprehensiveAnalysisText(c),
+  };
+}
+
+// viewMode：'all' | 'consent'（S=v）| 'noconsent'（S=x 或 未填寫，見使用者裁決④「未填寫視同不同意」）。
+function _ftHighConcernListRows(mergedRows, viewMode) {
+  return (mergedRows || [])
+    .filter(function (r) { return r && r.cells && r.cells.high_concern === 'v'; })
+    .filter(function (r) {
+      if (viewMode === 'consent') return r.cells.consent === 'v';
+      if (viewMode === 'noconsent') return r.cells.consent !== 'v';
+      return true;
+    })
+    .map(_ftHighConcernListRow);
+}
+
+// ②無效名單
+function _ftInvalidListRow(row, category) {
+  const c = (row && row.cells) || {};
+  return {
+    stuId: c.stu_id || '',
+    nameZh: c.name_zh || '',
+    college: c.college || '',
+    deptName: c.dept_name || '',
+    classAbbr: c.class_abbr || '',
+    gender: c.gender || '',
+    category: category,
+  };
+}
+
+function _ftInvalidListRows(mergedRows) {
+  const out = [];
+  (mergedRows || []).forEach(function (r) {
+    const cat = _ftInvalidCategory(r);
+    if (cat) out.push(_ftInvalidListRow(r, cat));
+  });
+  return out;
+}
+
+// 分組鍵：直接用學生基本資料的學院／系所全名／班級簡稱值分組（任務規格明定不要用 ef 的關鍵字
+// InStr 猜測法），空值歸「（未分類）」。
+function _ftGroupKey(v) {
+  const s = String(v == null ? '' : v).trim();
+  return s || '（未分類）';
+}
+
+// ③院系統計：學院→系所→班級三層分組樹，每層都用同一個 _ftGroupMetrics 算指標（小計＝該層底下
+// 所有列重新彙總，不是逐欄加總，避免無效人數等非可加性指標算錯）。
+function _ftBuildCollegeDeptClassStats(mergedRows) {
+  const collegeMap = new Map();
+  (mergedRows || []).forEach(function (r) {
+    const c = (r && r.cells) || {};
+    const college = _ftGroupKey(c.college);
+    const dept = _ftGroupKey(c.dept_name);
+    const cls = _ftGroupKey(c.class_abbr);
+    if (!collegeMap.has(college)) collegeMap.set(college, new Map());
+    const deptMap = collegeMap.get(college);
+    if (!deptMap.has(dept)) deptMap.set(dept, new Map());
+    const clsMap = deptMap.get(dept);
+    if (!clsMap.has(cls)) clsMap.set(cls, []);
+    clsMap.get(cls).push(r);
+  });
+
+  const collegeKeys = Array.from(collegeMap.keys()).sort(function (a, b) { return a.localeCompare(b, 'zh-Hant'); });
+  return collegeKeys.map(function (college) {
+    const deptMap = collegeMap.get(college);
+    const deptKeys = Array.from(deptMap.keys()).sort(function (a, b) { return a.localeCompare(b, 'zh-Hant'); });
+    let collegeRows = [];
+    const depts = deptKeys.map(function (dept) {
+      const clsMap = deptMap.get(dept);
+      const clsKeys = Array.from(clsMap.keys()).sort(function (a, b) { return a.localeCompare(b, 'zh-Hant'); });
+      let deptRows = [];
+      const classes = clsKeys.map(function (cls) {
+        const rowsForClass = clsMap.get(cls);
+        deptRows = deptRows.concat(rowsForClass);
+        return { classAbbr: cls, metrics: _ftGroupMetrics(rowsForClass) };
+      });
+      collegeRows = collegeRows.concat(deptRows);
+      return { dept: dept, metrics: _ftGroupMetrics(deptRows), classes: classes };
+    });
+    return { college: college, metrics: _ftGroupMetrics(collegeRows), depts: depts };
+  });
+}
+
+// 攤平樹狀結構供表格渲染：每個系所後面接一列系所小計，每個學院所有系所後面接一列學院小計
+// （使用者要求「系所小計與學院小計列」，ef 原表沒有，屬本切片新增）。
+function _ftFlattenCollegeDeptStats(tree) {
+  const out = [];
+  (tree || []).forEach(function (c) {
+    (c.depts || []).forEach(function (d) {
+      (d.classes || []).forEach(function (cl) {
+        out.push({ kind: 'class', college: c.college, dept: d.dept, classAbbr: cl.classAbbr, metrics: cl.metrics });
+      });
+      out.push({ kind: 'deptSubtotal', college: c.college, dept: d.dept, metrics: d.metrics });
+    });
+    out.push({ kind: 'collegeSubtotal', college: c.college, metrics: c.metrics });
+  });
+  return out;
+}
+
+// ④學制統計：分類規則照使用者裁決⑧（碩博士新生優先於大一新生判定，因「碩農園一」同時含「一」與
+// 「碩」）。
+function _ftClassifyEduLevel(classAbbr) {
+  const s = String(classAbbr == null ? '' : classAbbr);
+  if (s.indexOf('碩') !== -1 || s.indexOf('博') !== -1) return '碩博士新生';
+  if (s.indexOf('二') !== -1 || s.indexOf('三') !== -1) return '轉學生';
+  if (s.indexOf('一') !== -1) return '大一新生';
+  return '無法分類';
+}
+
+// 導師 join：以班級簡稱在導師名冊（tutors sheet rows）精確比對，查無回傳 null（前端顯示紅字
+// 「未找到」，見任務規格）。
+function _ftFindTutorForClass(classAbbr, tutorsRows) {
+  const q = String(classAbbr == null ? '' : classAbbr).trim();
+  const found = (tutorsRows || []).find(function (r) {
+    return r && r.cells && String(r.cells.class_abbr == null ? '' : r.cells.class_abbr).trim() === q;
+  });
+  return found ? (found.cells.tutor_name || '') : null;
+}
+
+// S01~S12 議題中文名對照（memory project_freshman_test.md；programmatic 常數，非 ef 的欄名 regex
+// 猜測——刻意明確用 sXXpr_dot 燈號欄，不會誤吃 SxxPR/Sxx_dot 兩組欄名，見 ef bug 清單第 6 點）。
+const FT_ISSUE_S_IDS = ['s01pr', 's02pr', 's03pr', 's04pr', 's05pr', 's06pr', 's07pr', 's08pr', 's09pr', 's10pr', 's11pr', 's12pr'];
+const FT_ISSUE_LABELS = {
+  s01pr: '同儕與人際互動', s02pr: '家庭功能影響', s03pr: '知心好友與親密關係', s04pr: '課業與作息變化',
+  s05pr: '網路經驗與霸凌', s06pr: '性別認同壓力', s07pr: '情境誘發情緒', s08pr: '生氣與衝動控制',
+  s09pr: '憤怒表達與攻擊', s10pr: '負向認知', s11pr: '憂鬱相關症狀', s12pr: '自殺意圖',
+};
+
+// 前5高議題：紅燈●人數排序（同數同名次不特別處理排名文字，僅回傳排序後清單，呼叫端 slice(0,5)）。
+function _ftTop5IssuesForRows(rows) {
+  const counts = {};
+  FT_ISSUE_S_IDS.forEach(function (id) { counts[id] = 0; });
+  (rows || []).forEach(function (r) {
+    const c = (r && r.cells) || {};
+    FT_ISSUE_S_IDS.forEach(function (id) {
+      if (c[id + '_dot'] === '●') counts[id]++;
+    });
+  });
+  return FT_ISSUE_S_IDS
+    .map(function (id) { return { id: id, label: FT_ISSUE_LABELS[id], count: counts[id] }; })
+    .filter(function (x) { return x.count > 0; })
+    .sort(function (a, b) { return b.count - a.count || a.id.localeCompare(b.id); })
+    .slice(0, 5);
+}
+
+// 依班級簡稱分組（學制統計主表），大一新生班級額外附前5高議題。
+function _ftBuildEduLevelClassStats(mergedRows, tutorsRows) {
+  const byClass = new Map();
+  (mergedRows || []).forEach(function (r) {
+    const cls = _ftGroupKey(r && r.cells && r.cells.class_abbr);
+    if (!byClass.has(cls)) byClass.set(cls, []);
+    byClass.get(cls).push(r);
+  });
+  const classKeys = Array.from(byClass.keys()).sort(function (a, b) { return a.localeCompare(b, 'zh-Hant'); });
+  return classKeys.map(function (cls) {
+    const rows = byClass.get(cls);
+    const level = _ftClassifyEduLevel(cls);
+    const tutorName = _ftFindTutorForClass(cls, tutorsRows);
+    const entry = {
+      classAbbr: cls,
+      level: level,
+      metrics: _ftGroupMetrics(rows),
+      tutorName: tutorName,
+      tutorFound: tutorName != null,
+    };
+    if (level === '大一新生') entry.top5Issues = _ftTop5IssuesForRows(rows);
+    return entry;
+  });
+}
+
+// 大一新生班級前20高關懷排名：同高關懷人數同名次（標準競賽排名 1,1,3…）；0 人不排入
+// （任務規格「上榜列整列紅字」的前提是要先排出名次）。
+function _ftRankFreshmanClasses(classStatsList) {
+  const freshman = (classStatsList || []).filter(function (e) { return e.level === '大一新生' && e.metrics.highConcern > 0; });
+  const sorted = freshman.slice().sort(function (a, b) {
+    return b.metrics.highConcern - a.metrics.highConcern || a.classAbbr.localeCompare(b.classAbbr, 'zh-Hant');
+  });
+  let rank = 0, prevCount = null;
+  return sorted.map(function (e, idx) {
+    if (prevCount === null || e.metrics.highConcern !== prevCount) {
+      rank = idx + 1;
+      prevCount = e.metrics.highConcern;
+    }
+    return Object.assign({}, e, { rank: rank });
+  });
+}
+
+// ⑤高關懷班級前N（ef 隱藏表「高關懷班級」乾淨重做）：大一新生班級依高關懷人數降冪，取前 N 班
+// 彙總（不足 N 班則以現有班級數為準）。ef 原表語意不明，這是我方乾淨詮釋版本。
+function _ftTopNFreshmanSummary(classStatsList, n) {
+  const freshman = (classStatsList || []).filter(function (e) { return e.level === '大一新生'; });
+  const sorted = freshman.slice().sort(function (a, b) {
+    return b.metrics.highConcern - a.metrics.highConcern || a.classAbbr.localeCompare(b.classAbbr, 'zh-Hant');
+  });
+  const top = sorted.slice(0, n);
+  let sumHighConcern = 0, sumTested = 0;
+  top.forEach(function (e) { sumHighConcern += e.metrics.highConcern; sumTested += e.metrics.tested; });
+  return {
+    n: n,
+    classCount: top.length,
+    highConcern: sumHighConcern,
+    tested: sumTested,
+    rate: sumTested > 0 ? sumHighConcern / sumTested : 0,
+  };
+}
+
+function _ftTopNFreshmanClassesReport(classStatsList) {
+  return [5, 10, 15, 20].map(function (n) { return _ftTopNFreshmanSummary(classStatsList, n); });
+}
+
+// ══════════════ v210 Slice 4：統計 tab — 渲染層（DOM，不在 harness 測試範圍）══════════════
+// 五個子表共用一個容器 #ft-stats-content；子分頁切換只換渲染函式，資料（_ft._statsMergedRows／
+// _ft._statsTutorRows）只在進「統計」tab 時（_ftLoadStatsView）重新計算一次，比照任務規格
+// 「進 tab 時計算、資料變更後切回自動反映」——不落地儲存。
+
+function _ftPct(rate) {
+  if (rate == null || isNaN(rate)) return '-';
+  return (rate * 100).toFixed(1) + '%';
+}
+
+async function _ftLoadStatsView() {
+  const el = document.getElementById('ft-stats-content');
+  if (el) el.innerHTML = `<div style="padding:20px;text-align:center;color:#a0aec0;">⏳ 讀取中…</div>`;
+  try {
+    const [studentsR, testsR, gformsR, tutorsR] = await Promise.all([
+      proxyCall('ftGetSheet', { semester: _ft.semester, sheet: 'students' }),
+      proxyCall('ftGetSheet', { semester: _ft.semester, sheet: 'tests' }),
+      proxyCall('ftGetSheet', { semester: _ft.semester, sheet: 'gforms' }),
+      proxyCall('ftGetSheet', { semester: _ft.semester, sheet: 'tutors' }),
+    ]);
+    const { rows } = _ftComputeMergedRows(studentsR.rows || [], testsR.rows || [], gformsR.rows || []);
+    _ft._statsMergedRows = rows;
+    _ft._statsTutorRows = tutorsR.rows || [];
+    if (!_ft._statsSub) _ft._statsSub = 'highconcern';
+    _ftRenderStatsSubTabs();
+    _ftRenderStatsSub();
+  } catch (e) {
+    if (el) el.innerHTML = `<div style="padding:20px;text-align:center;color:#c53030;">讀取失敗：${escHtml(e.message)}</div>`;
+  }
+}
+
+function _ftRenderStatsSubTabs() {
+  const bar = document.getElementById('ft-stats-subtabs');
+  if (!bar) return;
+  const subs = [
+    ['highconcern', '高關懷清冊'], ['invalid', '無效名單'], ['dept', '院系統計'],
+    ['edu', '學制統計'], ['topn', '高關懷班級前N'],
+  ];
+  const cur = _ft._statsSub || 'highconcern';
+  bar.innerHTML = subs.map(([id, label]) => `<button type="button" class="bk-page-tabbtn" data-active="${cur === id ? '1' : '0'}" onclick="_ftSwitchStatsSub('${id}')">${escHtml(label)}</button>`).join('');
+}
+
+function _ftSwitchStatsSub(sub) {
+  _ft._statsSub = sub;
+  _ftRenderStatsSubTabs();
+  _ftRenderStatsSub();
+}
+
+function _ftRenderStatsSub() {
+  const sub = _ft._statsSub || 'highconcern';
+  if (sub === 'highconcern') _ftRenderStatsHighConcern();
+  else if (sub === 'invalid') _ftRenderStatsInvalid();
+  else if (sub === 'dept') _ftRenderStatsDept();
+  else if (sub === 'edu') _ftRenderStatsEdu();
+  else if (sub === 'topn') _ftRenderStatsTopN();
+}
+
+function _ftSetHcView(v) {
+  _ft._statsHcView = v;
+  _ftRenderStatsHighConcern();
+}
+
+function _ftRenderStatsHighConcern() {
+  const view = _ft._statsHcView || 'all';
+  const rows = _ftHighConcernListRows(_ft._statsMergedRows || [], view);
+  const dotHeaders = FT_MERGED_PR_IDS.map(id => id.replace(/pr$/, '').toUpperCase());
+  const viewBtns = [['all', '全部'], ['consent', '同意導師知情（S=v）'], ['noconsent', '不同意（S=x／未填寫）']]
+    .map(([v, label]) => `<button type="button" class="btn btn-sm ${view === v ? 'btn-primary' : 'btn-secondary'}" onclick="_ftSetHcView('${v}')">${escHtml(label)}</button>`).join(' ');
+  const bodyRows = rows.map(r => `<tr>
+      <td>${escHtml(r.stuId)}</td><td>${escHtml(r.nameZh)}</td><td>${escHtml(r.college)}</td><td>${escHtml(r.deptName)}</td>
+      <td>${escHtml(r.classAbbr)}</td><td>${escHtml(r.gender)}</td><td>${escHtml(r.validity)}</td>
+      <td>${r.highSuicide === 'v' ? '是' : ''}</td><td>${r.highConcern === 'v' ? '是' : ''}</td>
+      <td>${escHtml(r.consentDisplay)}</td>
+      ${r.dots.map(d => `<td style="text-align:center;">${escHtml(d.dot)}</td>`).join('')}
+      <td>${escHtml(r.validityAnalysis)}</td><td>${escHtml(r.comprehensiveAnalysis)}</td>
+    </tr>`).join('');
+  const colCount = 12 + dotHeaders.length;
+  const html = `
+    <div style="margin-bottom:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+      ${viewBtns}
+      <span style="margin-left:auto;color:#718096;font-size:.84rem;">共 <strong>${rows.length}</strong> 人</span>
+    </div>
+    <div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px;">
+      <table style="min-width:1600px;">
+        <thead><tr>
+          <th>學號</th><th>姓名</th><th>學院</th><th>系所全名</th><th>班級簡稱</th><th>性別</th>
+          <th>測驗結果可信度</th><th>高自殺風險</th><th>高關懷</th><th>是否同意導師知情</th>
+          ${dotHeaders.map(h => `<th style="text-align:center;">${escHtml(h)}</th>`).join('')}
+          <th>可信度分析</th><th>綜合分析</th>
+        </tr></thead>
+        <tbody>${bodyRows || `<tr><td colspan="${colCount}" style="text-align:center;color:#a0aec0;">無資料</td></tr>`}</tbody>
+      </table>
+    </div>`;
+  const el = document.getElementById('ft-stats-content');
+  if (el) el.innerHTML = html;
+}
+
+function _ftRenderStatsInvalid() {
+  const rows = _ftInvalidListRows(_ft._statsMergedRows || []);
+  const bodyRows = rows.map(r => `<tr>
+      <td>${escHtml(r.stuId)}</td><td>${escHtml(r.nameZh)}</td><td>${escHtml(r.college)}</td>
+      <td>${escHtml(r.deptName)}</td><td>${escHtml(r.classAbbr)}</td><td>${escHtml(r.gender)}</td>
+      <td>${escHtml(r.category)}</td>
+    </tr>`).join('');
+  const html = `
+    <div style="margin-bottom:10px;color:#718096;font-size:.84rem;">共 <strong>${rows.length}</strong> 筆（含「未接受測驗」與「測驗結果可信度低」兩類，比照 ef 慣例合併列出）</div>
+    <div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px;">
+      <table><thead><tr><th>學號</th><th>姓名</th><th>學院</th><th>系所全名</th><th>班級簡稱</th><th>性別</th><th>無效類別</th></tr></thead>
+      <tbody>${bodyRows || `<tr><td colspan="7" style="text-align:center;color:#a0aec0;">無資料</td></tr>`}</tbody></table>
+    </div>`;
+  const el = document.getElementById('ft-stats-content');
+  if (el) el.innerHTML = html;
+}
+
+function _ftRenderStatsDept() {
+  const tree = _ftBuildCollegeDeptClassStats(_ft._statsMergedRows || []);
+  const flat = _ftFlattenCollegeDeptStats(tree);
+  const rowHtml = (r) => {
+    const m = r.metrics;
+    const label = r.kind === 'class' ? escHtml(r.classAbbr)
+      : r.kind === 'deptSubtotal' ? `【${escHtml(r.dept)} 系所小計】`
+      : `【${escHtml(r.college)} 學院小計】`;
+    const bold = r.kind !== 'class';
+    return `<tr style="${bold ? 'font-weight:700;background:#f7fafc;' : ''}">
+      <td>${r.kind === 'class' ? escHtml(r.college) : ''}</td>
+      <td>${r.kind === 'class' ? escHtml(r.dept) : ''}</td>
+      <td>${label}</td>
+      <td>${m.total}</td><td>${m.tested}</td><td>${m.untested}</td>
+      <td>${_ftPct(m.testRate)}</td>
+      <td>${m.highConcern}</td><td>${m.highConcernConsentOnly}</td><td>${m.invalid}</td>
+    </tr>`;
+  };
+  const html = `
+    <div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px;">
+      <table><thead><tr>
+        <th>學院</th><th>系所</th><th>班級/小計</th><th>應測</th><th>已測</th><th>未測</th>
+        <th>受測率</th><th>高關懷</th><th>高關懷(扣除不同意)</th><th>無效人數</th>
+      </tr></thead><tbody>${flat.map(rowHtml).join('') || `<tr><td colspan="10" style="text-align:center;color:#a0aec0;">無資料</td></tr>`}</tbody></table>
+    </div>`;
+  const el = document.getElementById('ft-stats-content');
+  if (el) el.innerHTML = html;
+}
+
+function _ftRenderStatsEdu() {
+  const classStats = _ftBuildEduLevelClassStats(_ft._statsMergedRows || [], _ft._statsTutorRows || []);
+  const ranked = _ftRankFreshmanClasses(classStats);
+  const top20Set = new Set(ranked.filter(e => e.rank <= 20).map(e => e.classAbbr));
+  const schoolTop5 = _ftTop5IssuesForRows(_ft._statsMergedRows || []);
+
+  const rowHtml = (e) => {
+    const m = e.metrics;
+    const highlighted = e.level === '大一新生' && top20Set.has(e.classAbbr);
+    const tutorCell = e.tutorFound ? escHtml(e.tutorName || '（無資料）') : `<span style="color:#c53030;font-weight:600;">未找到</span>`;
+    const issuesCell = e.top5Issues ? e.top5Issues.map(x => `${escHtml(x.label)}(${x.count})`).join('、') : '';
+    return `<tr style="${highlighted ? 'color:#c53030;font-weight:600;' : ''}">
+      <td>${escHtml(e.classAbbr)}</td><td>${escHtml(e.level)}</td><td>${tutorCell}</td>
+      <td>${m.total}</td><td>${m.tested}</td><td>${m.untested}</td><td>${_ftPct(m.testRate)}</td>
+      <td>${m.highConcern}</td><td>${m.highConcernConsentOnly}</td><td>${m.invalid}</td>
+      <td>${_ftPct(m.highConcernRate)}</td>
+      <td>${e.level === '大一新生' ? issuesCell : ''}</td>
+    </tr>`;
+  };
+
+  const html = `
+    <div style="margin-bottom:10px;background:#f7fafc;border:1px solid #e2e8f0;border-radius:6px;padding:8px 10px;font-size:.84rem;">
+      全校前 5 高議題：${schoolTop5.length ? schoolTop5.map(x => `${escHtml(x.label)}(${x.count})`).join('、') : '（無資料）'}
+    </div>
+    <div style="margin-bottom:8px;color:#718096;font-size:.8rem;">紅字列＝大一新生班級前20高關懷排名（同關懷人數同名次，0 人不排入）</div>
+    <div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px;">
+      <table><thead><tr>
+        <th>班級簡稱</th><th>學制</th><th>導師</th><th>應測</th><th>已測</th><th>未測</th><th>受測比例</th>
+        <th>高關懷(總數)</th><th>高關懷(扣除不同意)</th><th>無效人數</th><th>高關懷比例</th><th>前5高議題（大一新生）</th>
+      </tr></thead><tbody>${classStats.map(rowHtml).join('') || `<tr><td colspan="12" style="text-align:center;color:#a0aec0;">無資料</td></tr>`}</tbody></table>
+    </div>`;
+  const el = document.getElementById('ft-stats-content');
+  if (el) el.innerHTML = html;
+}
+
+function _ftRenderStatsTopN() {
+  const classStats = _ftBuildEduLevelClassStats(_ft._statsMergedRows || [], _ft._statsTutorRows || []);
+  const report = _ftTopNFreshmanClassesReport(classStats);
+  const rowHtml = (r) => `<tr>
+      <td>前 ${r.n} 高</td><td>${r.classCount}</td><td>${r.highConcern}</td><td>${r.tested}</td><td>${_ftPct(r.rate)}</td>
+    </tr>`;
+  const html = `
+    <div style="margin-bottom:8px;color:#718096;font-size:.82rem;">大一新生班級依高關懷人數降冪排序，取前 N 班彙總（若實際班級數不足 N，則以現有班級數為準）——此為乾淨詮釋版本（ef 原隱藏表語意不明），請眼驗是否符合期待。</div>
+    <div style="overflow-x:auto;border:1px solid #e2e8f0;border-radius:8px;">
+      <table><thead><tr><th>檔次</th><th>納入班級數</th><th>合計高關懷人數</th><th>合計已測人數</th><th>高關懷比例</th></tr></thead>
+      <tbody>${report.map(rowHtml).join('')}</tbody></table>
+    </div>`;
+  const el = document.getElementById('ft-stats-content');
+  if (el) el.innerHTML = html;
+}
+
 // ══════════════ 學期資料集 ══════════════
 
 async function _ftLoadSemesters() {
@@ -52756,9 +53267,12 @@ async function _ftSwitchTab(tab, force) {
   });
   const sheet = _ftCurrentSheet();
   const isMerged = tab === 'merged';
+  const isStats = tab === 'stats';
   const sheetTabEl = document.getElementById('ft-sheet-tab');
   const placeholderEl = document.getElementById('ft-tab-placeholder');
+  const statsTabEl = document.getElementById('ft-stats-tab');
   const dupBarEl = document.getElementById('ft-gform-dup-bar');
+  if (statsTabEl) statsTabEl.style.display = isStats ? '' : 'none';
   // v209：整合（merged）沒有對應的後端 sheet（唯讀衍生視圖），但仍走 #ft-sheet-tab 這個 grid 容器
   // （見 _ftLoadMergedView），只是隱藏工具列（不可編輯）、改顯示彙總列/未對應清單。
   if (sheet || isMerged) {
@@ -52776,6 +53290,10 @@ async function _ftSwitchTab(tab, force) {
       if (unmatchedBarEl) { unmatchedBarEl.style.display = 'none'; unmatchedBarEl.innerHTML = ''; }
     }
     if (isMerged) await _ftLoadMergedView(); else await _ftLoadActiveSheet();
+  } else if (isStats) {
+    if (sheetTabEl) sheetTabEl.style.display = 'none';
+    if (placeholderEl) placeholderEl.style.display = 'none';
+    await _ftLoadStatsView();
   } else {
     if (sheetTabEl) sheetTabEl.style.display = 'none';
     if (placeholderEl) { placeholderEl.style.display = ''; _ftRenderPlaceholder(tab); }
@@ -52783,7 +53301,7 @@ async function _ftSwitchTab(tab, force) {
 }
 
 function _ftRenderPlaceholder(tab) {
-  const labels = { stats: '統計' }; // v209：tutors／merged 已實作，僅 stats 仍是佔位（Slice 4）
+  const labels = {}; // v210：students/tests/gform/tutors/merged/stats 六個 tab 皆已實作，目前無佔位項
   const el = document.getElementById('ft-tab-placeholder');
   if (el) el.innerHTML = `<div style="padding:40px;text-align:center;color:#a0aec0;">🚧 ${escHtml(labels[tab] || tab)}開發中，敬請期待後續版本。</div>`;
 }
