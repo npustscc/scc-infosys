@@ -93,6 +93,22 @@ const OPENMAIL_IMAP_HOST = process.env.OPENMAIL_IMAP_HOST || 'mail.npust.edu.tw'
 const OPENMAIL_IMAP_PORT = Number(process.env.OPENMAIL_IMAP_PORT || 993);
 const OPENMAIL_SMTP_HOST = process.env.OPENMAIL_SMTP_HOST || 'mail.npust.edu.tw';
 const OPENMAIL_SMTP_PORT = Number(process.env.OPENMAIL_SMTP_PORT || 465);
+// 簡訊發送（三竹 Mitake／Every8D，見 src/sms/）連線設定——帳密只在 server .env，前端永不經手
+// （見 src/sms/actions.js getMitakeConfig/getE8dConfig，比照 openmail 帳密的「機密永不進 repo」
+// 資安原則）。全部選填：任一平台缺帳密即視為「未設定此平台」（smsStatus 據此回報，smsSend/
+// smsBalance 對該平台一律回業務錯誤 sms_not_configured，不 fail-fast、不影響其他平台或其餘功能）。
+const SMS_MITAKE_HOST = process.env.SMS_MITAKE_HOST || '';
+// 依三竹核發帳號而異：一般帳號 /api/mtk，B2C 帳號可能是 /b2c/mtk，缺值採前者。
+const SMS_MITAKE_BASE_PATH = process.env.SMS_MITAKE_BASE_PATH || '/api/mtk';
+const SMS_MITAKE_USERNAME = process.env.SMS_MITAKE_USERNAME || '';
+const SMS_MITAKE_PASSWORD = process.env.SMS_MITAKE_PASSWORD || '';
+// 設 '1' 表示帳號已開通長簡訊權限；未設時 sms/actions.js smsSend 會擋下超過單則長度（GSM 160/
+// UCS2 70 字）的內容——三竹對未開通長簡訊的帳號會靜默截斷超長簡訊，這是資料正確性風險，寧可
+// 送出前擋下並回業務錯誤，也不要讓使用者以為完整內容已送達。
+const SMS_MITAKE_LONG = process.env.SMS_MITAKE_LONG === '1';
+const SMS_E8D_HOST = process.env.SMS_E8D_HOST || 'api.e8d.tw';
+const SMS_E8D_UID = process.env.SMS_E8D_UID || '';
+const SMS_E8D_PWD = process.env.SMS_E8D_PWD || '';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
@@ -120,6 +136,14 @@ module.exports = {
   OPENMAIL_IMAP_PORT,
   OPENMAIL_SMTP_HOST,
   OPENMAIL_SMTP_PORT,
+  SMS_MITAKE_HOST,
+  SMS_MITAKE_BASE_PATH,
+  SMS_MITAKE_USERNAME,
+  SMS_MITAKE_PASSWORD,
+  SMS_MITAKE_LONG,
+  SMS_E8D_HOST,
+  SMS_E8D_UID,
+  SMS_E8D_PWD,
   NODE_ENV,
   PUBLIC_DIR,
 };

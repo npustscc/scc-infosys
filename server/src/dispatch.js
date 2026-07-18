@@ -10,11 +10,12 @@
 //      clearMentalLeaves 走 actions/mail.js＋本機 Gmail REST，getNpust5AuthUrl/exchangeNpust5OAuthCode
 //      回固定業務錯誤，見 NPUST5_WEB_AUTH_RETIRED_MSG）；v201 起 resolveDir/listDir/createFile/
 //      trashFile 亦已接線（見下方對應 case 註解）；v202 起 13 個 om* 校內 openmail 收發信 action
-//      已接線（見 openmail/actions.js，走一般授權閘，不在 AUTHZ_EXEMPT）；其餘未實作 action →
-//      明確業務錯誤（deleteFile/moveFile＝刻意不移植的純攻擊面死碼，clockContext/clockPunch＝
-//      依定案留在 GAS）
-// 每個請求無論成功/拒絕/例外都寫一筆 audit_log（見 audit.js，content 類參數只記長度；om* action
-// 另有專用摘要，見 audit.summarizeParams 的 action 參數）。
+//      已接線（見 openmail/actions.js，走一般授權閘，不在 AUTHZ_EXEMPT）；v203 起 6 個 sms*
+//      簡訊發送 action 已接線（見 sms/actions.js，三竹 Mitake／Every8D，同樣走一般授權閘）；
+//      其餘未實作 action → 明確業務錯誤（deleteFile/moveFile＝刻意不移植的純攻擊面死碼，
+//      clockContext/clockPunch＝依定案留在 GAS）
+// 每個請求無論成功/拒絕/例外都寫一筆 audit_log（見 audit.js，content 類參數只記長度；om*/sms*
+// action 另有專用摘要，見 audit.summarizeParams 的 action 參數）。
 'use strict';
 
 const envelope = require('./envelope');
@@ -34,6 +35,7 @@ const mailActions = require('./actions/mail');
 const openmailActions = require('./openmail/actions');
 const openmailCredStore = require('./openmail/credStore');
 const openmailClient = require('./openmail/client');
+const smsActions = require('./sms/actions');
 const gcSync = require('./sync/gcSync');
 const clockBridge = require('./actions/clockBridge');
 const adminUsersActions = require('./actions/adminUsers');
@@ -94,6 +96,10 @@ async function handleRequest(db, config, payload) {
   let outcome = 'ok';
   let responseEnvelope;
   let strippedNote = ''; // R1 caseAuthz shadow 模式：本應剝除幾筆的稽核備註（見下方 onShadowStrip）
+  // v203：result 提升到函式作用域（而非侷限於下方 try 區塊內）——sms* action 的稽核紀錄需要在
+  // finally 區塊內讀出 result.logId（見下方 audit 呼叫），smsSend 的 logId 是回傳值、不是 params
+  // 輸入欄位，params-only 的 audit.summarizeParams 拿不到，故改讓 finally 能存取這裡的 result。
+  let result;
 
   try {
     // exchangeNpust5OAuthCode：GAS 版不需要 idToken/sessionToken（code 本身即為授權證明），故沿用
@@ -318,7 +324,6 @@ async function handleRequest(db, config, payload) {
     // ── 5. ACTION_TABLE 分派 ──────────────────────────────────────────────────
     const onShadowStrip = (count, label) => { strippedNote = `caseAuthzShadow:${count}@${label}`; };
 
-    let result;
     switch (action) {
       case 'ping': result = { ok: true, email: userEmail }; break;
       // ── sessionLogout：登出即清 openmail 記憶體憑證＋關閉快取的 IMAP 連線（v202，見
@@ -406,6 +411,18 @@ async function handleRequest(db, config, payload) {
       case 'omDelete': result = await openmailActions.omDelete(userEmail, config, params); break;
       case 'omSearch': result = await openmailActions.omSearch(userEmail, config, params); break;
       case 'omSend': result = await openmailActions.omSend(userEmail, config, params); break;
+      // ── v203：簡訊發送（三竹 Mitake／Every8D，見 src/sms/ 檔頭）。走一般授權閘（不在
+      //    gate.AUTHZ_EXEMPT）；userEmail 皆來自已驗證 session（同 om*/twofa/password 類 action的
+      //    既有原則，smsSend 寫入 sms_batches.sender_email 用的也是這個已驗證身分，不吃 params 裡的
+      //    身分欄位）。三竹/Every8D 帳密只存 server .env（config.js），本檔與 sms/actions.js 皆不
+      //    落地、不回傳前端；smsSend/smsCancel 的稽核紀錄刻意不含簡訊內容/收件人門號（見下方 finally
+      //    區塊的 sms 專用 target/detail 組法，只記 logId 與筆數）。──
+      case 'smsStatus': result = smsActions.smsStatus(config); break;
+      case 'smsBalance': result = await smsActions.smsBalance(config, params); break;
+      case 'smsSend': result = await smsActions.smsSend(db, config, userEmail, params); break;
+      case 'smsListLog': result = smsActions.smsListLog(db, params); break;
+      case 'smsQueryStatus': result = await smsActions.smsQueryStatus(db, config, params); break;
+      case 'smsCancel': result = await smsActions.smsCancel(db, config, params); break;
       case 'configSelfPatch': result = configActions.configSelfPatch(db, params, ctx, userEmail); break;
       case 'configCasesPatch': result = configActions.configCasesPatch(db, params, ctx, userEmail, config.CASES_PATCH_AUTHZ_MODE); break;
       case 'casesUpsert': result = commitActions.casesUpsert(db, params, ctx); break;
@@ -455,11 +472,28 @@ async function handleRequest(db, config, payload) {
     return envelope.fail(err);
   } finally {
     try {
-      const detail = audit.summarizeParams(params, action) + (strippedNote ? `,${strippedNote}` : '');
+      // v203：sms* action 的稽核紀錄刻意不含簡訊內容/收件人門號/姓名（audit.summarizeParams 的
+      // sms 分支已處理，見 audit.js summarizeSmsParams），但仍要能對應到 sms_batches 的哪一筆
+      // ——smsSend 的 logId 是「回傳值」而非輸入參數，params-only 的 target/detail 組法拿不到，
+      // 故這裡額外從 result 補上（smsQueryStatus/smsCancel 的 logId 本就是輸入參數，兩種來源
+      // 皆涵蓋）。只記 id 與筆數，不記內容——同 CLAUDE.md 資安原則 3 去識別化。
+      const isSmsAction = typeof action === 'string' && /^sms[A-Z]/.test(action);
+      const smsLogId = isSmsAction
+        ? ((result && result.logId != null) ? result.logId : (params && params.logId != null ? params.logId : null))
+        : null;
+      const smsResultNote = isSmsAction && result
+        ? [
+          result.logId != null ? `resultLogId=${result.logId}` : null,
+          result.sent != null ? `resultSent=${result.sent}` : null,
+          result.canceled != null ? `resultCanceled=${result.canceled}` : null,
+        ].filter(Boolean).map((s) => `,${s}`).join('')
+        : '';
+      const detail = audit.summarizeParams(params, action) + (strippedNote ? `,${strippedNote}` : '') + smsResultNote;
       audit.appendAuditLog(db, {
         email: outcomeEmail,
         action: action || '(none)',
-        target: params && (params.path || params.file || params.fileId || params.folderId || params.parentId || params.parentFolderId || null),
+        target: (params && (params.path || params.file || params.fileId || params.folderId || params.parentId || params.parentFolderId))
+          || (smsLogId != null ? `smsLog:${smsLogId}` : null) || null,
         outcome,
         latencyMs: Date.now() - t0,
         detail,

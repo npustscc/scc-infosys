@@ -23,6 +23,7 @@ const CONFIDENTIAL_KEYS = new Set(['mailPass', 'password', 'currentPassword', 'n
 function summarizeParams(params, action) {
   if (!params || typeof params !== 'object') return '';
   if (action && /^om[A-Z]/.test(action)) return summarizeOpenmailParams(params);
+  if (action && /^sms[A-Z]/.test(action)) return summarizeSmsParams(params);
   return Object.keys(params).filter((k) => !CONFIDENTIAL_KEYS.has(k)).map((k) => {
     const v = params[k];
     const len = typeof v === 'string' ? v.length : (v && typeof v === 'object' ? JSON.stringify(v).length : String(v).length);
@@ -56,6 +57,23 @@ function summarizeOpenmailParams(params) {
     if (k === 'uids' && Array.isArray(v)) return `uids=${v.length}`;
     if (k === 'to' || k === 'cc' || k === 'bcc') return `${k}_domains=${domainOnlySummary(v)}`;
     if (k === 'subject') return `subject_len=${String(v == null ? '' : v).length}`;
+    const len = typeof v === 'string' ? v.length : (v && typeof v === 'object' ? JSON.stringify(v).length : String(v).length);
+    return `${k}_len=${len}`;
+  }).join(',');
+}
+
+// v203：簡訊發送（sms*）action 專用摘要——收件人（phone/name/caseId）與簡訊內文一律不落地
+// （比照 CLAUDE.md 資安原則 3 去識別化：個資/內文不進稽核，只留「筆數」與可讀的非機密欄位），
+// smsSend/smsCancel「記 logId 與筆數即可」的實際 logId 補記見 dispatch.js finally 區塊（logId 是
+// 回傳值，這裡拿不到，只能處理輸入參數）。
+function summarizeSmsParams(params) {
+  return Object.keys(params).filter((k) => !CONFIDENTIAL_KEYS.has(k)).map((k) => {
+    const v = params[k];
+    if (k === 'recipients' && Array.isArray(v)) return `recipients=${v.length}`;
+    if (k === 'message') return `message_len=${String(v == null ? '' : v).length}`;
+    if (k === 'provider') return `provider=${v}`;
+    if (k === 'scheduledAt') return `scheduledAt=${v ? String(v).slice(0, 14) : ''}`;
+    if (k === 'logId' || k === 'limit' || k === 'offset') return `${k}=${v}`;
     const len = typeof v === 'string' ? v.length : (v && typeof v === 'object' ? JSON.stringify(v).length : String(v).length);
     return `${k}_len=${len}`;
   }).join(',');
