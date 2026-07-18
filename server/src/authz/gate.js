@@ -53,18 +53,21 @@ const ADMIN_ONLY_ACTIONS = {
 };
 
 // F3：fileId/parentId 類動作限制在本次 ctx.root 子樹——Phase 1 骨架已實作的 action 對映。
+// resolveDir／listDir（v201）不在本表：兩者的路徑解析一律從 ctx.root 起算（同 readJson/updateJson
+// 的 path 參數），前端無法提供任意 fileId/folderId 逃逸出 root，故不需要 ROOT_GUARDED 額外把關。
 const ROOT_GUARDED = {
   readJsonById: 'fileId',
   updateContentById: 'fileId',
   getMetadata: 'fileId',
   createJson: 'parentId',
   listFolder: 'folderId',
-  // 以下為 GAS 版亦有、但 Node 版尚未實作的 action，保留映射供未來沿用：
-  deleteFile: 'fileId',
-  moveFile: 'fileId',
-  trashFile: 'fileId',
   createFolder: 'parentId',
   uploadFile: 'parentFolderId',
+  createFile: 'parentId', // v201：移植完整性掃描收尾
+  trashFile: 'fileId',    // v201：移植完整性掃描收尾（此列先前為「尚未實作」保留映射，現已接線）
+  // 以下為 GAS 版亦有、但 Node 版刻意不移植的純攻擊面 action（前端零引用），保留映射供未來沿用：
+  deleteFile: 'fileId',
+  moveFile: 'fileId',
 };
 
 // ── P0-2/v164：config.json 整檔寫入的授權面保護 ──

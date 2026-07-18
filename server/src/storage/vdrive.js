@@ -145,11 +145,70 @@ function getMetadata(db, fileId) {
   return rowToMeta(row);
 }
 
-function listFolder(db, folderId) {
+// v201：附帶驗證時發現 dev/index.html getCasesFolderFileMap 呼叫 listFolder 時已預期回應帶
+// modifiedTime（`fields: 'id,name,modifiedTime'`，用於「同名檔取最新」判斷，見該函式），但本函式
+// 原本只回 id/name/mimeType——modifiedTime 一律為 undefined，年份子資料夾內的同名檔比對永遠選中
+// 第一筆而非真正最新一筆。GAS 版 listFolder_ 直接轉發真實 Drive API、`fields` 參數要什麼有什麼，
+// 此處 vdrive 是虛擬層、不做欄位篩選（見 pageSize 之前的呼叫端共識：全欄位都有就直接回），故補上
+// modifiedTime（= updated_at）一併回傳，向下相容（多一個欄位不影響既有只取 id/name/mimeType 的呼叫端）。
+// pageSize（GAS 版預設 400）：本函式原本無上限，此處補上同預設值的裁切，供 listDir 共用。
+function listFolder(db, folderId, pageSize) {
+  const limit = pageSize && Number(pageSize) > 0 ? Math.floor(Number(pageSize)) : 400;
   const rows = db.prepare(
-    `SELECT id, name, mime_type FROM files WHERE parent_id = ? AND trashed = 0 ORDER BY name`
-  ).all(folderId);
-  return { files: rows.map((r) => ({ id: r.id, name: r.name, mimeType: r.mime_type })) };
+    `SELECT id, name, mime_type, updated_at FROM files WHERE parent_id = ? AND trashed = 0
+     ORDER BY name LIMIT ?`
+  ).all(folderId, limit);
+  return { files: rows.map((r) => ({ id: r.id, name: r.name, mimeType: r.mime_type, modifiedTime: r.updated_at })) };
+}
+
+// resolveDir_ 對映（v201）：path 為 'a/b' 形式，與 resolvePathToId 不同之處——每一段（含最後一段）
+// 皆須為資料夾，因為要解析的目標本身就是一個目錄，不是「目錄+檔案」。找不到任一段即拋錯。
+function resolveDirId(db, dirPath, ctx) {
+  const parts = String(dirPath == null ? '' : dirPath).split('/');
+  let curId = ctx.root;
+  for (const part of parts) {
+    const folder = db.prepare(
+      `SELECT id FROM files WHERE name = ? AND parent_id = ? AND mime_type = ? AND trashed = 0
+       ORDER BY updated_at DESC LIMIT 1`
+    ).get(part, curId, FOLDER_MIME);
+    if (!folder) throw new Error('Folder not found: ' + part);
+    curId = folder.id;
+  }
+  return curId;
+}
+
+// listDir_ 對映（v201）：resolveDirId 解出目錄後直接重用 listFolder（含上面新增的 modifiedTime／
+// pageSize），行為與 GAS 版「resolveDir_ 找到 folderId 後轉發同一組 Drive list 呼叫」一致。
+function listDir(db, dirPath, ctx, pageSize) {
+  const folderId = resolveDirId(db, dirPath, ctx);
+  return listFolder(db, folderId, pageSize);
+}
+
+// createFile_ 對映（v201）：GAS 版其實從未有這個 action（前端 debug_log 備份流程的 fallback 呼叫的
+// 是一個從未存在於 GAS switch 的 action 名稱，見 dispatch.js 該 case 註解），此處為新設語意——
+// 與 createJson 的差異：createJson 一律把 content 當「JS 物件」JSON.stringify 存、mime_type
+// 固定 application/json；createFile 的呼叫端（_syslogFlushToDrive）給的 content 是「已經
+// JSON.stringify 過的文字」，若再套用 createJson 的邏輯會被二次序列化（存進去的內容會變成一個
+// 內容是 JSON 字串的 JSON 字串）。createFile 因此直接把 content 當純文字原樣存、mime_type 採
+// 呼叫端指定值（預設 text/plain），不做任何序列化——讀回時字面即為呼叫端當初傳入的文字。
+function createFile(db, { name, content, mimeType, parentId }) {
+  const id = newFileId();
+  const text = content == null ? '' : String(content);
+  db.prepare(
+    `INSERT INTO files (id, parent_id, name, mime_type, content, trashed, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 0, ?, ?)`
+  ).run(id, parentId || null, name, mimeType || 'text/plain', text, nowIso(), nowIso());
+  return rowToMeta(getFileById(db, id));
+}
+
+// trashFile_ 對映（v201，見 authz/gate.js ROOT_GUARDED.trashFile 早已預留的 'fileId' 映射）：
+// 軟刪除（trashed=1），不像 GAS 版的 deleteFile_ 那樣真的從 Drive 移除——GAS 的 trashFile_
+// 本身也只是 drivePatch_(fileId, {trashed:true})，同樣是軟刪除，此處語意一致。
+function trashFile(db, fileId) {
+  const row = getFileById(db, fileId);
+  if (!row) throw new Error('trashFile failed: ' + fileId);
+  db.prepare('UPDATE files SET trashed = 1, updated_at = ? WHERE id = ?').run(nowIso(), fileId);
+  return rowToMeta(getFileById(db, fileId));
 }
 
 // fileId 是否為 rootId 的子孫（含自身）。files 表只存單一 parent_id（vdrive 簡化，不支援 Drive
@@ -233,6 +292,10 @@ module.exports = {
   updateJson,
   getMetadata,
   listFolder,
+  resolveDirId,
+  listDir,
+  createFile,
+  trashFile,
   isUnderRoot,
   query,
   parseQueryClauses,

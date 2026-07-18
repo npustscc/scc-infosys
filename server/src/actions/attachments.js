@@ -63,6 +63,16 @@ function uploadFile(db, { parentFolderId, fileName, mimeType, base64Data }) {
   return { fileId: meta.id, fileName: meta.name };
 }
 
+// ── trashFile（v201：移植完整性掃描收尾）────────────────────────────────────
+// 對映 trashFile_（GAS：drivePatch_(fileId, {trashed:true})，軟刪除）。唯一呼叫點是
+// confirmClearAllCases 清空個案 chunk（見 dev/index.html）——GAS 版本身未把此 action 列入
+// ADMIN_ONLY_ACTIONS，只受一般授權閘＋F3 ROOT_GUARDED（gate.js 早已預留 trashFile:'fileId'
+// 映射，dispatch.js 步驟 4c 通用套用）保護，此處比照不額外加驗證。
+function trashFile(db, { fileId }) {
+  if (!fileId) throw new Error('trashFile: 缺少 fileId');
+  return vdrive.trashFile(db, fileId);
+}
+
 // ── downloadFileBase64（三層查找）───────────────────────────────────────────
 // 對映 downloadFileBase64_，但額外處理 GAS 時代沒有的兩種情境：
 //   Tier 1：本庫（vdrive）——最常見情境，本環境上傳的附件。
@@ -282,6 +292,7 @@ module.exports = {
   LEGACY_ROOT_MAX_DEPTH,
   createFolder,
   uploadFile,
+  trashFile,
   downloadFileBase64,
   attachListHasFileId,
   issuesHasAttachment,

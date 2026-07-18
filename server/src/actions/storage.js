@@ -50,12 +50,27 @@ function getMetadata(db, { fileId }) {
   return vdrive.getMetadata(db, fileId);
 }
 
-function listFolder(db, { folderId }) {
-  return vdrive.listFolder(db, folderId);
+function listFolder(db, { folderId, pageSize }) {
+  return vdrive.listFolder(db, folderId, pageSize);
 }
 
 function query(db, { q }) {
   return vdrive.query(db, q);
+}
+
+// ── resolveDir/listDir/createFile（v201：移植完整性掃描收尾，見 dispatch.js 該三個 case 註解）──
+
+function resolveDir(db, { path: dirPath }, ctx) {
+  return { id: vdrive.resolveDirId(db, dirPath, ctx) };
+}
+
+function listDir(db, { path: dirPath, pageSize }, ctx) {
+  return vdrive.listDir(db, dirPath, ctx, pageSize);
+}
+
+function createFile(db, { name, content, mimeType, parentId }) {
+  if (!name || !parentId) throw new Error('createFile: 缺少 name/parentId');
+  return vdrive.createFile(db, { name, content, mimeType, parentId });
 }
 
 // ── startupBatch：前端開機唯一依賴的複合請求 ──
@@ -153,6 +168,9 @@ module.exports = {
   createJson,
   getMetadata,
   listFolder,
+  resolveDir,
+  listDir,
+  createFile,
   query,
   startupBatch,
 };

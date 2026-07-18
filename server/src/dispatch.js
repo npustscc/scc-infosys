@@ -8,7 +8,9 @@
 //   5. ACTION_TABLE 分派；日曆 7 個 action 已實作（走 actions/sync/gcSync.js＋本機 Calendar REST，
 //      見 CALENDAR_SYNC_CREDS）；npust5 信件解析 4 個 action 已實作（fetchMentalLeaves/
 //      clearMentalLeaves 走 actions/mail.js＋本機 Gmail REST，getNpust5AuthUrl/exchangeNpust5OAuthCode
-//      回固定業務錯誤，見 NPUST5_WEB_AUTH_RETIRED_MSG）；其餘未實作 action → 明確業務錯誤
+//      回固定業務錯誤，見 NPUST5_WEB_AUTH_RETIRED_MSG）；v201 起 resolveDir/listDir/createFile/
+//      trashFile 亦已接線（見下方對應 case 註解）；其餘未實作 action → 明確業務錯誤（deleteFile/
+//      moveFile＝刻意不移植的純攻擊面死碼，clockContext/clockPunch＝依定案留在 GAS）
 // 每個請求無論成功/拒絕/例外都寫一筆 audit_log（見 audit.js，content 類參數只記長度）。
 'use strict';
 
@@ -354,6 +356,18 @@ async function handleRequest(db, config, payload) {
       case 'listFolder': result = storageActions.listFolder(db, params); break;
       case 'query': result = storageActions.query(db, params); break;
       case 'startupBatch': result = storageActions.startupBatch(db, params, ctx, config); break;
+      // ── v201：移植完整性掃描收尾——resolveDir/listDir/createFile/trashFile 接線（此前四個
+      //    action 落到下方 default，前端呼叫端每次都吃 not-implemented 業務錯誤後退回 fallback，
+      //    見 dev/index.html getCasesFolderFileMap／_debugLogEnsureFolder／_syslogFlushToDrive／
+      //    confirmClearAllCases）。resolveDir/listDir 對映 dev/Code.gs resolveDir_/listDir_
+      //    （路徑一律從 ctx.root 起算，不需要 ROOT_GUARDED，見 gate.js 該常數頭註解）；createFile
+      //    為 GAS 版從未存在過的新 action（前端呼叫的名稱本就不在 GAS switch 裡，見
+      //    actions/storage.js createFile 函式頭），parentId 走 ROOT_GUARDED；trashFile 對映
+      //    trashFile_（軟刪除），ROOT_GUARDED 映射（gate.js）早已預留、此處才真正接線。──
+      case 'resolveDir': result = storageActions.resolveDir(db, params, ctx); break;
+      case 'listDir': result = storageActions.listDir(db, params, ctx); break;
+      case 'createFile': result = storageActions.createFile(db, params); break;
+      case 'trashFile': result = attachmentActions.trashFile(db, params); break;
       // ── v200：附件 action（見 actions/attachments.js 檔頭，cutover 回歸修補）。createFolder／
       //    uploadFile 已由 gate.ROOT_GUARDED（步驟 4c，見上方）限制 parentId/parentFolderId 須在
       //    本次 ctx.root 子樹；downloadFileBase64 不走 ROOT_GUARDED 簡單黑白名單（GAS 版亦然），
