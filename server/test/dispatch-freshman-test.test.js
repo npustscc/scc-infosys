@@ -249,12 +249,14 @@ test('ftSaveSchema：audit_log 記欄位 id 但不含學生資料（本就不在
   assert.match(auditRow.detail, /cols=stu_id\|name_zh/);
 });
 
-test('ftGetSheet：不支援的 sheet（尚未實作的後續切片 tab，如導師名冊）→ 業務錯誤', async () => {
+test('ftGetSheet：不支援的 sheet（尚未實作的後續切片 tab，如整合）→ 業務錯誤', async () => {
   const db = openDb(':memory:');
   const tok = await setupFtUser(db);
   await handleRequest(db, testConfig(), { action: 'ftCreateSemester', sessionToken: tok, rootFolderId: ROOT, id: '114-1' });
   const r = await handleRequest(db, testConfig(), {
-    action: 'ftGetSheet', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tutors',
+    // v209：導師名冊（tutors）已於 Slice 3 開放，整合（merged）仍是前端純衍生視圖、不落地儲存，
+    // 維持白名單外（見 freshmanTest/actions.js SHEETS 檔頭註解）。
+    action: 'ftGetSheet', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'merged',
   });
   assert.equal(r.success, false);
 });

@@ -444,6 +444,10 @@ async function handleRequest(db, config, payload) {
       case 'ftGetSheet': result = freshmanTestActions.ftGetSheet(db, params, ctx); break;
       case 'ftSaveSchema': result = freshmanTestActions.ftSaveSchema(db, params, ctx, userEmail); break;
       case 'ftSaveRows': result = freshmanTestActions.ftSaveRows(db, params, ctx, userEmail); break;
+      // v209：導師名冊「與導師系統同步」——唯讀讀取同機 tutorsys store（見
+      // freshmanTest/tutorsysSync.js 白名單），未設定 TUTORSYS_STORE_DIR 時直接讓錯誤往上拋，
+      // 走一般 catch 區塊變成業務錯誤（前端據此顯示「未設定」）。
+      case 'ftTutorSyncFetch': result = freshmanTestActions.ftTutorSyncFetch(config.TUTORSYS_STORE_DIR); break;
       case 'configSelfPatch': result = configActions.configSelfPatch(db, params, ctx, userEmail); break;
       case 'configCasesPatch': result = configActions.configCasesPatch(db, params, ctx, userEmail, config.CASES_PATCH_AUTHZ_MODE); break;
       case 'casesUpsert': result = commitActions.casesUpsert(db, params, ctx); break;

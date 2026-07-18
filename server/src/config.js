@@ -109,6 +109,13 @@ const SMS_MITAKE_LONG = process.env.SMS_MITAKE_LONG === '1';
 const SMS_E8D_HOST = process.env.SMS_E8D_HOST || 'api.e8d.tw';
 const SMS_E8D_UID = process.env.SMS_E8D_UID || '';
 const SMS_E8D_PWD = process.env.SMS_E8D_PWD || '';
+// v209：新生心理測驗「導師名冊」與 tutorsys 同步（見 freshmanTest/tutorsysSync.js）——指向同機
+// scc-tutorsys 該環境的 store 目錄絕對路徑（dev 對 dev、prod 對 prod，不可交叉；例：
+// /home/scc-s-admin/scc-tutor-dev/server/data/store）。唯讀，且只允許讀取白名單內的
+// classes.json／departments.json 兩檔（見 tutorsysSync.js ALLOWED_FILES，exact-match，非
+// pattern）。留空（預設）＝ftTutorSyncFetch 回業務錯誤，前端「與導師系統同步」按鈕顯示「未設定」，
+// 其餘新生心理測驗功能不受影響，故不可用 required()。
+const TUTORSYS_STORE_DIR = process.env.TUTORSYS_STORE_DIR || '';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
@@ -144,6 +151,7 @@ module.exports = {
   SMS_E8D_HOST,
   SMS_E8D_UID,
   SMS_E8D_PWD,
+  TUTORSYS_STORE_DIR,
   NODE_ENV,
   PUBLIC_DIR,
 };

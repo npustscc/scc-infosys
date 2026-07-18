@@ -26,16 +26,19 @@
 'use strict';
 
 const vdrive = require('../storage/vdrive');
+const tutorsysSync = require('./tutorsysSync');
 
 const ROOT_DIR = 'freshman-test';
 const SEMESTERS_PATH = `${ROOT_DIR}/semesters.json`;
 
-// v208 Slice 2：導師名冊/整合/統計仍是前端佔位、後端尚未實作，白名單刻意先只開放已完整設計的
-// 三個資料 tab（預設 deny，CLAUDE.md 資安原則 1）。
-const SHEETS = new Set(['students', 'tests', 'gforms']);
-// 學號欄固定不可刪（比對主鍵）——三個 sheet 皆用同一個 colId『stu_id』代表學號欄（刻意統一命名，
-// 讓前端「依學號跨 sheet 比對」的檢核程式碼不需要為每個 sheet 另外查一次 colId 對映表）。
-const LOCKED_COL_ID = { students: 'stu_id', tests: 'stu_id', gforms: 'stu_id' };
+// v209 Slice 3：導師名冊（tutors）開放——整合（merged）仍是前端純衍生視圖、不落地儲存，維持
+// 白名單外（預設 deny，CLAUDE.md 資安原則 1）；統計（stats）留待 Slice 4。
+const SHEETS = new Set(['students', 'tests', 'gforms', 'tutors']);
+// 學號欄固定不可刪（比對主鍵）——students/tests/gforms 三個 sheet 皆用同一個 colId『stu_id』代表
+// 學號欄（刻意統一命名，讓前端「依學號跨 sheet 比對」的檢核程式碼不需要為每個 sheet 另外查一次
+// colId 對映表）。tutors 的主鍵改為『class_abbr』（班級簡稱）——導師名冊沒有學號概念，比對主鍵
+// 是班級。
+const LOCKED_COL_ID = { students: 'stu_id', tests: 'stu_id', gforms: 'stu_id', tutors: 'class_abbr' };
 
 const STUDENTS_DEFAULT_COLS = [
   { id: 'stu_id', name: '學號', required: true, locked: true, width: 110 },
@@ -135,6 +138,18 @@ function genTestsDefaultCols() {
   return cols;
 }
 
+// v209：導師名冊——5+1 欄，欄位順序照任務規格「學院／系所／班級簡稱／導師／導師Email」，
+// 班級簡稱為鎖定主鍵欄（比照 students 的學號 locked）；另加一個「備註」欄供同步時標記
+// 「系主任（博士班預設）」等提示文字（見前端 _ftAssembleTutorSyncRows）。
+const TUTORS_DEFAULT_COLS = [
+  { id: 'college', name: '學院' },
+  { id: 'dept', name: '系所' },
+  { id: 'class_abbr', name: '班級簡稱', required: true, locked: true, width: 140 },
+  { id: 'tutor_name', name: '導師' },
+  { id: 'tutor_email', name: '導師Email' },
+  { id: 'note', name: '備註', width: 160 },
+];
+
 function defaultSchema(sheet) {
   if (sheet === 'students') {
     return { version: 1, cols: STUDENTS_DEFAULT_COLS.map((c) => ({ ...c })) };
@@ -144,6 +159,9 @@ function defaultSchema(sheet) {
   }
   if (sheet === 'gforms') {
     return { version: 1, cols: GFORMS_DEFAULT_COLS.map((c) => ({ ...c })) };
+  }
+  if (sheet === 'tutors') {
+    return { version: 1, cols: TUTORS_DEFAULT_COLS.map((c) => ({ ...c })) };
   }
   throw new Error(`freshmanTest: 未知 sheet（${sheet}）`);
 }
@@ -388,12 +406,24 @@ function ftSaveRows(db, params, ctx, userEmail) {
   return { ...result, historical };
 }
 
+// ── ftTutorSyncFetch：唯讀讀取同機 tutorsys 的 classes.json／departments.json（投影後的最小
+//    欄位集，見 tutorsysSync.js 檔頭）。純讀取、不寫入，因此不需要 semester/db 參數——tutorsys
+//    的班級/系所本身不分學期（見 memory project_freshman_test.md「tutorsys 資料結構」：per-term
+//    只有 records_<semesterId>.json 有分，classes/departments 是 tutorsys 目前現況的單一快照）。
+//    「與哪個學期同步」是前端的事（同步組裝時要另外載入該學期的 students sheet 找博士班班級／
+//    學院猜測配對，見前端 _ftAssembleTutorSyncRows），本 action 只負責回傳 tutorsys 原始快照。
+//    TUTORSYS_STORE_DIR 未設定時直接拋錯，dispatch.js 讓它自然變成業務錯誤（前端顯示「未設定」）。──
+function ftTutorSyncFetch(tutorsysStoreDir) {
+  return tutorsysSync.fetchTutorsysSnapshot(tutorsysStoreDir);
+}
+
 module.exports = {
   ROOT_DIR,
   SHEETS,
   LOCKED_COL_ID,
   STUDENTS_DEFAULT_COLS,
   GFORMS_DEFAULT_COLS,
+  TUTORS_DEFAULT_COLS,
   genTestsDefaultCols,
   defaultSchema,
   assertSheetAllowed,
@@ -407,4 +437,5 @@ module.exports = {
   ftGetSheet,
   ftSaveSchema,
   ftSaveRows,
+  ftTutorSyncFetch,
 };
