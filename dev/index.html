@@ -1777,6 +1777,8 @@
           <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
             <button class="btn btn-danger btn-sm" onclick="_logoutAllDevices()">登出所有裝置</button>
             <button class="btn btn-secondary btn-sm" onclick="_renderMySessions()">重新整理</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="_ckgSetAll('pref-session-chk',true)">全選</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="_ckgSetAll('pref-session-chk',false)">全不選</button>
             <button id="pref-session-archive-btn" class="btn btn-secondary btn-sm" onclick="_archiveMySessionsChecked()" style="display:none;">封存勾選</button>
             <button id="pref-session-archive-all-btn" class="btn btn-secondary btn-sm" onclick="_archiveMySessionsAll()" style="display:none;">全部封存</button>
           </div>
@@ -4121,6 +4123,10 @@
 
           <div id="modal-supervisees-wrap" class="form-row" style="display:none;margin-top:16px;margin-bottom:0;">
             <label id="modal-supervisees-label">負責的實習生</label>
+            <div style="display:flex;gap:6px;margin-bottom:4px;">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="_ckgSetAll('mspv-cb',true)">全選</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="_ckgSetAll('mspv-cb',false)">全不選</button>
+            </div>
             <div id="modal-supervisees-picker" style="max-height:300px;overflow-y:auto;overflow-x:hidden;border:1px solid #cbd5e0;border-radius:6px;padding:8px 10px;background:#fafbfc;">
               <span style="font-size:.82rem;color:#a0aec0;">請先勾選督導或窗口身分…</span>
             </div>
@@ -5218,13 +5224,17 @@ document.addEventListener('keyup', function (e) {
   if (toolbar?.classList.contains('rt-toolbar')) _updateRtBtnStates(toolbar);
 });
 
-// ── 通用：批次勾選清單的 Shift 範圍選取 ──
+// ── 通用：批次勾選清單的全選／全不選／Shift 範圍選取（v205 起，全站共用同一套機制，見下方登記表）──
 // 適用全站所有「列級批次勾選」清單（個案列表、案號查詢與管理、待辦事項、身心調適假等，見下方清單），
-// 不含單一設定用途的 checkbox（如「僅看自己」這類非清單多選）。
+// 不含單一設定用途的 checkbox（如「僅看自己」這類非清單多選）。新增涉及批次勾選的功能時，一律將
+// row checkbox 加上共同 class 並登記進 SHIFT_RANGE_SELECT_CLASSES，即自動取得 Shift 範圍選取；
+// 全選/全不選則呼叫 _ckgSetAll(class, checked) 或直接輸出 _ckgToolbarHtml(class) 兩顆按鈕。
 // 用事件委派掛在 document 上（依 class 判斷群組），不受清單 re-render（innerHTML 重建）影響；
 // 記錄每個群組「上次點擊」的 checkbox，shift+click 時把兩者之間（依目前 DOM 順序）的同群組 checkbox
 // 全部設成本次點擊 checkbox 的勾選狀態，並對每個被改動的 checkbox 觸發 change 事件，讓既有 onchange
 // （如 _casesSelected 等狀態同步）照常執行。checkbox 的 click 事件觸發時 checked 已是切換後的新值。
+// 範圍計算（_ckgRangeIndices）為純函式、獨立於 DOM，供本機制與 pt/ir/gt/wd 等狀態陣列型匯入預覽
+// 清單共用（見各自的 xxSel／xxSelAll），避免重複實作同一段「Shift 範圍」邏輯。
 const SHIFT_RANGE_SELECT_CLASSES = [
   'case-row-chk',   // 個案列表
   'cn-row-chk',     // 案號查詢與管理
@@ -5238,7 +5248,45 @@ const SHIFT_RANGE_SELECT_CLASSES = [
   'grad-cb',        // 畢業生列管
   'wd-cb',          // 休退學列管
   'mspv-cb',        // 督導設定的受督者picker
+  'imp-unclosed',   // 匯入服務總表：勾選仍未結案個案
+  'bic-oor-chk',    // 批次匯入服務總表：排除超出學期範圍記錄
+  'om-msg-cb',      // 校內信箱：訊息列表
+  'pref-session-chk', // 偏好設定：登入紀錄封存勾選
 ];
+
+// 純函式：從 orderedKeys（依畫面目前順序排列的識別值陣列，可以是 DOM 順序索引，也可以是狀態
+// 陣列的業務 id）中，算出 fromKey～toKey（含頭尾）之間的所有識別值。用於「Shift+點擊批次勾選」
+// 的範圍計算，全站共用同一份邏輯（不論背後是純 DOM checkbox，或狀態陣列＋重繪的匯入預覽清單）。
+// 找不到 fromKey 或 toKey 時，退化為只回傳 [toKey]（找不到範圍就至少處理本次點擊的項目）；
+// toKey 為 null/undefined（無點擊目標）時回傳空陣列。
+function _ckgRangeIndices(orderedKeys, fromKey, toKey) {
+  if (toKey === undefined || toKey === null) return [];
+  const from = orderedKeys.indexOf(fromKey);
+  const to = orderedKeys.indexOf(toKey);
+  if (from === -1 || to === -1) return [toKey];
+  const lo = Math.min(from, to), hi = Math.max(from, to);
+  return orderedKeys.slice(lo, hi + 1);
+}
+
+// 對某 class 的所有 checkbox（未 disabled 者）設定同一勾選狀態；用 .click() 模擬真實點擊
+// （而非直接改 .checked 再派發 change），確保不論該畫面把狀態更新邏輯掛在 onchange 或 onclick
+// 上都能正確觸發，行為等同使用者一顆顆真的點過一遍。
+function _ckgSetAll(cls, checked) {
+  document.querySelectorAll('.' + cls).forEach(cb => {
+    if (cb.disabled) return;
+    if (cb.checked !== checked) cb.click();
+  });
+}
+
+// 標準「全選／全不選」工具列（兩顆小按鈕），一行接入既有畫面：_ckgToolbarHtml('xxx-chk')。
+function _ckgToolbarHtml(cls, opts) {
+  opts = opts || {};
+  const size = opts.size || 'sm';
+  const labels = opts.labels || ['全選', '全不選'];
+  return `<button type="button" class="btn btn-secondary btn-${size}" onclick="_ckgSetAll('${cls}',true)">${escHtml(labels[0])}</button>` +
+    `<button type="button" class="btn btn-secondary btn-${size}" onclick="_ckgSetAll('${cls}',false)">${escHtml(labels[1])}</button>`;
+}
+
 const _shiftRangeLastClicked = {}; // class 名稱 → 該群組最後點擊的 checkbox 元素
 // 用 capture phase：部分清單（如個案列表）的 row checkbox 外層有 onclick="event.stopPropagation()"
 // 阻擋事件冒泡到 document，capture phase 由上而下先於那些 bubble-phase 攔截執行，才能穩定收到事件。
@@ -5249,19 +5297,18 @@ document.addEventListener('click', function (e) {
   if (!cls) return;
   if (e.shiftKey && _shiftRangeLastClicked[cls] && document.contains(_shiftRangeLastClicked[cls]) && _shiftRangeLastClicked[cls] !== cb) {
     const group = [...document.querySelectorAll('.' + cls)];
+    const idxKeys = group.map((_, i) => i);
     const from = group.indexOf(_shiftRangeLastClicked[cls]);
     const to = group.indexOf(cb);
-    if (from !== -1 && to !== -1) {
-      const [lo, hi] = from < to ? [from, to] : [to, from];
-      const target = cb.checked;
-      for (let i = lo; i <= hi; i++) {
-        const item = group[i];
-        if (item.checked !== target) {
-          item.checked = target;
-          item.dispatchEvent(new Event('change', { bubbles: true }));
-        }
+    const range = (from !== -1 && to !== -1) ? _ckgRangeIndices(idxKeys, from, to) : [];
+    const target = cb.checked;
+    range.forEach(i => {
+      const item = group[i];
+      if (item.checked !== target) {
+        item.checked = target;
+        item.dispatchEvent(new Event('change', { bubbles: true }));
       }
-    }
+    });
   }
   _shiftRangeLastClicked[cls] = cb;
 }, true);
@@ -18980,7 +19027,7 @@ function _showBatchImportConfirm(parsedFiles, newCounselorsMap = {}) {
             const reason = range ? ((r.record.date||'') < range.first ? '早於學期起始' : '晚於學期結束') : '超出範圍';
             return `<tr style="background:${isExcluded?'#f7fafc':'#fffbeb'};">
               <td style="padding:6px 10px;text-align:center;">
-                <input type="checkbox" ${isExcluded?'checked':''} title="勾選=排除不匯入" data-recid="${escHtml(r.record.id)}" onchange="window._bicToggle(this)" style="cursor:pointer;width:15px;height:15px;">
+                <input type="checkbox" class="bic-oor-chk" ${isExcluded?'checked':''} title="勾選=排除不匯入" data-recid="${escHtml(r.record.id)}" onchange="window._bicToggle(this)" style="cursor:pointer;width:15px;height:15px;">
               </td>
               <td style="padding:6px 10px;font-size:.85rem;color:#4a5568;">${escHtml(r.record.date||'—')}</td>
               <td style="padding:6px 10px;font-size:.88rem;font-weight:600;">${escHtml(r.studentName||'—')}</td>
@@ -19652,20 +19699,12 @@ function showImportReviewModal(imported, prog, newCounselorsMap) {
       rerender();
     };
     window._irLastClick = -1;
+    // Shift 範圍計算改呼叫共用純函式 _ckgRangeIndices（見全站批次勾選共用 helper），
+    // 不再各自重複實作同一段 Math.min/max 範圍邏輯。
     window.irSel = (origIdx, checked, evt) => {
-      const filtered = getFiltered();
-      if (evt.shiftKey && window._irLastClick >= 0) {
-        const cur = filtered.findIndex(c => c._origIdx === origIdx);
-        const last = filtered.findIndex(c => c._origIdx === window._irLastClick);
-        if (cur >= 0 && last >= 0) {
-          const s = Math.min(cur, last), e2 = Math.max(cur, last);
-          for (let i = s; i <= e2; i++) reviewMap.get(filtered[i]._origIdx)._selected = checked;
-        } else {
-          reviewMap.get(origIdx)._selected = checked;
-        }
-      } else {
-        reviewMap.get(origIdx)._selected = checked;
-      }
+      const ids = getFiltered().map(c => c._origIdx);
+      const range = (evt?.shiftKey && window._irLastClick >= 0) ? _ckgRangeIndices(ids, window._irLastClick, origIdx) : [origIdx];
+      range.forEach(id => { reviewMap.get(id)._selected = checked; });
       window._irLastClick = origIdx;
       rerender();
     };
@@ -31021,6 +31060,13 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-19', v: 205, title: '勾選操作通用化：全選／全不選／Shift 批次勾選', isProd: false, items: [
+      item('改善', '全站所有「一次勾選多筆」的畫面（個案列表、案號查詢與管理、待辦事項、身心調適假資料庫與通知、資源回收桶、畢業生／休退學列管、督導受督者設定、晤談記錄批次列印、學期批次刪除、釋放空個案案號等）現在都支援：按著 Shift 點擊可一次勾選「上次點擊」到「這次點擊」之間的所有項目'),
+      item('新功能', '登入紀錄（偏好設定頁）新增「全選」「全不選」按鈕，並支援 Shift 批次勾選'),
+      item('新功能', '督導設定的受督者勾選清單新增「全選」「全不選」按鈕'),
+      item('改善', '匯入相關的勾選畫面（服務總表批次匯入之未結案確認／超出學期範圍排除、校級轉銜評估匯入比對、教務處轉退學名單匯入比對、PDF 附件頁面選擇器）補上 Shift 批次勾選；PDF 頁面選擇器原本用滑鼠逐頁點選，現在也可 Shift 選取連續頁面範圍'),
+      item('技術', '抽出全站共用的 Shift 範圍計算與全選/全不選 helper，取代原本分散在各畫面各自實作的重複邏輯'),
+    ]},
     { date: '2026-07-18', v: 204, title: '修復：測試版橫幅遮住圖片編輯器與附件檢視頂列', isProd: false, items: [
       item('修復', '測試版環境的橘色橫幅會蓋住圖片編輯器的標題列與附件/PDF 檢視視窗的關閉鈕，導致部分功能無法點按；相關全螢幕視窗的層級已調整至橫幅之上（僅測試版看得出差異，正式版無橫幅本無此問題）'),
     ]},
@@ -33566,7 +33612,7 @@ function openBatchPrintModal(caseId) {
 }
 
 function _bpSelectAll(checked) {
-  document.querySelectorAll('#batch-print-overlay .bp-cb').forEach(cb => { cb.checked = checked; });
+  _ckgSetAll('bp-cb', checked);
 }
 
 function _doBatchPrint(caseId) {
@@ -41648,16 +41694,11 @@ function showPsychTestPreviewModal(rows, prog) {
     window.ptTab = (t) => { _tab = t; _page = 0; rerender(); };
     window.ptPg = (p) => { const tot = Math.max(1, Math.ceil(getFiltered().length / PAGE_SIZE)); _page = Math.max(0, Math.min(tot-1, p)); rerender(); };
     window.ptSelAll = (checked) => { getFiltered().forEach(i => { i.selected = checked; }); _lastClick = -1; rerender(); };
+    // Shift 範圍計算改呼叫共用純函式 _ckgRangeIndices（見全站批次勾選共用 helper）。
     window.ptSel = (origIdx, checked, evt) => {
-      const filtered = getFiltered();
-      if (evt.shiftKey && _lastClick >= 0) {
-        const cur = filtered.findIndex(i => i.origIdx === origIdx);
-        const last = filtered.findIndex(i => i.origIdx === _lastClick);
-        if (cur >= 0 && last >= 0) {
-          const s = Math.min(cur, last), e2 = Math.max(cur, last);
-          for (let i = s; i <= e2; i++) filtered[i].selected = checked;
-        } else { items[origIdx].selected = checked; }
-      } else { items[origIdx].selected = checked; }
+      const ids = getFiltered().map(i => i.origIdx);
+      const range = (evt?.shiftKey && _lastClick >= 0) ? _ckgRangeIndices(ids, _lastClick, origIdx) : [origIdx];
+      range.forEach(id => { items[id].selected = checked; });
       _lastClick = origIdx;
       rerender();
     };
@@ -41899,8 +41940,7 @@ async function openSemesterDeleteModal() {
           <p style="font-size:.84rem;color:#718096;margin:8px 0 0;">依<strong>記錄日期</strong>選擇學期刪除。資料將移入資源回收桶，<strong>30 天後</strong>永久刪除（期間可復原）。</p>
         </div>
         <div style="padding:8px 14px;border-bottom:1px solid #e2e8f0;display:flex;gap:8px;">
-          <button type="button" onclick="document.querySelectorAll('.sem-chk').forEach(c=>c.checked=true)" class="btn btn-secondary btn-sm">全選</button>
-          <button type="button" onclick="document.querySelectorAll('.sem-chk').forEach(c=>c.checked=false)" class="btn btn-secondary btn-sm">全不選</button>
+          ${_ckgToolbarHtml('sem-chk')}
         </div>
         <div style="overflow:auto;flex:1;">${semRows}</div>
         <div style="padding:14px 24px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:8px;background:#f7fafc;">
@@ -41995,8 +42035,7 @@ async function promptEmptyCaseDeletion(emptyCases, now) {
           <p style="font-size:.84rem;color:#718096;margin:8px 0 0;">以下 <strong>${emptyCases.length}</strong> 個個案刪除記錄後已無任何晤談紀錄。是否同時刪除個案基本資料（釋放案號）？</p>
         </div>
         <div style="padding:8px 14px;border-bottom:1px solid #e2e8f0;display:flex;gap:8px;">
-          <button type="button" onclick="document.querySelectorAll('.ecd-chk').forEach(c=>c.checked=true)" class="btn btn-secondary btn-sm">全選</button>
-          <button type="button" onclick="document.querySelectorAll('.ecd-chk').forEach(c=>c.checked=false)" class="btn btn-secondary btn-sm">全不選</button>
+          ${_ckgToolbarHtml('ecd-chk')}
         </div>
         <div style="overflow:auto;flex:1;">${rows}</div>
         <div style="padding:14px 24px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:8px;background:#f7fafc;">
@@ -45754,10 +45793,17 @@ async function showGradTransferImportPreview(rows, curSem) {
       default: return [];
     }
   }
-  window._gtPreviewTab = (t) => { previewTab = t; _gtRender(); };
+  let _gtLastClick = -1; // Shift 範圍選取：上次點擊的 entries 索引（見全站批次勾選共用 helper）
+  window._gtPreviewTab = (t) => { previewTab = t; _gtLastClick = -1; _gtRender(); };
 
-  // ── 勾選操作 ──
-  window._gtSel = (i, c) => { c ? sel.add(i) : sel.delete(i); _gtRender(); };
+  // ── 勾選操作（Shift 範圍計算呼叫共用純函式 _ckgRangeIndices）──
+  window._gtSel = (i, c, evt) => {
+    const tabIdxs = _gtGetTabEntries(previewTab).map(e => entries.indexOf(e));
+    const range = (evt?.shiftKey && _gtLastClick >= 0 && tabIdxs.includes(_gtLastClick)) ? _ckgRangeIndices(tabIdxs, _gtLastClick, i) : [i];
+    range.forEach(idx => c ? sel.add(idx) : sel.delete(idx));
+    _gtLastClick = i;
+    _gtRender();
+  };
   // 全選/取消全選：依當前頁籤判斷是否全選，智慧切換
   window._gtToggleAll = () => {
     const tabEntries = _gtGetTabEntries(previewTab);
@@ -45765,6 +45811,7 @@ async function showGradTransferImportPreview(rows, curSem) {
     const tabSelCount = tabIdxs.filter(i => sel.has(i)).length;
     const doSelect = tabSelCount < tabEntries.length;
     tabIdxs.forEach(i => doSelect ? sel.add(i) : sel.delete(i));
+    _gtLastClick = -1;
     _gtRender();
   };
 
@@ -45883,7 +45930,7 @@ async function showGradTransferImportPreview(rows, curSem) {
       <option value="close"${e.closureDecision==='close'?' selected':''}>結案</option>
     </select>`;
     return `<tr data-row-idx="${i}" style="background:${rowBg};transition:background 0.3s;">
-      <td style="text-align:center;"><input type="checkbox" id="gt-cb-${i}" ${sel.has(i)?'checked':''} onchange="window._gtSel(${i},this.checked)"></td>
+      <td style="text-align:center;"><input type="checkbox" id="gt-cb-${i}" ${sel.has(i)?'checked':''} onchange="window._gtSel(${i},this.checked,event)"></td>
       <td style="min-width:60px;padding:4px 6px;"><div contenteditable="${isEditable}" style="outline:none;" oninput="window._gtRow[${i}].name=this.textContent.trim()" onblur="window._gtRevalidate(${i})">${escHtml(e.name)}</div></td>
       <td style="min-width:80px;padding:4px 6px;"><div contenteditable="${isEditable}" style="outline:none;" oninput="window._gtRow[${i}].sid=this.textContent.trim()" onblur="window._gtRevalidate(${i})">${escHtml(e.sid)}</div></td>
       <td style="font-size:.8rem;">${escHtml(e.schoolMeetingDate||'—')}</td>
@@ -47028,14 +47075,22 @@ async function showWithdrawImportPreview(rows) {
       default: return [];
     }
   }
-  window._wdPreviewTab = (t) => { previewTab = t; _wdRender(); };
+  let _wdLastClick = -1; // Shift 範圍選取：上次點擊的 entries 索引（見全站批次勾選共用 helper）
+  window._wdPreviewTab = (t) => { previewTab = t; _wdLastClick = -1; _wdRender(); };
 
-  // ── 勾選操作 ──
-  window._wdSel = (i, c) => { c ? sel.add(i) : sel.delete(i); _wdRender(); };
+  // ── 勾選操作（Shift 範圍計算呼叫共用純函式 _ckgRangeIndices）──
+  window._wdSel = (i, c, evt) => {
+    const tabIdxs = _wdGetTabEntries(previewTab).map(e => entries.indexOf(e));
+    const range = (evt?.shiftKey && _wdLastClick >= 0 && tabIdxs.includes(_wdLastClick)) ? _ckgRangeIndices(tabIdxs, _wdLastClick, i) : [i];
+    range.forEach(idx => c ? sel.add(idx) : sel.delete(idx));
+    _wdLastClick = i;
+    _wdRender();
+  };
   window._wdToggleAll = () => {
     const tabIdxs = _wdGetTabEntries(previewTab).map(e => entries.indexOf(e));
     const allSel  = tabIdxs.every(i => sel.has(i));
     tabIdxs.forEach(i => allSel ? sel.delete(i) : sel.add(i));
+    _wdLastClick = -1;
     _wdRender();
   };
 
@@ -47154,7 +47209,7 @@ async function showWithdrawImportPreview(rows) {
           ? `<span style="font-size:.78rem;color:#059669;">✅ 已手動修正對應</span>${auditHtml}`
           : `${decBadge}${warnMsg ? (decBadge ? '<br>' : '') + warnMsg : ''}<div style="display:flex;flex-direction:column;">${actionBtns}</div>${auditHtml}`;
     return `<tr data-wd-row-idx="${i}" style="background:${rowBg};transition:background 0.3s;">
-      <td style="text-align:center;padding:4px 6px;"><input type="checkbox" id="wd-cb-${i}" ${sel.has(i)?'checked':''} onchange="window._wdSel(${i},this.checked)"></td>
+      <td style="text-align:center;padding:4px 6px;"><input type="checkbox" id="wd-cb-${i}" ${sel.has(i)?'checked':''} onchange="window._wdSel(${i},this.checked,event)"></td>
       <td style="min-width:60px;padding:4px 6px;"><div contenteditable="${isEditable}" style="outline:none;" oninput="window._wdRow[${i}].name=this.textContent.trim()" onblur="window._wdRevalidate(${i})">${escHtml(e.name)}</div></td>
       <td style="min-width:80px;padding:4px 6px;"><div contenteditable="${isEditable}" style="outline:none;" oninput="window._wdRow[${i}].sid=this.textContent.trim()" onblur="window._wdRevalidate(${i})">${escHtml(e.sid)}</div></td>
       <td style="padding:4px 6px;font-size:.82rem;color:#92400e;">${escHtml(e.departureReason||'')}</td>
@@ -48846,6 +48901,7 @@ function _showPdfPageSelector(fileName, allPages, availSlots) {
   return new Promise(resolve => {
     const maxPgs = Math.min(availSlots * 5, allPages.length);
     let selected = allPages.slice(0, maxPgs).map((_, i) => i);
+    let _pdfLastClick = -1; // Shift 範圍選取：上次點擊的頁面索引（見全站批次勾選共用 helper）
     let modal = document.createElement('div');
     modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.82);z-index:100000;display:flex;align-items:center;justify-content:center;padding:20px;';
 
@@ -48864,7 +48920,7 @@ function _showPdfPageSelector(fileName, allPages, availSlots) {
           <div style="padding:10px 14px;overflow:auto;flex:1;">
             <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(105px,1fr));gap:8px;">
               ${allPages.map((p, i) => `
-                <div onclick="window._pdfToggle(${i})" style="cursor:pointer;text-align:center;">
+                <div onclick="window._pdfToggle(${i},event)" style="cursor:pointer;text-align:center;">
                   <div style="border:2px solid ${selSet.has(i)?'#3182ce':'#e2e8f0'};border-radius:5px;overflow:hidden;background:${selSet.has(i)?'#ebf8ff':'#fff'};">
                     <img src="${p.dataUrl}" style="width:100%;display:block;max-height:110px;object-fit:contain;">
                   </div>
@@ -48886,16 +48942,29 @@ function _showPdfPageSelector(fileName, allPages, availSlots) {
             </div>
           </div>
         </div>`;
-      window._pdfToggle = i => {
-        const pos = selected.indexOf(i);
-        if (pos >= 0) selected.splice(pos, 1);
-        else if (selected.length < maxPgs) selected.push(i);
-        else { showToast(`最多只能選 ${maxPgs} 頁`, 'warning'); return; }
+      // Shift+點擊：對「上次點擊」到本次點擊之間的頁面套用本次點擊後的勾選狀態（範圍計算呼叫
+      // 共用純函式 _ckgRangeIndices，見全站批次勾選共用 helper）。單純點擊則維持原本逐頁切換行為。
+      window._pdfToggle = (i, evt) => {
+        if (evt?.shiftKey && _pdfLastClick >= 0) {
+          const target = !selected.includes(i); // 本次點擊後的狀態：原本未選→勾選，原本已選→取消
+          const ids = allPages.map((_, idx) => idx);
+          _ckgRangeIndices(ids, _pdfLastClick, i).forEach(idx => {
+            const pos = selected.indexOf(idx);
+            if (target) { if (pos < 0 && selected.length < maxPgs) selected.push(idx); }
+            else if (pos >= 0) selected.splice(pos, 1);
+          });
+        } else {
+          const pos = selected.indexOf(i);
+          if (pos >= 0) selected.splice(pos, 1);
+          else if (selected.length < maxPgs) selected.push(i);
+          else { showToast(`最多只能選 ${maxPgs} 頁`, 'warning'); return; }
+        }
         selected.sort((a,b) => a-b);
+        _pdfLastClick = i;
         render();
       };
-      window._pdfSelAll = (total, max) => { selected = Array.from({length:Math.min(total,max)},(_,i)=>i); render(); };
-      window._pdfClearAll = () => { selected = []; render(); };
+      window._pdfSelAll = (total, max) => { selected = Array.from({length:Math.min(total,max)},(_,i)=>i); _pdfLastClick = -1; render(); };
+      window._pdfClearAll = () => { selected = []; _pdfLastClick = -1; render(); };
       modal.querySelector('#pdf-cancel').onclick = () => { modal.remove(); resolve(null); };
       modal.querySelector('#pdf-confirm').onclick = () => {
         if (!selected.length) return;
@@ -50903,7 +50972,7 @@ function _omRenderMessageList() {
     const attIcon = m.hasAttachments ? '📎 ' : '';
     const checked = _om.selected.has(m.uid) ? 'checked' : '';
     return `<div class="om-msg-row" data-uid="${m.uid}" style="display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid #edf2f7;cursor:pointer;${unread ? 'background:#f7fbff;' : ''}" onclick="_omOpenMessage(${m.uid})">
-      <input type="checkbox" ${checked} onclick="event.stopPropagation();_omToggleSelectOne(${m.uid}, this.checked)" style="flex-shrink:0;">
+      <input type="checkbox" class="om-msg-cb" ${checked} onclick="event.stopPropagation()" onchange="_omToggleSelectOne(${m.uid}, this.checked)" style="flex-shrink:0;">
       <span onclick="event.stopPropagation();_omToggleFlag(${m.uid}, ${!!m.flagged})" style="cursor:pointer;color:${m.flagged ? '#ecc94b' : '#cbd5e0'};flex-shrink:0;font-size:1rem;">${flagIcon}</span>
       <span style="width:110px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.84rem;${unread ? 'font-weight:700;color:#1a202c;' : 'color:#4a5568;'}">${escHtml(fromName)}</span>
       <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.86rem;${unread ? 'font-weight:700;color:#1a202c;' : 'color:#4a5568;'}">${attIcon}${escHtml(m.subject || '(無主旨)')}</span>
