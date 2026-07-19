@@ -85,12 +85,16 @@ test('_ftInvalidCategory：已測且 validity>=61 → null（非無效）', () =
 
 // ══════════════ 文案：可信度分析／綜合分析／同意顯示 ══════════════
 
-test('_ftValidityAnalysisText：三段文案門檻 <61／61~80／>=81', () => {
+test('_ftValidityAnalysisText：三段文案門檻 >70 認真／>60且<=70 倉促／<=60 不太專心（v211 修正 v210 反了的對應）', () => {
   const S = loadStats();
-  assert.equal(S._ftValidityAnalysisText('60'), '您似乎填答的有點倉促，結果報告可能有一點點不準。');
-  assert.equal(S._ftValidityAnalysisText('61'), '您填答過程可能不太專心，結果報告可信度不高。');
-  assert.equal(S._ftValidityAnalysisText('80'), '您填答過程可能不太專心，結果報告可信度不高。');
-  assert.equal(S._ftValidityAnalysisText('81'), '您很認真填答，測驗報告是準確的。');
+  assert.equal(S._ftValidityAnalysisText('71'), '您很認真填答，測驗報告是準確的。');
+  assert.equal(S._ftValidityAnalysisText('80'), '您很認真填答，測驗報告是準確的。');
+  assert.equal(S._ftValidityAnalysisText('100'), '您很認真填答，測驗報告是準確的。');
+  assert.equal(S._ftValidityAnalysisText('61'), '您似乎填答的有點倉促，結果報告可能有一點點不準。');
+  assert.equal(S._ftValidityAnalysisText('65'), '您似乎填答的有點倉促，結果報告可能有一點點不準。');
+  assert.equal(S._ftValidityAnalysisText('70'), '您似乎填答的有點倉促，結果報告可能有一點點不準。');
+  assert.equal(S._ftValidityAnalysisText('60'), '您填答過程可能不太專心，結果報告可信度不高。');
+  assert.equal(S._ftValidityAnalysisText('50'), '您填答過程可能不太專心，結果報告可信度不高。');
 });
 
 test('_ftValidityAnalysisText：空白 → 空字串', () => {
