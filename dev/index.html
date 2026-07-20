@@ -2180,6 +2180,15 @@
               <button class="btn btn-secondary btn-sm" onclick="_bgRefreshClick('信箱重新整理', () => omRefreshAll())">↻ 重新整理</button>
               <button class="btn btn-secondary btn-sm" onclick="omDisconnectClick()">中斷連結</button>
             </div>
+            <!-- v220：學諮伺服器資料夾（信件封存到本系統 sqlite，不佔 openmail 信箱空間） -->
+            <div style="border-top:2px solid #e2e8f0;padding:8px 10px 4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <h3 style="font-size:.8rem;margin:0;">學諮伺服器資料夾</h3>
+              <span style="font-size:.62rem;background:#edf2f7;color:#4a5568;border-radius:4px;padding:1px 5px;white-space:nowrap;" data-tip="信件存於學諮伺服器資料庫，不佔 openmail 信箱空間">📦 不佔信箱空間</span>
+            </div>
+            <div id="omsv-folder-tree" style="max-height:150px;overflow:auto;padding:4px;"></div>
+            <div style="padding:6px 8px 8px;">
+              <button class="btn btn-secondary btn-sm" style="width:100%;" onclick="_omsvCreateFolderPrompt()">＋ 新增資料夾</button>
+            </div>
           </div>
 
           <!-- 中：信件列表 -->
@@ -2193,6 +2202,7 @@
                 <select id="om-move-select" class="field-select" style="font-size:.78rem;padding:3px 6px;" onchange="_omMoveSelected(this)">
                   <option value="">移動到…</option>
                 </select>
+                <button class="btn btn-secondary btn-sm" onclick="_omArchiveSelectedClick()">📦 封存</button>
                 <button class="btn btn-danger btn-sm" onclick="_omDeleteSelected()">🗑 刪除</button>
               </div>
             </div>
@@ -2205,7 +2215,16 @@
             <div id="om-pagination" style="padding:8px 12px;border-top:1px solid #e2e8f0;display:flex;align-items:center;gap:10px;font-size:.82rem;color:#4a5568;"></div>
           </div>
 
-          <!-- 右：閱讀窗 -->
+          <!-- 中（互斥顯示）：學諮伺服器資料夾信件列表（v220），見 _omsvSelectFolder/_omsvSetViewMode -->
+          <div class="card" id="omsv-list-pane" style="display:none;flex:1;min-width:260px;flex-direction:column;overflow:hidden;">
+            <div class="card-header" style="flex-wrap:wrap;gap:6px;padding:10px 12px;">
+              <h3 id="omsv-list-folder-title" style="font-size:.9rem;">學諮伺服器資料夾</h3>
+              <button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="_omsvBackToMailbox()">← 返回信箱</button>
+            </div>
+            <div id="omsv-msg-list" style="flex:1;overflow:auto;"></div>
+          </div>
+
+          <!-- 右：閱讀窗（mailbox/學諮資料夾共用，見 _omsvRenderReadFooter 依 _om.archiveViewingId 切換底部按鈕） -->
           <div class="card" id="om-read-pane" style="display:none;width:44%;min-width:340px;flex-direction:column;overflow:hidden;">
             <div id="om-read-header" style="padding:12px 14px;border-bottom:1px solid #e2e8f0;overflow:auto;"></div>
             <div id="om-read-blocked-images" style="display:none;padding:6px 14px;background:#fffbeb;border-bottom:1px solid #f6ad55;font-size:.82rem;color:#744210;"></div>
@@ -2213,14 +2232,33 @@
               <iframe id="om-read-iframe" sandbox="allow-same-origin" style="width:100%;border:0;display:block;" title="信件內容"></iframe>
             </div>
             <div id="om-read-attachments" style="display:none;padding:8px 14px;border-top:1px solid #e2e8f0;font-size:.82rem;"></div>
-            <div style="padding:10px 14px;border-top:1px solid #e2e8f0;display:flex;gap:6px;flex-wrap:wrap;">
+            <div id="om-read-footer" style="padding:10px 14px;border-top:1px solid #e2e8f0;display:flex;gap:6px;flex-wrap:wrap;">
               <button class="btn btn-secondary btn-sm" onclick="openOmCompose('reply')">↩ 回覆</button>
               <button class="btn btn-secondary btn-sm" onclick="openOmCompose('replyAll')">↩↩ 回覆全部</button>
               <button class="btn btn-secondary btn-sm" onclick="openOmCompose('fwd')">➔ 轉寄</button>
+              <button class="btn btn-secondary btn-sm" onclick="_omArchiveCurrentClick()">📦 封存到學諮資料夾</button>
               <button class="btn btn-danger btn-sm" style="margin-left:auto;" onclick="_omDeleteCurrent()">🗑 刪除</button>
               <button class="btn btn-secondary btn-sm" onclick="_omCloseReadPane()">✕ 關閉</button>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- v220：封存到學諮資料夾 modal（選目標資料夾＋是否同時從 openmail 刪除原信） -->
+    <div id="omsv-archive-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.7);z-index:10001;align-items:center;justify-content:center;padding:20px;">
+      <div style="background:#fff;border-radius:12px;padding:22px 26px;max-width:380px;width:100%;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+        <h3 style="margin:0 0 12px;font-size:1rem;">封存到學諮資料夾</h3>
+        <div id="omsv-archive-modal-count" style="font-size:.85rem;color:#4a5568;margin-bottom:12px;"></div>
+        <label class="field-label">目標資料夾</label>
+        <select id="omsv-archive-target-select" class="field-select" style="width:100%;margin-bottom:12px;"></select>
+        <label style="display:flex;align-items:center;gap:8px;font-size:.85rem;cursor:pointer;margin-bottom:6px;">
+          <input type="checkbox" id="omsv-archive-delete-checkbox"> 同時從 openmail 刪除原信
+        </label>
+        <div style="font-size:.76rem;color:#a0aec0;margin-bottom:16px;">預設不勾選：信件同時保留在 openmail 與學諮伺服器資料夾兩邊。</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button class="btn btn-secondary" onclick="_omsvCloseArchiveModal()">取消</button>
+          <button class="btn btn-primary" id="omsv-archive-confirm-btn" onclick="_omsvArchiveConfirm()">封存</button>
         </div>
       </div>
     </div>
@@ -23115,6 +23153,7 @@ function signOut() {
     }
   } catch (_) {}
   try { _ckClearCaseCache(); } catch (_) {} // IndexedDB 個案 chunk 快取（不 await，登出流程不因此卡住）
+  try { if (typeof _omClearCache === 'function') _omClearCache(); } catch (_) {} // v220：登出清除信箱前端快取（列表/已讀內文），同 R5 資安原則
   gIdToken = null;
   currentUser = currentRole = extraRole = configData = null;
   casesData = [];
@@ -31804,6 +31843,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-20', v: 220, title: '信箱：openmail 密碼改 7 天免重登、信件列表與已讀內文加快取秒開、新增「學諮伺服器資料夾」信件封存', isProd: false, items: [
+      item('改善', 'openmail 密碼快取效期由「每日台北午夜過期」改為「7 天滑動視窗」（每次使用即續期 7 天），仍只存伺服器記憶體、重啟伺服器一律清空——週末不開機也不必重新輸入信箱密碼，重連提示流程不變'),
+      item('改善', '信箱切換資料夾、開信改為「有快取先顯示、背景悄悄刷新最新內容」，同一資料夾/信件重新開啟時秒開不再看到轉圈；已開過信件的內文快取上限 50 封（自動淘汰最舊），登出或信箱連線中斷會清空快取'),
+      item('新功能', '信箱頁新增「學諮伺服器資料夾」：可建立自訂資料夾，把信件（含附件）連同完整內容封存到學諮系統自己的資料庫，不佔用 openmail 信箱容量；可選擇封存後是否同時從 openmail 刪除原信（預設不刪，兩邊都保留）；封存資料夾內信件可個別刪除，資料夾需清空才能刪除'),
+      item('改善', '信箱連線失敗訊息明確化：分「帳密被拒（提示使用完整位址與伺服器鎖定機制）」「信箱伺服器沒回應（逾時，由 90 秒縮短為 15 秒即回報）」「無法連線」三種情形分別提示，並於稽核紀錄補記連線成敗原因'),
+    ]},
     { date: '2026-07-20', v: 219, title: '登入／PIN 解鎖畫面新增「小技巧」輪播，banner 新增全覽入口', isProd: false, items: [
       item('新功能', '登入畫面與 PIN 解鎖畫面各新增一張小提示卡片，圖文並茂輪流介紹系統裡的 20 項小技巧（每 15 秒自動換下一則，滑鼠移到卡片上會暫停，可用 ‹ › 手動切換），每次載入從隨機一則開始播放'),
       item('新功能', 'banner 左上角新增「💡 小技巧」按鈕，點開可一次瀏覽全部 20 則小技巧（含圖示與說明，可上下捲動）'),
@@ -51562,6 +51607,7 @@ function toggleNavPin(navId) {
 // ══════════════════════════════════════════════
 const _OM_SPECIAL_NAMES = { '\\Inbox':'收件匣', '\\Sent':'寄件備份', '\\Drafts':'草稿', '\\Trash':'垃圾桶', '\\Junk':'垃圾郵件' };
 const OM_MAX_ATTACH_BYTES = 50 * 1024 * 1024;
+const OM_CACHE_MAX_BODIES = 50; // v220：已開信內文快取上限（LRU 淘汰，見 _omCacheBodySet）
 let _om = {
   connected: false,
   mailUser: '',
@@ -51578,17 +51624,85 @@ let _om = {
   composeAttachments: [], // { filename, contentType, base64, size }
   composeMode: null,      // null | 'reply' | 'replyAll' | 'fwd'
   composeRefMsg: null,
+  // v220：學諮伺服器資料夾（信件封存到本系統 sqlite，見 openmail/archive.js omsv* action）
+  archiveFolders: [],        // [{ id, name, createdAt, messageCount }]
+  archiveCurrentFolderId: null, // 目前檢視中的封存資料夾 id；null＝目前顯示一般 openmail 信件列表
+  archiveMessages: [],       // 目前封存資料夾的信件列表 metadata（omsvList）
+  archiveViewingId: null,    // 閱讀窗目前顯示的封存信 id；null＝閱讀窗顯示的是即時 IMAP 信件
+  archivePending: [],        // 封存 modal 待送出的 [{folder,uid}]
+  // v220：前端記憶體快取（stale-while-revalidate），純記憶體不用 IndexedDB——見 _omClearCache 的
+  // 呼叫點（登出／中斷連結／mail_not_connected 一律清空，密碼以外的信件內容快取沒有「永不落地」
+  // 的等級要求，但仍比照同一份謹慎態度：離開帳號就清乾淨）。
+  cache: {
+    lists: new Map(),  // key `${folder}|${page}|${pageSize}` → { messages, total, page, pageSize }
+    bodies: new Map(), // key `${folder}::${uid}` → 已開信的完整內文（LRU，上限 OM_CACHE_MAX_BODIES）
+  },
 };
 
 function _omLsKey() { return 'scc_om_user_' + (currentUser?.email || ''); }
 
+// ── 快取 helper（v220） ──────────────────────────────────────────────────
+function _omListCacheKey(folder, page, pageSize) { return `${folder}|${page}|${pageSize}`; }
+function _omBodyCacheKey(folder, uid) { return `${folder}::${uid}`; }
+
+function _omCacheListSet(folder, page, pageSize, data) {
+  _om.cache.lists.set(_omListCacheKey(folder, page, pageSize), {
+    messages: Array.isArray(data.messages) ? data.messages : [],
+    total: data.total || 0,
+    page: data.page || page,
+    pageSize: data.pageSize || pageSize,
+  });
+}
+// 資料夾內容有結構性變動（信件被移出/移入/刪除，分頁/總數都可能跟著變）時，整個資料夾的所有
+// 分頁快取一併作廢，改由下次 _omLoadMessages 重新打 API（比就地修補分頁數字簡單可靠）。
+function _omCacheListInvalidateFolder(folder) {
+  if (!folder) return;
+  const prefix = folder + '|';
+  for (const key of [..._om.cache.lists.keys()]) {
+    if (key.startsWith(prefix)) _om.cache.lists.delete(key);
+  }
+}
+function _omCacheBodyGet(folder, uid) {
+  const key = _omBodyCacheKey(folder, uid);
+  const hit = _om.cache.bodies.get(key);
+  if (hit) { _om.cache.bodies.delete(key); _om.cache.bodies.set(key, hit); } // 命中即移到 Map 尾端（LRU 最新）
+  return hit;
+}
+function _omCacheBodySet(folder, uid, msg) {
+  const key = _omBodyCacheKey(folder, uid);
+  _om.cache.bodies.delete(key);
+  _om.cache.bodies.set(key, msg);
+  while (_om.cache.bodies.size > OM_CACHE_MAX_BODIES) {
+    const oldestKey = _om.cache.bodies.keys().next().value; // Map 保留插入順序，最前面＝最舊
+    _om.cache.bodies.delete(oldestKey);
+  }
+}
+function _omCacheBodyDelete(folder, uid) {
+  _om.cache.bodies.delete(_omBodyCacheKey(folder, uid));
+}
+function _omClearCache() {
+  _om.cache.lists.clear();
+  _om.cache.bodies.clear();
+}
+
 function _omErrMsg(msg) {
   const map = {
-    mail_auth_failed: '帳號或密碼錯誤，請重新確認後再試一次',
-    mail_server_unreachable: '無法連線到校內信箱伺服器，請稍後再試',
+    mail_auth_failed: '帳號或密碼被信箱伺服器拒絕：請確認帳號使用完整位址（帳號@mail.npust.edu.tw）且密碼正確。連續失敗會被信箱伺服器暫時鎖定，若剛連錯多次請等 2～3 分鐘再試',
+    mail_server_unreachable: '無法連線到校內信箱伺服器（非本系統問題），請稍後再試',
+    mail_server_timeout: '校內信箱伺服器沒有回應（可能因連續登入失敗被暫時限流）：請等 2～3 分鐘再試，並確認帳號使用完整位址（帳號@mail.npust.edu.tw）',
     mail_not_connected: '信箱連線已中斷，請重新登入',
     mail_send_failed: '寄送失敗，請稍後再試',
     mail_too_large: '附件總容量超過 50MB 上限，請移除部分附件後再試',
+    // v220：學諮伺服器資料夾（omsv*）業務錯誤
+    omsv_invalid_name: '資料夾名稱不可為空，且長度需在 100 字以內',
+    omsv_folder_name_taken: '已有相同名稱的資料夾',
+    omsv_folder_not_found: '找不到指定的學諮伺服器資料夾',
+    omsv_folder_not_empty: '資料夾內還有信件，請先清空後再刪除',
+    omsv_message_not_found: '找不到這封已封存的信件',
+    omsv_attachment_not_found: '找不到這個附件',
+    omsv_too_large: '信件超過 25MB 封存上限，請改用其他方式保存',
+    omsv_fetch_failed: '從信箱擷取信件失敗，請稍後再試',
+    omsv_parse_failed: '信件內容解析失敗',
   };
   return map[msg] || msg || '發生未知錯誤';
 }
@@ -51601,6 +51715,7 @@ async function _omCall(action, params) {
     if (e.message === 'mail_not_connected') {
       _om.connected = false;
       _omStopPoll();
+      _omClearCache(); // v220：連線中斷即清空快取，避免下次重連後看到不同帳號/舊資料的殘留
       showToast('信箱連線已中斷，請重新登入', 'warn');
       renderOmPage();
     }
@@ -51676,7 +51791,10 @@ async function omDisconnectClick() {
   hideLoading();
   _om.connected = false;
   _om.currentMsg = null;
+  _om.archiveCurrentFolderId = null;
+  _om.archiveViewingId = null;
   _omStopPoll();
+  _omClearCache(); // v220：登出/中斷連結一律清空快取
   renderOmPage();
   showToast('已中斷信箱連結', 'success');
 }
@@ -51685,10 +51803,15 @@ async function omDisconnectClick() {
 function _omFolderLabel(f) {
   return _OM_SPECIAL_NAMES[f.specialUse] || f.name;
 }
+function _omFindSpecialFolderPath(specialUse) {
+  const f = _om.folders.find(x => x.specialUse === specialUse);
+  return f ? f.path : null;
+}
 
 async function omRefreshAll() {
   await _omLoadFolders();
   await _omLoadMessages();
+  await _omsvLoadFolders(); // v220：學諮伺服器資料夾側欄
 }
 
 async function _omLoadFolders() {
@@ -51739,6 +51862,12 @@ function _omSelectFolder(path) {
   const cb = document.getElementById('om-search-clear-btn'); if (cb) cb.style.display = 'none';
   _omCloseReadPane();
   _om.selected.clear();
+  // v220：切回一般 openmail 資料夾時，若原本在檢視學諮伺服器資料夾就退出該模式
+  if (_om.archiveCurrentFolderId != null) {
+    _om.archiveCurrentFolderId = null;
+    _omsvSetViewMode(false);
+    _omsvRenderFolderTree();
+  }
   _omRenderFolderTree();
   _omRenderMoveOptions();
   _omLoadMessages();
@@ -51768,28 +51897,67 @@ function _omFmtSize(bytes) {
 }
 
 async function _omLoadMessages() {
-  const listEl = document.getElementById('om-msg-list');
-  if (listEl) listEl.innerHTML = '<div style="padding:20px;text-align:center;color:#a0aec0;">載入中…</div>';
   const titleEl = document.getElementById('om-list-folder-title');
   if (titleEl) {
     const f = _om.folders.find(x => x.path === _om.currentFolder);
     titleEl.textContent = _om.searchQuery ? `搜尋：「${_om.searchQuery}」` : (f ? _omFolderLabel(f) : _om.currentFolder);
   }
+  const folder = _om.currentFolder, page = _om.page, pageSize = _om.pageSize;
+
+  // v220：stale-while-revalidate——有快取先立即渲染（秒開），同時背景重新抓最新列表回來無聲更新
+  // （若使用者已切走就丟棄，見 _omRevalidateMessages）。搜尋結果不快取，永遠即時查詢。
+  if (!_om.searchQuery) {
+    const cached = _om.cache.lists.get(_omListCacheKey(folder, page, pageSize));
+    if (cached) {
+      _om.messages = cached.messages;
+      _om.total = cached.total;
+      _om.page = cached.page;
+      _om.pageSize = cached.pageSize;
+      _om.selected.clear();
+      _omRenderMessageList();
+      _omRenderPagination();
+      _omRevalidateMessages(folder, page, pageSize);
+      return;
+    }
+  }
+
+  const listEl = document.getElementById('om-msg-list');
+  if (listEl) listEl.innerHTML = '<div style="padding:20px;text-align:center;color:#a0aec0;">載入中…</div>';
   try {
     const action = _om.searchQuery ? 'omSearch' : 'omListMessages';
     const params = _om.searchQuery
-      ? { folder: _om.currentFolder, query: _om.searchQuery, page: _om.page, pageSize: _om.pageSize }
-      : { folder: _om.currentFolder, page: _om.page, pageSize: _om.pageSize };
+      ? { folder, query: _om.searchQuery, page, pageSize }
+      : { folder, page, pageSize };
     const data = await _omCall(action, params);
     _om.messages = Array.isArray(data.messages) ? data.messages : [];
     _om.total = data.total || 0;
-    _om.page = data.page || _om.page;
-    _om.pageSize = data.pageSize || _om.pageSize;
+    _om.page = data.page || page;
+    _om.pageSize = data.pageSize || pageSize;
+    if (!_om.searchQuery) _omCacheListSet(folder, page, pageSize, data);
   } catch (e) {
     if (listEl) listEl.innerHTML = `<div style="padding:20px;text-align:center;color:#c0392b;">載入失敗：${escHtml(_omErrMsg(e.message))}</div>`;
     return;
   }
   _om.selected.clear();
+  _omRenderMessageList();
+  _omRenderPagination();
+}
+
+// 背景重新整理（v220）：即使畫面已經用快取秒開，仍立刻打一次 API 拿最新資料覆蓋快取；只有使用者
+// 仍停留在同一個資料夾/分頁/非搜尋狀態時才更新畫面，避免「背景回應慢了一拍、使用者早已切到別的
+// 資料夾，畫面卻突然被換成上一個資料夾內容」。任何失敗（含 mail_not_connected，其 UI 切換已在
+// _omCall 內部處理）一律靜默，保留原本已顯示的快取內容不動。
+async function _omRevalidateMessages(folder, page, pageSize) {
+  let data;
+  try {
+    data = await _omCall('omListMessages', { folder, page, pageSize });
+  } catch (e) {
+    return;
+  }
+  _omCacheListSet(folder, page, pageSize, data);
+  if (_om.searchQuery || _om.currentFolder !== folder || _om.page !== page || _om.pageSize !== pageSize) return;
+  _om.messages = Array.isArray(data.messages) ? data.messages : [];
+  _om.total = data.total || 0;
   _omRenderMessageList();
   _omRenderPagination();
 }
@@ -51881,6 +52049,10 @@ async function _omMoveSelected(sel) {
     showToast(`已移動 ${uids.length} 封信件`, 'success');
     _om.selected.clear();
     if (_om.currentMsg && uids.includes(_om.currentMsg.uid)) _omCloseReadPane();
+    // v220：信件已離開原資料夾，捨棄兩邊的列表快取（分頁/總數都變了）＋原資料夾內文快取
+    uids.forEach(uid => _omCacheBodyDelete(_om.currentFolder, uid));
+    _omCacheListInvalidateFolder(_om.currentFolder);
+    _omCacheListInvalidateFolder(toFolder);
     await _omLoadFolders();
     await _omLoadMessages();
   } catch (e) {
@@ -51899,6 +52071,7 @@ async function _omDeleteSelected() {
     showToast(`已刪除 ${uids.length} 封信件`, 'success');
     _om.selected.clear();
     if (_om.currentMsg && uids.includes(_om.currentMsg.uid)) _omCloseReadPane();
+    _omInvalidateAfterDelete(_om.currentFolder, uids);
     await _omLoadFolders();
     await _omLoadMessages();
   } catch (e) {
@@ -51909,14 +52082,24 @@ async function _omDeleteCurrent() {
   if (!_om.currentMsg) return;
   if (!confirm('確定要刪除這封信件？')) return;
   try {
-    await _omCall('omDelete', { folder: _om.currentFolder, uids: [_om.currentMsg.uid] });
+    const uid = _om.currentMsg.uid;
+    await _omCall('omDelete', { folder: _om.currentFolder, uids: [uid] });
     showToast('已刪除信件', 'success');
     _omCloseReadPane();
+    _omInvalidateAfterDelete(_om.currentFolder, [uid]);
     await _omLoadFolders();
     await _omLoadMessages();
   } catch (e) {
     showToast('刪除失敗：' + _omErrMsg(e.message), 'error');
   }
+}
+// v220：omDelete 實際上是「移到垃圾桶」（見 openmail/actions.js omDelete，沒有 \Trash 才真刪除），
+// 兩邊列表快取（分頁/總數皆變）都要作廢，並丟棄已刪信件的內文快取。
+function _omInvalidateAfterDelete(folder, uids) {
+  uids.forEach(uid => _omCacheBodyDelete(folder, uid));
+  _omCacheListInvalidateFolder(folder);
+  const trashPath = _omFindSpecialFolderPath('\\Trash');
+  if (trashPath && trashPath !== folder) _omCacheListInvalidateFolder(trashPath);
 }
 
 // ── 搜尋 ────────────────────────────────────
@@ -51949,21 +52132,38 @@ function _omFmtAddr(a) {
 async function _omOpenMessage(uid) {
   const pane = document.getElementById('om-read-pane');
   if (pane) pane.style.display = 'flex';
+  _om.archiveViewingId = null; // v220：進入一般信箱閱讀模式（非學諮資料夾封存信）
+  const folder = _om.currentFolder;
+
+  // v220：已看過的信直接用快取內文即開（IMAP 信件內容不可變，不需要背景重抓）——秒開，不打 API。
+  const cached = _omCacheBodyGet(folder, uid);
+  if (cached) {
+    _om.currentMsg = cached;
+    const li0 = _om.messages.find(x => x.uid === uid);
+    if (li0) li0.seen = true;
+    _omRenderMessageList();
+    _omRenderReadPane(cached);
+    _omsvRenderReadFooter();
+    return;
+  }
+
   const headerEl = document.getElementById('om-read-header');
   if (headerEl) headerEl.innerHTML = '<div style="padding:20px;text-align:center;color:#a0aec0;">載入中…</div>';
   let msg;
   try {
-    msg = await _omCall('omGetMessage', { folder: _om.currentFolder, uid });
+    msg = await _omCall('omGetMessage', { folder, uid });
   } catch (e) {
     showToast('讀取信件失敗：' + _omErrMsg(e.message), 'error');
     return;
   }
+  _omCacheBodySet(folder, uid, msg);
   _om.currentMsg = msg;
   // omGetMessage 慣例上會順帶標已讀，前端同步列表狀態（不額外呼叫 omMarkSeen）
   const li = _om.messages.find(x => x.uid === uid);
   if (li) li.seen = true;
   _omRenderMessageList();
   _omRenderReadPane(msg);
+  _omsvRenderReadFooter();
 }
 
 function _omRenderReadPane(msg) {
@@ -52028,6 +52228,7 @@ function _omRenderReadPane(msg) {
 
 function _omCloseReadPane() {
   _om.currentMsg = null;
+  _om.archiveViewingId = null;
   const pane = document.getElementById('om-read-pane');
   if (pane) pane.style.display = 'none';
   const iframe = document.getElementById('om-read-iframe');
@@ -52052,7 +52253,11 @@ async function _omDownloadAttachment(index, filename) {
   if (!_om.currentMsg) return;
   showLoading('下載附件中…');
   try {
-    const r = await _omCall('omDownloadAttachment', { folder: _om.currentFolder, uid: _om.currentMsg.uid, index });
+    // v220：閱讀窗目前顯示的是學諮伺服器資料夾封存信時，附件要從封存的 source 解析下載
+    // （omsvDownloadAttachment），不是即時 IMAP（沒有 folder/uid 可用）。
+    const r = _om.archiveViewingId != null
+      ? await proxyCall('omsvDownloadAttachment', { id: _om.archiveViewingId, index })
+      : await _omCall('omDownloadAttachment', { folder: _om.currentFolder, uid: _om.currentMsg.uid, index });
     _omSaveBase64File(r.base64, r.contentType || 'application/octet-stream', r.filename || filename);
   } catch (e) {
     showToast('下載失敗：' + _omErrMsg(e.message), 'error');
@@ -52226,6 +52431,10 @@ async function omSendSubmit() {
     await _omCall('omSend', params);
     _omCloseCompose();
     showToast('已寄出信件', 'success');
+    // v220：寄出信件會 best-effort 備份一份到 \Sent（見 openmail/actions.js omSend），該資料夾的
+    // 列表快取已過期，作廢讓下次切過去時重抓。
+    const sentPath = _omFindSpecialFolderPath('\\Sent');
+    if (sentPath) _omCacheListInvalidateFolder(sentPath);
     if (!_om.searchQuery) _omLoadMessages();
   } catch (e) {
     alert('寄送失敗：' + _omErrMsg(e.message));
@@ -52247,6 +52456,261 @@ function _omStartPoll() {
 }
 function _omStopPoll() {
   if (_om.pollTimer) { clearInterval(_om.pollTimer); _om.pollTimer = null; }
+}
+
+// ══════════════════════════════════════════════
+//  v220：學諮伺服器資料夾（信件封存到本系統 sqlite，不佔 openmail 信箱空間）
+//  後端 action：omsvFolderList/Create/Rename/Delete、omsvArchiveMessage、omsvList/Get/
+//  DownloadAttachment/Delete（見 server/src/openmail/archive.js）。
+// ══════════════════════════════════════════════
+
+// ── 資料夾側欄 ──────────────────────────────
+async function _omsvLoadFolders() {
+  try {
+    const data = await proxyCall('omsvFolderList');
+    _om.archiveFolders = Array.isArray(data.folders) ? data.folders : [];
+  } catch (e) {
+    _om.archiveFolders = [];
+  }
+  _omsvRenderFolderTree();
+}
+
+function _omsvRenderFolderTree() {
+  const el = document.getElementById('omsv-folder-tree');
+  if (!el) return;
+  if (!_om.archiveFolders.length) {
+    el.innerHTML = '<div style="padding:8px;color:#a0aec0;font-size:.74rem;">尚無資料夾</div>';
+    return;
+  }
+  el.innerHTML = _om.archiveFolders.map(f => {
+    const active = _om.archiveCurrentFolderId === f.id;
+    const nameEsc = escHtml(f.name).replace(/'/g, "\\'");
+    return `<div class="nav-item${active ? ' active' : ''}" style="padding:5px 8px;font-size:.8rem;display:flex;align-items:center;gap:4px;">
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" onclick="_omsvSelectFolder(${f.id})">📦 ${escHtml(f.name)}</span>
+      <span style="color:#a0aec0;flex-shrink:0;font-size:.7rem;">${f.messageCount}</span>
+      <span style="cursor:pointer;flex-shrink:0;" title="重新命名" onclick="event.stopPropagation();_omsvRenameFolderPrompt(${f.id}, '${nameEsc}')">✎</span>
+      <span style="cursor:pointer;flex-shrink:0;" title="刪除" onclick="event.stopPropagation();_omsvDeleteFolderClick(${f.id})">🗑</span>
+    </div>`;
+  }).join('');
+}
+
+async function _omsvCreateFolderPrompt() {
+  const name = prompt('新資料夾名稱：');
+  if (name == null) return;
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  try {
+    await proxyCall('omsvFolderCreate', { name: trimmed });
+    showToast('已建立資料夾', 'success');
+    await _omsvLoadFolders();
+  } catch (e) {
+    showToast('建立失敗：' + _omErrMsg(e.message), 'error');
+  }
+}
+
+async function _omsvRenameFolderPrompt(folderId, oldName) {
+  const name = prompt('新名稱：', oldName);
+  if (name == null) return;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed === oldName) return;
+  try {
+    await proxyCall('omsvFolderRename', { folderId, name: trimmed });
+    showToast('已更名', 'success');
+    await _omsvLoadFolders();
+  } catch (e) {
+    showToast('更名失敗：' + _omErrMsg(e.message), 'error');
+  }
+}
+
+async function _omsvDeleteFolderClick(folderId) {
+  if (!confirm('確定要刪除這個資料夾？（資料夾內還有信件時無法刪除，請先清空）')) return;
+  try {
+    await proxyCall('omsvFolderDelete', { folderId });
+    showToast('已刪除資料夾', 'success');
+    if (_om.archiveCurrentFolderId === folderId) _omsvBackToMailbox();
+    await _omsvLoadFolders();
+  } catch (e) {
+    showToast('刪除失敗：' + _omErrMsg(e.message), 'error');
+  }
+}
+
+// ── 中間清單：一般信箱 / 學諮資料夾 互斥顯示 ──
+function _omsvSetViewMode(showArchive) {
+  const mailPane = document.getElementById('om-list-pane');
+  const archivePane = document.getElementById('omsv-list-pane');
+  if (mailPane) mailPane.style.display = showArchive ? 'none' : 'flex';
+  if (archivePane) archivePane.style.display = showArchive ? 'flex' : 'none';
+}
+
+async function _omsvSelectFolder(folderId) {
+  _om.archiveCurrentFolderId = folderId;
+  _omCloseReadPane();
+  _omsvSetViewMode(true);
+  _omsvRenderFolderTree();
+  await _omsvLoadMessages();
+}
+
+function _omsvBackToMailbox() {
+  _om.archiveCurrentFolderId = null;
+  _omCloseReadPane();
+  _omsvSetViewMode(false);
+  _omsvRenderFolderTree();
+}
+
+async function _omsvLoadMessages() {
+  const listEl = document.getElementById('omsv-msg-list');
+  const titleEl = document.getElementById('omsv-list-folder-title');
+  const folder = _om.archiveFolders.find(f => f.id === _om.archiveCurrentFolderId);
+  if (titleEl) titleEl.textContent = folder ? `📦 ${folder.name}` : '學諮伺服器資料夾';
+  if (listEl) listEl.innerHTML = '<div style="padding:20px;text-align:center;color:#a0aec0;">載入中…</div>';
+  let data;
+  try {
+    data = await proxyCall('omsvList', { folderId: _om.archiveCurrentFolderId });
+  } catch (e) {
+    if (listEl) listEl.innerHTML = `<div style="padding:20px;text-align:center;color:#c0392b;">載入失敗：${escHtml(_omErrMsg(e.message))}</div>`;
+    return;
+  }
+  _om.archiveMessages = Array.isArray(data.messages) ? data.messages : [];
+  _omsvRenderMessageList();
+}
+
+function _omsvRenderMessageList() {
+  const el = document.getElementById('omsv-msg-list');
+  if (!el) return;
+  if (!_om.archiveMessages.length) {
+    el.innerHTML = '<div style="padding:24px;text-align:center;color:#a0aec0;">沒有信件</div>';
+    return;
+  }
+  el.innerHTML = _om.archiveMessages.map(m => `
+    <div class="om-msg-row" style="display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid #edf2f7;cursor:pointer;" onclick="_omsvOpenMessage(${m.id})">
+      <span style="width:130px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.84rem;color:#4a5568;">${escHtml(m.from || '(未知寄件人)')}</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.86rem;color:#4a5568;">${escHtml(m.subject || '(無主旨)')}</span>
+      <span style="flex-shrink:0;font-size:.76rem;color:#a0aec0;width:70px;text-align:right;">${escHtml(_omFmtDate(m.date))}</span>
+      <span style="cursor:pointer;flex-shrink:0;color:#c0392b;" title="刪除" onclick="event.stopPropagation();_omsvDeleteMessageClick(${m.id})">🗑</span>
+    </div>`).join('');
+}
+
+async function _omsvOpenMessage(id) {
+  const pane = document.getElementById('om-read-pane');
+  if (pane) pane.style.display = 'flex';
+  _om.archiveViewingId = id;
+  const headerEl = document.getElementById('om-read-header');
+  if (headerEl) headerEl.innerHTML = '<div style="padding:20px;text-align:center;color:#a0aec0;">載入中…</div>';
+  let msg;
+  try {
+    msg = await proxyCall('omsvGet', { id });
+  } catch (e) {
+    showToast('讀取信件失敗：' + _omErrMsg(e.message), 'error');
+    return;
+  }
+  _om.currentMsg = msg;
+  _omRenderReadPane(msg);
+  _omsvRenderReadFooter();
+}
+
+async function _omsvDeleteMessageClick(id) {
+  if (!confirm('確定要刪除這封已封存的信件？此動作無法復原。')) return;
+  try {
+    await proxyCall('omsvDelete', { id });
+    showToast('已刪除', 'success');
+    if (_om.archiveViewingId === id) _omCloseReadPane();
+    await _omsvLoadMessages();
+    await _omsvLoadFolders(); // 更新側欄計數
+  } catch (e) {
+    showToast('刪除失敗：' + _omErrMsg(e.message), 'error');
+  }
+}
+
+// 閱讀窗底部按鈕：一般信箱信件（回覆/回覆全部/轉寄/封存/刪除）與學諮資料夾封存信（刪除/關閉）
+// 動作不同，共用同一組 DOM（#om-read-footer），依 _om.archiveViewingId 切換內容。
+function _omsvRenderReadFooter() {
+  const el = document.getElementById('om-read-footer');
+  if (!el) return;
+  if (_om.archiveViewingId != null) {
+    el.innerHTML = `
+      <button class="btn btn-danger btn-sm" style="margin-left:auto;" onclick="_omsvDeleteMessageClick(${_om.archiveViewingId})">🗑 刪除</button>
+      <button class="btn btn-secondary btn-sm" onclick="_omCloseReadPane()">✕ 關閉</button>`;
+  } else {
+    el.innerHTML = `
+      <button class="btn btn-secondary btn-sm" onclick="openOmCompose('reply')">↩ 回覆</button>
+      <button class="btn btn-secondary btn-sm" onclick="openOmCompose('replyAll')">↩↩ 回覆全部</button>
+      <button class="btn btn-secondary btn-sm" onclick="openOmCompose('fwd')">➔ 轉寄</button>
+      <button class="btn btn-secondary btn-sm" onclick="_omArchiveCurrentClick()">📦 封存到學諮資料夾</button>
+      <button class="btn btn-danger btn-sm" style="margin-left:auto;" onclick="_omDeleteCurrent()">🗑 刪除</button>
+      <button class="btn btn-secondary btn-sm" onclick="_omCloseReadPane()">✕ 關閉</button>`;
+  }
+}
+
+// ── 封存到學諮資料夾（modal：選目標資料夾＋是否同時從 openmail 刪除原信） ──
+function _omOpenArchiveModal(items) {
+  if (!items.length) { showToast('請先勾選信件', 'warn'); return; }
+  if (!_om.archiveFolders.length) { showToast('尚無學諮伺服器資料夾，請先在左側「＋ 新增資料夾」建立一個', 'warn'); return; }
+  _om.archivePending = items;
+  const countEl = document.getElementById('omsv-archive-modal-count');
+  if (countEl) countEl.textContent = `共 ${items.length} 封信件`;
+  const sel = document.getElementById('omsv-archive-target-select');
+  if (sel) sel.innerHTML = _om.archiveFolders.map(f => `<option value="${f.id}">${escHtml(f.name)}</option>`).join('');
+  const cb = document.getElementById('omsv-archive-delete-checkbox');
+  if (cb) cb.checked = false;
+  const modal = document.getElementById('omsv-archive-modal');
+  if (modal) modal.style.display = 'flex';
+}
+function _omsvCloseArchiveModal() {
+  const modal = document.getElementById('omsv-archive-modal');
+  if (modal) modal.style.display = 'none';
+  _om.archivePending = [];
+}
+function _omArchiveSelectedClick() {
+  const uids = [..._om.selected];
+  _omOpenArchiveModal(uids.map(uid => ({ folder: _om.currentFolder, uid })));
+}
+function _omArchiveCurrentClick() {
+  if (!_om.currentMsg || _om.archiveViewingId != null) return;
+  _omOpenArchiveModal([{ folder: _om.currentFolder, uid: _om.currentMsg.uid }]);
+}
+
+async function _omsvArchiveConfirm() {
+  const items = _om.archivePending;
+  const sel = document.getElementById('omsv-archive-target-select');
+  const targetFolderId = sel ? Number(sel.value) : NaN;
+  const deleteFromMail = !!document.getElementById('omsv-archive-delete-checkbox')?.checked;
+  if (!items.length || !targetFolderId) return;
+  const btn = document.getElementById('omsv-archive-confirm-btn');
+  const origHtml = btn?.innerHTML;
+  if (btn) { btn.disabled = true; btn.innerHTML = '封存中…'; }
+  let okCount = 0, failCount = 0, deleteFailCount = 0;
+  for (const item of items) {
+    try {
+      // 逐封依序呼叫（同一 IMAP 連線序列化執行，見 openmail/client.js withImap），避免併發搶同一顆
+      // mailboxLock。單封失敗不中斷整批，繼續處理其餘信件。
+      const r = await _omCall('omsvArchiveMessage', { folder: item.folder, uid: item.uid, targetFolderId, deleteFromMail });
+      okCount++;
+      if (deleteFromMail && r && !r.deleted) deleteFailCount++;
+    } catch (e) {
+      failCount++;
+    }
+  }
+  _omsvCloseArchiveModal();
+  if (btn) { btn.disabled = false; btn.innerHTML = origHtml || '封存'; }
+
+  if (okCount) {
+    let msg = `已封存 ${okCount} 封信件`;
+    if (deleteFailCount) msg += `，其中 ${deleteFailCount} 封未能從 openmail 刪除原信，請自行確認`;
+    showToast(msg, deleteFailCount ? 'warn' : 'success');
+  }
+  if (failCount) showToast(`${failCount} 封信件封存失敗`, 'error');
+
+  if (okCount) {
+    // 目標資料夾計數變了；若有勾選同時刪除，來源 openmail 資料夾內容也變了。
+    const srcFolders = new Set(items.map(it => it.folder));
+    srcFolders.forEach(f => _omCacheListInvalidateFolder(f));
+    if (_om.currentMsg && items.some(it => it.uid === _om.currentMsg.uid) && _om.archiveViewingId == null) _omCloseReadPane();
+    _om.selected.clear();
+    await _omLoadFolders();
+    await _omLoadMessages();
+    await _omsvLoadFolders();
+    if (_om.archiveCurrentFolderId === targetFolderId) await _omsvLoadMessages();
+  }
 }
 </script>
 

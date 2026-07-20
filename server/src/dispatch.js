@@ -10,8 +10,9 @@
 //      clearMentalLeaves 走 actions/mail.js＋本機 Gmail REST，getNpust5AuthUrl/exchangeNpust5OAuthCode
 //      回固定業務錯誤，見 NPUST5_WEB_AUTH_RETIRED_MSG）；v201 起 resolveDir/listDir/createFile/
 //      trashFile 亦已接線（見下方對應 case 註解）；v202 起 13 個 om* 校內 openmail 收發信 action
-//      已接線（見 openmail/actions.js，走一般授權閘，不在 AUTHZ_EXEMPT）；v203 起 6 個 sms*
-//      簡訊發送 action 已接線（見 sms/actions.js，三竹 Mitake／Every8D，同樣走一般授權閘）；
+//      已接線（見 openmail/actions.js，走一般授權閘，不在 AUTHZ_EXEMPT）；v220 起 9 個 omsv* 學諮
+//      伺服器資料夾（信件封存）action 已接線（見 openmail/archive.js，同樣走一般授權閘）；v203 起
+//      6 個 sms* 簡訊發送 action 已接線（見 sms/actions.js，三竹 Mitake／Every8D，同樣走一般授權閘）；
 //      v207 起 5 個 ft* 新生心理測驗 action 已接線（見 freshmanTest/actions.js，另外過 4a-3
 //      freshmanTestDecision 角色閘——管理者或 isFreshmenTestContact 主責）；
 //      其餘未實作 action → 明確業務錯誤（deleteFile/moveFile＝刻意不移植的純攻擊面死碼，
@@ -37,6 +38,7 @@ const officeDecryptActions = require('./actions/officeDecrypt');
 const commitActions = require('./actions/commit');
 const mailActions = require('./actions/mail');
 const openmailActions = require('./openmail/actions');
+const openmailArchive = require('./openmail/archive');
 const openmailCredStore = require('./openmail/credStore');
 const openmailClient = require('./openmail/client');
 const smsActions = require('./sms/actions');
@@ -432,6 +434,20 @@ async function handleRequest(db, config, payload) {
       case 'omDelete': result = await openmailActions.omDelete(userEmail, config, params); break;
       case 'omSearch': result = await openmailActions.omSearch(userEmail, config, params); break;
       case 'omSend': result = await openmailActions.omSend(userEmail, config, params); break;
+      // ── v220：學諮伺服器資料夾（omsv*，見 openmail/archive.js 檔頭）。信件封存到本系統
+      //    sqlite，不佔 openmail 信箱空間。走一般授權閘（不在 gate.AUTHZ_EXEMPT），ownerEmail
+      //    皆來自已驗證 session（同 om* 既有原則，不吃 params 裡的身分欄位——archive.js 每條查詢都
+      //    帶 owner_email 條件，跨 owner 存取一律「查無」視同拒絕）。omsvArchiveMessage 需要
+      //    openmail 憑證抓信，未 omConnect 過或已過期同樣回 'mail_not_connected'（見 credStore）。
+      case 'omsvFolderList': result = openmailArchive.omsvFolderList(db, userEmail); break;
+      case 'omsvFolderCreate': result = openmailArchive.omsvFolderCreate(db, userEmail, params); break;
+      case 'omsvFolderRename': result = openmailArchive.omsvFolderRename(db, userEmail, params); break;
+      case 'omsvFolderDelete': result = openmailArchive.omsvFolderDelete(db, userEmail, params); break;
+      case 'omsvArchiveMessage': result = await openmailArchive.omsvArchiveMessage(db, userEmail, config, params); break;
+      case 'omsvList': result = openmailArchive.omsvList(db, userEmail, params); break;
+      case 'omsvGet': result = await openmailArchive.omsvGet(db, userEmail, params); break;
+      case 'omsvDownloadAttachment': result = await openmailArchive.omsvDownloadAttachment(db, userEmail, params); break;
+      case 'omsvDelete': result = openmailArchive.omsvDelete(db, userEmail, params); break;
       // ── v203：簡訊發送（三竹 Mitake／Every8D，見 src/sms/ 檔頭）。走一般授權閘（不在
       //    gate.AUTHZ_EXEMPT）；userEmail 皆來自已驗證 session（同 om*/twofa/password 類 action的
       //    既有原則，smsSend 寫入 sms_batches.sender_email 用的也是這個已驗證身分，不吃 params 裡的
@@ -536,7 +552,18 @@ async function handleRequest(db, config, payload) {
             ? (result.encrypted ? 'probe_encrypted' : 'probe_plain')
             : (result.encrypted ? 'decrypted' : 'plain'))}`
         : '';
-      const detail = audit.summarizeParams(params, action) + (strippedNote ? `,${strippedNote}` : '') + smsResultNote + ftHistoricalNote + officeOutcomeNote;
+      // v220：omsvArchiveMessage 的結果（archivedId／是否成功從 openmail 刪除原信）補記於稽核——
+      // 只記 id 與布林值，不記信件主旨/內容（同 CLAUDE.md 資安原則 3 去識別化），供事後追查
+      // 「這次封存呼叫是否成功刪除原信」時不必去翻 openmail_archive_messages 表本身。
+      const omsvResultNote = (action === 'omsvArchiveMessage' && result && result.ok)
+        ? `,archivedId=${result.archivedId},deleted=${!!result.deleted}`
+        : '';
+      // 2026-07-20 事件：omConnect 業務層成敗（帳密被拒/逾時/不可達）補記於稽核——先前只記
+      // 「動作有執行」與 latency，事後只能靠 90 秒延遲反推是逾時。不記帳密本身。
+      const omConnectNote = (action === 'omConnect' && result)
+        ? `,connect_outcome=${result.error || 'ok'}`
+        : '';
+      const detail = audit.summarizeParams(params, action) + (strippedNote ? `,${strippedNote}` : '') + smsResultNote + ftHistoricalNote + officeOutcomeNote + omsvResultNote + omConnectNote;
       audit.appendAuditLog(db, {
         email: outcomeEmail,
         action: action || '(none)',

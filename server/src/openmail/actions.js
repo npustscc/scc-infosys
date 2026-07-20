@@ -47,7 +47,9 @@ async function omConnect(email, config, params) {
   if (!mailUser || !mailPass) return { error: 'mail_auth_failed' };
   const result = await client.verifyLogin(mailUser, mailPass, config);
   if (!result.ok) {
-    return { error: result.reason === 'auth' ? 'mail_auth_failed' : 'mail_server_unreachable' };
+    if (result.reason === 'auth') return { error: 'mail_auth_failed' };
+    if (result.reason === 'timeout') return { error: 'mail_server_timeout' };
+    return { error: 'mail_server_unreachable' };
   }
   credStore.set(email, mailUser, mailPass);
   return { ok: true, mailUser: mailUser };
@@ -212,6 +214,51 @@ function replaceCidRefs(html, cidMap) {
   });
 }
 
+// 把 mailparser 解析結果轉成前端閱讀窗需要的 view model（html 消毒、cid 內嵌、附件清單）。
+// meta 為呼叫端補上的額外欄位（uid/seen/flagged 是即時 IMAP 讀信才有；omsv 封存信重放時沒有這些
+// IMAP 專屬概念，見 openmail/archive.js omsvGet 只傳 {} ）——抽出本函式供兩邊共用，避免 HTML
+// 消毒/cid 內嵌/附件清單這段邏輯分裂成兩份。
+function buildMessageView(parsed, meta) {
+  const attachmentsOut = [];
+  const cidMap = new Map();
+  (parsed.attachments || []).forEach((att, idx) => {
+    const isInlineCid = !!att.cid && att.related !== false;
+    if (isInlineCid && att.content && att.content.length <= MAX_INLINE_CID_BYTES) {
+      cidMap.set(att.cid, `data:${att.contentType || 'application/octet-stream'};base64,${att.content.toString('base64')}`);
+      return;
+    }
+    attachmentsOut.push({
+      index: idx,
+      filename: att.filename || `attachment-${idx + 1}`,
+      contentType: att.contentType || 'application/octet-stream',
+      size: att.size != null ? att.size : (att.content ? att.content.length : 0),
+      cid: att.cid || null,
+      inline: !!isInlineCid,
+    });
+  });
+
+  const rawHtml = parsed.html || (parsed.text ? escapeTextToHtml(parsed.text) : '');
+  const { html: sanitizedHtml, blockedRemoteImages } = sanitize.sanitizeHtml(rawHtml);
+  const htmlWithCid = replaceCidRefs(sanitizedHtml, cidMap);
+
+  return {
+    subject: parsed.subject || '',
+    from: firstAddr(parsed.from),
+    to: addrList(parsed.to),
+    cc: addrList(parsed.cc),
+    replyTo: addrList(parsed.replyTo),
+    date: parsed.date ? new Date(parsed.date).toISOString() : null,
+    messageId: parsed.messageId || null,
+    inReplyTo: parsed.inReplyTo || null,
+    references: Array.isArray(parsed.references) ? parsed.references : (parsed.references ? [parsed.references] : []),
+    html: htmlWithCid,
+    text: parsed.text || '',
+    attachments: attachmentsOut,
+    blockedRemoteImages,
+    ...(meta || {}),
+  };
+}
+
 async function omGetMessage(email, config, params) {
   const folder = params && params.folder;
   const uid = params && params.uid;
@@ -231,47 +278,11 @@ async function omGetMessage(email, config, params) {
     }
 
     const parsed = await simpleParser(sourceBuf);
-
-    const attachmentsOut = [];
-    const cidMap = new Map();
-    (parsed.attachments || []).forEach((att, idx) => {
-      const isInlineCid = !!att.cid && att.related !== false;
-      if (isInlineCid && att.content && att.content.length <= MAX_INLINE_CID_BYTES) {
-        cidMap.set(att.cid, `data:${att.contentType || 'application/octet-stream'};base64,${att.content.toString('base64')}`);
-        return;
-      }
-      attachmentsOut.push({
-        index: idx,
-        filename: att.filename || `attachment-${idx + 1}`,
-        contentType: att.contentType || 'application/octet-stream',
-        size: att.size != null ? att.size : (att.content ? att.content.length : 0),
-        cid: att.cid || null,
-        inline: !!isInlineCid,
-      });
-    });
-
-    const rawHtml = parsed.html || (parsed.text ? escapeTextToHtml(parsed.text) : '');
-    const { html: sanitizedHtml, blockedRemoteImages } = sanitize.sanitizeHtml(rawHtml);
-    const htmlWithCid = replaceCidRefs(sanitizedHtml, cidMap);
-
-    return {
+    return buildMessageView(parsed, {
       uid: Number(uid),
-      subject: parsed.subject || '',
-      from: firstAddr(parsed.from),
-      to: addrList(parsed.to),
-      cc: addrList(parsed.cc),
-      replyTo: addrList(parsed.replyTo),
-      date: parsed.date ? new Date(parsed.date).toISOString() : null,
       seen: true,
       flagged: flags ? flags.has('\\Flagged') : false,
-      messageId: parsed.messageId || null,
-      inReplyTo: parsed.inReplyTo || null,
-      references: Array.isArray(parsed.references) ? parsed.references : (parsed.references ? [parsed.references] : []),
-      html: htmlWithCid,
-      text: parsed.text || '',
-      attachments: attachmentsOut,
-      blockedRemoteImages,
-    };
+    });
   }));
 }
 
@@ -480,4 +491,10 @@ module.exports = {
   // exported for unit tests of pure helpers
   bodyStructureHasAttachment,
   replaceCidRefs,
+  // exported for reuse by openmail/archive.js (v220 學諮伺服器資料夾)：同一套「mailparser 解析
+  // 結果 → 前端閱讀窗 view model」邏輯，封存信重放（沒有即時 IMAP 連線）也要用同一套 HTML 消毒/
+  // cid 內嵌/附件清單規則，不能分裂成兩份互不同步的實作。
+  buildMessageView,
+  firstAddr,
+  addrList,
 };

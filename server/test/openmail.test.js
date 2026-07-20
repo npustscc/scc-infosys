@@ -32,16 +32,38 @@ test('credStore.get：查無帳號 → null（未曾 set）', () => {
   assert.equal(credStore.get('never-set@x.com'), null);
 });
 
-test('credStore.get：過期（超過 expSec）→ null 且內部項目已被清除', () => {
+test('credStore.get：7 天內未過期 → 仍可取用（v220 滑動視窗，不再是台北午夜過期）', () => {
+  const email = 'not-yet-expired@x.com';
+  credStore.clear(email);
+  const now = Date.now();
+  credStore.set(email, 'u', 'p', now);
+  // 舊行為（台北午夜過期）下，跳兩天必定已過期；v220 滑動視窗下應仍存活。
+  const twoDaysLater = now + 2 * 24 * 3600 * 1000;
+  assert.ok(credStore.get(email, twoDaysLater));
+  credStore.clear(email);
+});
+
+test('credStore.get：過期（超過 7 天未使用）→ null 且內部項目已被清除', () => {
   const email = 'expire-test@x.com';
   credStore.clear(email);
   const now = Date.now();
   credStore.set(email, 'u', 'p', now);
-  // sessionAuth.nextTaipeiMidnightEpochSec(now) 一定 > now 的秒數；往後跳兩天必定已過期。
-  const twoDaysLater = now + 2 * 24 * 3600 * 1000;
-  assert.equal(credStore.get(email, twoDaysLater), null);
+  const eightDaysLater = now + 8 * 24 * 3600 * 1000;
+  assert.equal(credStore.get(email, eightDaysLater), null);
   // lazy 清除：第二次呼叫（即使用原本的 now）也應該是 null，因為項目已被刪除。
   assert.equal(credStore.get(email, now), null);
+});
+
+test('credStore.get：滑動續期——中途取用一次會把效期往後推 7 天，原本會過期的時間點仍存活', () => {
+  const email = 'sliding-test@x.com';
+  credStore.clear(email);
+  const now = Date.now();
+  credStore.set(email, 'u', 'p', now);
+  const sixDaysLater = now + 6 * 24 * 3600 * 1000;
+  assert.ok(credStore.get(email, sixDaysLater)); // 第 6 天取用一次，續期至第 13 天
+  const twelveDaysLater = now + 12 * 24 * 3600 * 1000; // 若沒有滑動續期，第 12 天早該過期（原第 7 天過期）
+  assert.ok(credStore.get(email, twelveDaysLater));
+  credStore.clear(email);
 });
 
 test('credStore.clear：立即清除（比照 sessionLogout 呼叫時機）', () => {
@@ -56,7 +78,7 @@ test('credStore.sweep：清掉所有已過期項目，保留未過期項目', ()
   const now = Date.now();
   credStore.clear('sweep-old@x.com');
   credStore.clear('sweep-live@x.com');
-  credStore.set('sweep-old@x.com', 'u', 'p', now - 3 * 24 * 3600 * 1000); // 3 天前設定，早已過期
+  credStore.set('sweep-old@x.com', 'u', 'p', now - 8 * 24 * 3600 * 1000); // 8 天前設定，早已過期
   credStore.set('sweep-live@x.com', 'u', 'p', now); // 現在設定，尚未過期
   credStore.sweep(now);
   assert.equal(credStore.get('sweep-old@x.com', now), null);

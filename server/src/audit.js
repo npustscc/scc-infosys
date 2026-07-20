@@ -22,6 +22,7 @@ const CONFIDENTIAL_KEYS = new Set(['mailPass', 'password', 'currentPassword', 'n
 // summarizeOpenmailParams），folder 名／uid／收件人 domain／subject 長度可讀但仍不含信件內容本身。
 function summarizeParams(params, action) {
   if (!params || typeof params !== 'object') return '';
+  if (action && /^omsv[A-Z]/.test(action)) return summarizeOmsvParams(params);
   if (action && /^om[A-Z]/.test(action)) return summarizeOpenmailParams(params);
   if (action && /^sms[A-Z]/.test(action)) return summarizeSmsParams(params);
   if (action && /^ft[A-Z]/.test(action)) return summarizeFtParams(params);
@@ -99,6 +100,23 @@ function summarizeFtParams(params) {
     if (k === 'cols' && Array.isArray(v)) {
       return `cols=${v.map((c) => (c && c.id) || '').join('|').slice(0, 300)}`;
     }
+    const len = typeof v === 'string' ? v.length : (v && typeof v === 'object' ? JSON.stringify(v).length : String(v).length);
+    return `${k}_len=${len}`;
+  }).join(',');
+}
+
+// v220：學諮伺服器資料夾（omsv*，見 openmail/archive.js）專用摘要——資料夾名稱本身只是使用者
+// 自訂的組織標籤（不是信件個資），可讀記錄；folder（IMAP 路徑）／uid／folderId／id／index 等
+// 定位用欄位皆可讀記錄。信件主旨/寄件人/收件人/內文一律不會出現在這些 action 的 params 裡
+// （server 端自行從封存的 source 解析取得，不經前端傳入），故不需要額外黑名單即已符合「只記
+// 筆數/資料夾名/大小，不落信件主旨與內容」（CLAUDE.md 資安原則 3）。
+function summarizeOmsvParams(params) {
+  return Object.keys(params).filter((k) => !CONFIDENTIAL_KEYS.has(k)).map((k) => {
+    const v = params[k];
+    if (k === 'name') return `name=${String(v == null ? '' : v).slice(0, 80)}`;
+    if (k === 'folder') return `folder=${String(v).slice(0, 80)}`;
+    if (k === 'folderId' || k === 'targetFolderId' || k === 'id' || k === 'index' || k === 'uid') return `${k}=${v}`;
+    if (k === 'deleteFromMail') return `deleteFromMail=${!!v}`;
     const len = typeof v === 'string' ? v.length : (v && typeof v === 'object' ? JSON.stringify(v).length : String(v).length);
     return `${k}_len=${len}`;
   }).join(',');

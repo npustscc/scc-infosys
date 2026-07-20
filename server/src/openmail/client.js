@@ -113,6 +113,10 @@ async function verifyLogin(mailUser, mailPass, config) {
   const c = new ImapFlow({
     host: imapHost(config), port: imapPort(config), secure: true,
     auth: { user: mailUser, pass: mailPass }, logger: false,
+    // 2026-07-20 事件：郵件伺服器對連續登入失敗會懲罰性不回應，ImapFlow 預設 connectionTimeout
+    // 90 秒讓使用者每次重試都卡滿 90 秒。縮到 15 秒快速回報「郵件伺服器沒回應」。
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
   });
   try {
     await c.connect();
@@ -121,6 +125,8 @@ async function verifyLogin(mailUser, mailPass, config) {
   } catch (err) {
     try { c.close(); } catch (_e) { /* ignore */ }
     if (isAuthError(err)) return { ok: false, reason: 'auth' };
+    const msg = String((err && err.message) || '').toLowerCase();
+    if (/timeout|timed out/.test(msg) || err.code === 'ETIMEDOUT') return { ok: false, reason: 'timeout' };
     return { ok: false, reason: 'unreachable' };
   }
 }
