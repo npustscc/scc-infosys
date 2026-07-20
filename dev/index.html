@@ -4120,6 +4120,8 @@
             <button class="btn btn-secondary btn-sm" onclick="document.getElementById('ft-import-file').click()">📥 匯入 Excel/CSV</button>
             <input type="file" id="ft-import-file" accept=".xlsx,.xlsm,.xls,.csv" style="display:none;" onchange="_ftHandleImportFile(this)">
             <button class="btn btn-secondary btn-sm" onclick="_ftShowColumnManager()">⚙ 欄位管理</button>
+            <!-- v215：一鍵標記全部列軟刪除（單一 undo 交易，儲存後才實際刪除） -->
+            <button class="btn btn-danger btn-sm" onclick="_ftDeleteAllRows()">🗑 全部刪除</button>
             <!-- v209：導師名冊專用，其餘 tab 隱藏（見 _ftSwitchTab） -->
             <button class="btn btn-secondary btn-sm" id="ft-tutorsync-btn" style="display:none;" onclick="_ftTutorSyncStart()">🔄 與導師系統同步</button>
             <span id="ft-dirty-indicator" style="display:none;color:#c05621;font-size:.8rem;">● 有未儲存的變更</span>
@@ -31558,6 +31560,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-20', v: 215, title: '新生心理測驗：修正水平捲動時標題列與資料列錯位＋新增「全部刪除」', isProd: false, items: [
+      item('修正', '試算表水平捲動時，凍結欄（學號／中文姓名）只有資料列跟著固定、標題列沒有跟上，造成標題與資料對不上（看起來像標題出現空白欄、名稱被擠到別的欄位、欄寬不一致）；標題列凍結已修復，捲動時標題與資料列完全對齊'),
+      item('修正', '「班級簡稱」欄原本在所有分頁都被設成凍結欄（它其實只是「導師名冊」分頁的主鍵），在學生基本資料等分頁水平捲動時會浮起蓋在其他欄位上（看起來像被擠到最後一欄）；改為各分頁只凍結自己該凍結的欄位——導師名冊凍結班級簡稱，其餘分頁凍結學號／中文姓名'),
+      item('新功能', '工具列新增「🗑 全部刪除」：一鍵把目前分頁所有列標記為刪除（軟刪除），可按 Ctrl+Z 整批復原或逐列按「↺ 還原」，按「儲存」後才會實際從伺服器刪除'),
+      item('說明', '欄位名稱／順序／必填／增刪其實已可由工具列「⚙ 欄位管理」編輯（含改名與拖曳排序）；本次錯位為純顯示問題，伺服器上的欄位定義與資料經檢查皆完好，不需要刪除重建'),
+    ]},
     { date: '2026-07-20', v: 214, title: '使用者管理「登入紀錄」獨立成專屬分頁，新增時間/人員篩選與管理端封存', isProd: false, items: [
       item('新功能', '原「使用者列表」分頁裡的「登入紀錄總覽」卡片獨立成專屬的「登入紀錄」分頁；切到本分頁會自動載入一次，之後可按「重新載入」手動刷新'),
       item('新功能', '新增日期區間（登入時間）與人員（下拉選單，依角色分組，含已停用者與名冊外的舊帳號）篩選，篩選在前端即時套用、不需重新打後端'),
@@ -52440,7 +52448,12 @@ async function _smsCancelClick(logId) {
 const FT_TAB_SHEET = { students: 'students', tests: 'tests', gform: 'gforms', tutors: 'tutors' };
 const FT_ROW_H = 30;        // px，虛擬化列高（固定值，簡化窗口計算）
 const FT_VWIN_BUFFER = 8;   // 可視窗口上下緩衝列數
-const FT_STICKY_COL_IDS = new Set(['stu_id', 'name_zh', 'class_abbr']); // 導師名冊主鍵是 class_abbr（無學號/姓名欄）
+// v215：凍結欄依分頁而定——導師名冊的主鍵是 class_abbr（無學號/姓名欄），其餘分頁凍結學號/中文
+// 姓名。原本三者共用一個全域集合，導致學生基本資料等分頁的「班級簡稱」（第 11 欄）也被凍結，
+// 水平捲動時以 1000px 級的 sticky offset 蓋在其他欄位上（看起來像被擠到最後一欄）。
+function _ftStickyColIds() {
+  return _ft.tab === 'tutors' ? new Set(['class_abbr']) : new Set(['stu_id', 'name_zh']);
+}
 const FT_DELETE_COL_W = 46; // v213：每列軟刪除鈕欄寬（編輯模式才出現，見 _ftBuildRenderCtx／_ftDeleteCellHtml）
 const FT_UNDO_STACK_LIMIT = 100; // v213：交易式復原/重做堆疊上限（見任務規格「不要整表快照」）
 
@@ -54776,6 +54789,22 @@ function _ftToggleRowDelete(rowIdx) {
   _ftRenderGrid();
 }
 
+// v215：全部刪除——把目前分頁所有尚未標記的列一次標記軟刪除（單一 undo 交易，Ctrl+Z 可整批
+// 復原；逐列仍可按「↺ 還原」取消）。實際刪除與 v213 每列軟刪除共用同一條管線：按「儲存」才發生。
+function _ftDeleteAllRows() {
+  if (!_ft.rows.length) { showToast('目前沒有資料列', 'info'); return; }
+  const targets = _ft.rows.map((r, i) => ({ r, i })).filter(x => x.r._pendingDelete !== true);
+  if (!targets.length) { showToast('所有列都已標記為刪除，按「儲存」即會實際刪除', 'info'); return; }
+  if (!confirm(`確定要把全部 ${_ft.rows.length} 列標記為刪除嗎？\n\n標記後可按 Ctrl+Z 整批復原、或逐列按「↺ 還原」；要按「儲存」才會實際從伺服器刪除。`)) return;
+  if (!_ft.editing) _ftEnterEdit();
+  const fieldChanges = targets.map(x => ({ rowIdx: x.i, kind: 'flag', name: '_pendingDelete', oldValue: !!x.r._pendingDelete, newValue: true }));
+  targets.forEach(x => { x.r._pendingDelete = true; });
+  _ftPushUndo({ removals: [], insertions: [], fieldChanges });
+  _ftMarkDirty();
+  _ftRenderGrid();
+  showToast(`已標記全部 ${targets.length} 列為刪除，按「儲存」後才會實際寫入`, 'warn');
+}
+
 function _ftOnCellInput(rowIdx, colId, value) {
   const row = _ft.rows[rowIdx];
   if (!row) return;
@@ -54827,8 +54856,9 @@ function _ftBuildRenderCtx() {
   const gridTemplate = colWidths.map(w => w + 'px').join(' ');
   let acc = 0;
   const stickyOffset = {};
+  const stickySet = _ftStickyColIds();
   cols.forEach((c, i) => {
-    if (FT_STICKY_COL_IDS.has(c.id)) stickyOffset[c.id] = acc;
+    if (stickySet.has(c.id)) stickyOffset[c.id] = acc;
     acc += colWidths[i];
   });
   const needChecks = _ft.tab === 'tests' || _ft.tab === 'gform';
@@ -54842,15 +54872,17 @@ function _ftBuildRenderCtx() {
     studentsNameColId: 'name_zh',
   }) : null;
   const gformDupKeys = _ft.tab === 'gform' ? _ftFindDuplicateStuIds(_ft.rows, 'stu_id') : new Set();
-  return { cols, colWidths, totalWidth, gridTemplate, stickyOffset, checks, gformDupKeys, editing: _ft.editing, showDeleteCol };
+  return { cols, colWidths, totalWidth, gridTemplate, stickyOffset, stickySet, checks, gformDupKeys, editing: _ft.editing, showDeleteCol };
 }
 
 function _ftHeaderCellHtml(c, ctx) {
-  const stickyCss = FT_STICKY_COL_IDS.has(c.id) ? `position:sticky;left:${ctx.stickyOffset[c.id]}px;z-index:6;background:#f7fafc;` : '';
+  const stickyCss = ctx.stickySet.has(c.id) ? `position:sticky;left:${ctx.stickyOffset[c.id]}px;z-index:6;background:#f7fafc;` : '';
   const longName = c.name && c.name.length > 24;
   const dispName = longName ? escHtml(c.name.slice(0, 22)) + '…' : escHtml(c.name);
   const tip = longName ? ` data-tip="${escHtml(c.name)}"` : '';
-  return `<div data-col-id="${escHtml(c.id)}" style="${stickyCss}position:relative;padding:6px 8px;border:1px solid #e2e8f0;font-size:.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;"${tip}>${dispName}${c.required ? '<span class="req">*</span>' : ''}</div>`;
+  // v215：凍結欄不可再補 position:relative——同屬性後者覆蓋前者，會把 position:sticky 蓋掉，造成
+  // 表頭凍結失效、水平捲動時標題列與資料列錯位（sticky 本身即為定位元素，欄寬把手照常運作）。
+  return `<div data-col-id="${escHtml(c.id)}" style="${stickyCss || 'position:relative;'}padding:6px 8px;border:1px solid #e2e8f0;font-size:.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-sizing:border-box;"${tip}>${dispName}${c.required ? '<span class="req">*</span>' : ''}</div>`;
 }
 
 function _ftRowHtml(ri, ctx) {
@@ -54881,7 +54913,7 @@ function _ftRowHtml(ri, ctx) {
         tip = ` data-tip="與學生基本資料姓名不一致"`;
       }
     }
-    const isSticky = FT_STICKY_COL_IDS.has(c.id);
+    const isSticky = ctx.stickySet.has(c.id);
     const stickyCss = isSticky ? `position:sticky;left:${ctx.stickyOffset[c.id]}px;z-index:2;` : '';
     // sticky 欄需要不透明底色才能遮住捲動經過的內容；非 sticky 欄沒有這個顧慮，透明即可。
     const bg = cellBg || (isSticky ? (isGformDup ? (isExcluded ? '#f2f2f2' : '#fffbea') : '#fff') : '');
