@@ -32097,6 +32097,9 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-20', v: 228, title: '身心調適假信箱「登入自動擷取」改為完全靜默背景執行', isProd: false, items: [
+      item('改善', '身心調適假窗口／管理者登入時的信箱自動擷取，改為完全背景靜默：不再彈出右上角進度視窗、Gmail 需重新授權時也不再於登入當下彈授權視窗；只有真的擷取到新的請假信才輕量提示一筆，沒有新信則完全無感（原本每次登入都跳視窗較擾民）。手動「📥 從信箱擷取」維持完整進度視窗與授權流程不變'),
+    ] },
     { date: '2026-07-20', v: 227, title: '回應 #039：全系統晤談時間／節次下拉統一為「新增晤談紀錄」標準', isProd: false, items: [
       item('修正', '事件處理記錄的「晤談時間」下拉先前漏了「午 12:10-13:00」選項，與新增晤談紀錄不一致，已補上'),
       item('技術', '晤談時間／節次下拉改為單一標準來源（STD_PERIODS）：新增晤談紀錄、初次晤談紀錄表、事件處理記錄及各自的「下次預約」節次一律由同一份清單產生，日後要調整節次時間只需改一處即可全系統一致；空間預約的時段（含午休不可預約、供時段格線用）維持獨立清單'),
@@ -38588,7 +38591,9 @@ window._mlCreateFetchWin = (totalY, isAuto) => {
         <button id="ml-fw-done" style="flex:1;padding:6px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;font-size:13px;opacity:.5;" disabled onclick="document.getElementById('ml-fetch-win').remove()">完成</button>
       </div>
     </div>`;
-  document.body.appendChild(win);
+  // heart5 靜默化：自動擷取（登入後背景觸發）不顯示浮動視窗，整個過程靜默——window 節點仍建立供
+  // 進度 querySelector 寫入（no-op），但不掛到畫面上；只有手動「📥 從信箱擷取」才顯示視窗。
+  if (!isAuto) document.body.appendChild(win);
   const header = win.querySelector('#ml-fw-header');
   let ox = 0, oy = 0, dragging = false;
   header.addEventListener('pointerdown', e => {
@@ -38647,7 +38652,7 @@ window._mlFetch = async (isAuto) => {
         // 掃描未處理信件數
         const countResult = await proxyCall('countMentalLeavesUnprocessed');
         if (countResult?.needsAuth) {
-          bgJobFail(jobId, '需要 Gmail 授權'); _mlShowAuthModal(countResult.authUrl);
+          bgJobFail(jobId, '需要 Gmail 授權'); if (!isAuto) _mlShowAuthModal(countResult.authUrl); // 自動擷取不彈授權窗（登入時擾民），改由手動擷取或稍後重試
           _winStatus('需要重新授權'); _winDone(); return;
         }
         const rawCount = countResult.count ?? 0;
@@ -38666,7 +38671,7 @@ window._mlFetch = async (isAuto) => {
             _winStatus('另一工作階段正在擷取中，請稍後再試'); _winDone(); return;
           }
           if (result?.needsAuth) {
-            bgJobFail(jobId, '需要 Gmail 授權'); _mlShowAuthModal(result.authUrl);
+            bgJobFail(jobId, '需要 Gmail 授權'); if (!isAuto) _mlShowAuthModal(result.authUrl); // 自動擷取不彈授權窗
             _winStatus('需要重新授權'); _winDone(); return;
           }
           lastBatch = result.batchCount ?? 0;
@@ -38695,6 +38700,8 @@ window._mlFetch = async (isAuto) => {
           bgJobDone(jobId);
           auditLog('從信箱擷取身心調適假', null, null,
             `擷取 ${processed} 封，新增 ${totalNew} 筆${stillMore ? '，尚有更多' : ''}`);
+          // heart5 靜默化：自動擷取整程無視窗，只有真的抓到新請假信才輕量提示一次（0 筆完全靜默）
+          if (isAuto && totalNew > 0) showToast(`身心調適假：背景擷取到 ${totalNew} 筆新請假信`, 'info');
           _winPct(100);
           if (stillMore) {
             _winStatus('首批 200 封已完成');
