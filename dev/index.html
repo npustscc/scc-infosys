@@ -655,6 +655,10 @@
     .rec-more-btn:hover { color:#1a5276; }
     .record-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 
+    /* v232：信箱拖曳信件——資料夾拖放目標的 hover 樣式 */
+    .om-drop-hover { outline: 2px dashed #3182ce; outline-offset: -2px; background: #ebf8ff !important; }
+    body.om-dragging .om-msg-row { cursor: grabbing; }
+
     /* ── 狀態燈號 ── */
     .light-red    { background: #fde8e8; color: #c0392b; }
     .light-orange { background: #fdebd0; color: #9c4a00; }
@@ -2247,8 +2251,9 @@
             <div id="om-folder-resize" style="height:7px;flex-shrink:0;cursor:ns-resize;background:#edf2f7;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;" data-tip="上下拖曳可調整屏科大信箱資料夾的高度"></div>
             <!-- v220：學諮系統資料夾（信件封存到本系統 sqlite）；v224 字級對齊屏科大信箱 -->
             <div style="padding:8px 10px 4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex-shrink:0;">
-              <h3 style="font-size:.88rem;margin:0;cursor:help;" data-tip="把屏科大信箱信件（含附件）完整封存到學諮系統自己的資料庫，不佔用屏科大信箱容量；封存時可選擇是否同時刪除屏科大信箱原信。適合長期保存但不想佔用信箱空間的信件。">學諮系統資料夾 ⓘ</h3>
+              <h3 style="font-size:.88rem;margin:0;cursor:help;" data-tip="把屏科大信箱信件（含附件）完整封存到學諮系統自己的資料庫，不佔用屏科大信箱容量；封存時可選擇是否同時刪除屏科大信箱原信。適合長期保存但不想佔用信箱空間的信件。也可直接把信件拖曳進下方資料夾封存。">學諮系統資料夾 ⓘ</h3>
               <span style="font-size:.72rem;background:#edf2f7;color:#4a5568;border-radius:4px;padding:2px 7px;white-space:nowrap;" data-tip="信件存於學諮系統資料庫，不佔屏科大信箱空間">📦 不佔信箱空間</span>
+              <span style="cursor:pointer;margin-left:auto;font-size:.85rem;" onclick="_omDragDelPrefPrompt()" data-tip="拖曳封存偏好：設定拖信進來時，原信要每次詢問／自動刪除／自動保留">⚙</span>
             </div>
             <div id="omsv-folder-tree" style="flex:1;overflow:auto;padding:4px;"></div>
             <div style="padding:6px 8px 8px;flex-shrink:0;">
@@ -32146,6 +32151,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-20', v: 232, title: '信箱：信件可拖曳到資料夾移動、拖進學諮系統資料夾封存（含原信處理偏好）', isProd: false, items: [
+      item('新功能', '信件列表的信可直接「拖曳」到左側屏科大信箱資料夾完成移動——拖已勾選的信＝整批一起移動，拖未勾選的信＝只移動那一封；拖曳時目標資料夾會以藍色虛線框提示'),
+      item('新功能', '信件也可拖進「學諮系統資料夾」直接封存：放開時跳出視窗詢問原信要「保留」或「同時刪除」，並可勾選「記住我的選擇，不再詢問」；勾錯了隨時可從學諮系統資料夾標題列的 ⚙ 重新設定（每次詢問／自動刪除／自動保留）'),
+      item('技術', '移動與封存的核心流程抽出共用（下拉選單/勾選封存與拖曳走同一套快取作廢與重載邏輯），行為一致'),
+    ] },
     { date: '2026-07-20', v: 231, title: '信箱新增「寄件匣」離線寫信：連不上也能寫信暫存，連線恢復自動寄出', isProd: true, items: [
       item('新功能', '寄信遇到連線問題（信箱伺服器沒回應、尚未連結等）時，會詢問是否把整封信（含附件）存入「寄件匣」；存入後信箱頁上方會出現寄件匣提示條，列出待寄信件，可逐封移除或按「立即寄出」手動補寄'),
       item('新功能', '連線恢復（燈號轉綠且已連結）時，寄件匣的信會自動依序補寄，成功後提示補寄了幾封；補寄成功的信照常備份到「寄件備份」資料夾'),
@@ -52428,7 +52438,11 @@ function _omRenderFolderTree() {
     const active = f.path === _om.currentFolder;
     const label = _omFolderLabel(f);
     const unseen = f.unseen ? `<span class="badge badge-blue" style="margin-left:auto;flex-shrink:0;">${f.unseen}</span>` : '';
-    return `<div class="nav-item${active ? ' active' : ''}" style="padding:6px 8px;font-size:.85rem;" onclick="_omSelectFolder('${escHtml(f.path).replace(/'/g, "\\'")}')">
+    const pathEsc = escHtml(f.path).replace(/'/g, "\\'");
+    return `<div class="nav-item${active ? ' active' : ''}" style="padding:6px 8px;font-size:.85rem;" onclick="_omSelectFolder('${pathEsc}')"
+      ondragover="if(window._om&&_om._dragUids){event.preventDefault();this.classList.add('om-drop-hover');}"
+      ondragleave="this.classList.remove('om-drop-hover')"
+      ondrop="this.classList.remove('om-drop-hover');_omDropOnFolder('${pathEsc}')">
       <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(label)}</span>${unseen}
     </div>`;
   }).join('') || '<div style="padding:10px;color:#a0aec0;font-size:.82rem;">尚無資料夾</div>';
@@ -52563,7 +52577,7 @@ function _omRenderMessageList() {
     const flagIcon = m.flagged ? '★' : '☆';
     const attIcon = m.hasAttachments ? '📎 ' : '';
     const checked = _om.selected.has(m.uid) ? 'checked' : '';
-    return `<div class="om-msg-row" data-uid="${m.uid}" style="display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid #edf2f7;cursor:pointer;${unread ? 'background:#f7fbff;' : ''}" onclick="_omOpenMessage(${m.uid})">
+    return `<div class="om-msg-row" data-uid="${m.uid}" draggable="true" ondragstart="_omMsgDragStart(event, ${m.uid})" ondragend="_omMsgDragEnd()" style="display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid #edf2f7;cursor:pointer;${unread ? 'background:#f7fbff;' : ''}" onclick="_omOpenMessage(${m.uid})" data-tip="可拖曳到左側資料夾移動信件，或拖到學諮系統資料夾封存">
       <input type="checkbox" class="om-msg-cb" ${checked} onclick="event.stopPropagation()" onchange="_omToggleSelectOne(${m.uid}, this.checked)" style="flex-shrink:0;">
       <span onclick="event.stopPropagation();_omToggleFlag(${m.uid}, ${!!m.flagged})" style="cursor:pointer;color:${m.flagged ? '#ecc94b' : '#cbd5e0'};flex-shrink:0;font-size:1rem;">${flagIcon}</span>
       <span style="width:110px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.84rem;${unread ? 'font-weight:700;color:#1a202c;' : 'color:#4a5568;'}">${escHtml(fromName)}</span>
@@ -52627,11 +52641,9 @@ async function _omMarkSelected(seen) {
   }
 }
 
-async function _omMoveSelected(sel) {
-  const toFolder = sel.value;
-  if (!toFolder) return;
-  const uids = [..._om.selected];
-  if (!uids.length) { showToast('請先勾選信件', 'warn'); sel.value = ''; return; }
+// v232：移動核心抽出共用（下拉選單與拖曳皆呼叫）
+async function _omMoveUids(uids, toFolder) {
+  if (!uids.length || !toFolder || toFolder === _om.currentFolder) return;
   try {
     await _omCall('omMove', { folder: _om.currentFolder, uids, toFolder });
     showToast(`已移動 ${uids.length} 封信件`, 'success');
@@ -52645,9 +52657,123 @@ async function _omMoveSelected(sel) {
     await _omLoadMessages();
   } catch (e) {
     showToast('移動失敗：' + _omErrMsg(e.message), 'error');
-  } finally {
-    sel.value = '';
   }
+}
+
+async function _omMoveSelected(sel) {
+  const toFolder = sel.value;
+  if (!toFolder) return;
+  const uids = [..._om.selected];
+  if (!uids.length) { showToast('請先勾選信件', 'warn'); sel.value = ''; return; }
+  await _omMoveUids(uids, toFolder);
+  sel.value = '';
+}
+
+// ══════ v232：拖曳信件到資料夾（移動）／學諮系統資料夾（封存）══════
+// 拖曳中的 uid 清單：拖已勾選的列＝整批勾選一起拖；拖未勾選的列＝只拖那一封。
+function _omMsgDragStart(e, uid) {
+  const uids = (_om.selected.has(uid) && _om.selected.size) ? [..._om.selected] : [uid];
+  _om._dragUids = uids;
+  document.body.classList.add('om-dragging');
+  try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(uid)); } catch (_) {}
+}
+function _omMsgDragEnd() {
+  _om._dragUids = null;
+  document.body.classList.remove('om-dragging');
+  document.querySelectorAll('.om-drop-hover').forEach(el => el.classList.remove('om-drop-hover'));
+}
+
+function _omDropOnFolder(toFolder) {
+  const uids = _om._dragUids;
+  _omMsgDragEnd();
+  if (!uids || !uids.length) return;
+  if (toFolder === _om.currentFolder) return;
+  _omMoveUids(uids, toFolder);
+}
+
+// 拖進學諮系統資料夾 → 封存。是否同時刪原信依偏好：'ask'（預設，跳詢問窗＋「不再詢問」勾選）／
+// 'del'（自動刪）／'keep'（自動留）。偏好可由學諮系統資料夾標題列的 ⚙ 重新設定（需求：勾錯了要有地方改）。
+function _omDragDelPrefKey() { return 'scc_om_drag_del_' + (currentUser?.email || ''); }
+function _omDragDelPrefGet() {
+  try { const v = localStorage.getItem(_omDragDelPrefKey()); return (v === 'del' || v === 'keep') ? v : 'ask'; } catch (_) { return 'ask'; }
+}
+function _omDragDelPrefSet(v) { try { localStorage.setItem(_omDragDelPrefKey(), v); } catch (_) {} }
+
+function _omDropOnArchiveFolder(folderId, folderName) {
+  const uids = _om._dragUids;
+  _omMsgDragEnd();
+  if (!uids || !uids.length) return;
+  const items = uids.map(uid => ({ folder: _om.currentFolder, uid }));
+  const pref = _omDragDelPrefGet();
+  if (pref === 'del' || pref === 'keep') {
+    _omsvArchiveItems(items, folderId, pref === 'del');
+    return;
+  }
+  _omShowDragDelModal(items, folderId, folderName);
+}
+
+// 詢問視窗（drop 模式）：刪原信/保留原信＋「記住我的選擇，不再詢問」勾選
+function _omShowDragDelModal(items, folderId, folderName) {
+  document.getElementById('om-drag-del-modal')?.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'om-drag-del-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:420px;">
+      <div class="modal-header"><h3>封存到「${escHtml(folderName)}」</h3></div>
+      <div class="modal-body">
+        <p style="font-size:.88rem;color:#4a5568;">共 ${items.length} 封信件將封存到學諮系統資料夾。封存後要如何處理屏科大信箱裡的原信？</p>
+        <label style="display:flex;align-items:center;gap:6px;font-size:.82rem;color:#718096;margin-top:10px;cursor:pointer;">
+          <input type="checkbox" id="om-drag-del-remember"> 記住我的選擇，之後拖曳封存不再詢問（可隨時從學諮系統資料夾標題列的 ⚙ 重新設定）
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="document.getElementById('om-drag-del-modal').remove()">取消</button>
+        <button class="btn btn-secondary" id="om-drag-keep-btn">保留原信</button>
+        <button class="btn btn-primary" id="om-drag-del-btn" style="background:#c53030;border-color:#c53030;">同時刪除原信</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  const go = (del) => {
+    const remember = !!document.getElementById('om-drag-del-remember')?.checked;
+    if (remember) _omDragDelPrefSet(del ? 'del' : 'keep');
+    modal.remove();
+    _omsvArchiveItems(items, folderId, del);
+  };
+  document.getElementById('om-drag-keep-btn').onclick = () => go(false);
+  document.getElementById('om-drag-del-btn').onclick = () => go(true);
+}
+
+// 偏好修正入口（⚙）：重新選擇拖曳封存時的原信處理方式
+function _omDragDelPrefPrompt() {
+  const cur = _omDragDelPrefGet();
+  const labels = { ask: '每次詢問', del: '自動刪除原信', keep: '自動保留原信' };
+  document.getElementById('om-drag-del-modal')?.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'om-drag-del-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:400px;">
+      <div class="modal-header"><h3>拖曳封存偏好</h3></div>
+      <div class="modal-body">
+        <p style="font-size:.86rem;color:#4a5568;margin-bottom:10px;">把信件拖進學諮系統資料夾封存時，屏科大信箱的原信要如何處理？（目前：${labels[cur]}）</p>
+        ${['ask', 'keep', 'del'].map(v => `
+          <label style="display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;font-size:.88rem;">
+            <input type="radio" name="om-drag-pref" value="${v}" ${cur === v ? 'checked' : ''}> ${labels[v]}
+          </label>`).join('')}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="document.getElementById('om-drag-del-modal').remove()">取消</button>
+        <button class="btn btn-primary" id="om-drag-pref-save-btn">儲存</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  document.getElementById('om-drag-pref-save-btn').onclick = () => {
+    const v = modal.querySelector('input[name="om-drag-pref"]:checked')?.value || 'ask';
+    _omDragDelPrefSet(v);
+    modal.remove();
+    showToast('已更新拖曳封存偏好', 'success');
+  };
 }
 
 async function _omDeleteSelected() {
@@ -53084,7 +53210,10 @@ function _omsvRenderFolderTree() {
   el.innerHTML = _om.archiveFolders.map(f => {
     const active = _om.archiveCurrentFolderId === f.id;
     const nameEsc = escHtml(f.name).replace(/'/g, "\\'");
-    return `<div class="nav-item${active ? ' active' : ''}" style="padding:5px 8px;font-size:.85rem;display:flex;align-items:center;gap:4px;">
+    return `<div class="nav-item${active ? ' active' : ''}" style="padding:5px 8px;font-size:.85rem;display:flex;align-items:center;gap:4px;"
+      ondragover="if(window._om&&_om._dragUids){event.preventDefault();this.classList.add('om-drop-hover');}"
+      ondragleave="this.classList.remove('om-drop-hover')"
+      ondrop="this.classList.remove('om-drop-hover');_omDropOnArchiveFolder(${f.id}, '${nameEsc}')">
       <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" onclick="_omsvSelectFolder(${f.id})">📦 ${escHtml(f.name)}</span>
       <span style="color:#a0aec0;flex-shrink:0;font-size:.7rem;">${f.messageCount}</span>
       <span style="cursor:pointer;flex-shrink:0;" title="重新命名" onclick="event.stopPropagation();_omsvRenameFolderPrompt(${f.id}, '${nameEsc}')">✎</span>
@@ -53268,15 +53397,9 @@ function _omArchiveCurrentClick() {
   _omOpenArchiveModal([{ folder: _om.currentFolder, uid: _om.currentMsg.uid }]);
 }
 
-async function _omsvArchiveConfirm() {
-  const items = _om.archivePending;
-  const sel = document.getElementById('omsv-archive-target-select');
-  const targetFolderId = sel ? Number(sel.value) : NaN;
-  const deleteFromMail = !!document.getElementById('omsv-archive-delete-checkbox')?.checked;
+// v232：封存核心抽出共用（勾選封存 modal 與拖曳封存皆呼叫）
+async function _omsvArchiveItems(items, targetFolderId, deleteFromMail) {
   if (!items.length || !targetFolderId) return;
-  const btn = document.getElementById('omsv-archive-confirm-btn');
-  const origHtml = btn?.innerHTML;
-  if (btn) { btn.disabled = true; btn.innerHTML = '封存中…'; }
   let okCount = 0, failCount = 0, deleteFailCount = 0;
   for (const item of items) {
     try {
@@ -53289,18 +53412,16 @@ async function _omsvArchiveConfirm() {
       failCount++;
     }
   }
-  _omsvCloseArchiveModal();
-  if (btn) { btn.disabled = false; btn.innerHTML = origHtml || '封存'; }
 
   if (okCount) {
     let msg = `已封存 ${okCount} 封信件`;
-    if (deleteFailCount) msg += `，其中 ${deleteFailCount} 封未能從 openmail 刪除原信，請自行確認`;
+    if (deleteFailCount) msg += `，其中 ${deleteFailCount} 封未能從屏科大信箱刪除原信，請自行確認`;
     showToast(msg, deleteFailCount ? 'warn' : 'success');
   }
   if (failCount) showToast(`${failCount} 封信件封存失敗`, 'error');
 
   if (okCount) {
-    // 目標資料夾計數變了；若有勾選同時刪除，來源 openmail 資料夾內容也變了。
+    // 目標資料夾計數變了；若有勾選同時刪除，來源信箱資料夾內容也變了。
     const srcFolders = new Set(items.map(it => it.folder));
     srcFolders.forEach(f => _omCacheListInvalidateFolder(f));
     if (_om.currentMsg && items.some(it => it.uid === _om.currentMsg.uid) && _om.archiveViewingId == null) _omCloseReadPane();
@@ -53310,6 +53431,20 @@ async function _omsvArchiveConfirm() {
     await _omsvLoadFolders();
     if (_om.archiveCurrentFolderId === targetFolderId) await _omsvLoadMessages();
   }
+}
+
+async function _omsvArchiveConfirm() {
+  const items = _om.archivePending;
+  const sel = document.getElementById('omsv-archive-target-select');
+  const targetFolderId = sel ? Number(sel.value) : NaN;
+  const deleteFromMail = !!document.getElementById('omsv-archive-delete-checkbox')?.checked;
+  if (!items.length || !targetFolderId) return;
+  const btn = document.getElementById('omsv-archive-confirm-btn');
+  const origHtml = btn?.innerHTML;
+  if (btn) { btn.disabled = true; btn.innerHTML = '封存中…'; }
+  await _omsvArchiveItems(items, targetFolderId, deleteFromMail);
+  _omsvCloseArchiveModal();
+  if (btn) { btn.disabled = false; btn.innerHTML = origHtml || '封存'; }
 }
 </script>
 
