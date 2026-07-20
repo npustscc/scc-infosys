@@ -414,6 +414,111 @@ test('ftSaveRows：audit_log 記 deletedCount 與 deletedIds（僅系統配發 i
   assert.doesNotMatch(auditRow.detail, /B99999999/);
 });
 
+// ══════════════ v223 D2：評判記憶（judged）══════════════
+
+test('ftGetSheet：新 sheet 尚無 judged 資料時回空陣列', async () => {
+  const db = openDb(':memory:');
+  const tok = await setupFtUser(db, 'ft-judge1@x.com');
+  await handleRequest(db, testConfig(), { action: 'ftCreateSemester', sessionToken: tok, rootFolderId: ROOT, id: '114-1' });
+  const r = await handleRequest(db, testConfig(), {
+    action: 'ftGetSheet', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tests',
+  });
+  assert.equal(r.success, true);
+  assert.deepEqual(r.data.judged, []);
+});
+
+test('ftSaveRows：帶 judged 陣列會落地存檔，ftGetSheet 原樣回傳', async () => {
+  const db = openDb(':memory:');
+  const tok = await setupFtUser(db, 'ft-judge2@x.com');
+  await handleRequest(db, testConfig(), { action: 'ftCreateSemester', sessionToken: tok, rootFolderId: ROOT, id: '114-1' });
+  const judged = [{ stuId: 'B99999999', hash: 'abc12345', deletedAt: '2026-07-20T00:00:00.000Z' }];
+  const r = await handleRequest(db, testConfig(), {
+    action: 'ftSaveRows', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tests',
+    rows: [], judged,
+  });
+  assert.equal(r.success, true);
+  const sheet = await handleRequest(db, testConfig(), {
+    action: 'ftGetSheet', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tests',
+  });
+  assert.deepEqual(sheet.data.judged, judged);
+});
+
+test('ftSaveRows：未帶 judged 參數（undefined）不動既有評判記憶', async () => {
+  const db = openDb(':memory:');
+  const tok = await setupFtUser(db, 'ft-judge3@x.com');
+  await handleRequest(db, testConfig(), { action: 'ftCreateSemester', sessionToken: tok, rootFolderId: ROOT, id: '114-1' });
+  const judged = [{ stuId: 'B99999999', hash: 'abc12345', deletedAt: '2026-07-20T00:00:00.000Z' }];
+  await handleRequest(db, testConfig(), {
+    action: 'ftSaveRows', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tests',
+    rows: [], judged,
+  });
+  // 之後一般存檔（如新增一列，未帶 judged）不應清掉先前記住的評判記憶。
+  await handleRequest(db, testConfig(), {
+    action: 'ftSaveRows', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tests',
+    rows: [{ cells: { stu_id: 'B88888888', name_zh: '測試員乙' } }],
+  });
+  const sheet = await handleRequest(db, testConfig(), {
+    action: 'ftGetSheet', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tests',
+  });
+  assert.deepEqual(sheet.data.judged, judged);
+});
+
+test('ftSaveRows：帶空陣列 judged:[] 明確清空（對應「全部刪除並儲存」語意）', async () => {
+  const db = openDb(':memory:');
+  const tok = await setupFtUser(db, 'ft-judge4@x.com');
+  await handleRequest(db, testConfig(), { action: 'ftCreateSemester', sessionToken: tok, rootFolderId: ROOT, id: '114-1' });
+  await handleRequest(db, testConfig(), {
+    action: 'ftSaveRows', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tests',
+    rows: [], judged: [{ stuId: 'B99999999', hash: 'abc12345', deletedAt: '2026-07-20T00:00:00.000Z' }],
+  });
+  await handleRequest(db, testConfig(), {
+    action: 'ftSaveRows', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tests',
+    rows: [], judged: [],
+  });
+  const sheet = await handleRequest(db, testConfig(), {
+    action: 'ftGetSheet', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tests',
+  });
+  assert.deepEqual(sheet.data.judged, []);
+});
+
+test('ftSaveRows：judged 內格式不對的項目會被過濾掉（無 stuId／hash／deletedAt 或型別不符）', async () => {
+  const db = openDb(':memory:');
+  const tok = await setupFtUser(db, 'ft-judge5@x.com');
+  await handleRequest(db, testConfig(), { action: 'ftCreateSemester', sessionToken: tok, rootFolderId: ROOT, id: '114-1' });
+  const r = await handleRequest(db, testConfig(), {
+    action: 'ftSaveRows', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tests',
+    rows: [],
+    judged: [
+      { stuId: 'B99999999', hash: 'abc12345', deletedAt: '2026-07-20T00:00:00.000Z' }, // 合法
+      { stuId: '', hash: 'abc12345', deletedAt: '2026-07-20T00:00:00.000Z' },           // stuId 空白
+      { hash: 'abc12345', deletedAt: '2026-07-20T00:00:00.000Z' },                       // 缺 stuId
+      { stuId: 'B11111111', deletedAt: '2026-07-20T00:00:00.000Z' },                     // 缺 hash
+      { stuId: 'B22222222', hash: 'abc12345' },                                          // 缺 deletedAt
+      'not-an-object',
+      null,
+    ],
+  });
+  assert.equal(r.success, true);
+  const sheet = await handleRequest(db, testConfig(), {
+    action: 'ftGetSheet', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tests',
+  });
+  assert.equal(sheet.data.judged.length, 1);
+  assert.equal(sheet.data.judged[0].stuId, 'B99999999');
+});
+
+test('ftSaveRows：audit_log 不含 judged 內的學號明細，只記長度', async () => {
+  const db = openDb(':memory:');
+  const tok = await setupFtUser(db, 'ft-judge6@x.com');
+  await handleRequest(db, testConfig(), { action: 'ftCreateSemester', sessionToken: tok, rootFolderId: ROOT, id: '114-1' });
+  await handleRequest(db, testConfig(), {
+    action: 'ftSaveRows', sessionToken: tok, rootFolderId: ROOT, semester: '114-1', sheet: 'tests',
+    rows: [], judged: [{ stuId: 'B99999999', hash: 'abc12345', deletedAt: '2026-07-20T00:00:00.000Z' }],
+  });
+  const auditRow = db.prepare("SELECT * FROM audit_log WHERE action = 'ftSaveRows' ORDER BY id DESC LIMIT 1").get();
+  assert.doesNotMatch(auditRow.detail, /B99999999/);
+  assert.match(auditRow.detail, /judged_len=/);
+});
+
 test('ftGetSheet：白名單外的 sheet 名稱（如 __proto__ 或任意字串）一律業務錯誤，不會意外回傳資料', async () => {
   const db = openDb(':memory:');
   const tok = await setupFtUser(db);

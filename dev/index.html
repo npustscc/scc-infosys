@@ -4261,6 +4261,8 @@
           <div id="ft-merged-unmatched-bar" style="display:none;background:#fffaf0;border:1px solid #feebc8;border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:.82rem;max-height:160px;overflow:auto;"></div>
           <!-- Google表單 tab 專用：同學號多筆填寫（重複狀態）清單，見 _ftRenderGformDupBar -->
           <div id="ft-gform-dup-bar" style="display:none;background:#fffaf0;border:1px solid #feebc8;border-radius:6px;padding:8px 10px;margin-bottom:10px;"></div>
+          <!-- v223 C：匯入衝突摘要條（取代直接跳出逐列勾選 modal），見 _ftShowImportSummaryBar。 -->
+          <div id="ft-import-summary-bar" style="display:none;background:#ebf8ff;border:1px solid #bee3f8;border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:.84rem;"></div>
           <!-- v222：頂部同步水平捲軸——資料多時不用捲到最下面才能左右捲，見 _ftInitTopScrollbar。 -->
           <div id="ft-grid-topscroll" style="overflow-x:auto;overflow-y:hidden;height:14px;border:1px solid #e2e8f0;border-bottom:none;border-radius:8px 8px 0 0;background:#f7fafc;"><div id="ft-grid-topscroll-spacer" style="height:1px;"></div></div>
           <div id="ft-grid-wrap" style="overflow:auto;border:1px solid #e2e8f0;border-radius:0 0 8px 8px;max-height:70vh;position:relative;"></div>
@@ -5117,10 +5119,25 @@ function showPage(pageId, navEl) {
   // v207：新生心理測驗頁的試算表編輯中有未儲存變更時，離開頁面（含側邊欄導航）先確認——此頁自管
   // dirty（window._ftDirty），不掛全域 _gd 草稿引擎（見 _ftEnterEdit／_ftSaveEdit 檔頭說明）。
   // beforeunload（整頁關閉/重整）另外在下方事件監聽處理，本處只管站內導頁。
+  // v223：原生 confirm() 改為系統內建 modal（比照 _ftSwitchTab／_ftSwitchSemester，見
+  // _ftConfirmLeaveModal），多一個「儲存變更後切換」選項——因此本函式其餘導頁邏輯抽成
+  // _showPageContinue，三個分支（留在此頁／放棄變更並切換／儲存變更後切換）各自決定是否呼叫它。
   if (window._ftDirty && document.getElementById('page-freshman-test')?.classList.contains('active') && pageId !== 'page-freshman-test') {
-    if (!confirm('「新生心理測驗」頁有未儲存的變更，確定要離開嗎？離開後變更不會保留。')) return;
-    window._ftDirty = false;
+    _ftConfirmLeaveModal(
+      null,
+      () => { window._ftDirty = false; _showPageContinue(pageId, navEl); },
+      async () => {
+        const ok = await _ftSaveEdit();
+        if (ok) _showPageContinue(pageId, navEl);
+        return ok;
+      }
+    );
+    return;
   }
+  _showPageContinue(pageId, navEl);
+}
+
+function _showPageContinue(pageId, navEl) {
   // 打卡模式下切到其他頁 → 觸發完整 INFOSYS 載入
   if (_clockOnlyMode && pageId !== 'page-clock') _upgradeFromClockMode();
   // 離開待辦頁時標記待派案 todo 為已讀
@@ -32052,6 +32069,14 @@ function renderChangelogPage() {
       item('新增', '工具列常駐「📦 含已封存」勾選，等同篩選面板「封存」群組的快速開關，不用再打開漏斗篩選面板才能切換'),
       item('說明', 'v223～v225 版號保留給進行中的功能批次，本版跳號先行'),
     ] },
+    { date: '2026-07-20', v: 223, title: '新生心測：匯入衝突統一處理視窗、欄位對照排序、未儲存離頁提醒、評判記憶、整合 tab 姓名比對', isProd: false, items: [
+      item('新功能', '匯入 Excel/CSV 遇到「同學號但欄位不同」的衝突時，不再逐列跳勾選視窗：工具列下方先出現一條「匯入摘要條」（新增／無異動／衝突筆數），衝突很多也不會擋住畫面；按「🔧 處理衝突」才進統一處理視窗'),
+      item('新功能', '匯入衝突「統一處理視窗」：每筆同學號的現有值與匯入值並排，可整筆切「採用匯入／保留現有」（也有「全部採用匯入／全部保留現有」批次鈕），保留下來的每一格還能就地編輯；衝突量大時自動分頁（每頁 50 筆）'),
+      item('改善', '匯入「欄位對照」畫面可切換「依檔案順序呈現」或「需要處理的欄位置頂」，欄位很多時第一眼就能鎖定要處理的項目'),
+      item('改善', '在資料分頁編輯未儲存時切換分頁／學期，改用系統內建提醒視窗（取代瀏覽器原生醜訊息），除「留在此頁／放棄變更並切換」外新增「儲存變更後切換」；若是關閉或重新整理整個網頁（離開系統），仍會跳瀏覽器原生確認'),
+      item('新功能', '測驗資料／Google表單分頁「刪除某列並儲存」後會記住該列內容指紋（評判記憶）：日後主責再次上傳同一份檔案更新名冊時，內容完全相同的已刪列不會被當成新資料重新帶入；對某分頁按「🗑 全部刪除」並儲存＝重來，該分頁評判記憶整批清空，未按全部刪除則持續記憶，省去重複評判'),
+      item('新功能', '整合分頁「未對應清單」新增「自動比對學號／自動比對姓名」切換：切到「比對姓名」時，以學生基本資料為主，把學號查無的紀錄改用姓名去找同名學生並列出其學號，協助主責快速辨識這筆是否為某位學生的學號登打錯誤'),
+    ]},
     { date: '2026-07-20', v: 222, title: '新生心測 grid 七項改進（欄位對照/匯入按鈕/時間戳記轉換/篩選置頂/頂部捲軸/統計表格/tab 快取）', isProd: false, items: [
       item('改善', '匯入 Excel/CSV「欄位對照」畫面：下拉選單「忽略此欄」加紅色 ❌ 標示、「➕ 新增為新欄位」移到清單第 2 位（緊接在忽略選項後、所有現有欄位之前），更容易第一眼看到'),
       item('改善', '工具列「📥 匯入 Excel/CSV」按鈕改為醒目的主要按鈕樣式，與「＋新增列」一致'),
@@ -53485,6 +53510,9 @@ let _ft = {
   // v222：per-(semester,tab) grid 資料快取 { [`${semester}::${tab}`]: {schema, rows} }，見
   // _ftLoadActiveSheet／_ftGetSheetCached。
   _sheetCache: {},
+  // v223：目前分頁的評判記憶（tests／gforms 專用，見 _ftBuildJudgedEntries 檔頭說明），隨
+  // _ftApplySheetResponseToState／tab 快取一起載入。
+  judged: [],
 };
 
 function _ftCurrentSheet() { return FT_TAB_SHEET[_ft.tab] || null; }
@@ -53568,6 +53596,26 @@ function _ftAutoMapImportHeaders(header, schemaCols) {
 // 是否需要跳出「欄位對照」modal：只要有任一匯入欄「有內容但對不上」現有欄位即觸發。
 function _ftImportNeedsMapping(mapping) {
   return (mapping || []).some(m => !m.colId && !m.autoIgnored);
+}
+
+// ══════════════ v223 A：欄位對照 modal 排序切換（純顯示排序，不影響確認邏輯）══════════════
+// 該欄是否「已解決」：使用者已明確選過（userChoice 非 null，見 _ftRenderColumnMappingModal 的
+// onchange），或初始自動對映時已精確命中現有欄位，或原本就是空白標題（autoIgnored，預設忽略、
+// 不需要人工決定）。userChoice 優先於原始 mapping 狀態——即使原本「對不上」，使用者選過任何選項
+// （含明確選「忽略此欄」）後就不再算「需要處理」。
+function _ftColMapEntryResolved(m, userChoiceValue) {
+  if (userChoiceValue != null) return true;
+  return !!(m && (m.colId || m.autoIgnored));
+}
+
+// 依 sortMode 算出欄位對照列的顯示順序（真實索引陣列）：'issues' 把「需要處理」的欄排到最前面
+// （組內維持原相對順序，穩定排序）；其餘（含預設 'file'）維持檔案原始欄位順序。
+function _ftColumnMappingDisplayOrder(needsWorkFlags, sortMode) {
+  const idxs = (needsWorkFlags || []).map((_, i) => i);
+  if (sortMode !== 'issues') return idxs;
+  const front = idxs.filter(i => needsWorkFlags[i]);
+  const back = idxs.filter(i => !needsWorkFlags[i]);
+  return front.concat(back);
 }
 
 // ══════════════ v213：交易式復原/重做（純函式部分）══════════════
@@ -53713,8 +53761,38 @@ function _ftDetectImportConflicts(existingRows, importRows, keyColId) {
   return { newRows, conflicts, unchanged };
 }
 
+// ══════════════ v223 C：匯入衝突統一處理視窗（純函式）══════════════
+// 依「統一處理視窗」裡每組衝突已決定的最終內容（resolvedGroups：[{ existing, workingCells }]，
+// workingCells 可能是原始現有值、原始匯入值，或使用者手動改過的混合值——與舊版
+// _ftBuildImportFinalRows 的「整列二選一」不同，本函式不重新判斷取代與否，呼叫端已經決定好），
+// 組出最終要送給 ftSaveRows 的完整 rows 陣列；newRows（無衝突的新資料）直接附加。
+function _ftBuildImportFinalRowsFromGroups(existingRows, newRows, resolvedGroups) {
+  const workingByExisting = new Map((resolvedGroups || []).map(g => [g.existing, g.workingCells]));
+  const result = (existingRows || []).map(r => {
+    const wc = workingByExisting.get(r);
+    if (wc) return { ...r, cells: { ...wc } };
+    return r;
+  });
+  return result.concat(newRows || []);
+}
+
+// 分頁：依 page（0-based）、pageSize 切出當頁要顯示的衝突組（大量衝突時避免一次全部塞進 DOM，
+// 見任務規格「>200 組時每頁 50 組」）。
+function _ftImportResolvePageSlice(groups, page, pageSize) {
+  const size = pageSize || 50;
+  const start = Math.max(0, page || 0) * size;
+  return (groups || []).slice(start, start + size);
+}
+
+function _ftImportResolveTotalPages(total, pageSize) {
+  const size = pageSize || 50;
+  return Math.max(1, Math.ceil((total || 0) / size));
+}
+
 // ── 純函式：依匯入預覽的使用者勾選結果（acceptedKeys＝要「取代」的衝突學號集合），組出最終要
-//    送給 ftSaveRows 的完整 rows 陣列（未勾選的衝突維持既有值；新增列直接附加）。──
+//    送給 ftSaveRows 的完整 rows 陣列（未勾選的衝突維持既有值；新增列直接附加）。v223：本函式
+//    仍供「導師系統同步」（_ftApplyTutorSyncResult）沿用勾選式二選一邏輯，未變動——匯入衝突 modal
+//    本身改走上方 _ftBuildImportFinalRowsFromGroups（統一處理視窗，可就地編輯），兩者並存。──
 function _ftBuildImportFinalRows(existingRows, detect, acceptedKeys) {
   const result = (existingRows || []).map(r => {
     const match = detect.conflicts.find(c => c.existing === r);
@@ -53724,6 +53802,87 @@ function _ftBuildImportFinalRows(existingRows, detect, acceptedKeys) {
     return r;
   });
   return result.concat(detect.newRows);
+}
+
+// ══════════════ v223 D2：資料 tab（tests／gform）刪除並儲存後的「評判記憶」（純函式）══════════════
+// 使用者刪除某列並儲存（＝真刪，見 v216 軟刪除改儲存即真刪）後，記住該列的「簽名」（學號＋整列
+// cells 內容的穩定雜湊）；之後再匯入內容完全相同的列時，不當成新資料帶入，而是靜默略過（見任務
+// 規格 12-1）。儲存位置：該 sheet 的 rows.json 內新增 judged 欄位（見 server/src/freshmanTest/
+// actions.js ftSaveRows／ftGetSheet），隨存檔一起送出／隨讀取原樣回傳，前端只負責計算內容。
+
+// FNV-1a（32-bit）字串雜湊，回傳 8 碼十六進位字串——選用理由：實作簡單、分佈夠好，本用途只是
+// 「內容比對用的指紋」，不是密碼學安全雜湊。
+function _ftFnv1aHash(str) {
+  let h = 0x811c9dc5;
+  const s = String(str == null ? '' : str);
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+// 把 cells 轉成「跟物件 key 出現順序無關」的穩定字串再雜湊——欄位值一律先 _ftTrimCell（比照存檔
+// 前整批 trim 慣例），空值/空字串視為未填寫、不落入指紋（確保「只差頭尾空白」或「同樣沒填的欄位
+// 用 undefined 還是空字串表示」不會被誤判成不同內容）。
+function _ftStableCellsString(cells) {
+  const c = cells || {};
+  const parts = [];
+  Object.keys(c).sort().forEach((k) => {
+    const v = _ftTrimCell(c[k]);
+    if (v == null || v === '') return;
+    parts.push(k + '=' + String(v));
+  });
+  return parts.join('');
+}
+
+function _ftRowJudgeHash(cells) {
+  return _ftFnv1aHash(_ftStableCellsString(cells));
+}
+
+// 算出一列的評判記憶簽名 { stuId, hash }：stuId 供快速篩選候選、hash 供精確比對整列內容是否相同。
+function _ftRowJudgeSignature(row, keyColId) {
+  const cells = (row && row.cells) || {};
+  const stuId = _ftTrimCell(cells[keyColId || 'stu_id']) || '';
+  return { stuId, hash: _ftRowJudgeHash(cells) };
+}
+
+// 把本次存檔真正被刪除的既有列（見 _ftSaveEdit：_pendingDelete 且已有 _id）併入既有評判記憶，
+// 同 stuId+hash 不重複記錄；deletedAt 由呼叫端傳入本次存檔時間（供測試可控，不在純函式內叫
+// new Date()）。
+function _ftBuildJudgedEntries(existingJudged, deletedRows, keyColId, nowIso) {
+  const seen = new Set((existingJudged || []).map((j) => j.stuId + '' + j.hash));
+  const merged = (existingJudged || []).map((j) => ({ stuId: j.stuId, hash: j.hash, deletedAt: j.deletedAt }));
+  (deletedRows || []).forEach((row) => {
+    const sig = _ftRowJudgeSignature(row, keyColId);
+    if (!sig.stuId) return; // 沒有學號的列無法比對，不記錄
+    const key = sig.stuId + '' + sig.hash;
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push({ stuId: sig.stuId, hash: sig.hash, deletedAt: nowIso });
+  });
+  return merged;
+}
+
+// 該次「儲存」是否等同「全部刪除並儲存」（見任務規格 12-2：全部刪除＝重來，評判記憶應整批清空；
+// 單筆刪除則持續累積）。判準：儲存前 rows 非空、且每一列都已標記 _pendingDelete——不論是透過工具
+// 列「🗑 全部刪除」一次標記、還是使用者逐列點刪除湊滿全部，效果視為等價。
+function _ftIsFullClearSave(rowsBeforeSave) {
+  return !!(rowsBeforeSave && rowsBeforeSave.length && rowsBeforeSave.every((r) => r && r._pendingDelete === true));
+}
+
+// 匯入的新資料列（既有資料查無對應學號的列）比對評判記憶，把「內容與先前某筆已評判刪除的紀錄
+// 完全相同」的列靜默篩掉，不當成新資料帶入。回傳 { kept, skippedCount }，kept 保留原順序。
+function _ftFilterImportRowsAgainstJudged(rows, judged, keyColId) {
+  const set = new Set((judged || []).map((j) => j.stuId + '' + j.hash));
+  const kept = [];
+  let skippedCount = 0;
+  (rows || []).forEach((row) => {
+    const sig = _ftRowJudgeSignature(row, keyColId);
+    if (sig.stuId && set.has(sig.stuId + '' + sig.hash)) { skippedCount++; return; }
+    kept.push(row);
+  });
+  return { kept, skippedCount };
 }
 
 // ── 純函式：該列缺少哪些必填欄位（不阻擋儲存，只用來標記醒目提示）──
@@ -54316,6 +54475,21 @@ function _ftComputeMergedRows(studentsRows, testsRows, gformRows) {
   });
 
   return { rows, unmatched };
+}
+
+// v223 一.12：未對應清單「以姓名為主」的候選比對。unmatched 的學號在學生基本資料查無時，改用姓名
+// 去學生基本資料找同名的人（以學生基本資料為評判主體），協助主責判斷這筆是否為某位學生的學號登打
+// 錯誤。回傳每筆 unmatched 附上 candidates:[{stuId,name}]（可能多筆同名）。純函式、不動輸入。
+function _ftUnmatchedNameCandidates(unmatched, studentsRows) {
+  const norm = (v) => String(v == null ? '' : v).trim();
+  const byName = new Map();
+  (studentsRows || []).forEach(r => {
+    const nm = norm(r && r.cells && r.cells.name_zh);
+    if (!nm) return;
+    if (!byName.has(nm)) byName.set(nm, []);
+    byName.get(nm).push({ stuId: norm(r.cells && r.cells.stu_id), name: nm });
+  });
+  return (unmatched || []).map(u => ({ ...u, candidates: (u.name && byName.get(norm(u.name))) || [] }));
 }
 
 // 彙總列：總人數/有測驗紀錄數/高關懷數/未受測數（見任務裁決⑤：未受測＝無測驗紀錄，與「無效」
@@ -55580,34 +55754,56 @@ async function _ftCreateSemesterSubmit() {
   }
 }
 
-// 切換學期／切換 tab／離開頁面前，若有未儲存變更一律 confirm（見檔頭 dirty 管理說明）。
+// 切換學期／切換 tab／離開頁面前，若有未儲存變更一律先確認（見檔頭 dirty 管理說明）。
+// v223：原生 confirm() 改為系統內建 modal（見 _ftConfirmLeaveModal），多一個「儲存變更後切換」
+// 選項——因此把「真正切學期」的邏輯抽成 _ftSwitchSemesterContinue，供三個分支共用。
 async function _ftSwitchSemester(id) {
   if (id === _ft.semester) return;
   if (window._ftDirty) {
-    if (!confirm('切換學期將放棄本次未儲存的變更，確定要切換嗎？')) {
-      const sel = document.getElementById('ft-semester-select');
-      if (sel) sel.value = _ft.semester;
-      return;
-    }
-    _ftClearDirty();
-    _ft.editing = false;
+    _ftConfirmLeaveModal(
+      () => { const sel = document.getElementById('ft-semester-select'); if (sel) sel.value = _ft.semester; },
+      () => { _ftClearDirty(); _ft.editing = false; _ftSwitchSemesterContinue(id); },
+      async () => {
+        const ok = await _ftSaveEdit();
+        if (ok) await _ftSwitchSemesterContinue(id);
+        return ok;
+      }
+    );
+    return;
   }
+  await _ftSwitchSemesterContinue(id);
+}
+
+async function _ftSwitchSemesterContinue(id) {
   _ft.semester = id;
   _ft._studentsCache = null; // 換學期，跨 tab 檢核快取失效
   _ft._sheetCache = {}; // v222：切學期，per-(semester,tab) grid 快取全部清空（見 _ftLoadActiveSheet）
   await _ftSwitchTab(_ft.tab || 'students', true);
 }
 
+// v223：同上，切 tab 的「真正切換」邏輯抽成 _ftSwitchTabContinue，供 modal 三個分支共用。
 async function _ftSwitchTab(tab, force) {
   if (!force && tab !== _ft.tab && window._ftDirty) {
-    if (!confirm('切換分頁將放棄本次未儲存的變更，確定要切換嗎？')) return;
-    _ftClearDirty();
-    _ft.editing = false;
+    _ftConfirmLeaveModal(
+      null,
+      () => { _ftClearDirty(); _ft.editing = false; _ftSwitchTabContinue(tab, true); },
+      async () => {
+        const ok = await _ftSaveEdit();
+        if (ok) await _ftSwitchTabContinue(tab, true);
+        return ok;
+      }
+    );
+    return;
   }
+  await _ftSwitchTabContinue(tab, force);
+}
+
+async function _ftSwitchTabContinue(tab, force) {
   // v222：篩選／問題列置頂是單一 tab 內的顯示狀態，切 tab 就清空，避免帶著舊篩選字串跑到新 tab
   // 卻誤以為「這個 tab 資料變少了」。
   _ft.filterText = '';
   _ft.pinIssuesTop = false;
+  if (typeof _ftHideImportSummaryBar === 'function') _ftHideImportSummaryBar(); // v223 C：切 tab 收掉匯入摘要條
   _ft.tab = tab;
   ['students', 'tests', 'gform', 'tutors', 'merged', 'stats', 'reports'].forEach(t => {
     document.getElementById(`ft-tabbtn-${t}`)?.setAttribute('data-active', t === tab ? '1' : '0');
@@ -55689,6 +55885,9 @@ function _ftApplySheetResponseToState(r) {
   _ft._uidSeq = 1;
   _ft.rows = _ftFilterDeleted(r.rows || []).map(row => ({ ...row, cells: { ...((row && row.cells) || {}) } }));
   _ftEnsureRowUids(_ft.rows);
+  // v223：評判記憶（僅 tests／gforms 兩個 sheet 實際使用，其餘 sheet 一律空陣列，見
+  // _ftSaveEdit／_ftFilterImportRowsAgainstJudged 檔頭說明）。
+  _ft.judged = Array.isArray(r.judged) ? r.judged : [];
   return _ft.rows;
 }
 
@@ -55707,6 +55906,7 @@ async function _ftLoadActiveSheet() {
     _ft._uidSeq = 1;
     _ft.rows = cached.rows.map(row => ({ ...row, cells: { ...((row && row.cells) || {}) } }));
     _ftEnsureRowUids(_ft.rows);
+    _ft.judged = cached.judged || []; // v223：評判記憶隨 tab 快取一起帶（見 _ftApplySheetResponseToState）
     _ft.editing = false;
     _ft._vwin = null;
     _ft._renderCtx = null;
@@ -55721,7 +55921,7 @@ async function _ftLoadActiveSheet() {
   try {
     const r = await proxyCall('ftGetSheet', { semester, sheet });
     const rows = _ftApplySheetResponseToState(r);
-    _ft._sheetCache[cacheKey] = { schema: r.schema, rows: rows.map(row => ({ ...row, cells: { ...row.cells } })) };
+    _ft._sheetCache[cacheKey] = { schema: r.schema, rows: rows.map(row => ({ ...row, cells: { ...row.cells } })), judged: _ft.judged };
     _ft.editing = false;
     _ft._vwin = null;
     _ft._renderCtx = null;
@@ -55748,7 +55948,7 @@ async function _ftRefreshActiveSheetInBackground(sheet, semester, cacheKey) {
   const freshRows = _ftFilterDeleted(r.rows || []);
   const cached = _ft._sheetCache[cacheKey];
   const changed = !cached || _ftSheetDataChanged(cached.schema, cached.rows, r.schema, freshRows);
-  _ft._sheetCache[cacheKey] = { schema: r.schema, rows: freshRows.map(row => ({ ...row, cells: { ...((row && row.cells) || {}) } })) };
+  _ft._sheetCache[cacheKey] = { schema: r.schema, rows: freshRows.map(row => ({ ...row, cells: { ...((row && row.cells) || {}) } })), judged: Array.isArray(r.judged) ? r.judged : [] };
   const stillRelevant = _ft.semester === semester && _ftCurrentSheet() === sheet;
   if (!changed || !stillRelevant || _ft.editing) return;
   _ftApplySheetResponseToState(r);
@@ -55769,13 +55969,15 @@ async function _ftLoadMergedView() {
       proxyCall('ftGetSheet', { semester: _ft.semester, sheet: 'tests' }),
       proxyCall('ftGetSheet', { semester: _ft.semester, sheet: 'gforms' }),
     ]);
-    const { rows, unmatched } = _ftComputeMergedRows(_ftFilterDeleted(studentsR.rows), _ftFilterDeleted(testsR.rows), _ftFilterDeleted(gformsR.rows));
+    const sStudents = _ftFilterDeleted(studentsR.rows);
+    const { rows, unmatched } = _ftComputeMergedRows(sStudents, _ftFilterDeleted(testsR.rows), _ftFilterDeleted(gformsR.rows));
     _ft.schema = { version: 1, cols: _ftMergedSchemaCols() };
     _ft.rows = rows;
     _ft.editing = false;
     _ft._vwin = null;
     _ft._renderCtx = null;
     _ft._mergedUnmatched = unmatched;
+    _ft._mergedStudents = sStudents; // v223 一.12：供未對應清單「以姓名比對」用
     _ftRenderMergedSummary(rows, unmatched);
     _ftRenderGrid();
   } catch (e) {
@@ -55794,8 +55996,34 @@ function _ftRenderMergedSummary(rows, unmatched) {
   if (!unmatchedEl) return;
   if (!unmatched || !unmatched.length) { unmatchedEl.style.display = 'none'; unmatchedEl.innerHTML = ''; return; }
   unmatchedEl.style.display = '';
-  const list = unmatched.map(u => `<li>${escHtml(u.stuId)}　${escHtml(u.name || '（無姓名）')}　<span style="color:#a0aec0;">來源：${escHtml(u.source)}</span></li>`).join('');
-  unmatchedEl.innerHTML = `<div style="color:#744210;margin-bottom:4px;">⚠ 未對應清單（學號在學生基本資料查無，可能是登打錯誤，共 ${unmatched.length} 筆）：</div><ul style="margin:0;padding-left:20px;">${list}</ul>`;
+  // v223 一.12：可切換「自動比對學號」（預設，列出學號查無者）／「自動比對姓名」（改以姓名去學生
+  // 基本資料找同名者，協助主責辨識此筆是否為某學生的學號登打錯誤——以學生基本資料為評判主體）。
+  const mode = _ft._mergedMatchMode || 'stuId';
+  const annotated = mode === 'name' ? _ftUnmatchedNameCandidates(unmatched, _ft._mergedStudents || []) : unmatched;
+  const toggle = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap;">
+    <span style="color:#744210;">⚠ 未對應清單（學號在學生基本資料查無，可能是登打錯誤，共 ${unmatched.length} 筆）</span>
+    <span style="flex:1 1 auto;"></span>
+    <span style="color:#718096;font-size:.78rem;">辨識方式：</span>
+    <button class="btn btn-sm ${mode === 'stuId' ? 'btn-primary' : 'btn-secondary'}" onclick="_ftSetMergedMatchMode('stuId')" data-tip="依學號比對（預設）：列出學號在學生基本資料查無的紀錄">自動比對學號</button>
+    <button class="btn btn-sm ${mode === 'name' ? 'btn-primary' : 'btn-secondary'}" onclick="_ftSetMergedMatchMode('name')" data-tip="改以姓名為主，去學生基本資料找同名的人，協助判斷此筆是否為某學生的學號登打錯誤">自動比對姓名</button>
+  </div>`;
+  const list = annotated.map(u => {
+    let extra = '';
+    if (mode === 'name') {
+      if (u.candidates && u.candidates.length) {
+        extra = `　<span style="color:#2b6cb0;">→ 學生基本資料同名學號：${u.candidates.map(c => escHtml(c.stuId || '（無學號）')).join('、')}（可能為學號登打錯誤）</span>`;
+      } else {
+        extra = `　<span style="color:#c53030;">→ 學生基本資料查無同名</span>`;
+      }
+    }
+    return `<li>${escHtml(u.stuId)}　${escHtml(u.name || '（無姓名）')}　<span style="color:#a0aec0;">來源：${escHtml(u.source)}</span>${extra}</li>`;
+  }).join('');
+  unmatchedEl.innerHTML = `${toggle}<ul style="margin:0;padding-left:20px;">${list}</ul>`;
+}
+
+function _ftSetMergedMatchMode(mode) {
+  _ft._mergedMatchMode = mode;
+  _ftRenderMergedSummary(_ft.rows, _ft._mergedUnmatched);
 }
 
 function _ftSyncEditButtons() {
@@ -55976,13 +56204,17 @@ async function _ftDiscardEdit() {
 //    即使該列 cells 全空也要送（否則刪除動作不會落地）——這是「完全空白列不送」規則的唯一例外。
 //  - 其餘列沿用既有規則：完全空白（無任何欄位有值）不送。
 //  - 存檔前整批對每一欄值跑 _ftTrimCell（規格③「存檔前整批保險」，救回貼上/舊資料殘留的頭尾空白）。
+// v223：回傳 true／false（儲存成功／失敗），供 _ftConfirmLeaveModal 的「儲存變更後切換」分支判斷
+// 是否要繼續執行原本待做的切換（呼叫端不能只看有沒有拋例外——本函式向來自己 catch 並顯示 toast，
+// 不會讓例外往外傳）。
 async function _ftSaveEdit() {
   const sheet = _ftCurrentSheet();
-  if (!sheet) return;
+  if (!sheet) return false;
   const btn = document.getElementById('ft-save-btn');
   if (btn) btn.disabled = true;
   try {
-    const rowsToSave = _ft.rows
+    const rowsBeforeSave = _ft.rows;
+    const rowsToSave = rowsBeforeSave
       .filter(r => !(r && r._pendingDelete === true && !r._id))
       .filter(r => (r && r._pendingDelete === true && r._id) || Object.values((r && r.cells) || {}).some(v => String(v ?? '').trim() !== ''))
       .map(r => {
@@ -55993,7 +56225,23 @@ async function _ftSaveEdit() {
         return out;
       });
     const totalMissing = rowsToSave.filter(r => !r.deleted).reduce((sum, r) => sum + _ftRowMissingRequired(r, _ft.schema).length, 0);
-    const r = await proxyCall('ftSaveRows', { semester: _ft.semester, sheet, rows: rowsToSave });
+    const params = { semester: _ft.semester, sheet, rows: rowsToSave };
+    // v223 D2：測驗資料／Google表單 tab 記住「使用者刪除既有列並儲存」的內容指紋（評判記憶），
+    // 供匯入時靜默略過重複匯入同一筆已評判刪除的資料（見 _ftBuildJudgedEntries／
+    // _ftFilterImportRowsAgainstJudged 檔頭說明）；「全部刪除」並儲存＝重來，整批清空記憶
+    // （見 _ftIsFullClearSave），單筆刪除則持續累積。students／tutors 不記錄（見任務規格 12
+    // 明定範圍僅 tests／gform，不送 judged 參數，後端維持原樣不動）。
+    if (sheet === 'tests' || sheet === 'gforms') {
+      if (_ftIsFullClearSave(rowsBeforeSave)) {
+        params.judged = [];
+      } else {
+        const deletedRows = rowsBeforeSave.filter(r => r && r._pendingDelete === true && r._id);
+        if (deletedRows.length) {
+          params.judged = _ftBuildJudgedEntries(_ft.judged || [], deletedRows, 'stu_id', new Date().toISOString());
+        }
+      }
+    }
+    const r = await proxyCall('ftSaveRows', params);
     showToast(`已儲存 ${r.count} 筆${totalMissing ? `（其中 ${totalMissing} 個必填欄位仍為空，已標記醒目提示，請盡快補齊）` : ''}`, totalMissing ? 'warn' : 'success');
     _ft.editing = false;
     _ftClearDirty();
@@ -56004,11 +56252,66 @@ async function _ftSaveEdit() {
     // 儲存結果更新快取」）。
     delete _ft._sheetCache[_ftSheetCacheKey(_ft.semester, sheet)];
     await _ftLoadActiveSheet();
+    return true;
   } catch (e) {
     showToast('儲存失敗：' + e.message, 'error');
+    return false;
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+// ══════════════ v223 B：可重用的「離開頁面前有未儲存變更」提醒 modal ══════════════
+// 取代原本三處（切換分頁／切換學期／站內導頁離開）各自的原生 confirm()，改為系統內建 modal（比照
+// 既有 .modal-overlay/.modal-box 樣式），多一個「儲存變更後切換」選項——呼叫端傳入三顆按鈕各自要
+// 執行的 callback：
+//   onStay      － 使用者選「留在此頁」（可為 null，代表不需要額外復原動作，例如切分頁按鈕本身
+//                  沒有畫面狀態要復原；切學期下拉選單則需要把 <select> 值改回目前學期）。
+//   onDiscard   － 使用者選「放棄變更並切換」，同步 callback，呼叫端自行負責清 dirty／繼續切換。
+//   onSaveThen  － 使用者選「儲存變更後切換」，async function，須回傳 _ftSaveEdit() 的結果
+//                  （true／false）：本函式只負責防連點與顯示「儲存中…」，儲存失敗時 _ftSaveEdit
+//                  本身已經 showToast 顯示錯誤，這裡只需要讓 modal 維持開啟、按鈕解除防連點，不
+//                  重複顯示錯誤訊息。
+function _ftConfirmLeaveModal(onStay, onDiscard, onSaveThen) {
+  document.getElementById('ft-leave-modal')?.remove();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'ft-leave-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:440px;">
+      <div class="modal-header"><h3>有未儲存的變更</h3></div>
+      <div class="modal-body">
+        <p style="font-size:.88rem;color:#4a5568;margin:0;">目前編輯的內容尚未儲存，離開後未儲存的變更將會遺失，要怎麼處理？</p>
+      </div>
+      <div class="modal-footer" style="flex-wrap:wrap;">
+        <button type="button" class="btn btn-secondary" id="ft-leave-stay-btn">留在此頁</button>
+        <button type="button" class="btn btn-danger" id="ft-leave-discard-btn">放棄變更並切換</button>
+        <button type="button" class="btn btn-primary" id="ft-leave-save-btn">儲存變更後切換</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  const close = () => modal.remove();
+  const stayBtn = document.getElementById('ft-leave-stay-btn');
+  const discardBtn = document.getElementById('ft-leave-discard-btn');
+  const saveBtn = document.getElementById('ft-leave-save-btn');
+  stayBtn.onclick = () => { close(); if (onStay) onStay(); };
+  discardBtn.onclick = () => { close(); if (onDiscard) onDiscard(); };
+  saveBtn.onclick = async () => {
+    if (saveBtn.disabled) return; // 防連點（存檔為非同步，見檔頭說明）
+    stayBtn.disabled = true; discardBtn.disabled = true; saveBtn.disabled = true;
+    saveBtn.textContent = '儲存中…';
+    let ok = false;
+    try {
+      ok = await onSaveThen();
+    } catch (e) {
+      showToast('儲存失敗：' + (e && e.message), 'error');
+      ok = false;
+    }
+    if (ok) { close(); return; }
+    // 儲存失敗：modal 維持開啟，解除防連點，讓使用者可以重試或改選其他選項。
+    stayBtn.disabled = false; discardBtn.disabled = false; saveBtn.disabled = false;
+    saveBtn.textContent = '儲存變更後切換';
+  };
 }
 
 function _ftAddRows() {
@@ -56434,7 +56737,7 @@ async function _ftHandleImportFile(input) {
     if (!_ftImportNeedsMapping(mapping)) {
       _ftProceedImport(aoa);
     } else {
-      _ft._importMapping = { aoa, header, mapping };
+      _ft._importMapping = { aoa, header, mapping, sortMode: 'file', userChoices: {} }; // v223 A：排序切換狀態
       _ftRenderColumnMappingModal();
     }
   } catch (e) {
@@ -56486,61 +56789,52 @@ function _ftPreviewImport(aoa) {
   }
   const detect = _ftDetectImportConflicts(_ft.rows, usable, keyColId);
   _ft.importPreview = { detect, missingKeyCount: missingKey.length };
-  _ftRenderImportModal(detect, missingKey.length);
+  _ftShowImportSummaryBar(detect, missingKey.length);
 }
 
-function _ftRenderImportModal(detect, missingKeyCount) {
-  const modal = document.createElement('div');
-  modal.className = 'modal-overlay';
-  modal.id = 'ft-import-modal';
-  const rows = detect.conflicts.map((c, i) => {
-    const diffHtml = c.diffCols.map(colId => {
-      const col = _ft.schema.cols.find(x => x.id === colId);
-      const name = col ? col.name : colId;
-      const ev = (c.existing.cells || {})[colId] ?? '';
-      const iv = (c.incoming.cells || {})[colId] ?? '';
-      return `<div style="margin-bottom:2px;"><strong>${escHtml(name)}</strong>：<span style="color:#a0aec0;">${escHtml(String(ev))}</span> → <span style="color:#2b6cb0;">${escHtml(String(iv))}</span></div>`;
-    }).join('');
-    return `<tr>
-      <td style="text-align:center;"><input type="checkbox" class="ft-conflict-chk" data-idx="${i}"></td>
-      <td>${escHtml(c.key)}</td>
-      <td>${diffHtml}</td>
-    </tr>`;
-  }).join('');
-  modal.innerHTML = `
-    <div class="modal-box" style="max-width:720px;">
-      <div class="modal-header"><h3>匯入預覽</h3></div>
-      <div class="modal-body" style="max-height:60vh;overflow:auto;">
-        <p style="font-size:.86rem;color:#4a5568;">
-          新增 <strong>${detect.newRows.length}</strong> 筆、<strong>${detect.unchanged.length}</strong> 筆無異動、
-          <strong>${detect.conflicts.length}</strong> 筆有欄位差異（勾選「取代」套用匯入值，未勾選則維持現有資料）。
-          ${missingKeyCount ? `<br>另有 ${missingKeyCount} 列缺少學號已略過。` : ''}
-        </p>
-        ${detect.conflicts.length ? `
-        <div style="margin-bottom:8px;">${_ckgToolbarHtml('ft-conflict-chk')}</div>
-        <table style="width:100%;border-collapse:collapse;font-size:.82rem;">
-          <thead><tr><th style="text-align:center;">取代</th><th>學號</th><th>差異欄位（現有 → 匯入）</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>` : ''}
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary" onclick="document.getElementById('ft-import-modal').remove();">取消</button>
-        <button class="btn btn-primary" onclick="_ftConfirmImport()">確認匯入</button>
-      </div>
-    </div>`;
-  document.body.appendChild(modal);
+// ══════════════ v223 C：匯入衝突摘要條 + 統一處理視窗（UI）══════════════
+// 取代舊版 _ftRenderImportModal 的「逐列勾選取代」modal（需求一.6/6-1/6-2）：
+//   一.6   衝突很多會擋畫面 → 平時只在工具列下方顯示一條「摘要條」（可收合），不強制跳窗。
+//   一.6-1 不用逐列處理 → 摘要條上一顆批次「🔧 處理衝突」按鈕，按了才進統一處理視窗。
+//   一.6-2 統一視窗＝試算表式：每筆同學號衝突並排「現有 / 匯入」，可決定採用哪一版（誰留），
+//          留下的最終值一格一格可再編輯；大量衝突分頁（見 _ftImportResolvePageSlice）。
+// 無衝突時摘要條直接給「確認匯入」鈕（走 _ftApplyImportDirect），不必開視窗。
+
+function _ftHideImportSummaryBar() {
+  const bar = document.getElementById('ft-import-summary-bar');
+  if (bar) { bar.style.display = 'none'; bar.innerHTML = ''; }
+  _ft.importPreview = null;
 }
 
-function _ftConfirmImport() {
+function _ftShowImportSummaryBar(detect, missingKeyCount) {
+  const bar = document.getElementById('ft-import-summary-bar');
+  if (!bar) return;
+  const nNew = detect.newRows.length, nSame = detect.unchanged.length, nConf = detect.conflicts.length;
+  const missNote = missingKeyCount ? `，另有 ${missingKeyCount} 列缺少學號已略過` : '';
+  const actionBtn = nConf
+    ? `<button class="btn btn-primary btn-sm" onclick="_ftOpenImportResolveModal()">🔧 處理衝突（${nConf}）</button>`
+    : `<button class="btn btn-primary btn-sm" onclick="_ftApplyImportDirect()">✅ 確認匯入（新增 ${nNew} 筆）</button>`;
+  bar.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span style="font-weight:600;">📥 匯入解析完成</span>
+      <span style="color:#2b6cb0;">新增 <strong>${nNew}</strong></span>
+      <span style="color:#718096;">無異動 <strong>${nSame}</strong></span>
+      <span style="color:${nConf ? '#c05621' : '#718096'};">衝突 <strong>${nConf}</strong></span>
+      <span style="color:#a0aec0;font-size:.8rem;">${escHtml(missNote)}</span>
+      <span style="flex:1 1 auto;"></span>
+      ${actionBtn}
+      <button class="btn btn-secondary btn-sm" onclick="_ftHideImportSummaryBar()">取消</button>
+    </div>
+    ${nConf ? `<div style="margin-top:6px;font-size:.78rem;color:#718096;">同一學號在現有資料與匯入檔都有、但欄位內容不同的筆數；按「處理衝突」逐筆決定保留哪一版、可就地編輯。</div>` : ''}`;
+  bar.style.display = 'block';
+}
+
+// 無衝突：直接把新增列套進試算表（走與統一視窗相同的純函式，resolvedGroups 傳空陣列）。
+function _ftApplyImportDirect() {
   const detect = _ft.importPreview && _ft.importPreview.detect;
-  document.getElementById('ft-import-modal')?.remove();
   if (!detect) return;
-  const acceptedKeys = new Set();
-  document.querySelectorAll('.ft-conflict-chk').forEach(cb => {
-    if (cb.checked) acceptedKeys.add(detect.conflicts[Number(cb.dataset.idx)].key);
-  });
   const before = _ft.rows;
-  const after = _ftBuildImportFinalRows(before, detect, acceptedKeys);
+  const after = _ftBuildImportFinalRowsFromGroups(before, detect.newRows, []);
   _ftEnsureRowUids(after);
   const tx = _ftDiffRowsForTransaction(before, after);
   _ft.rows = after;
@@ -56548,6 +56842,148 @@ function _ftConfirmImport() {
   _ftPushUndo(tx);
   _ftMarkDirty();
   _ftRenderGrid();
+  _ftHideImportSummaryBar();
+  showToast('匯入內容已套用到試算表，請確認後按「儲存」才會寫入伺服器', 'info');
+}
+
+// 統一處理視窗狀態：choices[i]＝該衝突要採用哪一版（'incoming' 匯入／'existing' 現有）；
+// edits[i]＝{colId:值} 使用者就地改過的最終值（覆蓋 choices 的預設）。
+function _ftOpenImportResolveModal() {
+  const detect = _ft.importPreview && _ft.importPreview.detect;
+  if (!detect || !detect.conflicts.length) return;
+  _ft._importResolve = { page: 0, pageSize: 50, choices: {}, edits: {} };
+  detect.conflicts.forEach((_, i) => { _ft._importResolve.choices[i] = 'incoming'; _ft._importResolve.edits[i] = {}; });
+  _ftRenderImportResolveModal();
+}
+
+// 取某衝突組某欄位的「最終值」：使用者改過用改過的，否則依 choices 取匯入/現有值。
+function _ftImportResolveFinalVal(i, colId) {
+  const st = _ft._importResolve;
+  const c = _ft.importPreview.detect.conflicts[i];
+  if (st.edits[i] && Object.prototype.hasOwnProperty.call(st.edits[i], colId)) return st.edits[i][colId];
+  const src = st.choices[i] === 'existing' ? c.existing : c.incoming;
+  return (src.cells || {})[colId] ?? '';
+}
+
+function _ftRenderImportResolveModal() {
+  const detect = _ft.importPreview && _ft.importPreview.detect;
+  const st = _ft._importResolve;
+  if (!detect || !st) return;
+  document.getElementById('ft-import-resolve-modal')?.remove();
+  const total = detect.conflicts.length;
+  const totalPages = _ftImportResolveTotalPages(total, st.pageSize);
+  if (st.page >= totalPages) st.page = totalPages - 1;
+  const pageGroups = _ftImportResolvePageSlice(detect.conflicts, st.page, st.pageSize);
+  const startIdx = st.page * st.pageSize;
+  const colName = (id) => { const col = _ft.schema.cols.find(x => x.id === id); return col ? col.name : id; };
+  const blocks = pageGroups.map((c, k) => {
+    const i = startIdx + k;
+    const chosenIncoming = st.choices[i] === 'incoming';
+    const diffRows = c.diffCols.map(colId => {
+      const ev = String((c.existing.cells || {})[colId] ?? '');
+      const iv = String((c.incoming.cells || {})[colId] ?? '');
+      const fv = String(_ftImportResolveFinalVal(i, colId));
+      return `<tr>
+        <td style="padding:3px 6px;font-weight:600;white-space:nowrap;">${escHtml(colName(colId))}</td>
+        <td style="padding:3px 6px;color:#a0aec0;">${escHtml(ev)}</td>
+        <td style="padding:3px 6px;color:#2b6cb0;">${escHtml(iv)}</td>
+        <td style="padding:3px 6px;"><input type="text" value="${escHtml(fv)}" style="width:100%;box-sizing:border-box;padding:2px 5px;border:1px solid #cbd5e0;border-radius:4px;font-size:.82rem;" oninput="_ftImportResolveEditCell(${i}, '${escHtml(colId)}', this.value)"></td>
+      </tr>`;
+    }).join('');
+    return `<div style="border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;margin-bottom:10px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px;">
+        <strong style="font-size:.86rem;">學號 ${escHtml(c.key)}</strong>
+        <span style="flex:1 1 auto;"></span>
+        <button class="btn btn-sm ${chosenIncoming ? 'btn-primary' : 'btn-secondary'}" onclick="_ftImportResolveSetChoice(${i}, 'incoming')" data-tip="採用匯入檔的值取代現有資料（留下匯入版）">採用匯入</button>
+        <button class="btn btn-sm ${!chosenIncoming ? 'btn-primary' : 'btn-secondary'}" onclick="_ftImportResolveSetChoice(${i}, 'existing')" data-tip="保留現有資料、忽略此筆匯入（留下現有版）">保留現有</button>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:.82rem;">
+        <thead><tr style="color:#718096;text-align:left;">
+          <th style="padding:2px 6px;">欄位</th><th style="padding:2px 6px;">現有值</th><th style="padding:2px 6px;">匯入值</th><th style="padding:2px 6px;width:34%;">最終值（可編輯）</th>
+        </tr></thead>
+        <tbody>${diffRows}</tbody>
+      </table>
+    </div>`;
+  }).join('');
+  const pager = totalPages > 1 ? `
+    <div style="display:flex;align-items:center;justify-content:center;gap:10px;margin-top:6px;font-size:.84rem;">
+      <button class="btn btn-secondary btn-sm" ${st.page <= 0 ? 'disabled' : ''} onclick="_ftImportResolveGoPage(${st.page - 1})">‹ 上一頁</button>
+      <span>第 ${st.page + 1} / ${totalPages} 頁（共 ${total} 筆）</span>
+      <button class="btn btn-secondary btn-sm" ${st.page >= totalPages - 1 ? 'disabled' : ''} onclick="_ftImportResolveGoPage(${st.page + 1})">下一頁 ›</button>
+    </div>` : '';
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'ft-import-resolve-modal';
+  modal.innerHTML = `
+    <div class="modal-box" style="max-width:820px;">
+      <div class="modal-header"><h3>處理匯入衝突（${total} 筆）</h3></div>
+      <div class="modal-body" style="max-height:64vh;overflow:auto;">
+        <p style="font-size:.82rem;color:#718096;margin-bottom:10px;">每筆同學號在現有與匯入檔內容不同。預設採用匯入值，可切換「保留現有」，或直接在「最終值」就地編輯。確認後套進試算表（尚未寫入伺服器，需按「儲存」）。</p>
+        <div style="display:flex;gap:8px;margin-bottom:10px;">
+          <button class="btn btn-secondary btn-sm" onclick="_ftImportResolveSetAll('incoming')">全部採用匯入</button>
+          <button class="btn btn-secondary btn-sm" onclick="_ftImportResolveSetAll('existing')">全部保留現有</button>
+        </div>
+        ${blocks}
+        ${pager}
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="document.getElementById('ft-import-resolve-modal').remove();">取消</button>
+        <button class="btn btn-primary" onclick="_ftConfirmImportResolve()">確認匯入</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+}
+
+function _ftImportResolveSetChoice(i, choice) {
+  const st = _ft._importResolve;
+  if (!st) return;
+  st.choices[i] = choice;
+  st.edits[i] = {}; // 切換版本時，清掉該組先前的就地編輯，回到所選版本的原值
+  _ftRenderImportResolveModal();
+}
+
+function _ftImportResolveSetAll(choice) {
+  const st = _ft._importResolve, detect = _ft.importPreview && _ft.importPreview.detect;
+  if (!st || !detect) return;
+  detect.conflicts.forEach((_, i) => { st.choices[i] = choice; st.edits[i] = {}; });
+  _ftRenderImportResolveModal();
+}
+
+function _ftImportResolveEditCell(i, colId, val) {
+  const st = _ft._importResolve;
+  if (!st) return;
+  if (!st.edits[i]) st.edits[i] = {};
+  st.edits[i][colId] = val;
+}
+
+function _ftImportResolveGoPage(p) {
+  const st = _ft._importResolve;
+  if (!st) return;
+  st.page = p;
+  _ftRenderImportResolveModal();
+}
+
+function _ftConfirmImportResolve() {
+  const detect = _ft.importPreview && _ft.importPreview.detect;
+  const st = _ft._importResolve;
+  document.getElementById('ft-import-resolve-modal')?.remove();
+  if (!detect || !st) return;
+  const resolvedGroups = detect.conflicts.map((c, i) => {
+    const workingCells = { ...(c.existing.cells || {}) };
+    c.diffCols.forEach(colId => { workingCells[colId] = _ftImportResolveFinalVal(i, colId); });
+    return { existing: c.existing, workingCells };
+  });
+  const before = _ft.rows;
+  const after = _ftBuildImportFinalRowsFromGroups(before, detect.newRows, resolvedGroups);
+  _ftEnsureRowUids(after);
+  const tx = _ftDiffRowsForTransaction(before, after);
+  _ft.rows = after;
+  if (!_ft.editing) _ftEnterEdit();
+  _ftPushUndo(tx);
+  _ftMarkDirty();
+  _ftRenderGrid();
+  _ftHideImportSummaryBar();
+  _ft._importResolve = null;
   showToast('匯入內容已套用到試算表，請確認後按「儲存」才會寫入伺服器', 'info');
 }
 
@@ -56564,21 +57000,30 @@ function _ftRenderColumnMappingModal() {
   const cols = _ft.schema.cols;
   const mappedColIds = new Set(state.mapping.filter(m => m.colId).map(m => m.colId));
   const unmatchedExisting = cols.filter(c => !mappedColIds.has(c.id));
-  const rowsHtml = state.header.map((h, idx) => {
+  const sortMode = state.sortMode || 'file';
+  const userChoices = state.userChoices || {};
+  // v223 A：排序切換——「需要處理的欄位置頂」模式下，把還沒被解決（原本對不上、使用者也還沒
+  // 明確選過）的欄位排到最前面，方便欄位很多時第一眼就能鎖定要處理的項目（見
+  // _ftColumnMappingDisplayOrder／_ftColMapEntryResolved 純函式）。
+  const needsWorkFlags = state.header.map((_, idx) => !_ftColMapEntryResolved(state.mapping[idx], userChoices[idx] != null ? userChoices[idx] : null));
+  const order = _ftColumnMappingDisplayOrder(needsWorkFlags, sortMode);
+  const rowsHtml = order.map((idx) => {
+    const h = state.header[idx];
     const m = state.mapping[idx];
     const previewVals = [1, 2]
       .map(r => (state.aoa[r] ? state.aoa[r][idx] : ''))
       .map(v => (v == null ? '' : String(v)))
       .filter(v => v !== '');
     const preview = previewVals.length ? escHtml(previewVals.join('、')) : '<span style="color:#a0aec0;">（無資料）</span>';
+    const chosen = userChoices[idx] != null ? userChoices[idx] : (m.colId || '__ignore__');
     const options = [
-      `<option value="__ignore__" ${!m.colId ? 'selected' : ''}>❌ 忽略此欄</option>`,
-      `<option value="__new__">➕ 新增為新欄位</option>`,
-    ].concat(cols.map(c => `<option value="${escHtml(c.id)}" ${m.colId === c.id ? 'selected' : ''}>${escHtml(c.name)}</option>`));
-    return `<tr>
+      `<option value="__ignore__" ${chosen === '__ignore__' ? 'selected' : ''}>❌ 忽略此欄</option>`,
+      `<option value="__new__" ${chosen === '__new__' ? 'selected' : ''}>➕ 新增為新欄位</option>`,
+    ].concat(cols.map(c => `<option value="${escHtml(c.id)}" ${chosen === c.id ? 'selected' : ''}>${escHtml(c.name)}</option>`));
+    return `<tr${needsWorkFlags[idx] ? ' style="background:#fffaf0;"' : ''}>
       <td>${escHtml(h || '（無標題）')}</td>
       <td style="color:#718096;font-size:.8rem;">${preview}</td>
-      <td><select class="field-select ft-colmap-select" data-idx="${idx}" style="max-width:220px;">${options.join('')}</select></td>
+      <td><select class="field-select ft-colmap-select" data-idx="${idx}" style="max-width:220px;" onchange="_ftOnColMapSelectChange(this)">${options.join('')}</select></td>
     </tr>`;
   }).join('');
   const modal = document.createElement('div');
@@ -56589,6 +57034,11 @@ function _ftRenderColumnMappingModal() {
       <div class="modal-header"><h3>欄位對照</h3></div>
       <div class="modal-body" style="max-height:65vh;overflow:auto;">
         <p style="font-size:.86rem;color:#4a5568;">匯入檔案的欄位名稱與現有欄位不完全相符，請確認每一欄的對應方式後再匯入。</p>
+        <div style="margin-bottom:10px;display:flex;align-items:center;gap:6px;font-size:.82rem;flex-wrap:wrap;">
+          <span style="color:#718096;">排序：</span>
+          <button type="button" class="btn btn-sm ${sortMode !== 'issues' ? 'btn-primary' : 'btn-secondary'}" onclick="_ftSetColMapSortMode('file')">照檔案欄位順序</button>
+          <button type="button" class="btn btn-sm ${sortMode === 'issues' ? 'btn-primary' : 'btn-secondary'}" onclick="_ftSetColMapSortMode('issues')">需要處理的欄位置頂</button>
+        </div>
         <table style="width:100%;border-collapse:collapse;font-size:.82rem;">
           <thead><tr><th>匯入欄名</th><th>預覽值（前 2 筆）</th><th>對應到</th></tr></thead>
           <tbody>${rowsHtml}</tbody>
@@ -56601,6 +57051,23 @@ function _ftRenderColumnMappingModal() {
       </div>
     </div>`;
   document.body.appendChild(modal);
+}
+
+// 記錄使用者對某欄的明確選擇（不立即重繪——避免每次選完跳動位置；下次排序切換或確認時讀取）。
+function _ftOnColMapSelectChange(sel) {
+  const state = _ft._importMapping;
+  if (!state) return;
+  const idx = Number(sel.dataset.idx);
+  state.userChoices = state.userChoices || {};
+  state.userChoices[idx] = sel.value;
+}
+
+// 切換「欄位對照」modal 的排序模式（見 _ftColumnMappingDisplayOrder），重繪整個 modal。
+function _ftSetColMapSortMode(mode) {
+  const state = _ft._importMapping;
+  if (!state) return;
+  state.sortMode = mode;
+  _ftRenderColumnMappingModal();
 }
 
 async function _ftConfirmColumnMapping() {

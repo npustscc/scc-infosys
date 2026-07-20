@@ -284,7 +284,9 @@ function ftCreateSemester(db, params, ctx, userEmail) {
   return result;
 }
 
-// ── ftGetSheet：回傳 { schema, rows }。缺檔一律回預設 schema／空 rows（尚未建立資料的新學期）──
+// ── ftGetSheet：回傳 { schema, rows, judged }。缺檔一律回預設 schema／空 rows（尚未建立資料的
+//    新學期）。judged（v223 D2 評判記憶，見下方 ftSaveRows 檔頭）原樣回傳，缺欄位視為空陣列——
+//    僅 tests／gforms 兩個 sheet 實際會有內容，其餘 sheet 一律是空陣列。──
 function ftGetSheet(db, params, ctx) {
   const semester = params && params.semester;
   const sheet = params && params.sheet;
@@ -303,8 +305,21 @@ function ftGetSheet(db, params, ctx) {
     db, rowsPath, ctx, `ftGetSheet: 讀取 ${rowsPath} 失敗，已中止以保護資料`
   );
   const rows = (rowsData && Array.isArray(rowsData.rows)) ? rowsData.rows : [];
+  const judged = (rowsData && Array.isArray(rowsData.judged)) ? rowsData.judged : [];
 
-  return { schema, rows };
+  return { schema, rows, judged };
+}
+
+// ── v223 D2：評判記憶（judged）條目驗證——前端整份陣列取代送來（比照 rows 慣例），本函式只做
+//    最基本的形狀檢查，過濾掉格式不對的項目（不整批 throw 中止存檔，避免單一髒項目擋掉整次
+//    儲存；stuId 不得為空——沒有學號無法比對，判定為攻擊面/雜訊一律捨棄）。──
+function sanitizeJudgedEntries(judged) {
+  if (!Array.isArray(judged)) return null;
+  return judged
+    .filter((j) => j && typeof j.stuId === 'string' && j.stuId.trim()
+      && (typeof j.hash === 'string' || typeof j.hash === 'number')
+      && typeof j.deletedAt === 'string')
+    .map((j) => ({ stuId: j.stuId, hash: String(j.hash), deletedAt: j.deletedAt }));
 }
 
 // ── ftSaveSchema：整份 cols 取代（欄位數量小，不需差異式 op）。刪欄不觸碰 rows.json（見檔頭
@@ -375,7 +390,11 @@ function ftSaveSchema(db, params, ctx, userEmail) {
 //    就等於沒新增過，見前端 _ftSaveEdit 檔頭說明。
 //    v216：標 deleted:true 送來的列，本次存檔即從資料檔「物理移除」（不再是永久保留的軟刪除）——
 //    deletedAt/deletedBy 只用於本次回傳值（前端顯示成功訊息／稽核摘要用），不會被寫入持久化
-//    檔案，因為該列本身就不會出現在寫入的 rows 陣列裡。──
+//    檔案，因為該列本身就不會出現在寫入的 rows 陣列裡。
+//    v223 D2：可選帶 params.judged（評判記憶，見前端 _ftBuildJudgedEntries 檔頭說明）——前端整份
+//    陣列取代送來（比照 rows 慣例，不做差異式 op），未帶（undefined）視為「本次存檔不動評判記憶」
+//    （沿用既有值，例如 students／tutors 兩個 sheet 從不送此參數）；帶空陣列 [] 則明確清空（對應
+//    「全部刪除並儲存」語意，見 _ftIsFullClearSave）。──
 function ftSaveRows(db, params, ctx, userEmail) {
   const semester = params && params.semester;
   const sheet = params && params.sheet;
@@ -383,6 +402,8 @@ function ftSaveRows(db, params, ctx, userEmail) {
   assertSemesterId(semester);
   assertSheetAllowed(sheet);
   if (!Array.isArray(rows)) throw new Error('ftSaveRows: rows 須為陣列');
+  const judgedIncoming = (params && Object.prototype.hasOwnProperty.call(params, 'judged'))
+    ? sanitizeJudgedEntries(params.judged) : undefined;
   const historical = isHistoricalSemester(db, ctx, semester);
 
   const result = db.transaction(() => {
@@ -392,6 +413,7 @@ function ftSaveRows(db, params, ctx, userEmail) {
       db, path, ctx, `ftSaveRows: 讀取 ${path} 失敗，已中止寫入以保護資料`
     );
     const oldById = new Map();
+    const existingJudged = (loaded && Array.isArray(loaded.judged)) ? loaded.judged : [];
     if (fileId != null) {
       if (!loaded || !Array.isArray(loaded.rows)) {
         throw new Error(`ftSaveRows: ${path} 內容異常（rows 非陣列），已中止寫入以保護資料`);
@@ -412,7 +434,8 @@ function ftSaveRows(db, params, ctx, userEmail) {
     });
     // v216：deleted:true 的列本次存檔即物理移除，不寫入持久化檔案（見上方函式頭註解）。
     const finalRows = nextRows.filter((r) => r.deleted !== true);
-    const data = { rows: finalRows, updatedAt: now, updatedBy: userEmail || null };
+    const judged = judgedIncoming !== undefined ? judgedIncoming : existingJudged;
+    const data = { rows: finalRows, judged, updatedAt: now, updatedBy: userEmail || null };
     writeBack(db, fileId, dir, sheetFileName(sheet), data, ctx);
     const deletedCount = nextRows.filter((r) => r.deleted === true).length;
     return { ok: true, count: finalRows.length, updatedAt: now, deletedCount };
@@ -453,4 +476,5 @@ module.exports = {
   ftSaveSchema,
   ftSaveRows,
   ftTutorSyncFetch,
+  sanitizeJudgedEntries,
 };
