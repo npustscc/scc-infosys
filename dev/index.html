@@ -319,6 +319,9 @@
     /* Content area */
     #content {
       flex: 1;
+      min-width: 0; /* v216：避免內容過寬（如新生心測 146 欄的表格）撐開這個 flex item，
+                       進而把整頁往右推出視窗；讓內層各自的 overflow:auto 容器（如
+                       #ft-grid-wrap）自己負責水平捲動，而不是整頁一起橫向捲動。 */
       padding: 28px 32px;
     }
 
@@ -4114,7 +4117,7 @@
             <button class="btn btn-secondary btn-sm" id="ft-undo-btn" onclick="_ftUndo()" disabled data-tip="復原（Ctrl+Z）">↶ 復原</button>
             <button class="btn btn-secondary btn-sm" id="ft-redo-btn" onclick="_ftRedo()" disabled data-tip="重做（Ctrl+Y／Ctrl+Shift+Z）">↷ 重做</button>
             <span style="width:1px;height:20px;background:#e2e8f0;"></span>
-            <button class="btn btn-secondary btn-sm" onclick="_ftAddRows()">＋新增列</button>
+            <button class="btn btn-primary btn-sm" onclick="_ftAddRows()">＋新增列</button>
             <input type="number" id="ft-add-rows-count" class="field-input" value="5" min="1" max="500" style="width:60px;padding:4px 6px;">
             <span style="width:1px;height:20px;background:#e2e8f0;"></span>
             <button class="btn btn-secondary btn-sm" onclick="document.getElementById('ft-import-file').click()">📥 匯入 Excel/CSV</button>
@@ -31560,6 +31563,13 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-20', v: 216, title: '新生心理測驗：修正復原/重做連按失效、整合tab學號比對、欄位過多版面跑版；新增列按鈕醒目化；軟刪除改儲存即真刪', isProd: false, items: [
+      item('修正', '編輯試算表時連續按 Ctrl+Z／Ctrl+Y 復原/重做，第一次操作後輸入焦點會跟著畫面重繪一起消失，導致從第二下開始按鍵沒反應；已修正為可連續復原/重做到堆疊清空為止，不需要每次重新點回儲存格'),
+      item('修正', '整合分頁的學號欄位，過去若學生名冊裡的舊資料學號尾端殘留看不見的空白，會讓該學號在整合、統計、報告、匯出檔案裡都帶著這段空白，拿去跟其他名冊比對容易誤判「對不上」；學號比對邏輯本身其實一直是正確的，本次一併修正顯示出來的學號值也去除頭尾空白'),
+      item('修正', '欄位很多很寬的分頁（如「測驗資料」146 欄）在一般視窗寬度下，會把整個頁面（含右上角「學期」與「新增學期」）一起往右推出可視範圍；修正後只有試算表本身會出現水平捲軸，其餘版面維持在畫面內'),
+      item('改善', '工具列「＋新增列」改為醒目的主要按鈕樣式，與「匯入 Excel/CSV」「欄位管理」等次要操作視覺區隔，避免不小心點錯'),
+      item('改善', '編輯模式下刪除列，改為按「儲存」後立即從伺服器實際刪除，不再是保留於資料庫中的軟刪除；存檔前仍可隨時按「還原」或 Ctrl+Z 復原，行為不變'),
+    ]},
     { date: '2026-07-20', v: 215, title: '新生心理測驗：修正水平捲動時標題列與資料列錯位＋新增「全部刪除」', isProd: false, items: [
       item('修正', '試算表水平捲動時，凍結欄（學號／中文姓名）只有資料列跟著固定、標題列沒有跟上，造成標題與資料對不上（看起來像標題出現空白欄、名稱被擠到別的欄位、欄寬不一致）；標題列凍結已修復，捲動時標題與資料列完全對齊'),
       item('修正', '「班級簡稱」欄原本在所有分頁都被設成凍結欄（它其實只是「導師名冊」分頁的主鍵），在學生基本資料等分頁水平捲動時會浮起蓋在其他欄位上（看起來像被擠到最後一欄）；改為各分頁只凍結自己該凍結的欄位——導師名冊凍結班級簡稱，其餘分頁凍結學號／中文姓名'),
@@ -53135,8 +53145,11 @@ function _ftComputeMergedCells(studentsRow, testRow, gformRow, existence) {
   const gCells = (gformRow && gformRow.cells) || {};
 
   const cells = {
-    stu_id: sCells.stu_id ?? '',
-    name_zh: sCells.name_zh ?? '',
+    // v216：stu_id／name_zh 顯示值須 trim——JOIN 比對本身（_ftComputeMergedRows 的 norm()）
+    // 早已雙邊 trim，但這裡組出的顯示值先前未 trim，導致舊資料尾隨空白會一路帶到整合 tab／
+    // 統計／報告／匯出，看起來像「對不上」（實際上比對沒問題，只是顯示值帶著空白）。
+    stu_id: _ftTrimCell(sCells.stu_id) ?? '',
+    name_zh: _ftTrimCell(sCells.name_zh) ?? '',
     test_date: tCells.test_date ?? '',
     edu_code: sCells.edu_code ?? '',
     edu_abbr: sCells.edu_abbr ?? '',
@@ -54695,13 +54708,21 @@ function _ftRedo() {
 // Ctrl+Z／Ctrl+Y／Ctrl+Shift+Z 鍵盤監聽：焦點若在儲存格 input 且該格「有未提交的輸入」（目前
 // input 顯示值 ≠ 聚焦當下的原值），一律不攔截——讓瀏覽器原生的輸入框 undo 處理該格（見任務
 // 規格）；其餘情況（未聚焦儲存格，或該格值已提交/未變更）才由本函式接手復原/重做堆疊。
+// v216：改掛在 document 上（見下方註冊處說明）——本函式一開始就用「新生心測頁是否為目前顯示
+// 中的頁面」守門，避免非新生心測頁面也被攔截；並比照站內既有慣例，主動避開圖片編輯器
+// （_imgEdActive）、家系圖編輯器（geno-overlay）、富文字編輯器（contenteditable/.rt-editor）
+// 這幾個各自有自己 undo 處理的場景，讓它們的鍵盤事件正常往下走原生流程或各自的處理函式。
 function _ftHandleUndoRedoKeydown(ev) {
   const key = ev.key ? ev.key.toLowerCase() : '';
   const mod = ev.ctrlKey || ev.metaKey;
   const isUndo = mod && !ev.shiftKey && key === 'z';
   const isRedo = mod && (key === 'y' || (ev.shiftKey && key === 'z'));
   if (!isUndo && !isRedo) return;
+  if (!document.getElementById('page-freshman-test')?.classList.contains('active')) return;
+  if (window._imgEdActive) return;
+  if (document.getElementById('geno-overlay')) return;
   const active = document.activeElement;
+  if (active && (active.isContentEditable || (active.classList && active.classList.contains('rt-editor')))) return;
   if (active && active.classList && active.classList.contains('ft-cell-input')) {
     const focus = _ft._focus;
     const hasUncommitted = focus && String(active.value ?? '') !== String(focus.oldValue ?? '');
@@ -54725,11 +54746,11 @@ async function _ftDiscardEdit() {
   await _ftLoadActiveSheet();
 }
 
-// v213：rowsToSave 建構規則——
+// rowsToSave 建構規則——
 //  - 待刪除（_pendingDelete）且尚未存檔過（_id 為 null）的新列：直接不送（等於沒新增過）。
-//  - 待刪除且是既有列（有 _id）：一律送出並標 deleted:true（後端 ftSaveRows 原樣保存、不物理
-//    移除，見 server/src/freshmanTest/actions.js），即使該列 cells 全空也要送（否則刪除動作不會
-//    落地）——這是「完全空白列不送」規則的唯一例外。
+//  - 待刪除且是既有列（有 _id）：一律送出並標 deleted:true。v216：後端 ftSaveRows 收到
+//    deleted:true 的列，本次存檔即從資料檔物理移除（見 server/src/freshmanTest/actions.js），
+//    即使該列 cells 全空也要送（否則刪除動作不會落地）——這是「完全空白列不送」規則的唯一例外。
 //  - 其餘列沿用既有規則：完全空白（無任何欄位有值）不送。
 //  - 存檔前整批對每一欄值跑 _ftTrimCell（規格③「存檔前整批保險」，救回貼上/舊資料殘留的頭尾空白）。
 async function _ftSaveEdit() {
@@ -55111,11 +55132,15 @@ document.addEventListener('paste', (ev) => {
   _ftRenderGrid();
 });
 
-// v213：Ctrl+Z／Ctrl+Y／Ctrl+Shift+Z 只在新生心理測驗頁面範圍內生效（掛在 #page-freshman-test
-// 容器上，事件冒泡涵蓋頁內所有 grid/modal 節點），一次註冊即可（頁面本身是靜態 HTML、不會被
-// 整個替換掉，不需要每次 render 重新綁定，比照既有 _ftBindGridScroll 的「用旗標避免重複綁」
-// 慣例——這裡直接掛在固定存在的容器節點上，天然只會執行一次）。
-document.getElementById('page-freshman-test')?.addEventListener('keydown', _ftHandleUndoRedoKeydown);
+// v216：改掛在 document 上，而非 #page-freshman-test 容器上。原本掛在容器節點上是靠事件冒泡
+// 接收 keydown，但 _ftUndo() 會呼叫 _ftRenderGrid() 整版重繪，把原本聚焦的 .ft-cell-input 從
+// DOM 移除，瀏覽器此時會把 focus 退回 document.body——下一次 keydown 的 event.target 就是
+// body（在 #page-freshman-test 之外），DOM 事件只會往上冒泡到祖先、不會往下傳給子孫節點的
+// 監聽器，掛在 #page-freshman-test（body 的子孫）上的監聽器因此永遠收不到，導致連按第二下
+// 開始沒反應。改掛在 document 上可涵蓋任何 focus 落點；頁面範圍與其他編輯器互斥改由
+// _ftHandleUndoRedoKeydown 函式內部的守門條件負責（見上方函式註解），一次註冊即可（頁面本身
+// 是靜態 HTML、不會被整個替換掉，不需要每次 render 重新綁定）。
+document.addEventListener('keydown', _ftHandleUndoRedoKeydown);
 
 // ══════════════ 匯入（Excel/CSV）══════════════
 

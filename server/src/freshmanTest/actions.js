@@ -369,11 +369,13 @@ function ftSaveSchema(db, params, ctx, userEmail) {
 //    填寫「選主條目」使用：非主條目列標 excluded:true（前端半透明/刪除線顯示，不刪資料，供日後
 //    整合 tab 只取主條目）。三個 sheet 共用同一個欄位，非 gforms 的列一律 excluded:false。
 //    v213：新增列層級 deleted/deletedAt/deletedBy 旗標——供「每列軟刪除」使用：既有列（帶 _id）
-//    可標 deleted:true 送來，本 action 原樣保存並記錄刪除時間／操作者（若該列已是 deleted:true，
-//    保留原 deletedAt/deletedBy，不因重複儲存而覆蓋——同一次刪除只記一次時間/操作者）；
-//    deleted:false（或未帶）一律清空 deletedAt/deletedBy。前端一律不物理移除列（本次不做刪除
-//    ftSaveRows: 「新列（_id 尚未存在）且已標刪除」直接不送——那本來就等於沒新增過，見前端
-//    _ftSaveEdit 檔頭說明。──
+//    可標 deleted:true 送來，本 action 計算刪除時間／操作者（若該列已是 deleted:true，保留原
+//    deletedAt/deletedBy，不因重複儲存而覆蓋——同一次刪除只記一次時間/操作者）；deleted:false
+//    （或未帶）一律清空 deletedAt/deletedBy。「新列（_id 尚未存在）且已標刪除」直接不送——那本來
+//    就等於沒新增過，見前端 _ftSaveEdit 檔頭說明。
+//    v216：標 deleted:true 送來的列，本次存檔即從資料檔「物理移除」（不再是永久保留的軟刪除）——
+//    deletedAt/deletedBy 只用於本次回傳值（前端顯示成功訊息／稽核摘要用），不會被寫入持久化
+//    檔案，因為該列本身就不會出現在寫入的 rows 陣列裡。──
 function ftSaveRows(db, params, ctx, userEmail) {
   const semester = params && params.semester;
   const sheet = params && params.sheet;
@@ -408,10 +410,12 @@ function ftSaveRows(db, params, ctx, userEmail) {
       const deletedBy = deleted ? ((wasDeleted && old.deletedBy) || userEmail || null) : null;
       return { _id: id, _createdAt: (old && old._createdAt) || now, _updatedAt: now, cells, excluded, deleted, deletedAt, deletedBy };
     });
-    const data = { rows: nextRows, updatedAt: now, updatedBy: userEmail || null };
+    // v216：deleted:true 的列本次存檔即物理移除，不寫入持久化檔案（見上方函式頭註解）。
+    const finalRows = nextRows.filter((r) => r.deleted !== true);
+    const data = { rows: finalRows, updatedAt: now, updatedBy: userEmail || null };
     writeBack(db, fileId, dir, sheetFileName(sheet), data, ctx);
     const deletedCount = nextRows.filter((r) => r.deleted === true).length;
-    return { ok: true, count: nextRows.length, updatedAt: now, deletedCount };
+    return { ok: true, count: finalRows.length, updatedAt: now, deletedCount };
   }).immediate();
 
   return { ...result, historical };
