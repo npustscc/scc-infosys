@@ -2202,6 +2202,9 @@
     <div id="page-om" class="page">
       <div class="page-title">信箱</div>
 
+      <!-- v231：寄件匣（離線暫存待寄信件）提示條——連結前後都看得到，見 _omRenderOutboxBar／_omFlushOutbox -->
+      <div id="om-outbox-bar" style="display:none;background:#fffaf0;border:1px solid #feebc8;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:.85rem;"></div>
+
       <div id="om-connect-card" class="card" style="max-width:480px;">
         <div class="card-header" style="display:flex;align-items:center;gap:8px;"><h3 style="margin:0;">連結屏科大信箱</h3><span id="om-reach-light" style="margin-left:auto;font-size:.78rem;color:#a0aec0;white-space:nowrap;">● 檢查連線中…</span></div>
         <div style="padding:16px;">
@@ -2216,6 +2219,8 @@
           <button class="btn btn-primary" id="om-connect-btn" onclick="omConnectSubmit()" style="width:100%;">連結</button>
           <!-- v224：密碼效期說明（每週日 00:00 統一過期，見 server credStore.js） -->
           <div style="font-size:.72rem;color:#a0aec0;margin-top:12px;line-height:1.6;">🔒 密碼只暫存於伺服器記憶體、永不寫入資料庫或紀錄檔；<strong>每週日凌晨 00:00 會統一失效</strong>，屆時重新連結一次即可（平日不會被登出，伺服器重啟也需重連）。</div>
+          <!-- v231：離線寫信——未連結也能先寫信暫存寄件匣，連結成功後提醒寄出 -->
+          <button class="btn btn-secondary btn-sm" style="width:100%;margin-top:10px;" onclick="openOmCompose()" data-tip="信箱連不上也可以先寫信：寄出時若失敗，可存入寄件匣，等連線恢復後自動寄出">✎ 離線寫信（暫存寄件匣）</button>
         </div>
       </div>
 
@@ -32141,6 +32146,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-20', v: 231, title: '信箱新增「寄件匣」離線寫信：連不上也能寫信暫存，連線恢復自動寄出', isProd: false, items: [
+      item('新功能', '寄信遇到連線問題（信箱伺服器沒回應、尚未連結等）時，會詢問是否把整封信（含附件）存入「寄件匣」；存入後信箱頁上方會出現寄件匣提示條，列出待寄信件，可逐封移除或按「立即寄出」手動補寄'),
+      item('新功能', '連線恢復（燈號轉綠且已連結）時，寄件匣的信會自動依序補寄，成功後提示補寄了幾封；補寄成功的信照常備份到「寄件備份」資料夾'),
+      item('新功能', '信箱連結頁新增「✎ 離線寫信（暫存寄件匣）」按鈕——還沒連結（如週日效期過後尚未重登）也能先把信寫好，寄出失敗時選擇存入寄件匣，重新連結後自動寄出'),
+      item('說明', '寄件匣暫存在本機瀏覽器（每封上限 2.5MB 含附件），換電腦或清除瀏覽器資料不會帶著走；帳密錯誤等「重寄也不會成功」的失敗不會進寄件匣，仍會直接提示'),
+    ] },
     { date: '2026-07-20', v: 230, title: '側邊選單不再被捲回頂端＋信箱左欄可調寬＋小技巧按鈕移到 🔒 旁', isProd: true, items: [
       item('修復', '左側選單改為固定高度、自帶捲軸：切換頁面時選單不再被捲回最上面（原本點選單下方的項目後，選單每次都跳回頂端、得重新往下捲）；選單捲動位置與頁面內容捲動互相獨立'),
       item('新功能', '信箱左欄（屏科大信箱／學諮系統資料夾）右緣可左右拖曳調整寬度，最寬為預設的 2 倍（210～420px），寬度會記住；「屏科大信箱」橫幅上的 ↻／⏏ 按鈕在欄位較窄時會自動換行不再擠壓'),
@@ -52110,6 +52121,7 @@ async function renderOmPage() {
   // v224：連線/在線燈號——不論連結與否都顯示，並在信箱頁開著時每 30 秒輪詢一次可達性。
   _omUpdateReachLight();
   _omStartReachPoll();
+  _omRenderOutboxBar(); // v231：寄件匣提示條（連結前後都顯示）
 }
 
 // v224：查詢並更新「連線頁可連線」與「信箱在線」兩顆燈號。純 TCP 可達性探測（不觸發登入限流）。
@@ -52121,11 +52133,13 @@ async function _omUpdateReachLight() {
     el.style.color = color;
     if (tip) el.setAttribute('data-tip', tip);
   };
-  let reachable = false;
-  try { const r = await proxyCall('omReachable'); reachable = !!r.reachable; } catch (_) { reachable = false; }
+  let reachable = false, connected = false;
+  try { const r = await proxyCall('omReachable'); reachable = !!r.reachable; connected = !!r.connected; } catch (_) { reachable = false; }
   if (reachable) {
     setLight('om-reach-light', '🟢 信箱伺服器可連線', '#2f855a', '已可連到屏科大信箱伺服器（mail.npust.edu.tw），可輸入帳密連結');
     setLight('om-online-light', '🟢 在線上', '#2f855a', '與屏科大信箱伺服器連線正常');
+    // v231：連線恢復且已連結 → 自動補寄寄件匣
+    if (connected && _omOutboxLoad().length) _omFlushOutbox(true);
   } else {
     setLight('om-reach-light', '🔴 目前無法連線', '#c53030', '連不到屏科大信箱伺服器：可能校內網路異常或伺服器維護，稍後再試');
     setLight('om-online-light', '🔴 連線中斷', '#c53030', '目前連不到屏科大信箱伺服器，收發信可能失敗；稍後會自動重試');
@@ -52218,6 +52232,95 @@ function _omInitLeftColResize() {
   };
   bar.addEventListener('pointerup', end);
   bar.addEventListener('pointercancel', end);
+}
+
+// ══════ v231：寄件匣（離線寫信暫存）══════
+// 寄出失敗（連線類錯誤）時把整封信存 localStorage，連線恢復後自動補寄（見 _omUpdateReachLight 的
+// auto-flush hook）。per-使用者 key；附件以 base64 一併暫存，總量超過 2.5MB 不收（localStorage 配額
+// 保護），請使用者移除附件或稍後再試。
+function _omOutboxKey() { return 'scc_om_outbox_' + (currentUser?.email || ''); }
+function _omOutboxLoad() {
+  try { const a = JSON.parse(localStorage.getItem(_omOutboxKey()) || '[]'); return Array.isArray(a) ? a : []; } catch (_) { return []; }
+}
+function _omOutboxSave(arr) {
+  try { localStorage.setItem(_omOutboxKey(), JSON.stringify(arr)); return true; }
+  catch (e) { alert('寄件匣儲存失敗（瀏覽器儲存空間不足）：' + e.message); return false; }
+}
+
+// 是否為「值得進寄件匣」的連線類失敗（帳密被拒等使用者問題不收——重寄也不會成功）
+function _omIsConnErr(msg) {
+  return /mail_not_connected|mail_server_unreachable|mail_server_timeout|Failed to fetch|NetworkError|逾時|timeout/i.test(String(msg || ''));
+}
+
+function _omQueueOutbox(params) {
+  const size = JSON.stringify(params).length;
+  if (size > 2.5 * 1024 * 1024) {
+    alert('這封信（含附件）超過寄件匣暫存上限 2.5MB，無法離線暫存；請先移除部分附件，或等連線恢復後直接寄出。');
+    return false;
+  }
+  const arr = _omOutboxLoad();
+  arr.push({ id: 'ob_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), createdAt: new Date().toISOString(), params });
+  if (!_omOutboxSave(arr)) return false;
+  _omRenderOutboxBar();
+  return true;
+}
+
+function _omOutboxRemove(id) {
+  const arr = _omOutboxLoad().filter(x => x.id !== id);
+  _omOutboxSave(arr);
+  _omRenderOutboxBar();
+}
+
+function _omRenderOutboxBar() {
+  const bar = document.getElementById('om-outbox-bar');
+  if (!bar) return;
+  const arr = _omOutboxLoad();
+  if (!arr.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+  const items = arr.map(x => `
+    <div style="display:flex;align-items:center;gap:8px;padding:2px 0;font-size:.8rem;color:#4a5568;">
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">✉ ${escHtml((x.params.subject || '（無主旨）'))} → ${escHtml((x.params.to || []).join(', '))}</span>
+      <span style="color:#a0aec0;flex-shrink:0;">${escHtml((x.createdAt || '').replace('T', ' ').slice(5, 16))}</span>
+      <button class="btn btn-secondary btn-sm" style="padding:0 6px;flex-shrink:0;" onclick="_omOutboxRemove('${escHtml(x.id)}')" data-tip="從寄件匣移除（放棄這封信）">✕</button>
+    </div>`).join('');
+  bar.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <strong style="color:#975a16;">📤 寄件匣：${arr.length} 封待寄</strong>
+      <span style="color:#975a16;font-size:.78rem;">連線恢復後會自動寄出，也可手動立即寄出</span>
+      <span style="flex:1 1 auto;"></span>
+      <button class="btn btn-primary btn-sm" onclick="_omFlushOutbox(false)">立即寄出</button>
+    </div>
+    <div style="margin-top:4px;">${items}</div>`;
+  bar.style.display = 'block';
+}
+
+let _omFlushingOutbox = false;
+async function _omFlushOutbox(isAuto) {
+  if (_omFlushingOutbox) return;
+  const arr = _omOutboxLoad();
+  if (!arr.length) return;
+  _omFlushingOutbox = true;
+  let sent = 0;
+  try {
+    for (const item of arr.slice()) {
+      try {
+        await _omCall('omSend', item.params);
+        sent++;
+        _omOutboxRemove(item.id);
+      } catch (e) {
+        // 連線類失敗：留在寄件匣等下次；其他錯誤（如收件人格式）也保留但提示使用者處理
+        if (!isAuto) showToast(`寄件匣寄出失敗（${_omErrMsg(e.message)}），未寄出的信仍保留在寄件匣`, 'warn');
+        break;
+      }
+    }
+    if (sent) {
+      showToast(`寄件匣：已補寄出 ${sent} 封信`, 'success');
+      const sentPath = _omFindSpecialFolderPath('\\Sent');
+      if (sentPath) _omCacheListInvalidateFolder(sentPath);
+    }
+  } finally {
+    _omFlushingOutbox = false;
+    _omRenderOutboxBar();
+  }
 }
 
 // 登入帳號附註（例：linkinlol）——為日後多信箱登入鋪路。
@@ -52897,22 +53000,23 @@ async function omSendSubmit() {
   const origHtml = btn?.innerHTML;
   if (btn) { btn.disabled = true; btn.innerHTML = '寄出中…'; }
   showLoading('寄出中…');
+  // v231：params 提到 try 外——寄送失敗（連線類）時要原封不動存進寄件匣
+  const params = {
+    to: to.split(',').map(s => s.trim()).filter(Boolean),
+    cc: cc ? cc.split(',').map(s => s.trim()).filter(Boolean) : [],
+    bcc: bcc ? bcc.split(',').map(s => s.trim()).filter(Boolean) : [],
+    subject,
+    html,
+    text: _stripHtmlToText(html),
+    attachments: _om.composeAttachments.map(a => ({ filename: a.filename, contentType: a.contentType, base64: a.base64 })),
+  };
+  if (_om.composeMode && _om.composeRefMsg) {
+    const ref = _om.composeRefMsg;
+    const refs = Array.isArray(ref.references) ? ref.references.slice() : (ref.references ? [ref.references] : []);
+    if (ref.messageId) { params.inReplyTo = ref.messageId; refs.push(ref.messageId); }
+    if (refs.length) params.references = refs;
+  }
   try {
-    const params = {
-      to: to.split(',').map(s => s.trim()).filter(Boolean),
-      cc: cc ? cc.split(',').map(s => s.trim()).filter(Boolean) : [],
-      bcc: bcc ? bcc.split(',').map(s => s.trim()).filter(Boolean) : [],
-      subject,
-      html,
-      text: _stripHtmlToText(html),
-      attachments: _om.composeAttachments.map(a => ({ filename: a.filename, contentType: a.contentType, base64: a.base64 })),
-    };
-    if (_om.composeMode && _om.composeRefMsg) {
-      const ref = _om.composeRefMsg;
-      const refs = Array.isArray(ref.references) ? ref.references.slice() : (ref.references ? [ref.references] : []);
-      if (ref.messageId) { params.inReplyTo = ref.messageId; refs.push(ref.messageId); }
-      if (refs.length) params.references = refs;
-    }
     await _omCall('omSend', params);
     _omCloseCompose();
     showToast('已寄出信件', 'success');
@@ -52922,7 +53026,17 @@ async function omSendSubmit() {
     if (sentPath) _omCacheListInvalidateFolder(sentPath);
     if (!_om.searchQuery) _omLoadMessages();
   } catch (e) {
-    alert('寄送失敗：' + _omErrMsg(e.message));
+    // v231：連線類失敗 → 提議存入寄件匣（連線恢復後自動寄出）；其他錯誤照舊提示
+    if (_omIsConnErr(e.message)) {
+      if (confirm('寄送失敗（信箱連線問題）：' + _omErrMsg(e.message) + '\n\n要把這封信存入「寄件匣」嗎？連線恢復後會自動寄出（也可在信箱頁手動立即寄出）。')) {
+        if (_omQueueOutbox(params)) {
+          _omCloseCompose();
+          showToast('已存入寄件匣，連線恢復後會自動寄出', 'info');
+        }
+      }
+    } else {
+      alert('寄送失敗：' + _omErrMsg(e.message));
+    }
   } finally {
     hideLoading();
     _omSending = false;
