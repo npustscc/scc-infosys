@@ -93,6 +93,11 @@ const OPENMAIL_IMAP_HOST = process.env.OPENMAIL_IMAP_HOST || 'mail.npust.edu.tw'
 const OPENMAIL_IMAP_PORT = Number(process.env.OPENMAIL_IMAP_PORT || 993);
 const OPENMAIL_SMTP_HOST = process.env.OPENMAIL_SMTP_HOST || 'mail.npust.edu.tw';
 const OPENMAIL_SMTP_PORT = Number(process.env.OPENMAIL_SMTP_PORT || 465);
+// v235：信箱「記住密碼（自動登入）」opt-in 加密落地（見 openmail/credPersist.js 檔頭）——
+// AES-256 金鑰，64 hex chars（32 bytes，openssl rand -hex 32 產生）。留空（預設）＝功能整個
+// fail-closed（credPersist.keyFromConfig 回 null，不落地、不 hydrate，前端不顯示「記住密碼」
+// 勾選框），故不可用 required()，多數部署情境不需要啟用此 opt-in 例外。
+const OPENMAIL_CRED_KEY = process.env.OPENMAIL_CRED_KEY || '';
 // 簡訊發送（三竹 Mitake／Every8D，見 src/sms/）連線設定——帳密只在 server .env，前端永不經手
 // （見 src/sms/actions.js getMitakeConfig/getE8dConfig，比照 openmail 帳密的「機密永不進 repo」
 // 資安原則）。全部選填：任一平台缺帳密即視為「未設定此平台」（smsStatus 據此回報，smsSend/
@@ -149,6 +154,7 @@ module.exports = {
   OPENMAIL_IMAP_PORT,
   OPENMAIL_SMTP_HOST,
   OPENMAIL_SMTP_PORT,
+  OPENMAIL_CRED_KEY,
   SMS_MITAKE_HOST,
   SMS_MITAKE_BASE_PATH,
   SMS_MITAKE_USERNAME,

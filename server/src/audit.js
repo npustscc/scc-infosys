@@ -51,6 +51,9 @@ function domainOnlySummary(addr) {
 // openmail（om*）action 專用摘要：folder 名／uid／收件人 domain 可讀但不含帳密/信件內容本身；
 // 其餘欄位（html/text/attachments/query/mailUser...）仍走長度摘要；CONFIDENTIAL_KEYS（mailPass 等）
 // 一律跳過。folder 名截短至 80 字避免使用者自訂資料夾名稱異常長時把 detail 撐爆。
+// v235：rememberMe（omConnect 的「記住密碼」opt-in 勾選狀態）比照 omsv 摘要函式的 deleteFromMail
+// 寫法記布林值——這是使用者的選擇本身（是否要求伺服器落地密碼），不是密碼內容，可讀記錄供事後
+// 稽核「這次連結有沒有勾記住密碼」，不落地的仍是密碼本身（mailPass 已在 CONFIDENTIAL_KEYS）。
 function summarizeOpenmailParams(params) {
   return Object.keys(params).filter((k) => !CONFIDENTIAL_KEYS.has(k)).map((k) => {
     const v = params[k];
@@ -59,6 +62,7 @@ function summarizeOpenmailParams(params) {
     if (k === 'uids' && Array.isArray(v)) return `uids=${v.length}`;
     if (k === 'to' || k === 'cc' || k === 'bcc') return `${k}_domains=${domainOnlySummary(v)}`;
     if (k === 'subject') return `subject_len=${String(v == null ? '' : v).length}`;
+    if (k === 'rememberMe') return `rememberMe=${!!v}`;
     const len = typeof v === 'string' ? v.length : (v && typeof v === 'object' ? JSON.stringify(v).length : String(v).length);
     return `${k}_len=${len}`;
   }).join(',');

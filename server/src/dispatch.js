@@ -40,6 +40,7 @@ const mailActions = require('./actions/mail');
 const openmailActions = require('./openmail/actions');
 const openmailArchive = require('./openmail/archive');
 const openmailCredStore = require('./openmail/credStore');
+const openmailCredPersist = require('./openmail/credPersist');
 const openmailClient = require('./openmail/client');
 const smsActions = require('./sms/actions');
 const freshmanTestActions = require('./freshmanTest/actions');
@@ -343,11 +344,23 @@ async function handleRequest(db, config, payload) {
     // ── 5. ACTION_TABLE 分派 ──────────────────────────────────────────────────
     const onShadowStrip = (count, label) => { strippedNote = `caseAuthzShadow:${count}@${label}`; };
 
+    // v235：om*/omsv* 呼叫前先嘗試從「記住密碼」落地資料回填 credStore 記憶體（見
+    // openmail/credPersist.js hydrate 檔頭）。credStore 已有值（記憶體快取未過期）時 hydrate 內部
+    // 直接短路回 false，不查 sqlite——對未 opt-in「記住密碼」的使用者，這只是一次可忽略成本的
+    // sqlite miss 查詢（PRIMARY KEY 查無），不影響效能；keyFromConfig 每次呼叫都重新解一次 .env
+    // 字串（純字串比對＋Buffer.from，成本可忽略，不需要額外快取）。
+    if (typeof action === 'string' && /^om/.test(action)) {
+      openmailCredPersist.hydrate(db, openmailCredPersist.keyFromConfig(config), userEmail);
+    }
+
     switch (action) {
       case 'ping': result = { ok: true, email: userEmail }; break;
       // ── sessionLogout：登出即清 openmail 記憶體憑證＋關閉快取的 IMAP 連線（v202，見
       //    openmail/credStore.js 檔頭「密碼永不落地、與 session 同壽命」的最高資安要求——顯式登出
-      //    不必等到台北午夜自然過期，立即清除）。──
+      //    不必等到台北午夜自然過期，立即清除）。v235：此處刻意**不**呼叫 credPersist.remove——
+      //    「記住密碼」opt-in 落地資料的存在意義正是「登出再登入後仍能自動重連」，若登出就順手刪掉
+      //    落地資料，這個功能就形同沒有 opt-in 選項（每次登出都等於取消記住）。落地資料只在使用者
+      //    明確按「中斷連結」（omDisconnect）或下次連結時不勾選 rememberMe（omConnect）才會被清除。──
       case 'sessionLogout':
         result = sessionActions.sessionLogout(db, userEmail);
         openmailCredStore.clear(userEmail);
@@ -427,8 +440,8 @@ async function handleRequest(db, config, payload) {
       //    未 omConnect 過或已過期一律回業務錯誤 'mail_not_connected'（見 actions.js withCreds）。──
       case 'omStatus': result = openmailActions.omStatus(userEmail); break;
       case 'omReachable': result = await openmailActions.omReachable(userEmail, config); break;
-      case 'omConnect': result = await openmailActions.omConnect(userEmail, config, params); break;
-      case 'omDisconnect': result = openmailActions.omDisconnect(userEmail); break;
+      case 'omConnect': result = await openmailActions.omConnect(db, userEmail, config, params); break;
+      case 'omDisconnect': result = openmailActions.omDisconnect(db, userEmail); break;
       case 'omListFolders': result = await openmailActions.omListFolders(userEmail, config); break;
       case 'omListMessages': result = await openmailActions.omListMessages(userEmail, config, params); break;
       case 'omGetMessage': result = await openmailActions.omGetMessage(userEmail, config, params); break;

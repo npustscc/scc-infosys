@@ -274,7 +274,8 @@ test('omConnect：成功（monkey-patch client.verifyLogin，不觸網）→ cre
     const r = await handleRequest(db, cfg, {
       action: 'omConnect', sessionToken: tok, rootFolderId: ROOT, mailUser: 'connectok', mailPass: 'a-real-password-123',
     });
-    assert.deepEqual(r.data, { ok: true, mailUser: 'connectok' });
+    // v235：未帶 rememberMe（沿用既有呼叫慣例，不 opt-in）→ remembered:false，其餘欄位不變。
+    assert.deepEqual(r.data, { ok: true, mailUser: 'connectok', remembered: false });
     const cached = credStore.get('connectok@x.com');
     assert.equal(cached.mailUser, 'connectok');
     assert.equal(cached.mailPass, 'a-real-password-123');

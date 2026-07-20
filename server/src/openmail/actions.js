@@ -13,6 +13,7 @@
 const { simpleParser } = require('mailparser');
 const MailComposer = require('nodemailer/lib/mail-composer');
 const credStore = require('./credStore');
+const credPersist = require('./credPersist');
 const client = require('./client');
 const sanitize = require('./sanitize');
 
@@ -43,12 +44,18 @@ function omStatus(email) {
 
 // v224：信箱伺服器可達性探測（連線頁「可連線」燈號／信箱「在線」燈號用）。純 TCP 探測、不需帳密、
 // 不觸發登入限流；同時回報本 session 是否已連結（credStore 有效）。
+// v235：一併回報 rememberAvailable——伺服器是否已設定 OPENMAIL_CRED_KEY（「記住密碼」加密金鑰）。
+// 前端只在此為 true 時才顯示「記住密碼（自動登入）」勾選框；未設定金鑰時功能整個 fail-closed，
+// 顯示勾選框也沒有意義（勾了也不會真的落地，見 omConnect 下方判斷）。
 async function omReachable(email, config) {
   const reachable = await client.probeReachable(config);
-  return { reachable, connected: !!credStore.get(email) };
+  return { reachable, connected: !!credStore.get(email), rememberAvailable: !!credPersist.keyFromConfig(config) };
 }
 
-async function omConnect(email, config, params) {
+// v235：db 參數用於「記住密碼」opt-in 落地（見 credPersist.js 檔頭）——rememberMe===true 且伺服器
+// 已設定加密金鑰時才落地；其餘情況（未勾選、或勾了但金鑰未設定）一律 remove（沒勾＝忘記舊的、
+// 金鑰未設定＝功能關閉不留舊資料），回傳 remembered 供前端顯示對應提示，密碼本身不出現在回傳值。
+async function omConnect(db, email, config, params) {
   const mailUser = params && params.mailUser;
   const mailPass = params && params.mailPass;
   if (!mailUser || !mailPass) return { error: 'mail_auth_failed' };
@@ -59,12 +66,23 @@ async function omConnect(email, config, params) {
     return { error: 'mail_server_unreachable' };
   }
   credStore.set(email, mailUser, mailPass);
-  return { ok: true, mailUser: mailUser };
+  const key = credPersist.keyFromConfig(config);
+  let remembered = false;
+  if (params && params.rememberMe === true && key) {
+    credPersist.save(db, key, email, mailUser, mailPass);
+    remembered = true;
+  } else {
+    credPersist.remove(db, email);
+  }
+  return { ok: true, mailUser: mailUser, remembered };
 }
 
-function omDisconnect(email) {
+// v235：db 參數用於顯式中斷連結時一併刪除已落地的「記住密碼」（完整忘記——與 sessionLogout 只清
+// 記憶體、保留落地資料的行為刻意不同，見 dispatch.js sessionLogout 分支註解）。
+function omDisconnect(db, email) {
   credStore.clear(email);
   client.closeConnection(email);
+  credPersist.remove(db, email);
   return { ok: true };
 }
 
