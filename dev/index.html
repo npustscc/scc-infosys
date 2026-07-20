@@ -17812,6 +17812,17 @@ let _cnAbType = new Set(); // A案/B案篩選（空集合 = 全部）
 let _cnSelected = new Set();
 let _casesSelected = new Set();
 
+// v226：工具列常駐「📦 含已封存」捷徑——鏡射篩選面板「封存」群組（勾=不限封存、取消=回到預設
+// 「未封存」），封存篩選不再只藏在漏斗面板裡。若使用者在面板單勾「已封存」，此勾選框也視為
+// 「含已封存」＝勾選狀態（語意：目前列表可能出現已封存個案）。
+function _cnIncludesArchived() { return _cnArchived.size === 0 || _cnArchived.has('archived'); }
+function _cnToggleIncludeArchived(on) {
+  _cnArchived = on ? new Set() : new Set(['unarchived']);
+  _cnPage = 1;
+  _cnSelected.clear();
+  renderCaseNums();
+  _saveCnPrefs();
+}
 // 案號查詢頁「封存／狀態／案別」勾選面板的群組定義（供首次渲染與 surgical update 共用，避免兩處重複維護）
 function _cnFilterPanelGroups() {
   return [
@@ -17843,7 +17854,11 @@ function renderCaseNums(resetPage) {
 
   // v173：封存／狀態／案別改收合式勾選面板，同群組 OR、跨群組 AND（見 _filterPanelMatch）；
   // closure 標籤沿用改版前 if/else if 的互斥判定（僅二態，OR 語意等價）
-  const _cnActiveGroups = { archived: [..._cnArchived], closure: [..._cnClosureStatus], abType: [..._cnAbType] };
+  // v226：搜尋時略過「封存」篩選——預設「未封存」會讓已封存個案怎麼搜都搜不到（看起來像個案
+  // 消失）；有搜尋字串即視為全域查找，封存與否都要能命中（狀態/案別/主責篩選照舊生效）。
+  // 已封存列在案號旁以 📦 徽章標示（見下方 rows）。q 的讀取因此從分頁計算處提前到這裡。
+  const q = document.getElementById('cn-search')?.value?.trim().toLowerCase() || '';
+  const _cnActiveGroups = { archived: q ? [] : [..._cnArchived], closure: [..._cnClosureStatus], abType: [..._cnAbType] };
   visible = visible.filter(c => _filterPanelMatch({
     archived: c.archived ? ['archived'] : ['unarchived'],
     closure: (c.status === 'closed' && !_hasPastUnclosed(c)) ? ['closed'] : ['active'],
@@ -17892,7 +17907,6 @@ function renderCaseNums(resetPage) {
     });
   });
 
-  const q = document.getElementById('cn-search')?.value?.trim().toLowerCase() || '';
   const filtered = q
     ? visible.filter(c => (c.id||'').toLowerCase().includes(q) || (c.name||'').toLowerCase().includes(q) || (c.studentId||'').toLowerCase().includes(q) ||
         (c.formerIds || []).some(f => (f.id||'').toLowerCase().includes(q))) // 曾用案號也要能被搜尋命中
@@ -17959,7 +17973,7 @@ function renderCaseNums(resetPage) {
     return `
     <tr class="${_cnRowClass}" style="cursor:${c.deleted?'default':'pointer'};" ${c.deleted?'':` onclick="showCaseDetail('${escHtml(c.id)}')"`}>
       <td style="width:36px;text-align:center;" onclick="event.stopPropagation()">${chk}</td>
-      <td><strong style="color:#1a5276;">${escHtml(c.id || '—')}</strong>${formerIdsBadge}</td>
+      <td><strong style="color:#1a5276;">${escHtml(c.id || '—')}</strong>${c.archived ? ' <span data-tip="此個案已封存" style="font-size:.8rem;">📦</span>' : ''}${formerIdsBadge}</td>
       <td>${escHtml(c.name || '—')} ${_semStatusBadgeHtml(c)}</td>
       <td>${escHtml(c.studentId || '—')}</td>
       <td>${semChips}</td>
@@ -17994,6 +18008,8 @@ function renderCaseNums(resetPage) {
     const sel = document.getElementById('cn-pagesize');
     if (sel) sel.value = String(_cnPageSize);
     _fpSyncPanel('cn', _cnFilterPanelGroups(), { archived: _cnArchived, closure: _cnClosureStatus, abType: _cnAbType }, '_cnPage=1;_cnSelected.clear();renderCaseNums();_saveCnPrefs()');
+    const incA = document.getElementById('cn-include-archived');
+    if (incA) incA.checked = _cnIncludesArchived();
     const _cnIsDefaultArchived = _cnArchived.size === 1 && _cnArchived.has('unarchived');
     const clearBtn = document.getElementById('cn-clear-btn');
     if (clearBtn) clearBtn.disabled = (_cnIsDefaultArchived && !_cnClosureStatus.size && !_cnCounselor && !_cnAbType.size && !(document.getElementById('cn-search')?.value?.trim()));
@@ -18023,6 +18039,9 @@ function renderCaseNums(resetPage) {
             ${buildCounselorFilterOpts(_cnCounselor, true, '全部人員')}
           </select>
           ${_fpButtonHtml('cn')}
+          <label style="font-size:.85rem;color:#4a5568;white-space:nowrap;display:flex;align-items:center;gap:4px;cursor:pointer;" data-tip="勾選後列表顯示全部個案（含已封存）；等同篩選面板「封存」群組全選。搜尋時不論此設定，已封存個案一律可被搜尋命中。">
+            <input type="checkbox" id="cn-include-archived" ${_cnIncludesArchived() ? 'checked' : ''} onchange="_cnToggleIncludeArchived(this.checked)">📦 含已封存
+          </label>
           <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;">每頁
             <select id="cn-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;"
               onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select>筆
@@ -32028,6 +32047,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-20', v: 226, title: '案號查詢與管理：搜尋可命中已封存個案＋工具列新增「📦 含已封存」開關', isProd: false, items: [
+      item('改善', '搜尋框輸入文字時自動涵蓋已封存個案——先前預設「未封存」篩選會讓已封存個案怎麼搜都搜不到（看起來像個案消失）；已封存列在案號旁以 📦 徽章標示'),
+      item('新增', '工具列常駐「📦 含已封存」勾選，等同篩選面板「封存」群組的快速開關，不用再打開漏斗篩選面板才能切換'),
+      item('說明', 'v223～v225 版號保留給進行中的功能批次，本版跳號先行'),
+    ] },
     { date: '2026-07-20', v: 222, title: '新生心測 grid 七項改進（欄位對照/匯入按鈕/時間戳記轉換/篩選置頂/頂部捲軸/統計表格/tab 快取）', isProd: false, items: [
       item('改善', '匯入 Excel/CSV「欄位對照」畫面：下拉選單「忽略此欄」加紅色 ❌ 標示、「➕ 新增為新欄位」移到清單第 2 位（緊接在忽略選項後、所有現有欄位之前），更容易第一眼看到'),
       item('改善', '工具列「📥 匯入 Excel/CSV」按鈕改為醒目的主要按鈕樣式，與「＋新增列」一致'),
