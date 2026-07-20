@@ -2173,10 +2173,10 @@
       <div class="page-title">信箱</div>
 
       <div id="om-connect-card" class="card" style="max-width:480px;">
-        <div class="card-header"><h3>連結校內信箱</h3></div>
+        <div class="card-header" style="display:flex;align-items:center;gap:8px;"><h3 style="margin:0;">連結校內信箱</h3><span id="om-reach-light" style="margin-left:auto;font-size:.78rem;color:#a0aec0;white-space:nowrap;">● 檢查連線中…</span></div>
         <div style="padding:16px;">
           <div class="alert alert-info" style="margin-bottom:14px;font-size:.85rem;line-height:1.6;">
-            密碼只保存在伺服器記憶體，登出或每日過期即自動清除；伺服器重啟後需重新輸入。
+            密碼只保存在伺服器記憶體、永不寫入資料庫；帳號可只輸入前半，系統會自動補上 @mail.npust.edu.tw。
           </div>
           <div id="om-connect-error" class="alert alert-error" style="display:none;margin-bottom:12px;"></div>
           <label class="field-label">openmail 帳號<span class="req">*</span></label>
@@ -2193,7 +2193,7 @@
         <div style="display:flex;gap:14px;align-items:stretch;height:calc(100vh - 200px);min-height:460px;">
           <!-- 左：資料夾樹 -->
           <div class="card" style="width:210px;flex-shrink:0;display:flex;flex-direction:column;overflow:hidden;">
-            <div class="card-header" style="padding:10px 12px;"><h3 style="font-size:.88rem;">資料夾</h3></div>
+            <div class="card-header" style="padding:10px 12px;display:flex;align-items:center;gap:6px;"><h3 style="font-size:.88rem;margin:0;">資料夾</h3><span id="om-online-light" style="margin-left:auto;font-size:.72rem;white-space:nowrap;color:#a0aec0;" data-tip="與校內信箱伺服器的連線狀態">●</span></div>
             <div id="om-folder-tree" style="flex:1;overflow:auto;padding:6px 4px;"></div>
             <div style="padding:8px;border-top:1px solid #e2e8f0;display:flex;flex-direction:column;gap:6px;">
               <button class="btn btn-secondary btn-sm" onclick="_bgRefreshClick('信箱重新整理', () => omRefreshAll())">↻ 重新整理</button>
@@ -5156,7 +5156,7 @@ function _showPageContinue(pageId, navEl) {
     _detailReturnToNewCase = false;
   }
   // v202：離開信箱頁停止未讀輪詢（規格＝信箱頁開著時才每 2 分鐘刷新，不在信箱頁不輪詢）
-  if (prevPage === 'page-om' && pageId !== 'page-om' && typeof _omStopPoll === 'function') _omStopPoll();
+  if (prevPage === 'page-om' && pageId !== 'page-om' && typeof _omStopPoll === 'function') { _omStopPoll(); if (typeof _omStopReachPoll === 'function') _omStopReachPoll(); }
   const alreadyActive = document.getElementById(pageId)?.classList.contains('active');
   if (prevPage && prevPage !== pageId) { _prevNavState = _buildNavState(prevPage); }
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -32104,6 +32104,7 @@ function renderChangelogPage() {
       item('改善', 'openmail 連結時帳號可只輸入前半（如工號/帳號），系統自動補上「@mail.npust.edu.tw」——校內信箱只接受完整位址，之前需自己打整串；也可照舊自行輸入完整位址'),
       item('改善', '「學諮伺服器資料夾」正名為「學諮系統資料夾」，標題加上滑鼠說明（把信件完整封存到學諮系統資料庫、不佔 openmail 信箱容量、封存時可選是否刪原信）；「📦 不佔信箱空間」標籤字體放大更清楚'),
       item('改善', 'openmail 密碼快取效期由「7 天滑動視窗」改為「每週日凌晨 00:00 統一失效」——平日不會被登出，每週日重新連結一次即可，重連時機固定好記；連結畫面也補上此說明。密碼仍只存伺服器記憶體、永不落地、重啟即清'),
+      item('新功能', '信箱連結頁與信箱畫面新增「連線狀態燈號」：🟢 可連線／在線上、🔴 無法連線／連線中斷，開著信箱時每 30 秒自動偵測——用輕量網路探測（不需帳密、不觸發信箱伺服器登入限流），一眼就能看出是校內信箱伺服器出問題還是自己沒連結'),
     ] },
     { date: '2026-07-20', v: 229, title: '空間預約／精神科評估表補「午」時段（延續 #039）＋通知/許願池輪詢改更即時', isProd: true, items: [
       item('修正', '空間預約與精神科醫師評估表的「節次」下拉先前缺少中午時段，已補上「午 12:10-13:00」，與晤談時間下拉一致（延續 #039 全系統晤談時間／節次一致化）'),
@@ -52052,6 +52053,38 @@ async function renderOmPage() {
       if (saved && el && !el.value) el.value = saved;
     } catch (_) {}
   }
+  // v224：連線/在線燈號——不論連結與否都顯示，並在信箱頁開著時每 30 秒輪詢一次可達性。
+  _omUpdateReachLight();
+  _omStartReachPoll();
+}
+
+// v224：查詢並更新「連線頁可連線」與「信箱在線」兩顆燈號。純 TCP 可達性探測（不觸發登入限流）。
+async function _omUpdateReachLight() {
+  const setLight = (id, html, color, tip) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = html;
+    el.style.color = color;
+    if (tip) el.setAttribute('data-tip', tip);
+  };
+  let reachable = false;
+  try { const r = await proxyCall('omReachable'); reachable = !!r.reachable; } catch (_) { reachable = false; }
+  if (reachable) {
+    setLight('om-reach-light', '🟢 信箱伺服器可連線', '#2f855a', '已可連到校內信箱伺服器（mail.npust.edu.tw），可輸入帳密連結');
+    setLight('om-online-light', '🟢 在線上', '#2f855a', '與校內信箱伺服器連線正常');
+  } else {
+    setLight('om-reach-light', '🔴 目前無法連線', '#c53030', '連不到校內信箱伺服器：可能校內網路異常或伺服器維護，稍後再試');
+    setLight('om-online-light', '🔴 連線中斷', '#c53030', '目前連不到校內信箱伺服器，收發信可能失敗；稍後會自動重試');
+  }
+}
+function _omStartReachPoll() {
+  if (_om.reachTimer) return;
+  _om.reachTimer = setInterval(() => {
+    if (document.getElementById('page-om')?.classList.contains('active')) _omUpdateReachLight();
+  }, 30000);
+}
+function _omStopReachPoll() {
+  if (_om.reachTimer) { clearInterval(_om.reachTimer); _om.reachTimer = null; }
 }
 
 // ── 連結／中斷 ──────────────────────────────

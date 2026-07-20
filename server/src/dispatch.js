@@ -426,6 +426,7 @@ async function handleRequest(db, config, payload) {
       //    的既有原則，不吃 params 裡的身分欄位）。openmail 帳密只存 openmail/credStore.js 記憶體，
       //    未 omConnect 過或已過期一律回業務錯誤 'mail_not_connected'（見 actions.js withCreds）。──
       case 'omStatus': result = openmailActions.omStatus(userEmail); break;
+      case 'omReachable': result = await openmailActions.omReachable(userEmail, config); break;
       case 'omConnect': result = await openmailActions.omConnect(userEmail, config, params); break;
       case 'omDisconnect': result = openmailActions.omDisconnect(userEmail); break;
       case 'omListFolders': result = await openmailActions.omListFolders(userEmail, config); break;

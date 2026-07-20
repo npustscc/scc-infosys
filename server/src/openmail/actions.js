@@ -41,6 +41,13 @@ function omStatus(email) {
   return { connected: !!creds, mailUser: creds ? creds.mailUser : null };
 }
 
+// v224：信箱伺服器可達性探測（連線頁「可連線」燈號／信箱「在線」燈號用）。純 TCP 探測、不需帳密、
+// 不觸發登入限流；同時回報本 session 是否已連結（credStore 有效）。
+async function omReachable(email, config) {
+  const reachable = await client.probeReachable(config);
+  return { reachable, connected: !!credStore.get(email) };
+}
+
 async function omConnect(email, config, params) {
   const mailUser = params && params.mailUser;
   const mailPass = params && params.mailPass;
@@ -476,6 +483,7 @@ async function omSend(email, config, params) {
 
 module.exports = {
   omStatus,
+  omReachable,
   omConnect,
   omDisconnect,
   omListFolders,

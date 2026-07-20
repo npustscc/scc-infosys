@@ -12,8 +12,29 @@
 
 const { ImapFlow } = require('imapflow');
 const nodemailer = require('nodemailer');
+const net = require('net');
 
 const IDLE_CLOSE_MS = 5 * 60 * 1000;
+
+// v224：輕量網路可達性探測——只做 TCP connect 到 IMAP host:port（不做 TLS 握手、不登入），成功即
+// 視為信箱伺服器可連線。刻意不帶帳密：這不是登入嘗試，不會觸發信箱伺服器的登入失敗限流，可安全地
+// 供「連線頁可連線燈號 / 信箱在線燈號」定期輪詢。逾時或錯誤一律回 false（fail-closed）。
+function probeReachable(config, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    let done = false;
+    const socket = net.connect({ host: imapHost(config), port: imapPort(config) });
+    const finish = (reachable) => {
+      if (done) return;
+      done = true;
+      try { socket.destroy(); } catch (_) {}
+      resolve(reachable);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
+}
 
 function imapHost(config) { return (config && config.OPENMAIL_IMAP_HOST) || 'mail.npust.edu.tw'; }
 function imapPort(config) { return Number((config && config.OPENMAIL_IMAP_PORT) || 993); }
@@ -151,6 +172,7 @@ module.exports = {
   closeConnection,
   verifyLogin,
   buildSmtpTransport,
+  probeReachable,
   imapHost,
   imapPort,
   smtpHost,
