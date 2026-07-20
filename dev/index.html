@@ -18056,9 +18056,6 @@ function renderCaseNums(resetPage) {
             ${buildCounselorFilterOpts(_cnCounselor, true, '全部人員')}
           </select>
           ${_fpButtonHtml('cn')}
-          <label style="font-size:.85rem;color:#4a5568;white-space:nowrap;display:flex;align-items:center;gap:4px;cursor:pointer;" data-tip="勾選後列表顯示全部個案（含已封存）；等同篩選面板「封存」群組全選。搜尋時不論此設定，已封存個案一律可被搜尋命中。">
-            <input type="checkbox" id="cn-include-archived" ${_cnIncludesArchived() ? 'checked' : ''} onchange="_cnToggleIncludeArchived(this.checked)">📦 含已封存
-          </label>
           <label style="font-size:.85rem;color:#718096;white-space:nowrap;display:flex;align-items:center;gap:4px;">每頁
             <select id="cn-pagesize" class="field-input" style="padding:4px 6px;font-size:.85rem;"
               onchange="_cnPageSize=parseInt(this.value);_cnPage=1;renderCaseNums()">${pageSizeOptions}</select>筆
@@ -26530,7 +26527,44 @@ function _continueTodo(id) {
 const EVR_TOPICS = ['自我探索','情感困擾','家庭關係','心理疾患或傾向','情緒困擾','人際關係','學習與課業','生涯探索','生活適應','網路成癮','生理健康','性別議題','其他'];
 const EVR_MODES = ['面談','視訊','團體','電話關懷','E-mail/簡訊','外展訪視','其他'];
 const EVR_INTERVIEWEES = ['學生本人','家屬','朋友','伴侶','教職員工生','資源網絡人員'];
-const EVR_PERIODS = ['第1節 08:10-09:00','第2節 09:10-10:00','第3節 10:15-11:05','第4節 11:10-12:00','第5節 13:30-14:20','第6節 14:30-15:20','第7節 15:30-16:20','第8節 16:30-17:20','第9節 18:00-18:50','第10節 18:55-19:45','第11節 19:50-20:40'];
+// #039：晤談時間／節次下拉的「單一標準來源」（以「新增晤談紀錄」為準）。全系統的晤談時間/節次選單
+// 一律由 STD_PERIODS 產生，日後只要改這裡即可一併調整（晤談紀錄 #rec-time、初次晤談 #ii-interview-time、
+// 事件處理記錄 #pfx-time，及各自的「下次預約」節次）。含「午 12:10-13:00」——先前 EVR_PERIODS 漏掉此項，
+// 導致事件處理記錄的晤談時間下拉與新增晤談紀錄不一致，本次統一補上。
+// 註：空間預約另有 BK_PERIODS（含 start/end 供時段格線、且刻意不設「午」時段，午休非可預約時段），非本清單。
+const STD_PERIODS = [
+  '第1節 08:10-09:00', '第2節 09:10-10:00', '第3節 10:15-11:05', '第4節 11:10-12:00',
+  '午 12:10-13:00',
+  '第5節 13:30-14:20', '第6節 14:30-15:20', '第7節 15:30-16:20', '第8節 16:30-17:20',
+  '第9節 18:00-18:50', '第10節 18:55-19:45', '第11節 19:50-20:40',
+];
+const EVR_PERIODS = STD_PERIODS; // 向後相容既有引用（事件處理記錄）
+
+// 產生標準晤談時間／節次的 <option> 字串。selected＝目前值（非標準值時自動選「其他」）；
+// withOther＝是否含「其他（自填時間）」，置於「請選擇」之後、各節次之前，比照新增晤談紀錄的排列。
+function stdPeriodOptionsHtml(selected, opts) {
+  opts = opts || {};
+  const withOther = opts.withOther !== false;
+  const placeholder = opts.placeholder || '— 請選擇 —';
+  const sel = selected == null ? '' : String(selected);
+  const isStd = STD_PERIODS.includes(sel);
+  let html = `<option value="">${escHtml(placeholder)}</option>`;
+  if (withOther) html += `<option value="其他"${(!isStd && sel) ? ' selected' : ''}>其他（自填時間）</option>`;
+  html += STD_PERIODS.map(v => `<option value="${escHtml(v)}"${v === sel ? ' selected' : ''}>${escHtml(v)}</option>`).join('');
+  return html;
+}
+
+// #039：三個靜態晤談時間/節次選單（新增晤談紀錄晤談時間、初次晤談初談時間、下次預約節次）改由
+// STD_PERIODS 就地重填，達成單一來源。選項文字與原本一致，故既有讀值／草稿還原邏輯（設 select.value）
+// 不受影響。延到 DOMContentLoaded 才執行——確保 escHtml 等後續 <script> 區塊的函式都已定義、DOM 也齊全。
+function _initStdPeriodSelects() {
+  ['rec-time', 'ii-interview-time', 'rec-next-bk-period'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = stdPeriodOptionsHtml('', { withOther: true });
+  });
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _initStdPeriodSelects);
+else _initStdPeriodSelects();
 
 let _evrCaseId     = null;
 let _evrCounselors = [];
@@ -26833,10 +26867,9 @@ function _buildEvrCardHtml(r, idx) {
   const mkOpts = (arr, cur) => arr.map(v => `<option value="${escHtml(v)}"${v===cur?' selected':''}>${escHtml(v)}</option>`).join('');
   const roomOpts = `<option value="">— 請選擇 —</option>` + mkOpts(ROOMS, r.room);
   const modeOpts = `<option value="">— 請選擇 —</option>` + mkOpts(EVR_MODES, r.interventionMode);
-  // Time: check if stored time is a standard period or custom
-  const isStdTime = EVR_PERIODS.includes(r.time);
-  const periodOpts = `<option value="">— 請選擇 —</option><option value="其他"${(!isStdTime && r.time)?' selected':''}>其他（自填時間）</option>` +
-    EVR_PERIODS.map(v => `<option value="${escHtml(v)}"${v===r.time?' selected':''}>${escHtml(v)}</option>`).join('');
+  // Time: check if stored time is a standard period or custom（#039：改用 STD_PERIODS 單一來源）
+  const isStdTime = STD_PERIODS.includes(r.time);
+  const periodOpts = stdPeriodOptionsHtml(r.time);
 
   const topicOtherVal     = (r.topics||[]).find(s => s.startsWith('其他：'))?.slice(3) || '';
   const topicOtherChecked = (r.topics||[]).some(s => s === '其他' || s.startsWith('其他：'));
@@ -32064,9 +32097,13 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
-    { date: '2026-07-20', v: 226, title: '案號查詢與管理：搜尋可命中已封存個案＋工具列新增「📦 含已封存」開關', isProd: false, items: [
+    { date: '2026-07-20', v: 227, title: '回應 #039：全系統晤談時間／節次下拉統一為「新增晤談紀錄」標準', isProd: false, items: [
+      item('修正', '事件處理記錄的「晤談時間」下拉先前漏了「午 12:10-13:00」選項，與新增晤談紀錄不一致，已補上'),
+      item('技術', '晤談時間／節次下拉改為單一標準來源（STD_PERIODS）：新增晤談紀錄、初次晤談紀錄表、事件處理記錄及各自的「下次預約」節次一律由同一份清單產生，日後要調整節次時間只需改一處即可全系統一致；空間預約的時段（含午休不可預約、供時段格線用）維持獨立清單'),
+    ] },
+    { date: '2026-07-20', v: 226, title: '案號查詢與管理：搜尋可命中已封存個案（已封存列標 📦 徽章）', isProd: false, items: [
       item('改善', '搜尋框輸入文字時自動涵蓋已封存個案——先前預設「未封存」篩選會讓已封存個案怎麼搜都搜不到（看起來像個案消失）；已封存列在案號旁以 📦 徽章標示'),
-      item('新增', '工具列常駐「📦 含已封存」勾選，等同篩選面板「封存」群組的快速開關，不用再打開漏斗篩選面板才能切換'),
+      item('說明', '封存的顯示/隱藏沿用篩選面板「封存」群組即可，工具列不另設「含已封存」開關'),
       item('說明', 'v223～v225 版號保留給進行中的功能批次，本版跳號先行'),
     ] },
     { date: '2026-07-20', v: 223, title: '新生心測：匯入衝突統一處理視窗、欄位對照排序、未儲存離頁提醒、評判記憶、整合 tab 姓名比對', isProd: false, items: [
