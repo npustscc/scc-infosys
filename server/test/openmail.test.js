@@ -32,37 +32,37 @@ test('credStore.get：查無帳號 → null（未曾 set）', () => {
   assert.equal(credStore.get('never-set@x.com'), null);
 });
 
-test('credStore.get：7 天內未過期 → 仍可取用（v220 滑動視窗，不再是台北午夜過期）', () => {
-  const email = 'not-yet-expired@x.com';
-  credStore.clear(email);
-  const now = Date.now();
-  credStore.set(email, 'u', 'p', now);
-  // 舊行為（台北午夜過期）下，跳兩天必定已過期；v220 滑動視窗下應仍存活。
-  const twoDaysLater = now + 2 * 24 * 3600 * 1000;
-  assert.ok(credStore.get(email, twoDaysLater));
-  credStore.clear(email);
+test('credStore.nextSundayMidnightSec：回傳的時間點是台北時間的週日 00:00', () => {
+  const exp = credStore.nextSundayMidnightSec(Date.now());
+  // 位移成台北牆上時間後，用 UTC 讀法檢查為週日 00:00:00
+  const d = new Date((exp + 8 * 3600) * 1000);
+  assert.equal(d.getUTCDay(), 0);      // 0 = 週日
+  assert.equal(d.getUTCHours(), 0);
+  assert.equal(d.getUTCMinutes(), 0);
+  assert.equal(d.getUTCSeconds(), 0);
 });
 
-test('credStore.get：過期（超過 7 天未使用）→ null 且內部項目已被清除', () => {
-  const email = 'expire-test@x.com';
+test('credStore.get：週界（週日 00:00）之前仍可取用、到週界即過期並清除', () => {
+  const email = 'weekly-test@x.com';
   credStore.clear(email);
   const now = Date.now();
   credStore.set(email, 'u', 'p', now);
-  const eightDaysLater = now + 8 * 24 * 3600 * 1000;
-  assert.equal(credStore.get(email, eightDaysLater), null);
-  // lazy 清除：第二次呼叫（即使用原本的 now）也應該是 null，因為項目已被刪除。
-  assert.equal(credStore.get(email, now), null);
+  const expMs = credStore.nextSundayMidnightSec(now) * 1000;
+  // 週界前一秒 → 仍存活
+  assert.ok(credStore.get(email, expMs - 1000));
+  // 到達週界（週日 00:00）→ null 且已被清除
+  assert.equal(credStore.get(email, expMs), null);
+  assert.equal(credStore.get(email, now), null); // lazy 清除後即使用原 now 也是 null
 });
 
-test('credStore.get：滑動續期——中途取用一次會把效期往後推 7 天，原本會過期的時間點仍存活', () => {
-  const email = 'sliding-test@x.com';
+test('credStore.get：固定週界不滑動——平日取用不會把過期時間往後推過週日', () => {
+  const email = 'no-slide-test@x.com';
   credStore.clear(email);
   const now = Date.now();
   credStore.set(email, 'u', 'p', now);
-  const sixDaysLater = now + 6 * 24 * 3600 * 1000;
-  assert.ok(credStore.get(email, sixDaysLater)); // 第 6 天取用一次，續期至第 13 天
-  const twelveDaysLater = now + 12 * 24 * 3600 * 1000; // 若沒有滑動續期，第 12 天早該過期（原第 7 天過期）
-  assert.ok(credStore.get(email, twelveDaysLater));
+  const expMs = credStore.nextSundayMidnightSec(now) * 1000;
+  credStore.get(email, now + 1000); // 中途取用一次
+  assert.equal(credStore.get(email, expMs), null); // 仍在同一個週日 00:00 過期，未被續期
   credStore.clear(email);
 });
 

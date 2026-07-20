@@ -6,37 +6,38 @@
 //   - session 顯式登出（sessionLogout）時由 dispatch.js 同步呼叫 clear(email)，立即清除，
 //     不需等到效期到。
 //
-// v220 效期策略改為「7 天滑動視窗」（原本是與登入 session 同壽命的台北午夜過期）：
-//   - 理由：openmail 帳密只是打開一個已經通過 session 驗證使用者的信箱，不是額外的敏感度層級——
-//     真正的存取邊界仍是 session 本身（sessionToken 過期或被撤銷，dispatch.js 的授權閘就已擋下
-//     所有 om*/omsv* action，credStore 是否還留著快取的信箱密碼並不會多開任何攻擊面）。原「每日
-//     必須重登信箱」對日常使用（尤其週末不開機、隔一兩天才回來看信）造成不必要的摩擦，重連時
-//     又得手動重新輸入密碼。
-//   - set()：每次成功 omConnect 都把效期重設為 now + 7 天。
-//   - get()：只要仍未過期，每次成功取用就「滑動續期」再往後推 7 天（不是固定 7 天後就強制過期，
-//     而是「7 天沒被使用才過期」）——比照瀏覽器 session cookie 滑動視窗的常見設計。
-//   - 安全性沒有降低：本模組仍是純記憶體 Map、不吃 db 參數、不做任何 I/O，**重啟 server process
-//     即全部清空**——這是刻意保留的安全設計，理由不變：使用者重新輸入帳密即可，比照「密碼永不
-//     落地」的目標，本就不該有任何形式的持久化（sqlite/log 檔皆不落地）。換句話說，7 天滑動效期
-//     只影響「同一次 process 存活期間內，多久沒用就得重連」，process 重啟（部署/當機）仍強制
-//     所有人重新輸入密碼。
+// v224 效期策略改為「每週日 00:00（台北時間）統一過期」（原 v220 為 7 天滑動視窗）：
+//   - 理由：openmail 帳密只是打開一個已通過 session 驗證使用者的信箱，真正的存取邊界仍是 session
+//     本身（sessionToken 過期/撤銷時 dispatch.js 授權閘已擋下所有 om*/omsv* action，快取密碼與否
+//     不多開攻擊面）。改為固定週界，讓「多久要重連一次」有可預期節奏（每週日凌晨全體重連一次），
+//     且不因平日頻繁使用而無限續期。
+//   - set()：效期設為「下一個週日 00:00（台北）」。get()：固定週界、取用不再滑動續期，過期即刪。
+//   - 安全性不變：純記憶體 Map、不吃 db、不做 I/O，**重啟 server process 即全部清空**——密碼永不
+//     落地（sqlite/log 皆不落地），process 重啟仍強制所有人重新輸入密碼。
 'use strict';
 
-const SLIDING_WINDOW_SEC = 7 * 24 * 3600;
+const TAIPEI_OFFSET_SEC = 8 * 3600; // 台北 UTC+8，無日光節約
+
+// 下一個「週日 00:00（台北）」的 epoch 秒。當下已是某個週日的 00:00 之後，回傳的是「再下一個」週日。
+function nextSundayMidnightSec(nowMs) {
+  const nowSec = Math.floor(nowMs / 1000);
+  const tSec = nowSec + TAIPEI_OFFSET_SEC;        // 位移成「台北牆上時間」秒數
+  const day = Math.floor(tSec / 86400);            // 台北日序
+  const dow = (day + 4) % 7;                        // 0=週日（1970-01-01 為週四）
+  const daysUntil = dow === 0 ? 7 : (7 - dow);      // 週日當天也推到下一個週日
+  const nextMidnightTaipeiSec = (day + daysUntil) * 86400;
+  return nextMidnightTaipeiSec - TAIPEI_OFFSET_SEC; // 位移回真實 epoch
+}
 
 // sessionEmail → { mailUser, mailPass, expSec }
 const store = new Map();
 
-function slidingExpSec(nowMs) {
-  return Math.floor(nowMs / 1000) + SLIDING_WINDOW_SEC;
-}
-
 function set(email, mailUser, mailPass, nowMs = Date.now()) {
   if (!email) return;
-  store.set(email, { mailUser, mailPass, expSec: slidingExpSec(nowMs) });
+  store.set(email, { mailUser, mailPass, expSec: nextSundayMidnightSec(nowMs) });
 }
 
-// 過期即刪並回 null（fail-closed）；成功取用（未過期）時就地「滑動續期」，效期重推 7 天。
+// 過期即刪並回 null（fail-closed）。效期為固定週界（週日 00:00 台北），取用不再滑動續期。
 // 回傳的物件是內部參照，呼叫端不應保存超過單次操作的生命週期。
 function get(email, nowMs = Date.now()) {
   if (!email) return null;
@@ -46,7 +47,6 @@ function get(email, nowMs = Date.now()) {
     store.delete(email);
     return null;
   }
-  entry.expSec = slidingExpSec(nowMs); // 滑動續期
   return entry;
 }
 
@@ -69,4 +69,4 @@ function _size() {
   return store.size;
 }
 
-module.exports = { set, get, clear, sweep, _size };
+module.exports = { set, get, clear, sweep, _size, nextSundayMidnightSec };
