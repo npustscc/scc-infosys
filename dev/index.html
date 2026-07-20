@@ -1586,16 +1586,16 @@
             <button class="btn btn-danger" onclick="openSemesterDeleteModal()">學期批次刪除</button>
             <button class="btn btn-secondary" onclick="recoverCasesFromDrive()">從 Drive 恢復個案</button>
             <label class="btn btn-primary" style="cursor:pointer;margin:0;">匯入服務總表個案基本資料
-              <input type="file" id="import-file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportFile(this)" />
+              <input type="file" id="import-file" accept=".xlsx,.xlsm,.xls" style="display:none" onchange="handleImportFile(this)" />
             </label>
             <label class="btn btn-secondary" style="cursor:pointer;margin:0;">匯入輔導服務記錄
-              <input type="file" id="import-records-file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportRecordsFile(this)" />
+              <input type="file" id="import-records-file" accept=".xlsx,.xlsm,.xls" style="display:none" onchange="handleImportRecordsFile(this)" />
             </label>
             <label class="btn btn-secondary" style="cursor:pointer;margin:0;">匯入心理測驗（服務總表）
-              <input type="file" id="import-psych-file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportPsychExcel(this)" />
+              <input type="file" id="import-psych-file" accept=".xlsx,.xlsm,.xls" style="display:none" onchange="handleImportPsychExcel(this)" />
             </label>
             <label class="btn btn-warning" style="cursor:pointer;margin:0;" title="一次選多個 .xlsm 檔，依檔名排序後逐一匯入基本資料與輔導服務情形">批次匯入服務總表
-              <input type="file" id="batch-import-file" accept=".xlsx,.xlsm" multiple style="display:none" onchange="handleBatchImportFile(this)" />
+              <input type="file" id="batch-import-file" accept=".xlsx,.xlsm,.xls" multiple style="display:none" onchange="handleBatchImportFile(this)" />
             </label>
           </div>
           <div id="import-progress" style="margin-top:14px;display:none;font-size:.88rem;"></div>
@@ -4095,7 +4095,7 @@
             <input type="number" id="ft-add-rows-count" class="field-input" value="5" min="1" max="500" style="width:60px;padding:4px 6px;">
             <span style="width:1px;height:20px;background:#e2e8f0;"></span>
             <button class="btn btn-secondary btn-sm" onclick="document.getElementById('ft-import-file').click()">📥 匯入 Excel/CSV</button>
-            <input type="file" id="ft-import-file" accept=".xlsx,.xlsm,.csv" style="display:none;" onchange="_ftHandleImportFile(this)">
+            <input type="file" id="ft-import-file" accept=".xlsx,.xlsm,.xls,.csv" style="display:none;" onchange="_ftHandleImportFile(this)">
             <button class="btn btn-secondary btn-sm" onclick="_ftShowColumnManager()">⚙ 欄位管理</button>
             <!-- v209：導師名冊專用，其餘 tab 隱藏（見 _ftSwitchTab） -->
             <button class="btn btn-secondary btn-sm" id="ft-tutorsync-btn" style="display:none;" onclick="_ftTutorSyncStart()">🔄 與導師系統同步</button>
@@ -5557,6 +5557,262 @@ function handleFloatingBack() {
 function setAlert(containerId, type, msg) {
   document.getElementById(containerId).innerHTML =
     msg ? `<div class="alert alert-${type}">${msg}</div>` : '';
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Excel 匯入密碼解鎖（v212）— 集中管理匯入點共用的 SheetJS 載入／加密偵測／後端解密流程
+// ════════════════════════════════════════════════════════════════
+// 背景：SheetJS CE 0.20.3 無法解密任何加密 Office 檔（無論新版 OOXML 加密，或新版 Excel 存出的舊版
+// .xls 加密），XLSX.read 的 password 參數在此版本從未真正生效——只能靠後端新 action decryptOfficeFile
+// 真正解密。舊碼原本 9 個匯入點各自 inline 一份「動態載入 SheetJS <script>」與「固定密碼死參數
+// + fallback」，本節統一收斂成共用 helper，供全站匯入點與附件上傳的加密偵測共用。
+
+// 舊制服務總表系列匯入沿用的固定密碼集合，僅供靜默嘗試；失敗一律回退到使用者輸入視窗。
+// 不得出現在 changelog／commit message／console 輸出（公開 repo，避免密碼字面值可被搜尋命中）。
+const XLSX_LEGACY_IMPORT_PASSWORDS = ['7617'];
+
+let _xlsxLibPromise = null;
+// 單一 SheetJS 動態載入器（Promise 快取，載入中或已載入皆不重覆插入 <script>）；
+// 取代原本散落於各匯入／匯出點的 inline loader。
+function _xlsxEnsureLib() {
+  if (window.XLSX) return Promise.resolve();
+  if (_xlsxLibPromise) return _xlsxLibPromise;
+  _xlsxLibPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+    s.onload = resolve;
+    s.onerror = () => { _xlsxLibPromise = null; reject(new Error('無法載入 SheetJS')); };
+    document.head.appendChild(s);
+  });
+  return _xlsxLibPromise;
+}
+
+// CFB（Compound File Binary，舊版 OLE 容器格式）檔頭 magic number。正常 OOXML（.xlsx/.xlsm/.docx…）
+// 本質是 ZIP 封裝、開頭必為 'PK'；若副檔名是 OOXML 但檔頭卻是 CFB，代表 Office 以「密碼加密」另存時
+// 把整個 ZIP 包進 CFB 容器——這是判斷 OOXML 檔案已加密的可靠訊號。
+function _xlsxHasCfbMagic(bytes) {
+  const magic = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+  if (!bytes || bytes.length < magic.length) return false;
+  for (let i = 0; i < magic.length; i++) if (bytes[i] !== magic[i]) return false;
+  return true;
+}
+
+// 依 SheetJS 拋出的錯誤訊息，判斷是否為「檔案已加密」的訊號（涵蓋新版 OOXML 加密與新版 Excel 存出的
+// 舊版 .xls 加密兩種已知拋錯字樣）。非涵蓋全部情境，只用於決定是否轉入後端解密流程。
+function _xlsxIsEncryptedError(message) {
+  if (!message) return false;
+  return /password[- ]?protected|encrypt|filepass|algid/i.test(String(message));
+}
+
+// Office 家族副檔名分類：ooxml（新版格式，加密後外層必為 CFB 包裝，可單靠檔頭判斷）／
+// legacy（舊版 BIFF/CFB 原生格式，未加密的合法檔案本身也是 CFB，無法單靠檔頭判斷，需後端 probe）。
+function _officeExtFamily(fileName) {
+  const m = /\.([a-z0-9]+)$/i.exec(String(fileName || '').trim());
+  if (!m) return null;
+  const ext = m[1].toLowerCase();
+  if (['xlsx', 'xlsm', 'docx', 'docm', 'pptx'].includes(ext)) return 'ooxml';
+  if (['xls', 'doc', 'ppt'].includes(ext)) return 'legacy';
+  return null;
+}
+
+// decryptOfficeFile 後端錯誤碼 → 中文提示（不匹配已知代碼時原樣回傳，讓上層仍可顯示原始訊息）。
+function _xlsxDecryptErrLabel(code) {
+  if (code === 'wrong_password') return '密碼錯誤';
+  if (code === 'decrypt_failed') return '解密失敗，檔案可能已毀損';
+  if (code === 'file_too_large') return '檔案超過 20MB 上限，無法自動解密';
+  return code;
+}
+
+// ArrayBuffer ⇄ base64（不含 data: 前綴）互轉，供 decryptOfficeFile 的 dataBase64 欄位使用
+// （分段 String.fromCharCode 避免大檔案觸發呼叫堆疊上限）。
+function _arrayBufferToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+function _base64ToArrayBuffer(b64) {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr.buffer;
+}
+function _base64ToBlob(b64, mimeType) {
+  return new Blob([_base64ToArrayBuffer(b64)], { type: mimeType || 'application/octet-stream' });
+}
+
+// 通用密碼輸入 modal：type=password +「顯示密碼」勾選（比照 v193/v195 既有樣式）。取消回 null；
+// errorMsg 用於密碼錯誤重試時顯示紅字提示。z-index 取全站既有 modal 最高值（100010）之上，
+// 確保蓋過匯入預覽等既有 modal。
+function _pwPromptModal(opts) {
+  opts = opts || {};
+  const title = opts.title || '輸入密碼';
+  const message = opts.message || '';
+  const errorMsg = opts.errorMsg || '';
+  return new Promise(resolve => {
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:100030;display:flex;align-items:center;justify-content:center;padding:20px;';
+    modal.innerHTML = `
+      <div style="background:#fff;border-radius:12px;max-width:380px;width:100%;padding:20px 22px;box-shadow:0 10px 40px rgba(0,0,0,.3);">
+        <h3 style="margin:0 0 8px;font-size:1rem;color:#1a202c;">${escHtml(title)}</h3>
+        ${message ? `<p style="margin:0 0 12px;font-size:.85rem;color:#718096;">${escHtml(message)}</p>` : ''}
+        <input type="password" id="_pwp-input" class="field-input" style="width:100%;margin-bottom:6px;box-sizing:border-box;" autocomplete="off" placeholder="密碼" />
+        <label style="display:flex;align-items:center;gap:6px;font-size:.8rem;color:#4a5568;cursor:pointer;margin-bottom:8px;">
+          <input type="checkbox" id="_pwp-show" style="width:14px;height:14px;" />
+          顯示密碼
+        </label>
+        ${errorMsg ? `<div style="color:#c53030;font-size:.82rem;margin-bottom:8px;">${escHtml(errorMsg)}</div>` : ''}
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+          <button type="button" id="_pwp-cancel" class="btn btn-secondary btn-sm">取消</button>
+          <button type="button" id="_pwp-ok" class="btn btn-primary btn-sm">確定</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    const input = modal.querySelector('#_pwp-input');
+    modal.querySelector('#_pwp-show').onchange = function () { input.type = this.checked ? 'text' : 'password'; };
+    const close = (val) => { modal.remove(); resolve(val); };
+    modal.querySelector('#_pwp-cancel').onclick = () => close(null);
+    modal.querySelector('#_pwp-ok').onclick = () => close(input.value || '');
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); close(input.value || ''); } });
+    setTimeout(() => input.focus(), 30);
+  });
+}
+
+// 附件加密偵測用三選一 modal：解鎖後上傳／照原樣（仍加密）上傳／取消。
+function _officeEncryptedChoiceModal(fileName) {
+  return new Promise(resolve => {
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:100030;display:flex;align-items:center;justify-content:center;padding:20px;';
+    modal.innerHTML = `
+      <div style="background:#fff;border-radius:12px;max-width:420px;width:100%;padding:20px 22px;box-shadow:0 10px 40px rgba(0,0,0,.3);">
+        <h3 style="margin:0 0 8px;font-size:1rem;color:#1a202c;">檔案受密碼保護</h3>
+        <p style="margin:0 0 6px;font-size:.85rem;color:#4a5568;">「${escHtml(fileName)}」偵測到密碼保護。要解鎖後上傳，還是以原樣（仍加密）上傳？</p>
+        <p style="margin:0 0 14px;font-size:.78rem;color:#a0aec0;">本系統不提供無密碼破解；沒有密碼只能以原樣上傳。</p>
+        <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;">
+          <button type="button" id="_oec-cancel" class="btn btn-secondary btn-sm">取消</button>
+          <button type="button" id="_oec-asis" class="btn btn-secondary btn-sm">照原樣上傳</button>
+          <button type="button" id="_oec-unlock" class="btn btn-primary btn-sm">🔓 解鎖後上傳</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    const close = (val) => { modal.remove(); resolve(val); };
+    modal.querySelector('#_oec-cancel').onclick = () => close('cancel');
+    modal.querySelector('#_oec-asis').onclick = () => close('asis');
+    modal.querySelector('#_oec-unlock').onclick = () => close('unlock');
+  });
+}
+
+// 匯入統一入口：先直接嘗試 XLSX.read（不再帶死掉的 password 參數）；失敗時判斷是否為加密檔，
+// 是的話先靜默試 presetPasswords（沿用舊制固定密碼的設計意圖），逐一失敗（wrong_password）則進
+// _pwPromptModal 迴圈（可重試；取消則丟出帶 xlsxCancelled 旗標的 Error，供呼叫端顯示「已取消匯入」
+// 而非「匯入失敗」）。安全：password／dataBase64 一律以 _silent=true 呼叫 proxyCall，絕不進 _syslog。
+async function _xlsxReadUnlocked(buf, readOpts, opts) {
+  opts = opts || {};
+  const fileName = opts.fileName || '';
+  const presetPasswords = opts.presetPasswords || [];
+  await _xlsxEnsureLib();
+  try {
+    return { wb: XLSX.read(buf, readOpts), unlocked: false };
+  } catch (e) {
+    const head = new Uint8Array(buf.slice ? buf.slice(0, 8) : buf);
+    const looksEncrypted = _xlsxIsEncryptedError(e.message)
+      || (_xlsxHasCfbMagic(head) && _officeExtFamily(fileName) === 'ooxml');
+    if (!looksEncrypted) throw e;
+
+    const dataBase64 = _arrayBufferToBase64(buf);
+
+    for (const pw of presetPasswords) {
+      try {
+        const r = await proxyCall('decryptOfficeFile', { dataBase64, password: pw }, true);
+        if (r && r.encrypted && r.dataBase64) {
+          return { wb: XLSX.read(_base64ToArrayBuffer(r.dataBase64), readOpts), unlocked: true };
+        }
+      } catch (e2) {
+        if (!/wrong_password/.test(e2.message || '')) throw new Error(_xlsxDecryptErrLabel(e2.message));
+      }
+    }
+
+    let lastErr = '';
+    for (;;) {
+      const pw = await _pwPromptModal({
+        title: '檔案受密碼保護',
+        message: `「${fileName || '此檔案'}」需要密碼才能開啟，請輸入密碼：`,
+        errorMsg: lastErr,
+      });
+      if (pw === null) {
+        const cancelErr = new Error('檔案受密碼保護，已取消匯入');
+        cancelErr.xlsxCancelled = true;
+        throw cancelErr;
+      }
+      try {
+        const r = await proxyCall('decryptOfficeFile', { dataBase64, password: pw }, true);
+        if (r && r.encrypted && r.dataBase64) {
+          return { wb: XLSX.read(_base64ToArrayBuffer(r.dataBase64), readOpts), unlocked: true };
+        }
+        return { wb: XLSX.read(buf, readOpts), unlocked: false };
+      } catch (e3) {
+        if (/wrong_password/.test(e3.message || '')) { lastErr = '密碼錯誤，請再試一次'; continue; }
+        throw new Error(_xlsxDecryptErrLabel(e3.message));
+      }
+    }
+  }
+}
+
+// 附件上傳流程共用：偵測 Office 家族附件是否加密，加密則詢問解鎖／原樣上傳／取消。
+// 回傳：原 file（未加密或選擇照原樣）／解密後的新 File（解鎖成功）／null（使用者整體取消，
+// 呼叫端應跳過此檔、繼續處理下一個）。sniff 本身失敗（讀檔錯誤等）不擋上傳，視為未加密照常放行。
+async function _attachMaybeUnlockOfficeFile(file) {
+  const family = _officeExtFamily(file.name);
+  if (!family) return file;
+  let encrypted = false;
+  try {
+    const head = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+    if (family === 'ooxml') {
+      encrypted = _xlsxHasCfbMagic(head);
+    } else if (family === 'legacy' && _xlsxHasCfbMagic(head) && file.size <= 20 * 1024 * 1024) {
+      const dataBase64 = await _blobToBase64(file);
+      const probeR = await proxyCall('decryptOfficeFile', { dataBase64, probe: true }, true);
+      encrypted = !!(probeR && probeR.encrypted);
+    }
+  } catch (_) { return file; }
+  if (!encrypted) return file;
+
+  for (;;) {
+    const choice = await _officeEncryptedChoiceModal(file.name);
+    if (!choice || choice === 'cancel') return null;
+    if (choice === 'asis') return file;
+
+    const dataBase64 = await _blobToBase64(file);
+    let lastErr = '';
+    let unlockedFile;
+    for (;;) {
+      const pw = await _pwPromptModal({
+        title: '輸入檔案密碼',
+        message: `「${file.name}」已加密，請輸入密碼以解鎖後上傳：`,
+        errorMsg: lastErr,
+      });
+      if (pw === null) { unlockedFile = undefined; break; } // 回到三選 modal
+      try {
+        const r = await proxyCall('decryptOfficeFile', { dataBase64, password: pw }, true);
+        if (r && r.encrypted && r.dataBase64) {
+          unlockedFile = new File([_base64ToBlob(r.dataBase64, file.type)], file.name, { type: file.type });
+        } else {
+          unlockedFile = file;
+        }
+        break;
+      } catch (e) {
+        if (/wrong_password/.test(e.message || '')) { lastErr = '密碼錯誤，請再試一次'; continue; }
+        showToast('解密失敗：' + _xlsxDecryptErrLabel(e.message), 'error');
+        unlockedFile = null;
+        break;
+      }
+    }
+    if (unlockedFile === undefined) continue; // 使用者取消密碼輸入 → 回三選
+    return unlockedFile; // file（原樣）／解密後 File／null（解密失敗，已略過）
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -11229,7 +11485,7 @@ function _renderPsychTestReport(c, idx) {
     <span style="font-size:.82rem;color:#744210;flex:1;">若測驗結果有誤，可重新上傳或刪除。</span>
     <label style="cursor:pointer;padding:4px 12px;background:#ed8936;color:#fff;border-radius:6px;font-size:.83rem;font-weight:600;white-space:nowrap;">
       重新上傳/覆蓋
-      <input type="file" accept=".csv,.xlsx,.xlsm" style="display:none;" onchange="reuploadPsychTestResult('${escHtml(caseId)}',${idx},this)">
+      <input type="file" accept=".csv,.xlsx,.xlsm,.xls" style="display:none;" onchange="reuploadPsychTestResult('${escHtml(caseId)}',${idx},this)">
     </label>
     <button onclick="deletePsychTestResult('${escHtml(caseId)}',${idx})" style="padding:4px 12px;background:#fff;color:#c53030;border:1.5px solid #fc8181;border-radius:6px;font-size:.83rem;font-weight:600;cursor:pointer;white-space:nowrap;">刪除此測驗結果</button>
   </div>`;
@@ -11808,17 +12064,8 @@ async function reuploadPsychTestResult(caseId, idx, input) {
       }
       if (sid) _upsertPsychTestDB(sid || c.studentId, semester, result);
     } else {
-      await new Promise((resolve, reject) => {
-        if (window.XLSX) { resolve(); return; }
-        const s = document.createElement('script');
-        s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-        s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
-        document.head.appendChild(s);
-      });
       const buf = await file.arrayBuffer();
-      let wb;
-      try { wb = XLSX.read(buf, { type:'array', password:'7617' }); }
-      catch { wb = XLSX.read(buf, { type:'array' }); }
+      const { wb } = await _xlsxReadUnlocked(buf, { type: 'array' }, { fileName: file.name, presetPasswords: XLSX_LEGACY_IMPORT_PASSWORDS });
       const ws = wb.Sheets['新生測驗資料庫'] || wb.Sheets[wb.SheetNames[0]];
       if (!ws) throw new Error('找不到工作表');
       const rows2 = XLSX.utils.sheet_to_json(ws, { defval: '' });
@@ -11847,6 +12094,7 @@ async function reuploadPsychTestResult(caseId, idx, input) {
     showToast('已更新測驗結果', 'success');
     showCaseDetail(caseId);
   } catch(e) {
+    if (e.xlsxCancelled) { showToast(e.message, 'warning'); return; }
     showToast('解析失敗：' + e.message, 'error');
   }
 }
@@ -18849,22 +19097,12 @@ async function batchImportServiceTables(files) {
   prog.style.display = '';
   prog.innerHTML = '<span style="color:#718096;">載入 SheetJS 中…</span>';
 
-  await new Promise((resolve, reject) => {
-    if (window.XLSX) { resolve(); return; }
-    const s = document.createElement('script');
-    s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-    s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
-    document.head.appendChild(s);
-  });
-
   const parsedFiles = [];
   for (const file of sorted) {
     prog.innerHTML = `<span style="color:#718096;">解析 ${escHtml(file.name)}…</span>`;
     try {
       const buf = await file.arrayBuffer();
-      let wb;
-      try { wb = XLSX.read(buf, { type: 'array', password: '7617' }); }
-      catch { wb = XLSX.read(buf, { type: 'array' }); }
+      const { wb } = await _xlsxReadUnlocked(buf, { type: 'array' }, { fileName: file.name, presetPasswords: XLSX_LEGACY_IMPORT_PASSWORDS });
       const basicWs  = wb.Sheets['基本資料']    || wb.Sheets['學生資料'];
       const recordWs = wb.Sheets['輔導服務情形'] || wb.Sheets['輔導服務紀錄'] || wb.Sheets['輔導服務記錄'];
       const cases   = basicWs  ? _batchParseCasesSheet(basicWs, file.name)   : [];
@@ -18878,8 +19116,10 @@ async function batchImportServiceTables(files) {
       parsedFiles.push({ name: file.name, cases, records, semPrefix, outOfRangeRecords, error: null });
       _syslog('info', `批次匯入：${file.name} → ${cases.length} 筆個案、${records.length} 筆記錄（OOR: ${outOfRangeRecords.length}）`);
     } catch (e) {
-      parsedFiles.push({ name: file.name, cases: [], records: [], semPrefix: '', outOfRangeRecords: [], error: e.message });
-      auditLog('匯入失敗', null, null, `${file.name}：${e.message}`);
+      // 單檔取消解鎖不中斷整批：記為該檔失敗，繼續處理下一檔（見 _xlsxReadUnlocked 的 xlsxCancelled 旗標）。
+      const errMsg = e.xlsxCancelled ? '使用者取消解鎖' : e.message;
+      parsedFiles.push({ name: file.name, cases: [], records: [], semPrefix: '', outOfRangeRecords: [], error: errMsg });
+      auditLog('匯入失敗', null, null, `${file.name}：${errMsg}`);
     }
   }
 
@@ -19386,20 +19626,10 @@ async function importCasesFromExcel(file) {
   prog.style.display = '';
   prog.innerHTML = '<span style="color:#718096;">載入 SheetJS 中…</span>';
 
-  await new Promise((resolve, reject) => {
-    if (window.XLSX) { resolve(); return; }
-    const s = document.createElement('script');
-    s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-    s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
-    document.head.appendChild(s);
-  });
-
   prog.innerHTML = '<span style="color:#718096;">讀取檔案中…</span>';
   try {
     const buf = await file.arrayBuffer();
-    let wb;
-    try { wb = XLSX.read(buf, { type:'array', password:'7617' }); }
-    catch { wb = XLSX.read(buf, { type:'array' }); }
+    const { wb } = await _xlsxReadUnlocked(buf, { type: 'array' }, { fileName: file.name, presetPasswords: XLSX_LEGACY_IMPORT_PASSWORDS });
 
     const ws = wb.Sheets['學生資料'];
     if (!ws) throw new Error('找不到「學生資料」工作表，請確認檔案格式。');
@@ -19571,8 +19801,12 @@ async function importCasesFromExcel(file) {
     if (!confirmed) return;
     await finalizeImport(imported, prog);
   } catch(e) {
+    if (e.xlsxCancelled) {
+      prog.innerHTML = `<span style="color:#c53030;">${escHtml(e.message)}</span>`;
+      return;
+    }
     auditLog('匯入失敗', null, null, `匯入個案基本資料失敗：${e.message}`);
-    prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span><br><span style="color:#a0aec0;font-size:.8rem;">若因密碼保護無法開啟，請先將 Excel 另存為無密碼的 .xlsx 後再匯入。</span>`;
+    prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span><br><span style="color:#a0aec0;font-size:.8rem;">若檔案受密碼保護，系統會自動跳出密碼輸入視窗；如仍失敗請確認檔案未毀損或格式正確。</span>`;
   }
 }
 
@@ -31167,6 +31401,12 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-20', v: 212, title: 'Excel 匯入密碼解鎖＋舊版 .xls 支援＋附件上傳加密偵測', isProd: false, items: [
+      item('新功能', '全部 Excel 匯入點（服務總表個案基本資料／輔導服務記錄／心理測驗／批次匯入服務總表／心測報告重新上傳／新生心理測驗匯入／轉銜校級評估／轉入名單／離校名單）新增支援舊版 .xls 檔案格式匯入'),
+      item('新功能', '上述所有匯入點遇到受密碼保護的 Excel 檔案時，會自動跳出密碼輸入視窗（可切換顯示密碼），由後端解密後再繼續匯入，支援新版與舊版兩種加密格式；取消輸入會明確顯示「已取消匯入」而非誤導成一般失敗'),
+      item('新功能', '附件上傳（個案附件、校內信箱撰信附件）偵測到 Office 文件（Word 等）為加密檔時，會詢問「解鎖後上傳」或「照原樣（仍加密）上傳」，取消則略過該檔繼續處理其他附件；系統本身不提供無密碼破解'),
+      item('技術', '全站原本散落 12 處的 SheetJS 動態載入程式碼收斂為單一共用載入器；原本從未真正生效的匯入密碼死參數已移除，改由後端新 action 實際解密'),
+    ]},
     { date: '2026-07-20', v: 211, title: '新生心理測驗（Slice 5）：報告 tab——個人／班級導師版／系主任版／院長版報告，皆可批次列印＋統計子表 Excel 匯出', isProd: true, items: [
       item('新功能', '新增「報告」分頁，共 4 個子分頁：①個人報告——複刻 ef「個人計分結果」模板，A4 直式每生 2 頁（第1頁基本資料/測驗介紹/整體情形/向度/因子/量尺燈號結果/綜合分析/可信度分析/中心聯絡資訊，第2頁量表向度詳細說明），可依班級/學號姓名關鍵字/是否僅高關懷篩選，並可選擇是否於標題加註「高自殺風險隱性記號」（預設不勾選）後批次列印；②班級報告（導師版）——每班一頁，含應測/已測/未測/受測率/無效人數/高關懷（同意知情）人數、班級前5高議題、高關懷學生名單（學號/姓名/性別/高自殺風險/紅燈議題），可單班或全部班級批次列印；③系主任版——每系一頁彙整摘要（受測率、高關懷（同意知情）率、前3高議題）；④院長版——每學院一頁彙整摘要（受測率、高關懷（同意知情）率）；③④皆可單一或全部批次列印，報告頁尾皆註記「不同意（含未填寫同意書）之高關懷學生不列入名單與人數，議題統計為全班彙總」'),
       item('新功能', '「統計」分頁五個子表（高關懷清冊／無效名單／院系統計／學制統計／高關懷班級前N）皆新增「⬇ 匯出 Excel」按鈕，可直接匯出當前檢視內容為 .xlsx'),
@@ -33028,20 +33268,10 @@ async function importCounselingRecords(file) {
   prog.style.display = '';
   prog.innerHTML = '<span style="color:#718096;">載入 SheetJS 中…</span>';
 
-  await new Promise((resolve, reject) => {
-    if (window.XLSX) { resolve(); return; }
-    const s = document.createElement('script');
-    s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-    s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
-    document.head.appendChild(s);
-  });
-
   prog.innerHTML = '<span style="color:#718096;">讀取檔案中…</span>';
   try {
     const buf = await file.arrayBuffer();
-    let wb;
-    try { wb = XLSX.read(buf, { type:'array', password:'7617' }); }
-    catch { wb = XLSX.read(buf, { type:'array' }); }
+    const { wb } = await _xlsxReadUnlocked(buf, { type: 'array' }, { fileName: file.name, presetPasswords: XLSX_LEGACY_IMPORT_PASSWORDS });
 
     const ws = wb.Sheets['輔導服務紀錄'] || wb.Sheets['輔導服務記錄'];
     if (!ws) throw new Error('找不到「輔導服務紀錄」工作表，請確認檔案格式。');
@@ -33194,6 +33424,7 @@ async function importCounselingRecords(file) {
     await showCounselingImportPreview(matchedItems, unmatchedItems, prog, _ncMapRec, fileSemPrefix);
 
   } catch(e) {
+    if (e.xlsxCancelled) { prog.innerHTML = `<span style="color:#c53030;">${escHtml(e.message)}</span>`; return; }
     auditLog('匯入失敗', null, null, `匯入輔導服務記錄失敗：${e.message}`);
     prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span>`;
   }
@@ -41716,19 +41947,10 @@ async function importPsychTestFromExcel(file) {
   const prog = document.getElementById('import-progress');
   prog.style.display = '';
   prog.innerHTML = '<span style="color:#718096;">載入 SheetJS 中…</span>';
-  await new Promise((resolve, reject) => {
-    if (window.XLSX) { resolve(); return; }
-    const s = document.createElement('script');
-    s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-    s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
-    document.head.appendChild(s);
-  });
   prog.innerHTML = '<span style="color:#718096;">讀取檔案中…</span>';
   try {
     const buf = await file.arrayBuffer();
-    let wb;
-    try { wb = XLSX.read(buf, { type:'array', password:'7617' }); }
-    catch { wb = XLSX.read(buf, { type:'array' }); }
+    const { wb } = await _xlsxReadUnlocked(buf, { type: 'array' }, { fileName: file.name, presetPasswords: XLSX_LEGACY_IMPORT_PASSWORDS });
     const ws = wb.Sheets['新生測驗資料庫'];
     if (!ws) throw new Error('找不到「新生測驗資料庫」工作表，請確認檔案格式。');
     const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
@@ -41737,6 +41959,7 @@ async function importPsychTestFromExcel(file) {
     const confirmed = await showPsychTestPreviewModal(rows, prog);
     if (!confirmed) return;
   } catch(e) {
+    if (e.xlsxCancelled) { prog.innerHTML = `<span style="color:#c53030;">${escHtml(e.message)}</span>`; return; }
     prog.innerHTML = `<span style="color:#c53030;">✗ 匯入失敗：${escHtml(e.message)}</span>`;
   }
 }
@@ -45832,16 +46055,8 @@ async function handleImportGradTransferExcel(input) {
   const curSem = currentSemesterPrefix();
   document.getElementById('transfer-body').innerHTML = '<div style="padding:20px;color:#718096;">解析中…</div>';
   try {
-    if (!window.XLSX) {
-      await new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-        s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
-        document.head.appendChild(s);
-      });
-    }
     const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+    const { wb } = await _xlsxReadUnlocked(buf, { type: 'array', cellDates: true }, { fileName: file.name });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, dateNF: 'yyyy-mm-dd' });
     const rows = raw.map(r => Array.isArray(r) ? r.map(c => (c == null ? '' : String(c).trim())) : []);
@@ -45850,7 +46065,10 @@ async function handleImportGradTransferExcel(input) {
     const _prefixOk = await _ensureUnknownPrefixes(_sidList);
     if (!_prefixOk) { renderTransferPage(); return; }
     await showGradTransferImportPreview(rows, curSem);
-  } catch (e) { alert('解析失敗：' + e.message); renderTransferPage(); }
+  } catch (e) {
+    if (e.xlsxCancelled) { alert(e.message); renderTransferPage(); return; }
+    alert('解析失敗：' + e.message); renderTransferPage();
+  }
 }
 
 async function handleImportHistoryTransferCSV(input) {
@@ -46583,14 +46801,7 @@ async function _confirmLinkRecord(recId) {
 }
 
 async function downloadGradTransferExcelTemplate() {
-  if (!window.XLSX) {
-    await new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-      s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
-      document.head.appendChild(s);
-    });
-  }
+  await _xlsxEnsureLib();
   const headers = ['姓名', '學號', '校級評估會議日期', '校級會議轉銜評估結果', '結案會議日期', '結案會議評估結果'];
   const examples = [
     ['王小明', 'B11202001', '2025-03-15', '建議轉銜', '2025-09-10', '建議結案'],
@@ -46622,7 +46833,7 @@ function renderTransferPage() {
   const withdrawAll  = transferData.filter(r => r.type === 'withdraw');
   const tabBtn = (id, label, count, warn) =>
     `<button onclick="window._transferTab='${id}';try{localStorage.setItem('scc_trTab_'+DRIVE_FOLDER_ID,'${id}');}catch(_){}window._transferStatusFilter='all';renderTransferPage()" style="padding:8px 20px;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:${tab===id?'700':'400'};background:${tab===id?'#3498db':(warn&&count>0?'#fff7ed':'#f0f4f8')};color:${tab===id?'#fff':(warn&&count>0?'#9c4221':'#4a5568')};${warn&&count>0?'border:1px solid #fb923c;':''}">${label}（${count}）</button>`;
-  const importInBtn  = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="handleImportTransferExcel(this,'incoming')"><span class="btn btn-secondary btn-sm">📥 匯入轉入名單</span></label>`;
+  const importInBtn  = `<label style="cursor:pointer;"><input type="file" accept=".xlsx,.xlsm,.xls" style="display:none" onchange="handleImportTransferExcel(this,'incoming')"><span class="btn btn-secondary btn-sm">📥 匯入轉入名單</span></label>`;
   const dlTemplateBtn = `<button class="btn btn-secondary btn-sm" onclick="downloadTransferImportTemplate()" data-tip="下載轉入名單 Excel 範例檔，填寫後即可批次匯入。">📄 下載範例</button>`;
   const addInBtn  = `<button class="btn btn-primary btn-sm" onclick="openTransferAssessmentModal(null,'incoming')">＋ 手動新增</button>`;
 
@@ -47160,22 +47371,17 @@ async function handleImportWithdrawExcel(input) {
   const file = input.files[0]; input.value = '';
   document.getElementById('transfer-body').innerHTML = '<div style="padding:20px;color:#718096;">解析中…</div>';
   try {
-    if (!window.XLSX) {
-      await new Promise((resolve, reject) => {
-        const s = document.createElement('script');
-        s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-        s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
-        document.head.appendChild(s);
-      });
-    }
     const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+    const { wb } = await _xlsxReadUnlocked(buf, { type: 'array', cellDates: true }, { fileName: file.name });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const raw = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, dateNF: 'yyyy-mm-dd' });
     const rows = raw.map(r => Array.isArray(r) ? r.map(c => (c == null ? '' : String(c).trim())) : []);
     if (rows.length < 2) { alert('找不到資料列'); renderTransferPage(); return; }
     await showWithdrawImportPreview(rows);
-  } catch(e) { alert('解析失敗：' + e.message); renderTransferPage(); }
+  } catch(e) {
+    if (e.xlsxCancelled) { alert(e.message); renderTransferPage(); return; }
+    alert('解析失敗：' + e.message); renderTransferPage();
+  }
 }
 
 async function showWithdrawImportPreview(rows) {
@@ -47517,14 +47723,7 @@ async function showWithdrawImportPreview(rows) {
 }
 
 async function downloadWithdrawTemplate() {
-  if (!window.XLSX) {
-    await new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-      s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
-      document.head.appendChild(s);
-    });
-  }
+  await _xlsxEnsureLib();
   const ws = XLSX.utils.aoa_to_sheet([['姓名', '學號', '離校原因']]);
   ws['!cols'] = [14, 12, 20].map(wch => ({ wch }));
   const wb = XLSX.utils.book_new();
@@ -47579,14 +47778,7 @@ function _renderTransferRow(r) {
 }
 
 async function downloadTransferImportTemplate() {
-  if (!window.XLSX) {
-    await new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-      s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
-      document.head.appendChild(s);
-    });
-  }
+  await _xlsxEnsureLib();
   const headers = ['高關懷學生姓名', '學號', '身分證字號', '就讀班級/系所', '法定性別（男/女）', '出生年月日（西元，如1999-01-15）', '來源學校'];
   const ws = XLSX.utils.aoa_to_sheet([headers]);
   ws['!cols'] = [14, 12, 14, 16, 14, 24, 16].map(wch => ({ wch }));
@@ -47602,12 +47794,15 @@ async function handleImportTransferExcel(input, type) {
   prog.innerHTML = '<div style="padding:20px;color:#718096;">解析中…</div>';
   try {
     const ab = await file.arrayBuffer();
-    const wb = XLSX.read(ab, { type: 'array', password: '7617' });
+    const { wb } = await _xlsxReadUnlocked(ab, { type: 'array' }, { fileName: file.name, presetPasswords: XLSX_LEGACY_IMPORT_PASSWORDS });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
     if (rows.length < 2) { alert('找不到資料列'); renderTransferPage(); return; }
     await showTransferImportPreview(rows, type);
-  } catch(e) { alert('解析失敗：' + e.message); renderTransferPage(); }
+  } catch(e) {
+    if (e.xlsxCancelled) { alert(e.message); renderTransferPage(); return; }
+    alert('解析失敗：' + e.message); renderTransferPage();
+  }
 }
 
 async function showTransferImportPreview(rows, type) {
@@ -48784,8 +48979,12 @@ async function attachHandleInput(pid, input) {
     if (isImg) { await _attachAddImage(pid, file); }
     else if (isPdf) { await _attachAddPdf(pid, file); }
     else if (isWord) {
-      if (file.size > 5 * 1024 * 1024) { alert(`Word 檔案「${file.name}」超過 5MB 限制`); return; }
-      _attachAddWord(pid, file);
+      // v212：Office 家族附件先偵測是否密碼加密，加密則詢問解鎖／原樣上傳／取消（見
+      // _attachMaybeUnlockOfficeFile）；取消時略過本檔繼續處理下一檔，不中斷整批。
+      const resolved = await _attachMaybeUnlockOfficeFile(file);
+      if (!resolved) continue;
+      if (resolved.size > 5 * 1024 * 1024) { alert(`Word 檔案「${resolved.name}」超過 5MB 限制`); return; }
+      _attachAddWord(pid, resolved);
     } else {
       alert(`不支援的檔案類型：${file.name}\n支援：圖片、PDF、Word (.doc/.docx)`);
     }
@@ -51463,8 +51662,12 @@ async function _omAttachFilesSelected(input) {
   input.value = '';
   for (const file of files) {
     try {
-      const base64 = await _blobToBase64(file); // 共用附件子系統既有的 blob→base64 helper
-      _om.composeAttachments.push({ filename: file.name, contentType: file.type || 'application/octet-stream', base64, size: file.size });
+      // v212：Office 家族附件先偵測是否密碼加密，加密則詢問解鎖／原樣上傳／取消；
+      // 取消時略過本檔繼續處理下一檔，不中斷整批（見 _attachMaybeUnlockOfficeFile）。
+      const resolved = await _attachMaybeUnlockOfficeFile(file);
+      if (!resolved) continue;
+      const base64 = await _blobToBase64(resolved); // 共用附件子系統既有的 blob→base64 helper
+      _om.composeAttachments.push({ filename: resolved.name, contentType: resolved.type || file.type || 'application/octet-stream', base64, size: resolved.size });
     } catch (e) {
       showToast(`附件「${file.name}」讀取失敗`, 'error');
     }
@@ -52996,18 +53199,11 @@ function _ftPct(rate) {
   return (rate * 100).toFixed(1) + '%';
 }
 
-// v211：五個統計子表＋報告 tab 共用的 Excel 匯出（動態載入 SheetJS，寫法照抄既有
-// downloadGradTransferExcelTemplate；匯出資料一律從純函式重新取得，不 scrape DOM——DOM 只是
-// 顯示層，可能因排版而與原始資料有落差）。
+// v211：五個統計子表＋報告 tab 共用的 Excel 匯出；匯出資料一律從純函式重新取得，不 scrape
+// DOM——DOM 只是顯示層，可能因排版而與原始資料有落差。（v212：改呼叫共用的 _xlsxEnsureLib，
+// 保留函式名稱與既有呼叫點相容。）
 async function _ftLoadXlsxLib() {
-  if (!window.XLSX) {
-    await new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-      s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
-      document.head.appendChild(s);
-    });
-  }
+  await _xlsxEnsureLib();
 }
 
 async function _ftExportAoaToXlsx(filename, sheetName, aoa) {
@@ -54350,21 +54546,15 @@ async function _ftHandleImportFile(input) {
   input.value = '';
   if (!file) return;
   try {
-    await new Promise((resolve, reject) => {
-      if (window.XLSX) { resolve(); return; }
-      const s = document.createElement('script');
-      s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
-      s.onload = resolve; s.onerror = () => reject(new Error('無法載入 SheetJS'));
-      document.head.appendChild(s);
-    });
     const buf = await file.arrayBuffer();
-    const wb = XLSX.read(buf, { type: 'array' });
+    const { wb } = await _xlsxReadUnlocked(buf, { type: 'array' }, { fileName: file.name });
     const ws = wb.Sheets[wb.SheetNames[0]];
     const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
     if (!aoa.length) { showToast('檔案內容為空', 'warn'); return; }
     if (_ft.tab === 'gform') _ftGformImportFromAoa(aoa);
     else _ftPreviewImport(aoa);
   } catch (e) {
+    if (e.xlsxCancelled) { showToast(e.message, 'warning'); return; }
     showToast('匯入失敗：' + e.message, 'error');
   }
 }

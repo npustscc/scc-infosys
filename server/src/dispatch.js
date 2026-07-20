@@ -15,7 +15,8 @@
 //      v207 起 5 個 ft* 新生心理測驗 action 已接線（見 freshmanTest/actions.js，另外過 4a-3
 //      freshmanTestDecision 角色閘——管理者或 isFreshmenTestContact 主責）；
 //      其餘未實作 action → 明確業務錯誤（deleteFile/moveFile＝刻意不移植的純攻擊面死碼，
-//      clockContext/clockPunch＝依定案留在 GAS）
+//      clockContext/clockPunch＝依定案留在 GAS）；decryptOfficeFile 已接線（見
+//      actions/officeDecrypt.js，前端 Excel 匯入／附件上傳解密有密碼的 Office 檔用，走一般授權閘）
 // 每個請求無論成功/拒絕/例外都寫一筆 audit_log（見 audit.js，content 類參數只記長度；om*/sms*/ft*
 // action 另有專用摘要，見 audit.summarizeParams 的 action 參數）。
 'use strict';
@@ -32,6 +33,7 @@ const totpSetupActions = require('./actions/totpSetup');
 const twofaActions = require('./actions/twofa');
 const storageActions = require('./actions/storage');
 const attachmentActions = require('./actions/attachments');
+const officeDecryptActions = require('./actions/officeDecrypt');
 const commitActions = require('./actions/commit');
 const mailActions = require('./actions/mail');
 const openmailActions = require('./openmail/actions');
@@ -408,6 +410,10 @@ async function handleRequest(db, config, payload) {
       case 'createFolder': result = attachmentActions.createFolder(db, params); break;
       case 'uploadFile': result = attachmentActions.uploadFile(db, params); break;
       case 'downloadFileBase64': result = await attachmentActions.downloadFileBase64(db, params, ctx, config); break;
+      // ── decryptOfficeFile：後端解密有密碼的 Office 檔（xlsx/xls），見 actions/officeDecrypt.js
+      //    檔頭註解。走一般授權閘（不在 gate.AUTHZ_EXEMPT，不因為是工具函式而破例免授權——CLAUDE.md
+      //    資安原則 1）；不需要 ROOT_GUARDED（不涉及 fileId/parentId，純記憶體內解密，不碰 vdrive）。
+      case 'decryptOfficeFile': result = await officeDecryptActions.decryptOfficeFile(params); break;
       // ── v202：校內 openmail 收發信（Openfind Mail2000 V8.00，見 openmail/ 檔頭）。走一般授權閘
       //    （不在 gate.AUTHZ_EXEMPT），userEmail 皆來自已驗證 session（同 twofa/password 類 action
       //    的既有原則，不吃 params 裡的身分欄位）。openmail 帳密只存 openmail/credStore.js 記憶體，
@@ -518,7 +524,18 @@ async function handleRequest(db, config, payload) {
       // （本切片不做通知，見任務規格第 3 節），不需要在這裡重新讀一次 semesters.json。
       const isFtAction = typeof action === 'string' && /^ft[A-Z]/.test(action);
       const ftHistoricalNote = isFtAction && result && result.historical ? ',historical:true' : '';
-      const detail = audit.summarizeParams(params, action) + (strippedNote ? `,${strippedNote}` : '') + smsResultNote + ftHistoricalNote;
+      // decryptOfficeFile：只記業務結果分類（probe_encrypted/probe_plain/plain/decrypted/
+      // wrong_password/decrypt_failed/file_too_large/invalid_params），不記密碼/檔名/檔案內容
+      // ——password 已在 audit.CONFIDENTIAL_KEYS 黑名單、dataBase64 走預設長度摘要（見上方
+      // audit.summarizeParams），這裡只補上「這次呼叫的結果是哪一種」供事後稽核判讀。
+      const officeOutcomeNote = (action === 'decryptOfficeFile' && result)
+        ? `,office_outcome=${result.error
+          ? result.error
+          : ((params && params.probe === true)
+            ? (result.encrypted ? 'probe_encrypted' : 'probe_plain')
+            : (result.encrypted ? 'decrypted' : 'plain'))}`
+        : '';
+      const detail = audit.summarizeParams(params, action) + (strippedNote ? `,${strippedNote}` : '') + smsResultNote + ftHistoricalNote + officeOutcomeNote;
       audit.appendAuditLog(db, {
         email: outcomeEmail,
         action: action || '(none)',
