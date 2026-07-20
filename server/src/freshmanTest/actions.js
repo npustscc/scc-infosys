@@ -367,7 +367,13 @@ function ftSaveSchema(db, params, ctx, userEmail) {
 //    最終列陣列整包送來即可，不需要獨立的後端 merge action（減少攻擊面，CLAUDE.md 資安原則 1）。
 //    v208：新增列層級 excluded 旗標（布林，非 cells 內的資料值）——供 Google表單 tab 同學號多筆
 //    填寫「選主條目」使用：非主條目列標 excluded:true（前端半透明/刪除線顯示，不刪資料，供日後
-//    整合 tab 只取主條目）。三個 sheet 共用同一個欄位，非 gforms 的列一律 excluded:false。──
+//    整合 tab 只取主條目）。三個 sheet 共用同一個欄位，非 gforms 的列一律 excluded:false。
+//    v213：新增列層級 deleted/deletedAt/deletedBy 旗標——供「每列軟刪除」使用：既有列（帶 _id）
+//    可標 deleted:true 送來，本 action 原樣保存並記錄刪除時間／操作者（若該列已是 deleted:true，
+//    保留原 deletedAt/deletedBy，不因重複儲存而覆蓋——同一次刪除只記一次時間/操作者）；
+//    deleted:false（或未帶）一律清空 deletedAt/deletedBy。前端一律不物理移除列（本次不做刪除
+//    ftSaveRows: 「新列（_id 尚未存在）且已標刪除」直接不送——那本來就等於沒新增過，見前端
+//    _ftSaveEdit 檔頭說明。──
 function ftSaveRows(db, params, ctx, userEmail) {
   const semester = params && params.semester;
   const sheet = params && params.sheet;
@@ -396,11 +402,16 @@ function ftSaveRows(db, params, ctx, userEmail) {
       const old = oldById.get(id);
       const cells = (r && r.cells && typeof r.cells === 'object' && !Array.isArray(r.cells)) ? r.cells : {};
       const excluded = !!(r && r.excluded === true);
-      return { _id: id, _createdAt: (old && old._createdAt) || now, _updatedAt: now, cells, excluded };
+      const deleted = !!(r && r.deleted === true);
+      const wasDeleted = !!(old && old.deleted === true);
+      const deletedAt = deleted ? ((wasDeleted && old.deletedAt) || now) : null;
+      const deletedBy = deleted ? ((wasDeleted && old.deletedBy) || userEmail || null) : null;
+      return { _id: id, _createdAt: (old && old._createdAt) || now, _updatedAt: now, cells, excluded, deleted, deletedAt, deletedBy };
     });
     const data = { rows: nextRows, updatedAt: now, updatedBy: userEmail || null };
     writeBack(db, fileId, dir, sheetFileName(sheet), data, ctx);
-    return { ok: true, count: nextRows.length, updatedAt: now };
+    const deletedCount = nextRows.filter((r) => r.deleted === true).length;
+    return { ok: true, count: nextRows.length, updatedAt: now, deletedCount };
   }).immediate();
 
   return { ...result, historical };

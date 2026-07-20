@@ -83,12 +83,19 @@ function summarizeSmsParams(params) {
 // v207：新生心理測驗（ft*）action 專用摘要——學生個資明細（cells 內容）一律不落地，只記筆數／
 // 欄位名稱／學期代碼（CLAUDE.md 資安原則 3 去識別化）。cols 只記 id/name（欄位定義本身不是個資），
 // rows 只記筆數（實際學生資料在 cells 內，完全跳過）。
+// v213：rows 內若有列標 deleted:true（每列軟刪除），額外記 deletedCount 與 deletedIds（僅 _id，
+// 系統配發的隨機 id，非學號/姓名等個資，供事後追查「哪些列被刪」用；cells 內容仍完全不落地）。
 function summarizeFtParams(params) {
   return Object.keys(params).filter((k) => !CONFIDENTIAL_KEYS.has(k)).map((k) => {
     const v = params[k];
     if (k === 'semester' || k === 'sheet') return `${k}=${String(v).slice(0, 20)}`;
     if (k === 'id' || k === 'label') return `${k}=${String(v).slice(0, 40)}`;
-    if (k === 'rows' && Array.isArray(v)) return `rows=${v.length}`;
+    if (k === 'rows' && Array.isArray(v)) {
+      const deletedRows = v.filter((r) => r && r.deleted === true);
+      if (!deletedRows.length) return `rows=${v.length}`;
+      const ids = deletedRows.map((r) => (r && typeof r._id === 'string' ? r._id : '')).filter(Boolean).join('|').slice(0, 500);
+      return `rows=${v.length};deletedCount=${deletedRows.length};deletedIds=${ids}`;
+    }
     if (k === 'cols' && Array.isArray(v)) {
       return `cols=${v.map((c) => (c && c.id) || '').join('|').slice(0, 300)}`;
     }

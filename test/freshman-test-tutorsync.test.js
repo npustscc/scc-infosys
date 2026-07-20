@@ -15,7 +15,7 @@ function load_(names) {
 // ══════════════ 同步差異偵測（新增/衝突/無異動/刪除）══════════════
 
 test('_ftTutorSyncDiff：本地空 → 全部歸入 newRows，無 conflicts/removed（首次同步）', () => {
-  const S = load_(['_ftDetectImportConflicts', '_ftTutorSyncDiff']);
+  const S = load_(['_ftDetectImportConflicts', '_ftTutorSyncDiff', '_ftTrimCell']);
   const incoming = [{ cells: { class_abbr: '四農園一A', tutor_name: '王小明' } }];
   const r = S._ftTutorSyncDiff([], incoming, 'class_abbr');
   assert.equal(r.newRows.length, 1);
@@ -24,7 +24,7 @@ test('_ftTutorSyncDiff：本地空 → 全部歸入 newRows，無 conflicts/remo
 });
 
 test('_ftTutorSyncDiff：本地既有值與同步值不同 → conflicts；tutorsys 已無的本地班級 → removed', () => {
-  const S = load_(['_ftDetectImportConflicts', '_ftTutorSyncDiff']);
+  const S = load_(['_ftDetectImportConflicts', '_ftTutorSyncDiff', '_ftTrimCell']);
   const existing = [
     { cells: { class_abbr: '四農園一A', tutor_name: '舊導師' } },
     { cells: { class_abbr: '四農園二A', tutor_name: '已離職導師' } }, // tutorsys 已無此班級
@@ -40,7 +40,7 @@ test('_ftTutorSyncDiff：本地既有值與同步值不同 → conflicts；tutor
 });
 
 test('_ftTutorSyncDiff：完全相同 → unchanged，不進 conflicts/removed', () => {
-  const S = load_(['_ftDetectImportConflicts', '_ftTutorSyncDiff']);
+  const S = load_(['_ftDetectImportConflicts', '_ftTutorSyncDiff', '_ftTrimCell']);
   const existing = [{ cells: { class_abbr: '四農園一A', tutor_name: '王小明' } }];
   const incoming = [{ cells: { class_abbr: '四農園一A', tutor_name: '王小明' } }];
   const r = S._ftTutorSyncDiff(existing, incoming, 'class_abbr');
@@ -52,7 +52,7 @@ test('_ftTutorSyncDiff：完全相同 → unchanged，不進 conflicts/removed',
 // ══════════════ 套用同步結果 ══════════════
 
 test('_ftApplyTutorSyncResult：勾選取代的衝突套用新值、未勾選維持舊值、新增列附加、勾選刪除的列移除', () => {
-  const S = load_(['_ftDetectImportConflicts', '_ftTutorSyncDiff', '_ftBuildImportFinalRows', '_ftApplyTutorSyncResult']);
+  const S = load_(['_ftDetectImportConflicts', '_ftTutorSyncDiff', '_ftBuildImportFinalRows', '_ftApplyTutorSyncResult', '_ftTrimCell']);
   const existing = [
     { _id: 'r1', cells: { class_abbr: 'A班', tutor_name: '舊導師A' } },
     { _id: 'r2', cells: { class_abbr: 'B班', tutor_name: '舊導師B' } },
@@ -76,7 +76,7 @@ test('_ftApplyTutorSyncResult：勾選取代的衝突套用新值、未勾選維
 });
 
 test('_ftApplyTutorSyncResult：首次同步（本地空）→ 直接全帶入，不需要特判', () => {
-  const S = load_(['_ftDetectImportConflicts', '_ftTutorSyncDiff', '_ftBuildImportFinalRows', '_ftApplyTutorSyncResult']);
+  const S = load_(['_ftDetectImportConflicts', '_ftTutorSyncDiff', '_ftBuildImportFinalRows', '_ftApplyTutorSyncResult', '_ftTrimCell']);
   const incoming = [
     { cells: { class_abbr: 'A班', tutor_name: '導師A' } },
     { cells: { class_abbr: 'B班', tutor_name: '導師B' } },
