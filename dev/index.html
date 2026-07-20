@@ -225,6 +225,47 @@
     .login-card p  { font-size: .85rem; color: #718096; margin-bottom: 32px; line-height: 1.6; }
     #g-signin-btn  { display: flex; justify-content: center; }
 
+    /* ── v219：小技巧輪播卡片（登入畫面／PIN 解鎖畫面共用）── */
+    .tc-card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 16px 20px;
+      box-shadow: 0 4px 20px rgba(0,0,0,.1);
+      max-width: 420px;
+      width: 90%;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      text-align: left;
+    }
+    .tc-icon {
+      flex-shrink: 0;
+      width: 50px; height: 50px;
+      border-radius: 12px;
+      background: #ebf4fb;
+      display: flex; align-items: center; justify-content: center;
+      color: #1a5276;
+    }
+    .tc-icon svg { width: 32px; height: 32px; }
+    .tc-icon.tc-icon-emoji { font-size: 1.6rem; }
+    .tc-body { flex: 1; min-width: 0; }
+    .tc-title { font-size: .86rem; font-weight: 700; color: #1a5276; margin-bottom: 3px; }
+    .tc-desc { font-size: .76rem; color: #718096; line-height: 1.5; }
+    .tc-nav { flex-shrink: 0; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+    .tc-nav-btns { display: flex; align-items: center; gap: 2px; }
+    .tc-nav button {
+      background: none; border: none; color: #a0aec0; font-size: 1.05rem; cursor: pointer;
+      padding: 2px 6px; border-radius: 4px; transition: background .15s, color .15s;
+      line-height: 1;
+    }
+    .tc-nav button:hover { background: #ebf4fb; color: #1a5276; }
+    .tc-counter { font-size: .66rem; color: #a0aec0; white-space: nowrap; }
+    @media (max-width: 480px) {
+      .tc-card { flex-direction: column; text-align: center; }
+      .tc-nav { flex-direction: row; }
+    }
+
     /* ── Main layout ── */
     #main-layout {
       display: none;
@@ -1135,6 +1176,9 @@
 <!-- ── App Header ── -->
 <header id="app-header">
   <div style="display:flex;align-items:center;gap:10px;min-width:0;overflow:hidden;">
+    <button id="header-tc-btn" onclick="tcOpenModal()" data-tip="小技巧" title="小技巧"
+      style="background:rgba(255,255,255,.15);border:none;color:#fff;border-radius:6px;padding:4px 10px;font-size:.85rem;cursor:pointer;flex-shrink:0;display:flex;align-items:center;gap:4px;transition:background .15s;white-space:nowrap;"
+      onmouseover="this.style.background='rgba(255,255,255,.3)'" onmouseout="this.style.background='rgba(255,255,255,.15)'">💡 小技巧</button>
     <button id="sidebar-expand-btn" onclick="toggleSidebarHidden()" data-tip="展開側邊選單" title="展開側邊選單" style="display:none;">☰</button>
     <h1 style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">🏫 國立屏東科技大學學生諮商中心資訊系統</h1>
     <button id="header-back-btn" onclick="handleFloatingBack()">← 返回</button>
@@ -1201,6 +1245,8 @@
     <p style="font-size:.82rem;color:#718096;margin:0 0 10px;">尚未有系統帳號？</p>
     <button onclick="showApplyScreen()" style="width:100%;padding:9px;background:#fff;border:1.5px solid #cbd5e0;border-radius:6px;color:#4a5568;font-size:.9rem;cursor:pointer;">申請使用帳號</button>
   </div>
+  <!-- v219：小技巧輪播（登入畫面）-->
+  <div id="tc-mount-login" class="tc-card"></div>
 </div>
 
 <!-- ── Apply Screen ── -->
@@ -31413,7 +31459,140 @@ document.addEventListener('DOMContentLoaded', () => {
     const scrollBtn = document.getElementById('header-scroll-top');
     if (scrollBtn) scrollBtn.style.display = _hdrCompact ? '' : 'none';
   }, { passive: true });
+
+  // v219：小技巧輪播——登入畫面／PIN 解鎖畫面兩處掛載點，各自獨立狀態（起始則隨機）
+  tcInit('tc-mount-login');
+  tcInit('tc-mount-lock');
 });
+
+// ══════════════════════════════════════════════
+//  v219：小技巧輪播（登入畫面／PIN 解鎖畫面共用；banner「💡 小技巧」按鈕開全覽 Modal）
+// ══════════════════════════════════════════════
+const TC_INTERVAL_SEC = 15;
+
+// A 級（14 則，附簡約 inline SVG，viewBox 0 0 60 60，單色 currentColor 線條）
+const TC_ICONS = {
+  pin:        '<path d="M30 9c-9 0-16 7-16 16 0 12 16 28 16 28s16-16 16-28c0-9-7-16-16-16z"/><circle cx="30" cy="25" r="6"/>',
+  drag:       '<circle cx="21" cy="15" r="3.2"/><circle cx="39" cy="15" r="3.2"/><circle cx="21" cy="30" r="3.2"/><circle cx="39" cy="30" r="3.2"/><circle cx="21" cy="45" r="3.2"/><circle cx="39" cy="45" r="3.2"/>',
+  shiftcheck: '<rect x="7" y="23" width="15" height="15" rx="3"/><polyline points="10,30.5 14,34.5 19,26"/><line x1="24" y1="30.5" x2="35" y2="30.5"/><polyline points="31,26.5 35.5,30.5 31,34.5"/><rect x="38" y="23" width="15" height="15" rx="3"/><polyline points="41,30.5 45,34.5 50,26"/>',
+  autosave:   '<path d="M19 41a10.5 10.5 0 0 1-2-20.8A13.5 13.5 0 0 1 43 22a9.3 9.3 0 0 1-2 19H19z"/><polyline points="23,30.5 28,35.5 38,24"/>',
+  draft:      '<path d="M16 9h28v42l-14-8.5-14 8.5z"/><line x1="22" y1="20" x2="38" y2="20"/><line x1="22" y1="28" x2="38" y2="28"/>',
+  attach:     '<rect x="8" y="30" width="26" height="18" rx="3" stroke-dasharray="4 4"/><line x1="21" y1="32" x2="21" y2="44"/><polyline points="15,39 21,45 27,39"/><path d="M46 12v22a8 8 0 0 1-16 0V15a5 5 0 0 1 10 0v17a2 2 0 0 1-4 0V18"/>',
+  pdf2img:    '<path d="M9 6h15l7 7v27H9z"/><path d="M24 6v7h7"/><line x1="14" y1="21" x2="26" y2="21"/><line x1="14" y1="27" x2="26" y2="27"/><line x1="37" y1="25" x2="37" y2="37"/><polyline points="31,31 37,37 43,31"/><rect x="24" y="41" width="27" height="16" rx="2"/><circle cx="31" cy="47" r="2.4"/><polyline points="26,53 34,47 42,53 46,49"/>',
+  imgpaste:   '<rect x="9" y="9" width="30" height="24" rx="2"/><circle cx="17" cy="17" r="3"/><polyline points="11,30 23,21 29,27 37,16"/><path d="M39 39l10-2-2 10-3-3-6 6-2-2 6-6z"/>',
+  dblcal:     '<rect x="8" y="11" width="34" height="30" rx="3"/><line x1="8" y1="20" x2="42" y2="20"/><line x1="17" y1="6" x2="17" y2="15"/><line x1="33" y1="6" x2="33" y2="15"/><circle cx="44" cy="44" r="3"/><circle cx="44" cy="44" r="8" stroke-dasharray="3 4"/><circle cx="44" cy="44" r="13" stroke-dasharray="3 5"/>',
+  recycle:    '<path d="M15 18h30l-2.5 30a3 3 0 0 1-3 2.8H20.5a3 3 0 0 1-3-2.8z"/><line x1="10" y1="18" x2="50" y2="18"/><line x1="24" y1="11" x2="36" y2="11"/><line x1="24" y1="11" x2="24" y2="18"/><line x1="36" y1="11" x2="36" y2="18"/><path d="M20 40a10 10 0 0 1 17-7"/><polyline points="34,29 37,33 32,35"/>',
+  bgjob:      '<rect x="8" y="16" width="44" height="28" rx="4"/><line x1="15" y1="25" x2="34" y2="25"/><rect x="15" y="32" width="30" height="5" rx="2.5"/><rect x="15" y="32" width="18" height="5" rx="2.5" fill="currentColor" stroke="none"/>',
+  indent:     '<line x1="9" y1="14" x2="51" y2="14"/><line x1="19" y1="30" x2="51" y2="30"/><line x1="29" y1="46" x2="51" y2="46"/><polyline points="9,22 16,30 9,38"/>',
+  mention:    '<circle cx="24" cy="24" r="14"/><circle cx="24" cy="24" r="5.5"/><path d="M29.5 24v4.5a5.5 5.5 0 0 0 11 0v-4.5a16.5 16.5 0 1 0-7 13.6"/><line x1="38" y1="38" x2="50" y2="50"/>',
+  dblimg:     '<rect x="7" y="8" width="28" height="22" rx="2"/><circle cx="14" cy="15" r="2.6"/><polyline points="9,27 20,19 26,24 33,15"/><circle cx="44" cy="44" r="3"/><circle cx="44" cy="44" r="8" stroke-dasharray="3 4"/><circle cx="44" cy="44" r="13" stroke-dasharray="3 5"/>',
+};
+
+// 20 則（順序固定；輪播起始位置隨機挑選，但播放順序照本陣列順序前進/後退）
+const TC_HINTS = [
+  { id: 1,  icon: 'pin',        title: '選單釘選',        desc: '左側選單項目左緣的細條可「釘選」，分類收合後釘選項目仍會顯示。' },
+  { id: 2,  icon: 'drag',       title: '選單拖曳排序',    desc: '滑過選單項目會出現 ⠿ 把手，拖曳即可排序，順序會跨裝置同步。' },
+  { id: 3,  icon: 'shiftcheck', title: 'Shift 範圍勾選',  desc: '所有勾選清單按住 Shift 點擊，可一次勾選整段範圍。' },
+  { id: 4,  icon: 'autosave',   title: '表單自動備援',    desc: '長表單每 5 秒自動備份到瀏覽器，當機或誤關後登入會提示復原。' },
+  { id: 5,  icon: 'draft',      title: '暫存草稿至待辦',  desc: '表單填一半可存成待辦事項，之後按「繼續編輯」完整還原。' },
+  { id: 6,  icon: 'attach',     title: '拖曳／貼上附件',  desc: '圖片檔案可直接拖曳進來，或用 Ctrl+V 貼到任何文字框變成附件。' },
+  { id: 7,  icon: 'pdf2img',    title: 'PDF 轉圖片',      desc: '左側選單內建 PDF 轉圖片工具，全程在你的電腦內完成，不會上傳。' },
+  { id: 8,  icon: 'imgpaste',   title: '圖片編輯 Ctrl+V', desc: '圖片編輯頁可直接貼上剪貼簿圖片編輯，成品能一鍵複製回剪貼簿。' },
+  { id: 9,  icon: 'dblcal',     title: '預約點兩下',      desc: '空間預約表空白格點兩下直接新增，預約卡片可拖曳改期。' },
+  { id: 10, icon: 'recycle',    title: '資源回收桶',      desc: '刪錯的個案或紀錄會保留 30 天，可隨時復原。' },
+  { id: 11, icon: 'bgjob',      title: '背景工作卡片',    desc: '頂端進度小卡可點擊，直接跳到工作分頁看細節。' },
+  { id: 12, icon: 'indent',     title: '清單縮排',        desc: '富文字清單按 Tab／Shift+Tab 可調整縮排層級。' },
+  { id: 13, icon: 'mention',    title: '@提及拼音搜尋',   desc: '@人名可用拼音或台語羅馬字首字母模糊搜尋。' },
+  { id: 14, icon: 'dblimg',     title: '雙擊改圖',        desc: '富文字裡的圖片雙擊即可重新編輯。' },
+  { id: 15, emoji: '🧬', title: '家系圖',           desc: '自訂元件庫可重複使用，✨ 一鍵美化排版，Space+拖曳可平移畫布。' },
+  { id: 16, emoji: '📊', title: '新生心測試算表',   desc: '可直接貼上 Excel 多列多欄，Ctrl+Z／Y 逐步復原重做。' },
+  { id: 17, emoji: '📅', title: '日曆反向匯入',     desc: 'Google 日曆端新增的事件可一鍵匯入成系統預約。' },
+  { id: 18, emoji: '📬', title: '身心調適假',       desc: '選單項目旁的小圖示可直接從信箱擷取假單。' },
+  { id: 19, emoji: '🔀', title: '案號管理',         desc: '個案合併遷移與主案號對調（管理者），含 dry-run 檢核。' },
+  { id: 20, emoji: '🖨', title: '心測報告',         desc: '個人／導師／系主任／院長四種報告可批次列印＋Excel 匯出。' },
+];
+
+let _tcState = {};       // mountId -> { index, countdown, paused }
+let _tcTickTimer = null; // 全域 1 秒 ticker（畫面不可見／分頁隱藏時該 tick 直接跳過，不推進）
+
+function tcSvg(iconKey) {
+  return `<svg viewBox="0 0 60 60" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">${TC_ICONS[iconKey] || ''}</svg>`;
+}
+
+function tcInit(mountId) {
+  const el = document.getElementById(mountId);
+  if (!el) return;
+  _tcState[mountId] = { index: Math.floor(Math.random() * TC_HINTS.length), countdown: TC_INTERVAL_SEC, paused: false };
+  el.addEventListener('mouseenter', () => { const s = _tcState[mountId]; if (s) s.paused = true; });
+  el.addEventListener('mouseleave', () => { const s = _tcState[mountId]; if (s) s.paused = false; });
+  tcRenderMount(mountId);
+  if (!_tcTickTimer) _tcTickTimer = setInterval(tcTick, 1000);
+}
+
+function tcRenderMount(mountId) {
+  const el = document.getElementById(mountId);
+  const st = _tcState[mountId];
+  if (!el || !st) return;
+  const h = TC_HINTS[st.index];
+  el.innerHTML = `
+    <div class="tc-icon${h.emoji ? ' tc-icon-emoji' : ''}">${h.emoji ? h.emoji : tcSvg(h.icon)}</div>
+    <div class="tc-body">
+      <div class="tc-title">${escHtml(h.title)}</div>
+      <div class="tc-desc">${escHtml(h.desc)}</div>
+    </div>
+    <div class="tc-nav">
+      <div class="tc-nav-btns">
+        <button type="button" onclick="tcAdvance('${mountId}',-1)" aria-label="上一則">‹</button>
+        <button type="button" onclick="tcAdvance('${mountId}',1)" aria-label="下一則">›</button>
+      </div>
+      <span class="tc-counter">${st.index + 1}/${TC_HINTS.length}</span>
+    </div>`;
+}
+
+function tcAdvance(mountId, delta) {
+  const st = _tcState[mountId];
+  if (!st) return;
+  st.index = (st.index + delta + TC_HINTS.length) % TC_HINTS.length;
+  st.countdown = TC_INTERVAL_SEC;
+  tcRenderMount(mountId);
+}
+
+// 每秒檢查一次：分頁不可見（document.visibilityState）或掛載點本身不可見（display:none／祖先隱藏）
+// 或滑鼠正 hover 在卡片上時，該掛載點這一 tick 直接跳過、不倒數、不換下一則。
+function tcTick() {
+  Object.keys(_tcState).forEach(mountId => {
+    const st = _tcState[mountId];
+    if (!st) return;
+    const el = document.getElementById(mountId);
+    if (!el) return;
+    if (document.visibilityState !== 'visible') return;
+    if (el.offsetParent === null) return;
+    if (st.paused) return;
+    st.countdown -= 1;
+    if (st.countdown <= 0) tcAdvance(mountId, 1);
+  });
+}
+
+function tcOpenModal() {
+  const list = document.getElementById('tc-modal-list');
+  if (list) {
+    list.innerHTML = TC_HINTS.map((h, i) => `
+      <div style="display:flex;gap:12px;align-items:flex-start;padding:12px 4px;${i > 0 ? 'border-top:1px solid #e2e8f0;' : ''}">
+        <div class="tc-icon${h.emoji ? ' tc-icon-emoji' : ''}" style="width:42px;height:42px;">${h.emoji ? h.emoji : tcSvg(h.icon)}</div>
+        <div style="flex:1;min-width:0;">
+          <div class="tc-title" style="font-size:.92rem;">${escHtml(h.title)}</div>
+          <div class="tc-desc" style="font-size:.82rem;">${escHtml(h.desc)}</div>
+        </div>
+      </div>`).join('');
+  }
+  const modal = document.getElementById('tc-modal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function tcCloseModal() {
+  const modal = document.getElementById('tc-modal');
+  if (modal) modal.style.display = 'none';
+}
 
 // ══════════════════════════════════════════════
 //  PIN 鎖定系統
@@ -31625,6 +31804,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-20', v: 219, title: '登入／PIN 解鎖畫面新增「小技巧」輪播，banner 新增全覽入口', isProd: false, items: [
+      item('新功能', '登入畫面與 PIN 解鎖畫面各新增一張小提示卡片，圖文並茂輪流介紹系統裡的 20 項小技巧（每 15 秒自動換下一則，滑鼠移到卡片上會暫停，可用 ‹ › 手動切換），每次載入從隨機一則開始播放'),
+      item('新功能', 'banner 左上角新增「💡 小技巧」按鈕，點開可一次瀏覽全部 20 則小技巧（含圖示與說明，可上下捲動）'),
+      item('技術', '輪播計時器會在分頁切到背景或卡片本身不可見時自動停止推進，不影響效能；圖示以簡約 inline SVG／emoji 呈現，不引用外部資源'),
+    ]},
     { date: '2026-07-20', v: 218, title: '畫面鎖定顯示姓名職稱、使用者管理分頁可拖曳排序、登入紀錄「含已封存」即勾即生效', isProd: false, items: [
       item('改善', '畫面鎖定畫面原本顯示帳號名稱（如 email 前綴），改為顯示「姓名 職稱」（取自使用者管理中的姓名與職稱欄位），未設定姓名時退回帳號名稱'),
       item('新功能', '使用者管理頁的分頁（使用者列表／登入紀錄／帳號申請審核…）可拖曳調整順序，順序記憶會同步到雲端、跨裝置沿用'),
@@ -51123,7 +51307,7 @@ function toggleNavPin(navId) {
 </div>
 
 <!-- 畫面鎖定遮罩 -->
-<div id="lock-overlay" style="display:none;position:fixed;inset:0;background:#0f172a;z-index:9999;align-items:center;justify-content:center;">
+<div id="lock-overlay" style="display:none;position:fixed;inset:0;background:#0f172a;z-index:9999;align-items:center;justify-content:center;flex-direction:column;gap:20px;padding:20px;box-sizing:border-box;">
   <div style="background:#fff;padding:40px 36px;border-radius:14px;text-align:center;min-width:300px;box-shadow:0 8px 32px rgba(0,0,0,.3);">
     <div style="font-size:2.4rem;margin-bottom:12px;">🔒</div>
     <h2 style="margin-bottom:6px;color:#1a202c;">畫面已鎖定</h2>
@@ -51138,6 +51322,19 @@ function toggleNavPin(navId) {
     <div style="margin-top:16px;border-top:1px solid #e2e8f0;padding-top:12px;">
       <button onclick="signOut()" style="background:none;border:none;color:#718096;font-size:.8rem;cursor:pointer;text-decoration:underline;padding:0;">切換帳號（登出）</button>
     </div>
+  </div>
+  <!-- v219：小技巧輪播（PIN 解鎖畫面）-->
+  <div id="tc-mount-lock" class="tc-card"></div>
+</div>
+
+<!-- v219：小技巧 Modal（全部項目一覽）-->
+<div id="tc-modal" class="modal-overlay" style="display:none;" onclick="if(event.target===this) tcCloseModal()">
+  <div class="modal-box" style="max-width:560px;max-height:80vh;display:flex;flex-direction:column;">
+    <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
+      <h3>💡 小技巧</h3>
+      <button onclick="tcCloseModal()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+    </div>
+    <div class="modal-body" id="tc-modal-list" style="overflow-y:auto;flex:1;"></div>
   </div>
 </div>
 
