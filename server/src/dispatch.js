@@ -378,6 +378,7 @@ async function handleRequest(db, config, payload) {
       case 'adminResetPassword': result = await adminUsersActions.adminResetPassword(db, params, userEmail); break;
       case 'adminResetTwofa': result = adminUsersActions.adminResetTwofa(db, params, userEmail); break;
       case 'adminListAllSessions': result = adminUsersActions.adminListAllSessions(db, ctx, params); break;
+      case 'adminArchiveSessions': result = adminUsersActions.adminArchiveSessions(db, ctx, params, userEmail); break;
       // readJson/updateJson/createJson/listCommit：issuesDb/issuesCtx 已在上方「issues.json 路由」
       // 段落算好——目標檔非 issues.json 時就是原本的 db/ctx（行為不變），是 issues.json 時視
       // SHARED_ISSUES_DB 是否設定而指向共用庫（v198）。

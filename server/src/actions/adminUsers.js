@@ -1,6 +1,7 @@
 // server/src/actions/adminUsers.js — 帳號發放與管理（migration 005）：管理者專屬 action：
 // adminUserAuthGet／adminCreateLocalAccount／adminUpdateLocalAccount／adminResetPassword／
-// adminResetTwofa／adminListAllSessions。全部走 dispatch 的 gate.ADMIN_ONLY_ACTIONS 閘門（見
+// adminResetTwofa／adminListAllSessions／adminArchiveSessions（v214）。全部走 dispatch 的
+// gate.ADMIN_ONLY_ACTIONS 閘門（見
 // authz/gate.js／dispatch.js 步驟 4a），非管理者一律 Forbidden，本檔不重複判斷授權——actorEmail
 // 一律來自已驗證 session（dispatch.js 解出），只用於稽核（audit_log.email 記操作者，target 記被
 // 操作帳號的內部 email，兩者分開存，比照既有 audit.js「target 為目標摘要」的欄位語意；
@@ -22,6 +23,12 @@ const deviceTrust = require('../auth/deviceTrust');
 const sessionAuth = require('../auth/session');
 const audit = require('../audit');
 const sessionActions = require('./session');
+const vdrive = require('../storage/vdrive');
+
+// 與 session.js 的 SESSIONS_PATH 常數同值（該檔未匯出常數，adminListAllSessions／
+// adminArchiveSessions 皆透過 sessionActions.readSessionsData 讀取同一份檔案；寫回時本檔自行
+// 呼叫 vdrive.updateJson，故在此重複宣告路徑字面值）。
+const SESSIONS_PATH = 'sessions.json';
 
 function readConfigUsers(db, ctx) {
   return sessionActions.readConfigUsers(db, ctx);
@@ -220,6 +227,54 @@ function adminListAllSessions(db, ctx, params) {
   return { sessions };
 }
 
+// 管理者封存登入紀錄（v214：「登入紀錄」tab 的「封存勾選」）：跨帳號指名封存，比照
+// session.js archiveMySessions 的安全原則——只能封存「非使用中」的紀錄（active＝未過期且未
+// 撤銷），active 的紀錄即使被指名一律 skip，後端才是真正的安全邊界，前端即使已擋過一次仍需
+// 再擋（見 CLAUDE.md 資安原則／session.js archiveMySessions 檔頭註解）。
+// params: { items: [{ email, jti }] }；找不到符合 email+jti 的紀錄、已封存過、或該紀錄目前是
+// active，皆計入 skipped，不視為錯誤（管理者一次可能勾選跨帳號的多筆，容許部分略過）。
+function adminArchiveSessions(db, ctx, params, actorEmail) {
+  const items = Array.isArray(params && params.items) ? params.items : [];
+  if (!items.length) return { ok: true, archived: 0, skipped: 0 };
+
+  const data = sessionActions.readSessionsData(db, ctx);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const nowIso = new Date().toISOString();
+  const revokedBeforeCache = {};
+  const getRevokedBefore = (email) => {
+    if (!(email in revokedBeforeCache)) revokedBeforeCache[email] = sessionAuth.getRevokedBefore(db, email);
+    return revokedBeforeCache[email];
+  };
+
+  let archived = 0;
+  let skipped = 0;
+  const targetEmails = new Set();
+  items.forEach((item) => {
+    const email = String((item && item.email) || '');
+    const jti = String((item && item.jti) || '');
+    if (!email || !jti) { skipped++; return; }
+    const rec = data.sessions.find((s) => s && s.email === email && s.jti === jti);
+    if (!rec) { skipped++; return; } // 找不到符合的紀錄
+    if (rec.archived) { skipped++; return; } // 已封存過，不重複計數
+
+    const expired = Number(rec.exp) <= nowSec;
+    const revoked = !!(getRevokedBefore(email) && Number(rec.iat) < Number(getRevokedBefore(email)));
+    const active = !expired && !revoked;
+    if (active) { skipped++; return; } // 使用中的紀錄一律跳過，即使被指名
+
+    rec.archived = true;
+    rec.archivedAt = nowIso;
+    archived++;
+    targetEmails.add(email);
+  });
+
+  if (archived > 0) vdrive.updateJson(db, SESSIONS_PATH, data, ctx);
+
+  auditAdmin(db, actorEmail, 'adminArchiveSessions', [...targetEmails].join(','), `archived=${archived},skipped=${skipped}`);
+
+  return { ok: true, archived, skipped };
+}
+
 module.exports = {
   adminUserAuthGet,
   adminCreateLocalAccount,
@@ -227,4 +282,5 @@ module.exports = {
   adminResetPassword,
   adminResetTwofa,
   adminListAllSessions,
+  adminArchiveSessions,
 };

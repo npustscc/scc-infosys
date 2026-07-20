@@ -1,8 +1,8 @@
 // server/test/dispatch-session-archive.test.js — 登入紀錄封存（archiveMySessions／listMySessions
-// 的 archived 欄位）與管理者登入紀錄總覽（adminListAllSessions）整合測試（:memory: db，經
-// dispatch.handleRequest）。比照 test/dispatch-trusted-devices.test.js 的手法：sessions.json 是
-// 單一整檔，用 vdrive.readJson/updateJson 直接注入模擬的「舊裝置／已過期」紀錄，不需要真的等待
-// session 過期。
+// 的 archived 欄位）與管理者登入紀錄總覽／封存（adminListAllSessions／adminArchiveSessions，v214）
+// 整合測試（:memory: db，經 dispatch.handleRequest）。比照 test/dispatch-trusted-devices.test.js 的
+// 手法：sessions.json 是單一整檔，用 vdrive.readJson/updateJson 直接注入模擬的「舊裝置／已過期」
+// 紀錄，不需要真的等待 session 過期。
 'use strict';
 
 const { test } = require('node:test');
@@ -189,4 +189,86 @@ test('adminListAllSessions：跨全部使用者列出登入紀錄，預設濾掉
   assert.equal(archivedOne.email, 'staff@x.com');
   assert.equal(archivedOne.expired, true);
   assert.equal(archivedOne.active, false);
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// adminArchiveSessions（v214：管理者「登入紀錄」tab 封存勾選，可跨帳號指名封存）
+// ══════════════════════════════════════════════════════════════════════════
+
+test('adminArchiveSessions：非管理者呼叫 → Forbidden: admin only；未登入 → Session expired', async () => {
+  const db = openDb(':memory:');
+  const { config, staffTok } = await setupAdminAndStaff(db);
+  const r1 = await handleRequest(db, config, {
+    action: 'adminArchiveSessions', sessionToken: staffTok, rootFolderId: ROOT, items: [],
+  });
+  assert.equal(r1.data.error, 'Forbidden: admin only');
+
+  const r2 = await handleRequest(db, config, { action: 'adminArchiveSessions', rootFolderId: ROOT, items: [] });
+  assert.equal(r2.data.error, 'Session expired');
+});
+
+test('adminArchiveSessions：可跨帳號指名封存非使用中的紀錄；active 的紀錄即使被指名也 skip', async () => {
+  const db = openDb(':memory:');
+  const { config, adminTok, staffTok } = await setupAdminAndStaff(db);
+  injectExpiredSession(db, 'staff@x.com', 'expired-jti-1');
+  injectExpiredSession(db, 'admin@x.com', 'expired-jti-2');
+  const staffCurJti = currentJtiOf(db, 'staff@x.com');
+
+  const r = await handleRequest(db, config, {
+    action: 'adminArchiveSessions', sessionToken: adminTok, rootFolderId: ROOT,
+    items: [
+      { email: 'staff@x.com', jti: 'expired-jti-1' },
+      { email: 'admin@x.com', jti: 'expired-jti-2' },
+      { email: 'staff@x.com', jti: staffCurJti }, // 使用中，應被跳過
+      { email: 'staff@x.com', jti: 'no-such-jti' }, // 找不到，應被跳過
+    ],
+  });
+  assert.equal(r.data.ok, true);
+  assert.equal(r.data.archived, 2, '兩筆跨帳號的過期紀錄應一次封存');
+  assert.equal(r.data.skipped, 2, '使用中與不存在的各一筆應跳過');
+
+  const withArchived = await handleRequest(db, config, {
+    action: 'adminListAllSessions', sessionToken: adminTok, rootFolderId: ROOT, includeArchived: true,
+  });
+  assert.equal(withArchived.data.sessions.find((s) => s.jti === 'expired-jti-1').archived, true);
+  assert.equal(withArchived.data.sessions.find((s) => s.jti === 'expired-jti-2').archived, true);
+  assert.equal(withArchived.data.sessions.find((s) => s.jti === staffCurJti).archived, false, '使用中的紀錄不應被封存');
+
+  // 另一名管理者能看到 staff 的紀錄也被真的封存了（不是只在 staff 自己視角），驗證管理端與
+  // 自助端（archiveMySessions）動的是同一份 sessions.json。
+  const staffView = await handleRequest(db, config, { action: 'listMySessions', sessionToken: staffTok, rootFolderId: ROOT });
+  assert.equal(staffView.data.sessions.find((s) => s.jti === 'expired-jti-1').archived, true);
+});
+
+test('adminArchiveSessions：items 為空陣列或未附 → 無事可做，回 archived:0/skipped:0', async () => {
+  const db = openDb(':memory:');
+  const { config, adminTok } = await setupAdminAndStaff(db);
+  const r = await handleRequest(db, config, {
+    action: 'adminArchiveSessions', sessionToken: adminTok, rootFolderId: ROOT, items: [],
+  });
+  assert.deepEqual(r.data, { ok: true, archived: 0, skipped: 0 });
+
+  const r2 = await handleRequest(db, config, {
+    action: 'adminArchiveSessions', sessionToken: adminTok, rootFolderId: ROOT,
+  });
+  assert.deepEqual(r2.data, { ok: true, archived: 0, skipped: 0 });
+});
+
+test('adminArchiveSessions：已封存過的紀錄再次指名 → 不重複計數（計入 skipped）', async () => {
+  const db = openDb(':memory:');
+  const { config, adminTok } = await setupAdminAndStaff(db);
+  injectExpiredSession(db, 'staff@x.com', 'expired-jti-1');
+
+  const first = await handleRequest(db, config, {
+    action: 'adminArchiveSessions', sessionToken: adminTok, rootFolderId: ROOT,
+    items: [{ email: 'staff@x.com', jti: 'expired-jti-1' }],
+  });
+  assert.equal(first.data.archived, 1);
+
+  const second = await handleRequest(db, config, {
+    action: 'adminArchiveSessions', sessionToken: adminTok, rootFolderId: ROOT,
+    items: [{ email: 'staff@x.com', jti: 'expired-jti-1' }],
+  });
+  assert.equal(second.data.archived, 0);
+  assert.equal(second.data.skipped, 1);
 });

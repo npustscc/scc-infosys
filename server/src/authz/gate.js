@@ -53,6 +53,7 @@ const AUTHZ_EXEMPT = { ping: true, sessionStart: true };
 // （role==='主任' 或 isAdmin===true 或 extraRole==='管理者'）。
 // adminListAllSessions：跨全部使用者查看登入紀錄，雖不異動資料但屬敏感查詢（ip/geo/ua 等），
 // 同樣限管理者專屬。
+// adminArchiveSessions（v214）：管理者「登入紀錄」tab 可跨帳號封存他人登入紀錄，同樣限管理者專屬。
 const ADMIN_ONLY_ACTIONS = {
   deleteFile: true, moveFile: true,
   adminUserAuthGet: true,
@@ -61,6 +62,7 @@ const ADMIN_ONLY_ACTIONS = {
   adminResetPassword: true,
   adminResetTwofa: true,
   adminListAllSessions: true,
+  adminArchiveSessions: true,
 };
 
 // F3：fileId/parentId 類動作限制在本次 ctx.root 子樹——Phase 1 骨架已實作的 action 對映。
