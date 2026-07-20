@@ -116,6 +116,12 @@ const SMS_E8D_PWD = process.env.SMS_E8D_PWD || '';
 // pattern）。留空（預設）＝ftTutorSyncFetch 回業務錯誤，前端「與導師系統同步」按鈕顯示「未設定」，
 // 其餘新生心理測驗功能不受影響，故不可用 required()。
 const TUTORSYS_STORE_DIR = process.env.TUTORSYS_STORE_DIR || '';
+// v221：磁碟健康度（見 actions/systemHealth.js adminGetDiskHealth＋root systemd timer 執行的
+// scripts/smart-poll.js，本檔不動）——指向該 timer 寫出的 SMART 摘要 JSON 絕對路徑
+// （預設 /var/lib/scc-smart/smart.json，兩實例共用同一份，因為硬體本身是同機共用）。唯讀，
+// 選填——缺值時 adminGetDiskHealth 回業務錯誤 smart_not_configured，其餘功能不受影響，
+// 故不可用 required()。
+const SMART_STATUS_PATH = process.env.SMART_STATUS_PATH || '';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 
@@ -152,6 +158,7 @@ module.exports = {
   SMS_E8D_UID,
   SMS_E8D_PWD,
   TUTORSYS_STORE_DIR,
+  SMART_STATUS_PATH,
   NODE_ENV,
   PUBLIC_DIR,
 };

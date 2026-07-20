@@ -46,6 +46,7 @@ const freshmanTestActions = require('./freshmanTest/actions');
 const gcSync = require('./sync/gcSync');
 const clockBridge = require('./actions/clockBridge');
 const adminUsersActions = require('./actions/adminUsers');
+const systemHealthActions = require('./actions/systemHealth');
 const passwordActions = require('./actions/password');
 const configActions = require('./actions/config');
 const sharedIssuesDb = require('./storage/sharedIssuesDb');
@@ -381,6 +382,9 @@ async function handleRequest(db, config, payload) {
       case 'adminResetTwofa': result = adminUsersActions.adminResetTwofa(db, params, userEmail); break;
       case 'adminListAllSessions': result = adminUsersActions.adminListAllSessions(db, ctx, params); break;
       case 'adminArchiveSessions': result = adminUsersActions.adminArchiveSessions(db, ctx, params, userEmail); break;
+      // adminGetDiskHealth（v221）：讀 root systemd timer 寫出的 SMART 摘要 JSON（唯讀，見
+      // actions/systemHealth.js／config.js SMART_STATUS_PATH），不吃 params。
+      case 'adminGetDiskHealth': result = systemHealthActions.adminGetDiskHealth(config); break;
       // readJson/updateJson/createJson/listCommit：issuesDb/issuesCtx 已在上方「issues.json 路由」
       // 段落算好——目標檔非 issues.json 時就是原本的 db/ctx（行為不變），是 issues.json 時視
       // SHARED_ISSUES_DB 是否設定而指向共用庫（v198）。

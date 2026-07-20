@@ -1778,6 +1778,23 @@
           </div>
         </div>
       </div>
+      <!-- Panel: 磁碟健康（v221；僅本地帳密＋TOTP 後端顯示，見 IS_LOCAL_BACKEND——資料來源是
+           root systemd timer 定期寫出的 SMART 摘要，GAS 版無此後端能力）。本 panel 預設
+           display:none，切到 diskhealth tab 才由 renderAdminPage 打開，見該函式。 -->
+      <div id="admin-panel-diskhealth" style="display:none;">
+        <div class="card">
+          <div class="card-header">
+            <h3>磁碟健康（SMART）</h3>
+            <div style="display:flex;gap:10px;align-items:center;">
+              <span id="admin-diskhealth-updated" style="font-size:.8rem;color:#718096;"></span>
+              <button class="btn btn-secondary btn-sm" onclick="_adminDiskHealthLoad()">重新整理</button>
+            </div>
+          </div>
+          <div style="padding:16px 20px;">
+            <div id="admin-diskhealth-wrap"><p style="font-size:.85rem;color:#a0aec0;">載入中…</p></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 案號管理 -->
@@ -10125,6 +10142,8 @@ function renderAdminPage() {
   if (gcPanel) gcPanel.style.display = tab === 'gcsync' ? '' : 'none';
   const kwPanel = document.getElementById('admin-panel-keywords');
   if (kwPanel) kwPanel.style.display = tab === 'keywords' ? '' : 'none';
+  const dhPanel = document.getElementById('admin-panel-diskhealth');
+  if (dhPanel) dhPanel.style.display = tab === 'diskhealth' ? '' : 'none';
   if (tab === 'users')    { renderAdminUsers(); }
   else if (tab === 'sessions')  renderAdminSessions();
   else if (tab === 'apps')      renderPendingUsersTab();
@@ -10133,6 +10152,7 @@ function renderAdminPage() {
   else if (tab === 'workhours') renderAdminWorkHours();
   else if (tab === 'gcsync')    renderAdminGcSync();
   else if (tab === 'keywords')  { const kw = document.getElementById('admin-keywords-wrap'); if (kw) _mlRenderKeywordsTab(kw); }
+  else if (tab === 'diskhealth') renderAdminDiskHealth();
 }
 
 // v218：使用者管理 tab bar 可拖曳排序。順序來源＝_adminTabOrder()（沿用 navOrder_ 前綴白名單，
@@ -10140,7 +10160,7 @@ function renderAdminPage() {
 // _normalizeTodoTabOrder（不關心 key 語意，待辦 tab 排序原本就是這樣設計的）。tab 集合是條件式的
 // （sessions 僅 IS_LOCAL_BACKEND 顯示）——順序陣列仍含完整 8 個 key，只在渲染時依條件過濾，
 // 不會因為某裝置看不到某 tab 就打亂已存順序或漏掉其他 key。
-const ADMIN_TAB_DEFAULT_ORDER = ['users', 'sessions', 'apps', 'depts', 'presets', 'workhours', 'gcsync', 'keywords'];
+const ADMIN_TAB_DEFAULT_ORDER = ['users', 'sessions', 'apps', 'depts', 'presets', 'workhours', 'gcsync', 'keywords', 'diskhealth'];
 function _adminTabOrder() {
   return _normalizeTodoTabOrder(_userPref_('navOrder_adminTabs'), ADMIN_TAB_DEFAULT_ORDER);
 }
@@ -10163,6 +10183,7 @@ function _renderAdminTabs() {
     workhours: '上班時間',
     gcsync:    'Google 日曆同步',
     keywords:  '關鍵字字庫',
+    diskhealth: '磁碟健康',
   };
   const _t = (key, label) => {
     const active = _adminActiveTab === key;
@@ -10172,8 +10193,9 @@ function _renderAdminTabs() {
       font-weight:${active?'600':'400'};transition:all .15s;">${label}</button>`;
   };
   // v214：「登入紀錄」tab 僅本地帳密＋TOTP 後端顯示（見 IS_LOCAL_BACKEND）——順序陣列仍含此 key，
-  // 只在渲染時依條件過濾掉，不影響已存順序的其餘 key。
-  const order = _adminTabOrder().filter(key => key !== 'sessions' || IS_LOCAL_BACKEND);
+  // 只在渲染時依條件過濾掉，不影響已存順序的其餘 key。v221：「磁碟健康」同理（資料來源是本地
+  // server 才有的 SMART 收集，GAS 版無此後端能力）。
+  const order = _adminTabOrder().filter(key => (key !== 'sessions' && key !== 'diskhealth') || IS_LOCAL_BACKEND);
   bar.innerHTML = order.map(key => _t(key, labels[key] ?? key)).join('');
   _scdInitDrag(bar, {
     axis: 'x',
@@ -11240,6 +11262,158 @@ async function _adminSessionsArchiveChecked() {
   } catch (e) {
     alert('封存失敗：' + e.message);
   }
+}
+
+// ══════════════════════════════════════════════
+//  磁碟健康（使用者管理「磁碟健康」tab，v221；僅本地帳密＋TOTP 後端顯示，見 IS_LOCAL_BACKEND）：
+//  資料來源是 root systemd timer 定期收集寫出的 SMART 摘要 JSON（server/scripts/smart-poll.js，
+//  唯讀，見 adminGetDiskHealth action），本頁只做展示與人性化格式轉換，不寫入任何資料。
+// ══════════════════════════════════════════════
+let _adminDiskHealthLoaded = false; // 是否已載入過一次（切到本 tab 首次自動載入，之後靠「重新整理」按鈕）
+
+// tab 切換進入點：非本地後端不顯示此 tab（renderAdminPage 呼叫前已由 _renderAdminTabs 擋過一層，
+// 這裡再擋一次防禦性檢查），首次切入才自動載入。
+function renderAdminDiskHealth() {
+  if (!IS_LOCAL_BACKEND) return;
+  if (!_adminDiskHealthLoaded) _adminDiskHealthLoad();
+}
+
+// bytes → 人性化 GB/TB（磁碟容量習慣以十進位 1000 為底，非 1024）。
+function _dhBytesHuman(n) {
+  if (n === null || n === undefined) return '未知';
+  const tb = n / 1e12;
+  if (tb >= 1) return (tb >= 10 ? tb.toFixed(0) : tb.toFixed(1)) + ' TB';
+  const gb = n / 1e9;
+  return (gb >= 10 ? gb.toFixed(0) : gb.toFixed(1)) + ' GB';
+}
+
+// 開機時數 → 換算年數附註。
+function _dhHoursHuman(h) {
+  if (h === null || h === undefined) return '未知';
+  const years = h / 24 / 365;
+  return `${Number(h).toLocaleString('zh-TW')} 小時（約 ${years.toFixed(1)} 年）`;
+}
+
+function _dhTempStyle(t) {
+  if (t === null || t === undefined) return '';
+  if (t > 65) return 'color:#c53030;font-weight:700;';
+  if (t > 55) return 'color:#dd6b20;font-weight:700;';
+  return '';
+}
+
+function _dhStatusBadge(passed) {
+  if (passed === true) return '<span style="font-size:.78rem;font-weight:700;color:#276749;background:#f0fff4;border:1px solid #9ae6b4;border-radius:4px;padding:2px 8px;">✓ 正常</span>';
+  if (passed === false) return '<span style="font-size:.78rem;font-weight:700;color:#c53030;background:#fff5f5;border:1px solid #feb2b2;border-radius:4px;padding:2px 8px;">✕ 異常——請立即備份並更換</span>';
+  return '<span style="font-size:.78rem;color:#718096;background:#f7fafc;border:1px solid #e2e8f0;border-radius:4px;padding:2px 8px;">? 無法判讀</span>';
+}
+
+// 關鍵 SMART 屬性：raw 值代表的白話意義（見 server/scripts/smart-poll.js WANTED 對映，
+// 前端只挑這 4 項出來特別提醒，其餘 ataAttrs 欄位——如 power_on_hours、temperature——已在
+// 卡片其他區塊各自呈現，不重複列在此表）。
+const DH_ATTR_LABELS = {
+  reallocated_sectors: { label: '重新配置磁區數', hint: '壞軌已被換成備用磁區，數量持續增加代表磁碟正在老化' },
+  pending_sectors: { label: '待處理不穩定磁區', hint: '疑似壞軌但尚未確認，持續增加是早期故障警訊' },
+  offline_uncorrectable: { label: '離線不可修復磁區', hint: '已確定無法讀取的磁區，該處資料可能已受損' },
+  reported_uncorrect: { label: '回報不可修正錯誤', hint: '讀寫時發生無法修正錯誤的累計次數' },
+};
+
+// 單顆磁碟是否有異常值得在卡片頂端／整頁警示條提醒（smartPassed 明確為 false，或關鍵屬性 raw>0）。
+function _dhDiskHasWarning(disk) {
+  if (disk.smartPassed === false) return true;
+  const attrs = disk.ataAttrs || {};
+  return Object.keys(DH_ATTR_LABELS).some(k => Number(attrs[k]?.raw) > 0);
+}
+
+function _dhDiskCard(disk) {
+  if (disk.error) {
+    return `
+    <div style="border:1px solid #feb2b2;border-radius:8px;padding:16px;margin-bottom:12px;background:#fff5f5;">
+      <div style="font-weight:600;color:#822727;">${escHtml(disk.device || '（未知裝置）')}</div>
+      <div style="font-size:.85rem;color:#822727;margin-top:4px;">讀取此顆磁碟的 SMART 資訊失敗：${escHtml(disk.error)}</div>
+    </div>`;
+  }
+  const hasWarning = _dhDiskHasWarning(disk);
+  const type = disk.nvme ? 'NVMe SSD' : (disk.rotationRate === 0 ? 'SSD' : (disk.rotationRate ? `HDD（${disk.rotationRate} RPM）` : '未知類型'));
+  const attrs = disk.ataAttrs || {};
+  const attrRows = Object.entries(DH_ATTR_LABELS).map(([key, meta]) => {
+    const raw = attrs[key] ? attrs[key].raw : null;
+    if (raw === null || raw === undefined) return '';
+    const bad = Number(raw) > 0;
+    return `
+      <tr>
+        <td style="padding:4px 8px;font-size:.82rem;color:#4a5568;">${escHtml(meta.label)}</td>
+        <td style="padding:4px 8px;font-size:.82rem;${bad ? 'color:#dd6b20;font-weight:700;' : ''}">${escHtml(String(raw))}${bad ? ` ⚠️ ${escHtml(meta.hint)}` : ''}</td>
+      </tr>`;
+  }).join('');
+  const nvmeBlock = disk.nvme ? `
+    <div style="margin-top:8px;font-size:.82rem;color:#4a5568;">
+      NVMe 壽命已用：<b style="${Number(disk.nvme.percentageUsed) >= 80 ? 'color:#c53030;' : (Number(disk.nvme.percentageUsed) >= 50 ? 'color:#dd6b20;' : '')}">${disk.nvme.percentageUsed ?? '未知'}%</b>
+      ${disk.nvme.availableSpare !== null && disk.nvme.availableSpare !== undefined ? `，可用備援：${disk.nvme.availableSpare}%` : ''}
+      ${disk.nvme.mediaErrors ? `，媒體錯誤：<b style="color:#dd6b20;">${disk.nvme.mediaErrors}</b>` : ''}
+    </div>` : '';
+  return `
+    <div style="border:1px solid ${hasWarning ? '#feb2b2' : '#e2e8f0'};border-radius:8px;padding:16px;margin-bottom:12px;${hasWarning ? 'background:#fffaf9;' : ''}">
+      ${hasWarning ? `<div style="font-size:.82rem;font-weight:600;color:#c53030;margin-bottom:8px;">⚠️ 此顆磁碟偵測到異常，建議儘速備份資料並安排更換</div>` : ''}
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
+        <div>
+          <div style="font-weight:600;color:#2d3748;">${escHtml(disk.model || disk.device || '（未知型號）')}</div>
+          <div style="font-size:.8rem;color:#718096;margin-top:2px;">${escHtml(disk.device || '')}　序號：${escHtml(disk.serial || '未知')}</div>
+        </div>
+        ${_dhStatusBadge(disk.smartPassed)}
+      </div>
+      <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:10px;font-size:.85rem;color:#4a5568;">
+        <div>容量：<b>${_dhBytesHuman(disk.capacityBytes)}</b></div>
+        <div>類型：<b>${escHtml(type)}</b></div>
+        <div>溫度：<b style="${_dhTempStyle(disk.temperatureC)}">${disk.temperatureC ?? '未知'}${disk.temperatureC !== null && disk.temperatureC !== undefined ? '°C' : ''}</b></div>
+        <div>開機時數：<b>${_dhHoursHuman(disk.powerOnHours)}</b></div>
+      </div>
+      ${disk.selfTestStatus ? `<div style="font-size:.8rem;color:#718096;margin-top:6px;">自我檢測：${escHtml(disk.selfTestStatus)}</div>` : ''}
+      ${attrRows ? `<table style="width:100%;border-collapse:collapse;margin-top:10px;background:#f7fafc;border-radius:6px;">${attrRows}</table>` : ''}
+      ${nvmeBlock}
+    </div>`;
+}
+
+const DH_ERROR_MSGS = {
+  smart_not_configured: '伺服器未設定 SMART 收集（SMART_STATUS_PATH）',
+  smart_not_available: '讀不到健康度資料，收集排程可能尚未執行',
+};
+
+async function _adminDiskHealthLoad() {
+  const wrap = document.getElementById('admin-diskhealth-wrap');
+  const updatedEl = document.getElementById('admin-diskhealth-updated');
+  if (!wrap) return;
+  wrap.innerHTML = '<p style="font-size:.85rem;color:#718096;margin:0;">載入中…</p>';
+  if (updatedEl) updatedEl.textContent = '';
+  let data;
+  try {
+    data = await proxyCall('adminGetDiskHealth', {});
+  } catch (e) {
+    const msg = DH_ERROR_MSGS[e.message] || e.message;
+    wrap.innerHTML = `<p style="font-size:.85rem;color:#c53030;margin:0;">載入失敗：${escHtml(msg)}</p>`;
+    return;
+  }
+  _adminDiskHealthLoaded = true;
+  const disks = Array.isArray(data.disks) ? data.disks : [];
+  if (updatedEl) {
+    const genAt = data.generatedAt ? new Date(data.generatedAt) : null;
+    if (genAt && !Number.isNaN(genAt.getTime())) {
+      const minsAgo = Math.round((Date.now() - genAt.getTime()) / 60000);
+      const stale = minsAgo > 90;
+      updatedEl.innerHTML = `資料時間：${escHtml(genAt.toLocaleString('zh-TW', { hour12: false }))}（${minsAgo} 分鐘前）` +
+        (stale ? `　<span style="color:#c53030;font-weight:700;">資料過舊，收集排程可能停擺</span>` : '');
+    } else {
+      updatedEl.textContent = '資料時間：未知';
+    }
+  }
+  if (!disks.length) {
+    wrap.innerHTML = `<div class="empty-state"><div class="icon">💽</div><p>目前沒有偵測到任何磁碟資料。</p></div>`;
+    return;
+  }
+  const anyWarning = disks.some(_dhDiskHasWarning);
+  const banner = anyWarning
+    ? `<div style="border:1px solid #feb2b2;background:#fff5f5;border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:.88rem;color:#822727;font-weight:600;">⚠️ 偵測到至少一顆磁碟異常，請儘速確認並備份資料。</div>`
+    : '';
+  wrap.innerHTML = banner + disks.map(_dhDiskCard).join('');
 }
 
 async function saveUser() {
@@ -31843,6 +32017,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-20', v: 221, title: '使用者管理新增「磁碟健康」分頁，顯示伺服器硬碟 SMART 狀態', isProd: false, items: [
+      item('新功能', '使用者管理頁新增「磁碟健康」分頁（管理者專屬），顯示伺服器每顆磁碟的 SMART 健康度：整體狀態（正常／異常／無法判讀）、型號、容量、類型（HDD 轉速或 SSD）、序號、溫度、開機時數（換算年），以及重新配置磁區數／待處理不穩定磁區／離線不可修復磁區／回報不可修正錯誤等關鍵指標（異常時附白話說明），NVMe 磁碟另顯示壽命已用百分比；任一磁碟異常時卡片與頁面頂端皆會顯示警示提醒'),
+      item('新功能', '分頁頂端顯示資料收集時間（換算「N 分鐘前」），超過 90 分鐘未更新會以紅字提示「資料過舊，收集排程可能停擺」；可按「重新整理」手動刷新'),
+      item('技術', '資料來源為伺服器 root 排程每 30 分鐘收集一次的 SMART 摘要（smartctl），後端 adminGetDiskHealth 僅唯讀讀取該檔案原樣回傳，不需要應用程式本身提權'),
+    ]},
     { date: '2026-07-20', v: 220, title: '信箱：openmail 密碼改 7 天免重登、信件列表與已讀內文加快取秒開、新增「學諮伺服器資料夾」信件封存', isProd: false, items: [
       item('改善', 'openmail 密碼快取效期由「每日台北午夜過期」改為「7 天滑動視窗」（每次使用即續期 7 天），仍只存伺服器記憶體、重啟伺服器一律清空——週末不開機也不必重新輸入信箱密碼，重連提示流程不變'),
       item('改善', '信箱切換資料夾、開信改為「有快取先顯示、背景悄悄刷新最新內容」，同一資料夾/信件重新開啟時秒開不再看到轉圈；已開過信件的內文快取上限 50 封（自動淘汰最舊），登出或信箱連線中斷會清空快取'),
