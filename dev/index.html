@@ -1638,7 +1638,7 @@
             <h3>登入紀錄總覽</h3>
             <div style="display:flex;gap:10px;align-items:center;">
               <label style="font-size:.82rem;color:#4a5568;display:flex;align-items:center;gap:5px;cursor:pointer;">
-                <input type="checkbox" id="admin-sessions-include-archived" style="margin:0;"> 含已封存
+                <input type="checkbox" id="admin-sessions-include-archived" style="margin:0;" onchange="_adminSessionsLoad()"> 含已封存
               </label>
               <button class="btn btn-secondary btn-sm" onclick="_adminSessionsLoad()">重新載入</button>
             </div>
@@ -10051,24 +10051,53 @@ function renderAdminPage() {
   else if (tab === 'keywords')  { const kw = document.getElementById('admin-keywords-wrap'); if (kw) _mlRenderKeywordsTab(kw); }
 }
 
+// v218：使用者管理 tab bar 可拖曳排序。順序來源＝_adminTabOrder()（沿用 navOrder_ 前綴白名單，
+// 跨裝置同步＋localStorage 立即生效，見 syncUserPref_/_userPref_），正規化交給既有泛用純函式
+// _normalizeTodoTabOrder（不關心 key 語意，待辦 tab 排序原本就是這樣設計的）。tab 集合是條件式的
+// （sessions 僅 IS_LOCAL_BACKEND 顯示）——順序陣列仍含完整 8 個 key，只在渲染時依條件過濾，
+// 不會因為某裝置看不到某 tab 就打亂已存順序或漏掉其他 key。
+const ADMIN_TAB_DEFAULT_ORDER = ['users', 'sessions', 'apps', 'depts', 'presets', 'workhours', 'gcsync', 'keywords'];
+function _adminTabOrder() {
+  return _normalizeTodoTabOrder(_userPref_('navOrder_adminTabs'), ADMIN_TAB_DEFAULT_ORDER);
+}
+function _setAdminTabOrder(order) {
+  syncUserPref_({ navOrder_adminTabs: order });
+}
 function _renderAdminTabs() {
   const bar = document.getElementById('admin-tab-bar');
   if (!bar) return;
   const count = (pendingUsersData?.applications || []).filter(a => a.status === 'pending').length;
-  const _t = (key, label) => {
-    const active = _adminActiveTab === key;
-    return `<button type="button" onclick="_adminTab('${key}')"
-      style="padding:9px 20px;border:none;border-bottom:2px solid ${active?'#3182ce':'transparent'};
-      background:none;color:${active?'#2b6cb0':'#4a5568'};cursor:pointer;font-size:.9rem;
-      font-weight:${active?'600':'400'};transition:all .15s;">${label}</button>`;
-  };
   const badge = count > 0
     ? ` <span style="background:#e53e3e;color:#fff;border-radius:10px;padding:0 5px;font-size:.72rem;">${count}</span>`
     : '';
-  // v214：「登入紀錄」tab 僅本地帳密＋TOTP 後端顯示（見 IS_LOCAL_BACKEND），比照原本卡片的顯示條件，
-  // 改為條件式串接 tab 按鈕字串（而非渲染出來再切 display，非本地後端使用者完全看不到此分頁）。
-  const sessTab = IS_LOCAL_BACKEND ? _t('sessions','登入紀錄') : '';
-  bar.innerHTML = _t('users','使用者列表') + sessTab + _t('apps','帳號申請審核' + badge) + _t('depts','系所與學制') + _t('presets','快速選項') + _t('workhours','上班時間') + _t('gcsync','Google 日曆同步') + _t('keywords','關鍵字字庫');
+  const labels = {
+    users:     '使用者列表',
+    sessions:  '登入紀錄',
+    apps:      '帳號申請審核' + badge,
+    depts:     '系所與學制',
+    presets:   '快速選項',
+    workhours: '上班時間',
+    gcsync:    'Google 日曆同步',
+    keywords:  '關鍵字字庫',
+  };
+  const _t = (key, label) => {
+    const active = _adminActiveTab === key;
+    return `<button type="button" class="scd-drag-item" data-drag-key="${key}" data-tip="可拖曳調整分頁順序" onclick="_adminTab('${key}')"
+      style="padding:9px 20px;border:none;border-bottom:2px solid ${active?'#3182ce':'transparent'};
+      background:none;color:${active?'#2b6cb0':'#4a5568'};cursor:grab;font-size:.9rem;
+      font-weight:${active?'600':'400'};transition:all .15s;">${label}</button>`;
+  };
+  // v214：「登入紀錄」tab 僅本地帳密＋TOTP 後端顯示（見 IS_LOCAL_BACKEND）——順序陣列仍含此 key，
+  // 只在渲染時依條件過濾掉，不影響已存順序的其餘 key。
+  const order = _adminTabOrder().filter(key => key !== 'sessions' || IS_LOCAL_BACKEND);
+  bar.innerHTML = order.map(key => _t(key, labels[key] ?? key)).join('');
+  _scdInitDrag(bar, {
+    axis: 'x',
+    itemSelector: '.scd-drag-item',
+    longPressTouch: true,
+    getOrder: _adminTabOrder,
+    onReorder: (newOrder) => { _setAdminTabOrder(newOrder); _renderAdminTabs(); },
+  });
 }
 
 function _adminTab(tab) {
@@ -11117,7 +11146,12 @@ async function _adminSessionsArchiveChecked() {
   const items = boxes.map(el => ({ email: el.dataset.email, jti: el.dataset.jti }));
   try {
     const r = await proxyCall('adminArchiveSessions', { items });
-    showToast(`已封存 ${r.archived || 0} 筆登入紀錄${r.skipped ? '（略過 ' + r.skipped + ' 筆）' : ''}。`, 'success', 3000);
+    // v218：封存後若目前「含已封存」未勾，重新載入會依 includeArchived=false 把剛封存的紀錄濾掉，
+    // 使用者容易誤以為操作沒生效——toast 額外提示如何檢視。
+    const includeArchived = document.getElementById('admin-sessions-include-archived')?.checked || false;
+    const skippedNote = r.skipped ? `，略過 ${r.skipped} 筆` : '';
+    const hintNote = (!includeArchived && (r.archived || 0) > 0) ? '（勾選「含已封存」可檢視）' : '';
+    showToast(`已封存 ${r.archived || 0} 筆${hintNote}${skippedNote}。`, 'success', 4000);
     await _adminSessionsLoad();
   } catch (e) {
     alert('封存失敗：' + e.message);
@@ -31414,7 +31448,18 @@ function lockScreen(manual = false) {
   clearTimeout(_afkTimer);
   document.getElementById('lock-overlay').style.display = 'flex';
   const disp = document.getElementById('lock-user-display');
-  if (disp) disp.textContent = currentUser?.name ? `${currentUser.name}，請輸入 PIN 碼解鎖。` : '請輸入 PIN 碼解鎖。';
+  // v218：鎖定畫面顯示「姓名＋職稱」而非帳號名稱。姓名取 configData.users[email].name（中文姓名，
+  // 比 Google payload.name 可靠），職稱取 configData.users[email].role（config.json 既有欄位，
+  // Header／Sidebar 顯示職稱亦沿用同一欄位，見 resolveUserRole）。configData 理論上此時已載入
+  // （lockScreen 僅可能由登入後的 header 鎖定鈕／AFK 逾時／偏好設定頁觸發，皆在 checkPinSetup 之後），
+  // 但仍保留 fallback 鏈以防萬一：姓名＋職稱 → 只有姓名 → email → 空字串。
+  if (disp) {
+    const _u = configData?.users?.[currentUser?.email];
+    const _name = _u?.name || currentUser?.name || currentUser?.email || '';
+    const _role = _u?.role || '';
+    const _label = _name ? (_role ? `${_name} ${_role}` : _name) : '';
+    disp.textContent = _label ? `${_label}，請輸入 PIN 碼解鎖。` : '請輸入 PIN 碼解鎖。';
+  }
   const inp = document.getElementById('lock-pin-input');
   if (inp) { inp.value = ''; inp.focus(); }
   document.getElementById('lock-pin-error').style.display = 'none';
@@ -31580,6 +31625,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-20', v: 218, title: '畫面鎖定顯示姓名職稱、使用者管理分頁可拖曳排序、登入紀錄「含已封存」即勾即生效', isProd: false, items: [
+      item('改善', '畫面鎖定畫面原本顯示帳號名稱（如 email 前綴），改為顯示「姓名 職稱」（取自使用者管理中的姓名與職稱欄位），未設定姓名時退回帳號名稱'),
+      item('新功能', '使用者管理頁的分頁（使用者列表／登入紀錄／帳號申請審核…）可拖曳調整順序，順序記憶會同步到雲端、跨裝置沿用'),
+      item('修正', '登入紀錄頁「含已封存」勾選框原本勾選後要另外按「重新載入」才會生效，改為勾選/取消即立即重新載入；封存勾選的紀錄後，若「含已封存」未勾會另外提示可勾選檢視剛封存的紀錄'),
+    ]},
     { date: '2026-07-20', v: 217, title: '側邊選單新增「整個收合/展開」開關', isProd: true, items: [
       item('新功能', '側邊選單頂部新增收合鈕（⬅），可將整條側邊選單藏起、讓主內容區佔滿畫面；收合後左上角會出現一個小按鈕（☰）可再展開，不影響原有的分類收合／項目釘選／拖曳排序狀態'),
       item('技術', '收合狀態存於本機（localStorage）並比照分類收合／釘選同步至雲端使用者偏好，跨裝置登入時可還原上次選擇'),
