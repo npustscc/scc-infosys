@@ -240,7 +240,20 @@
       padding: 20px 0;
       flex-shrink: 0;
       position: relative;
+      transition: width .2s ease; /* v217：整個收合/展開用，拖曳調寬時會在 JS 端暫時關閉避免拖曳卡頓 */
     }
+    /* v217：sidebar 整個收合（非分類收合，是整條側邊欄）。#content 為 flex:1 會自動補滿騰出的空間。 */
+    #sidebar.sb-hidden { width: 0 !important; overflow: hidden; border-right: none; }
+    #sidebar-collapse-btn {
+      background: none; border: none; cursor: pointer; font-size: .95rem; color: #a0aec0;
+      padding: 4px 7px; border-radius: 5px; transition: background .15s, color .15s;
+    }
+    #sidebar-collapse-btn:hover { background: #ebf4fb; color: #1a5276; }
+    #sidebar-expand-btn {
+      background: rgba(255,255,255,.15); border: none; color: #fff; border-radius: 6px;
+      padding: 4px 10px; font-size: 1rem; cursor: pointer; flex-shrink: 0; transition: background .15s;
+    }
+    #sidebar-expand-btn:hover { background: rgba(255,255,255,.3); }
     #sidebar-resize-handle {
       position: absolute;
       top: 0; right: -3px;
@@ -1122,6 +1135,7 @@
 <!-- ── App Header ── -->
 <header id="app-header">
   <div style="display:flex;align-items:center;gap:10px;min-width:0;overflow:hidden;">
+    <button id="sidebar-expand-btn" onclick="toggleSidebarHidden()" data-tip="展開側邊選單" title="展開側邊選單" style="display:none;">☰</button>
     <h1 style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;">🏫 國立屏東科技大學學生諮商中心資訊系統</h1>
     <button id="header-back-btn" onclick="handleFloatingBack()">← 返回</button>
     <button id="header-prev-btn" onclick="handlePrevPage()" title="返回上一頁">← 上一頁：<span id="header-prev-label"></span></button>
@@ -1296,6 +1310,9 @@
   <!-- Sidebar -->
   <nav id="sidebar">
     <div id="sidebar-resize-handle" title="拖曳調整側邊欄寬度"></div>
+    <div style="display:flex;justify-content:flex-end;padding:0 12px;margin-top:-6px;">
+      <button id="sidebar-collapse-btn" onclick="toggleSidebarHidden()" data-tip="收合側邊選單" title="收合側邊選單">⬅</button>
+    </div>
     <div id="sidebar-role-box">
       <div class="role-name" id="sb-role">—</div>
       <div class="extra-role" id="sb-extra"></div>
@@ -31563,6 +31580,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-20', v: 217, title: '側邊選單新增「整個收合/展開」開關', isProd: false, items: [
+      item('新功能', '側邊選單頂部新增收合鈕（⬅），可將整條側邊選單藏起、讓主內容區佔滿畫面；收合後左上角會出現一個小按鈕（☰）可再展開，不影響原有的分類收合／項目釘選／拖曳排序狀態'),
+      item('技術', '收合狀態存於本機（localStorage）並比照分類收合／釘選同步至雲端使用者偏好，跨裝置登入時可還原上次選擇'),
+    ]},
     { date: '2026-07-20', v: 216, title: '新生心理測驗：修正復原/重做連按失效、整合tab學號比對、欄位過多版面跑版；新增列按鈕醒目化；軟刪除改儲存即真刪', isProd: false, items: [
       item('修正', '編輯試算表時連續按 Ctrl+Z／Ctrl+Y 復原/重做，第一次操作後輸入焦點會跟著畫面重繪一起消失，導致從第二下開始按鍵沒反應；已修正為可連續復原/重做到堆疊清空為止，不需要每次重新點回儲存格'),
       item('修正', '整合分頁的學號欄位，過去若學生名冊裡的舊資料學號尾端殘留看不見的空白，會讓該學號在整合、統計、報告、匯出檔案裡都帶著這段空白，拿去跟其他名冊比對容易誤判「對不上」；學號比對邏輯本身其實一直是正確的，本次一併修正顯示出來的學號值也去除頭尾空白'),
@@ -50692,6 +50713,7 @@ function initSidebarResize() {
     startX = e.clientX;
     startW = sidebar.offsetWidth;
     handle.classList.add('resizing');
+    sidebar.style.transition = 'none'; // v217：整體收合新增了 width transition，拖曳調寬時暫時關閉避免拖曳卡頓
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
     let active = true;
@@ -50699,6 +50721,7 @@ function initSidebarResize() {
       if (!active) return;
       active = false;
       handle.classList.remove('resizing');
+      sidebar.style.transition = '';
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       document.removeEventListener('mousemove', onMove, true);
@@ -50804,6 +50827,35 @@ function initSidebarCollapsePins() {
     item.insertBefore(bar, item.firstChild);
   });
   applySidebarPrefs();
+  initSidebarHiddenPref();
+}
+
+// ── v217：整個 sidebar 收合/展開（有別於上面「分類收合」與「釘選」，是整條側邊欄藏起來）──
+const SB_HIDDEN_LS_KEY = 'scc_sidebar_hidden';
+function applySidebarHiddenState(hidden) {
+  const sidebar   = document.getElementById('sidebar');
+  const expandBtn = document.getElementById('sidebar-expand-btn');
+  if (!sidebar) return;
+  sidebar.classList.toggle('sb-hidden', hidden);
+  if (expandBtn) expandBtn.style.display = hidden ? '' : 'none';
+}
+function initSidebarHiddenPref() {
+  let hidden = false;
+  try {
+    const ls = localStorage.getItem(SB_HIDDEN_LS_KEY);
+    if (ls !== null) hidden = (ls === '1');
+  } catch(_) {}
+  const drivePref = _userPref_('sidebarHidden');
+  if (drivePref !== undefined) hidden = Boolean(drivePref); // 雲端偏好優先（跨裝置同步），本機值僅為尚未讀到雲端前的立即回退
+  applySidebarHiddenState(hidden);
+}
+function toggleSidebarHidden() {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return;
+  const hidden = !sidebar.classList.contains('sb-hidden');
+  applySidebarHiddenState(hidden);
+  try { localStorage.setItem(SB_HIDDEN_LS_KEY, hidden ? '1' : '0'); } catch(_) {}
+  syncUserPref_({ sidebarHidden: hidden });
 }
 
 function applySidebarPrefs() {
