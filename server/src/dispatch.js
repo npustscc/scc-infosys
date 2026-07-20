@@ -448,6 +448,7 @@ async function handleRequest(db, config, payload) {
       case 'omsvFolderCreate': result = openmailArchive.omsvFolderCreate(db, userEmail, params); break;
       case 'omsvFolderRename': result = openmailArchive.omsvFolderRename(db, userEmail, params); break;
       case 'omsvFolderDelete': result = openmailArchive.omsvFolderDelete(db, userEmail, params); break;
+      case 'omsvFolderMove': result = openmailArchive.omsvFolderMove(db, userEmail, params); break;
       case 'omsvArchiveMessage': result = await openmailArchive.omsvArchiveMessage(db, userEmail, config, params); break;
       case 'omsvList': result = openmailArchive.omsvList(db, userEmail, params); break;
       case 'omsvGet': result = await openmailArchive.omsvGet(db, userEmail, params); break;

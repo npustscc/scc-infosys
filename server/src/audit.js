@@ -115,7 +115,9 @@ function summarizeOmsvParams(params) {
     const v = params[k];
     if (k === 'name') return `name=${String(v == null ? '' : v).slice(0, 80)}`;
     if (k === 'folder') return `folder=${String(v).slice(0, 80)}`;
-    if (k === 'folderId' || k === 'targetFolderId' || k === 'id' || k === 'index' || k === 'uid') return `${k}=${v}`;
+    // v234：omsvFolderMove/Create 的 parentId 純粹是資料夾階層定位用（哪個資料夾的 id），同
+    // folderId 一樣不是個資，可讀記錄。
+    if (k === 'folderId' || k === 'targetFolderId' || k === 'parentId' || k === 'id' || k === 'index' || k === 'uid') return `${k}=${v}`;
     if (k === 'deleteFromMail') return `deleteFromMail=${!!v}`;
     const len = typeof v === 'string' ? v.length : (v && typeof v === 'object' ? JSON.stringify(v).length : String(v).length);
     return `${k}_len=${len}`;

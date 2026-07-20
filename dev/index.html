@@ -2249,9 +2249,14 @@
             <div id="om-folder-tree" style="overflow:auto;padding:6px 4px;height:280px;flex-shrink:0;"></div>
             <!-- v224：可上下拖曳調整屏科大信箱資料夾樹高度 -->
             <div id="om-folder-resize" style="height:7px;flex-shrink:0;cursor:ns-resize;background:#edf2f7;border-top:1px solid #e2e8f0;border-bottom:1px solid #e2e8f0;" data-tip="上下拖曳可調整屏科大信箱資料夾的高度"></div>
-            <!-- v220：學諮系統資料夾（信件封存到本系統 sqlite）；v224 字級對齊屏科大信箱 -->
-            <div style="padding:8px 10px 4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex-shrink:0;">
-              <h3 style="font-size:.88rem;margin:0;cursor:help;" data-tip="把屏科大信箱信件（含附件）完整封存到學諮系統自己的資料庫，不佔用屏科大信箱容量；封存時可選擇是否同時刪除屏科大信箱原信。適合長期保存但不想佔用信箱空間的信件。也可直接把信件拖曳進下方資料夾封存。">學諮系統資料夾 ⓘ</h3>
+            <!-- v220：學諮系統資料夾（信件封存到本系統 sqlite）；v224 字級對齊屏科大信箱；v234 標題列
+                 加拖曳資料夾放開＝移回根層（只回應 _om._dragFolderId，信件拖曳到此不觸發任何動作，
+                 避免使用者誤以為把信拖到標題列會有作用）。 -->
+            <div style="padding:8px 10px 4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex-shrink:0;"
+              ondragover="if(typeof _om!=='undefined'&&_om._dragFolderId){event.preventDefault();this.classList.add('om-drop-hover');}"
+              ondragleave="this.classList.remove('om-drop-hover')"
+              ondrop="this.classList.remove('om-drop-hover');_omsvDropOnRoot()">
+              <h3 style="font-size:.88rem;margin:0;cursor:help;" data-tip="把屏科大信箱信件（含附件）完整封存到學諮系統自己的資料庫，不佔用屏科大信箱容量；封存時可選擇是否同時刪除屏科大信箱原信。適合長期保存但不想佔用信箱空間的信件。也可直接把信件拖曳進下方資料夾封存。資料夾可分層：每列的＋可建子資料夾，拖曳資料夾可改變階層（最多三層）。">學諮系統資料夾 ⓘ</h3>
               <span style="font-size:.72rem;background:#edf2f7;color:#4a5568;border-radius:4px;padding:2px 7px;white-space:nowrap;" data-tip="信件存於學諮系統資料庫，不佔屏科大信箱空間">📦 不佔信箱空間</span>
               <!-- v233：⚙ 放大並加文字標籤，改按鈕樣式更醒目 -->
               <span style="cursor:pointer;margin-left:auto;display:inline-flex;align-items:center;gap:4px;background:#ebf8ff;color:#2b6cb0;border:1px solid #90cdf4;border-radius:6px;padding:4px 10px;line-height:1;white-space:nowrap;" onclick="_omDragDelPrefPrompt()" onmouseover="this.style.background='#bee3f8'" onmouseout="this.style.background='#ebf8ff'" data-tip="拖曳封存偏好：設定拖信進來時，原信要每次詢問／自動刪除／自動保留"><span style="font-size:1.1rem;">⚙</span><span style="font-size:.76rem;font-weight:600;">封存偏好</span></span>
@@ -32152,6 +32157,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-20', v: 234, title: '信箱：學諮系統資料夾支援子資料夾分層（最多三層）', isProd: false, items: [
+      item('新功能', '學諮系統資料夾可建立子資料夾（每列的＋按鈕），左欄以樹狀縮排顯示並可 ▸/▾ 收合（記住收合狀態）'),
+      item('新功能', '拖曳資料夾到另一個資料夾即可改變階層，拖到「學諮系統資料夾」標題列移回最上層；最多三層，不能移進自己的子資料夾'),
+      item('說明', '信件拖曳封存不受影響，任何一層資料夾都可以收信；刪除資料夾時需先清空信件與子資料夾'),
+    ]},
     { date: '2026-07-20', v: 233, title: '信箱：學諮系統資料夾的 ⚙ 放大為「⚙ 封存偏好」醒目按鈕', isProd: true, items: [
       item('體驗', '學諮系統資料夾標題列的 ⚙（拖曳封存偏好設定入口）原本太小不易發現，放大並加上「封存偏好」文字標籤，改為藍色按鈕樣式，滑鼠移過會變色'),
     ]},
@@ -52005,7 +52015,9 @@ let _om = {
   composeMode: null,      // null | 'reply' | 'replyAll' | 'fwd'
   composeRefMsg: null,
   // v220：學諮伺服器資料夾（信件封存到本系統 sqlite，見 openmail/archive.js omsv* action）
-  archiveFolders: [],        // [{ id, name, createdAt, messageCount }]
+  // v234：archiveFolders 每筆多一個 parentId（null＝根層），資料夾拖曳改階層時用的
+  // _dragFolderId 動態掛在 _om 上（同 _dragUids 的既有寫法，不在此預先宣告）。
+  archiveFolders: [],        // [{ id, name, parentId, createdAt, messageCount }]
   archiveCurrentFolderId: null, // 目前檢視中的封存資料夾 id；null＝目前顯示一般 openmail 信件列表
   archiveMessages: [],       // 目前封存資料夾的信件列表 metadata（omsvList）
   archiveViewingId: null,    // 閱讀窗目前顯示的封存信 id；null＝閱讀窗顯示的是即時 IMAP 信件
@@ -52077,7 +52089,10 @@ function _omErrMsg(msg) {
     omsv_invalid_name: '資料夾名稱不可為空，且長度需在 100 字以內',
     omsv_folder_name_taken: '已有相同名稱的資料夾',
     omsv_folder_not_found: '找不到指定的學諮伺服器資料夾',
-    omsv_folder_not_empty: '資料夾內還有信件，請先清空後再刪除',
+    omsv_folder_not_empty: '資料夾內還有信件或子資料夾，請先清空',
+    // v234：資料夾階層（子資料夾）業務錯誤
+    omsv_folder_too_deep: '資料夾最多三層',
+    omsv_folder_cycle: '不能移到自己或自己的子資料夾底下',
     omsv_message_not_found: '找不到這封已封存的信件',
     omsv_attachment_not_found: '找不到這個附件',
     omsv_too_large: '信件超過 25MB 封存上限，請改用其他方式保存',
@@ -53204,6 +53219,28 @@ async function _omsvLoadFolders() {
   _omsvRenderFolderTree();
 }
 
+// v234：學諮系統資料夾樹狀階層（子資料夾，最多三層，見 server/openmail/archive.js
+// MAX_FOLDER_DEPTH）。收合狀態存 localStorage（比照 _omDragDelPrefKey 寫法，key 帶當前登入
+// email，換帳號不會互相汙染）。
+function _omsvCollapsedKey() { return 'scc_omsv_collapsed_' + (currentUser?.email || ''); }
+function _omsvCollapsedGet() {
+  try {
+    const v = JSON.parse(localStorage.getItem(_omsvCollapsedKey()) || '[]');
+    return new Set(Array.isArray(v) ? v : []);
+  } catch (_) { return new Set(); }
+}
+function _omsvCollapsedSet(set) {
+  try { localStorage.setItem(_omsvCollapsedKey(), JSON.stringify([...set])); } catch (_) {}
+}
+function _omsvToggleCollapse(id) {
+  const set = _omsvCollapsedGet();
+  if (set.has(id)) set.delete(id); else set.add(id);
+  _omsvCollapsedSet(set);
+  _omsvRenderFolderTree();
+}
+
+const OMSV_MAX_FOLDER_DEPTH = 3; // 對映 server 的 archive.js MAX_FOLDER_DEPTH（根層＝第 1 層）
+
 function _omsvRenderFolderTree() {
   const el = document.getElementById('omsv-folder-tree');
   if (!el) return;
@@ -53211,28 +53248,107 @@ function _omsvRenderFolderTree() {
     el.innerHTML = '<div style="padding:8px;color:#a0aec0;font-size:.74rem;">尚無資料夾</div>';
     return;
   }
-  el.innerHTML = _om.archiveFolders.map(f => {
-    const active = _om.archiveCurrentFolderId === f.id;
-    const nameEsc = escHtml(f.name).replace(/'/g, "\\'");
-    return `<div class="nav-item${active ? ' active' : ''}" style="padding:5px 8px;font-size:.85rem;display:flex;align-items:center;gap:4px;"
-      ondragover="if(typeof _om!=='undefined'&&_om._dragUids){event.preventDefault();this.classList.add('om-drop-hover');}"
-      ondragleave="this.classList.remove('om-drop-hover')"
-      ondrop="this.classList.remove('om-drop-hover');_omDropOnArchiveFolder(${f.id}, '${nameEsc}')">
-      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" onclick="_omsvSelectFolder(${f.id})">📦 ${escHtml(f.name)}</span>
-      <span style="color:#a0aec0;flex-shrink:0;font-size:.7rem;">${f.messageCount}</span>
-      <span style="cursor:pointer;flex-shrink:0;" title="重新命名" onclick="event.stopPropagation();_omsvRenameFolderPrompt(${f.id}, '${nameEsc}')">✎</span>
-      <span style="cursor:pointer;flex-shrink:0;" title="刪除" onclick="event.stopPropagation();_omsvDeleteFolderClick(${f.id})">🗑</span>
-    </div>`;
-  }).join('');
+  // 以 parentId 建 children map。parentId 指向不存在的 id（理論上不該發生的髒資料）一律當根層
+  // 處理，避免那個資料夾整個從畫面上消失、也避免遞迴時試圖走進不存在的節點。
+  const byId = new Map(_om.archiveFolders.map(f => [f.id, f]));
+  const childrenOf = new Map();
+  _om.archiveFolders.forEach(f => {
+    const pid = (f.parentId != null && byId.has(f.parentId)) ? f.parentId : null;
+    if (!childrenOf.has(pid)) childrenOf.set(pid, []);
+    childrenOf.get(pid).push(f);
+  });
+  childrenOf.forEach(list => list.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant')));
+
+  const collapsed = _omsvCollapsedGet();
+  const rows = [];
+  // seen 防禦：理論上不該有循環（server 端 omsvFolderMove 會擋），但遞迴渲染仍不吃任何已經
+  // 渲染過的 id，避免任何理論上的髒資料造成無窮迴圈。
+  const visit = (list, depth, seen) => {
+    for (const f of list) {
+      if (seen.has(f.id)) continue;
+      seen.add(f.id);
+      const kids = childrenOf.get(f.id) || [];
+      const hasKids = kids.length > 0;
+      const isCollapsed = collapsed.has(f.id);
+      const active = _om.archiveCurrentFolderId === f.id;
+      const nameEsc = escHtml(f.name).replace(/'/g, "\\'");
+      const indent = 4 + depth * 14;
+      const toggle = hasKids
+        ? `<span style="cursor:pointer;flex-shrink:0;width:14px;text-align:center;color:#718096;" onclick="event.stopPropagation();_omsvToggleCollapse(${f.id})">${isCollapsed ? '▸' : '▾'}</span>`
+        : `<span style="flex-shrink:0;width:14px;"></span>`;
+      const addBtn = depth < OMSV_MAX_FOLDER_DEPTH - 1
+        ? `<span style="cursor:pointer;flex-shrink:0;" title="新增子資料夾" onclick="event.stopPropagation();_omsvCreateFolderPrompt(${f.id})">＋</span>`
+        : '';
+      rows.push(`<div class="nav-item${active ? ' active' : ''}" draggable="true"
+        style="padding:5px 8px 5px ${indent}px;font-size:.85rem;display:flex;align-items:center;gap:4px;"
+        ondragstart="_omsvFolderDragStart(event, ${f.id})"
+        ondragend="_omsvFolderDragEnd()"
+        ondragover="if(typeof _om!=='undefined'&&(_om._dragUids||_om._dragFolderId)){event.preventDefault();this.classList.add('om-drop-hover');}"
+        ondragleave="this.classList.remove('om-drop-hover')"
+        ondrop="this.classList.remove('om-drop-hover');_omsvHandleDrop(${f.id}, '${nameEsc}')">
+        ${toggle}
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;" onclick="_omsvSelectFolder(${f.id})">📦 ${escHtml(f.name)}</span>
+        <span style="color:#a0aec0;flex-shrink:0;font-size:.7rem;">${f.messageCount}</span>
+        ${addBtn}
+        <span style="cursor:pointer;flex-shrink:0;" title="重新命名" onclick="event.stopPropagation();_omsvRenameFolderPrompt(${f.id}, '${nameEsc}')">✎</span>
+        <span style="cursor:pointer;flex-shrink:0;" title="刪除" onclick="event.stopPropagation();_omsvDeleteFolderClick(${f.id})">🗑</span>
+      </div>`);
+      if (hasKids && !isCollapsed) visit(kids, depth + 1, seen);
+    }
+  };
+  visit(childrenOf.get(null) || [], 0, new Set());
+  el.innerHTML = rows.join('');
 }
 
-async function _omsvCreateFolderPrompt() {
+// v234：資料夾列的 drop 統一入口——拖的是資料夾（_om._dragFolderId 有值）就改階層，
+// 否則沿用既有的信件封存流程（_omDropOnArchiveFolder）。拖到自己身上直接忽略。
+function _omsvHandleDrop(targetId, targetName) {
+  if (typeof _om !== 'undefined' && _om._dragFolderId != null) {
+    const dragId = _om._dragFolderId;
+    _omsvFolderDragEnd();
+    if (dragId === targetId) return;
+    _omsvMoveFolder(dragId, targetId);
+    return;
+  }
+  _omDropOnArchiveFolder(targetId, targetName);
+}
+
+// 拖到「學諮系統資料夾」標題列＝移回根層；只在拖的是資料夾時才有反應（見標題列 ondrop）。
+function _omsvDropOnRoot() {
+  if (typeof _om === 'undefined' || _om._dragFolderId == null) return;
+  const dragId = _om._dragFolderId;
+  _omsvFolderDragEnd();
+  _omsvMoveFolder(dragId, null);
+}
+
+function _omsvFolderDragStart(e, id) {
+  _om._dragFolderId = id;
+  document.body.classList.add('om-dragging');
+  try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', 'omsv-folder:' + id); } catch (_) {}
+}
+function _omsvFolderDragEnd() {
+  _om._dragFolderId = null;
+  document.body.classList.remove('om-dragging');
+  document.querySelectorAll('.om-drop-hover').forEach(el => el.classList.remove('om-drop-hover'));
+}
+
+async function _omsvMoveFolder(folderId, parentId) {
+  try {
+    await proxyCall('omsvFolderMove', { folderId, parentId });
+    showToast('已移動資料夾', 'success');
+    await _omsvLoadFolders();
+  } catch (e) {
+    showToast('移動失敗：' + _omErrMsg(e.message), 'error');
+  }
+}
+
+async function _omsvCreateFolderPrompt(parentId) {
   const name = prompt('新資料夾名稱：');
   if (name == null) return;
   const trimmed = name.trim();
   if (!trimmed) return;
   try {
-    await proxyCall('omsvFolderCreate', { name: trimmed });
+    await proxyCall('omsvFolderCreate', parentId != null ? { name: trimmed, parentId } : { name: trimmed });
     showToast('已建立資料夾', 'success');
     await _omsvLoadFolders();
   } catch (e) {
@@ -53255,7 +53371,7 @@ async function _omsvRenameFolderPrompt(folderId, oldName) {
 }
 
 async function _omsvDeleteFolderClick(folderId) {
-  if (!confirm('確定要刪除這個資料夾？（資料夾內還有信件時無法刪除，請先清空）')) return;
+  if (!confirm('確定要刪除這個資料夾？（資料夾內還有信件或子資料夾時無法刪除，請先清空）')) return;
   try {
     await proxyCall('omsvFolderDelete', { folderId });
     showToast('已刪除資料夾', 'success');
