@@ -2120,6 +2120,16 @@
         </div>
       </div>
 
+      <div class="card">
+        <div class="card-header"><h3>🖱️ 游標大小</h3></div>
+        <div style="padding:16px 20px;">
+          <p style="font-size:.82rem;color:#718096;margin-bottom:10px;">放大滑鼠游標並美化樣式，適合投影或視力需求；選擇後立即生效並跨裝置記住。</p>
+          <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;"><input type="radio" name="pref-cursor-size" value="std" onchange="_prefCursorSizeChange(this.value)"> 標準（瀏覽器原生）</label>
+          <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;"><input type="radio" name="pref-cursor-size" value="lg" onchange="_prefCursorSizeChange(this.value)"> 大（30px）</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="radio" name="pref-cursor-size" value="xl" onchange="_prefCursorSizeChange(this.value)"> 特大（42px）</label>
+        </div>
+      </div>
+
       </div><!-- /prefs-grid -->
     </div>
 
@@ -4738,6 +4748,49 @@ function applyDrivePrefs() {
   else if (bvm != null) { _bkListView = false; _bkWeekMode = false; _bkDaySpan = parseInt(bvm) || _bkDaySpan; }
   const usd = _userPref_('unassignedScanDate');
   if (usd) { try { localStorage.setItem('scc_unassigned_scan', usd); } catch(_) {} }
+  // v240：游標大小（標準／大／特大），登入即套用
+  _applyCursorSize(_userPref_('cursorSize', 'std'));
+}
+
+// ── v240 游標大小美化 ─────────────────────────────────────────────
+// 箭頭（viewBox 0 0 24 24，尖端在 (3,2)）：白底深灰描邊，圓角收尾
+const _CURSOR_ARROW_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 2 L4 19.5 L8.8 15.2 L12 21.5 L14.8 20.1 L11.6 13.9 L18 13.4 Z" fill="#ffffff" stroke="#1a202c" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+// 手型（viewBox 0 0 24 24，食指尖約在 (10,1.8)）：可點擊處用
+const _CURSOR_HAND_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9 3.5c0-.9.7-1.6 1.5-1.6s1.5.7 1.5 1.6V10h1V5.5c0-.9.7-1.6 1.5-1.6S16 4.6 16 5.5V11h1V7.2c0-.9.7-1.6 1.5-1.6S20 6.3 20 7.2v7.3c0 3.6-2.9 6.5-6.5 6.5h-1c-2.2 0-4.3-1.1-5.5-3l-2.9-4.5c-.5-.7-.3-1.7.4-2.2.7-.4 1.6-.3 2.1.3L8 13.2V3.5z" fill="#ffffff" stroke="#1a202c" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+// 將 SVG 字串加上 width/height 屬性後轉成 data URI（不用 base64，直接 encodeURIComponent 較短且可讀）
+function _cursorDataUri(svg, sizePx) {
+  const sized = svg.replace('<svg ', `<svg width="${sizePx}" height="${sizePx}" `);
+  return `data:image/svg+xml;utf8,${encodeURIComponent(sized)}`;
+}
+// 依尺寸產生／清除 <style id="_cursor_style">（lazy 建立）。'std' 完全清空內容＝回歸瀏覽器原生游標。
+function _applyCursorSize(size) {
+  let styleEl = document.getElementById('_cursor_style');
+  if (!styleEl) {
+    styleEl = document.createElement('style');
+    styleEl.id = '_cursor_style';
+    document.head.appendChild(styleEl);
+  }
+  if (size !== 'lg' && size !== 'xl') { styleEl.textContent = ''; return; }
+  const px = size === 'xl' ? 42 : 30;
+  const arrowUri = _cursorDataUri(_CURSOR_ARROW_SVG, px);
+  const handUri  = _cursorDataUri(_CURSOR_HAND_SVG, px);
+  // hotspot：箭頭尖端 (3,2)／24 換算成目前尺寸；手型食指尖 (10,1.8)／24 同樣換算
+  const ahx = Math.round(3 / 24 * px), ahy = Math.round(2 / 24 * px);
+  const hhx = Math.round(10 / 24 * px), hhy = Math.round(1.8 / 24 * px);
+  styleEl.textContent = `
+    /* 第一條不加 !important：全站大量 inline cursor:grab/ns-resize/help/text 等特殊游標
+       （拖曳把手、可調整寬度邊界、說明文字等）要靠 inline style 優先權自然蓋過此規則、
+       維持原生功能提示；只有「沒有特別指定游標」的地方才會落到這條美化箭頭。 */
+    body, body * { cursor: url("${arrowUri}") ${ahx} ${ahy}, auto; }
+    /* 第二條用 !important：專門蓋掉可點擊元素常見的 inline cursor:pointer，
+       讓連結／按鈕／導覽項一致換成放大手型，是本功能主要想美化的對象。 */
+    body a, body button, body .btn, body .nav-item,
+    body [onclick], body [style*="cursor:pointer"], body [style*="cursor: pointer"] {
+      cursor: url("${handUri}") ${hhx} ${hhy}, pointer !important;
+    }
+    /* 第三條保住輸入框的原生 I-beam，不被第一條蓋掉。 */
+    body input, body textarea, body select, body [contenteditable="true"] { cursor: auto !important; }
+  `;
 }
 
 // 傳入 filterFn([email, info]) 過濾，依使用頻率（開啟記憶時）或職別+筆畫排序
@@ -32358,6 +32411,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-21', v: 240, title: '偏好設定新增「游標大小」：可放大並美化滑鼠游標（標準／大／特大）', isProd: false, items: [
+      item('新功能', '偏好設定新增 🖱️ 游標大小：選「大」或「特大」即換成美化的白色描邊箭頭與手型游標，立即生效並跨裝置記住；投影簡報或視力需求時更容易看清游標位置'),
+      item('說明', '文字輸入框維持 I 形游標、拖曳把手等特殊游標維持原生樣式，只放大一般箭頭與可點擊處的手型'),
+    ]},
     { date: '2026-07-21', v: 239, title: '系統提示全面分級：錯誤/警告改頂部橫幅＋紅框閃爍，新增 📜 提示歷史', isProd: true, items: [
       item('改善', '成功/一般提示維持右下角但加大字級並加上倒數條；警告與錯誤改為頂部置中橫幅（可手動 ✕ 關閉、顯示更久），錯誤另有全畫面紅框閃爍提醒，重要訊息不再容易被忽略'),
       item('新功能', 'header 通知鈴鐺旁新增 📜 提示訊息紀錄：保留最近 20 則系統提示，剛剛沒看清楚的提示可以回頭查（重新整理後清空）'),
@@ -33803,6 +33860,8 @@ function renderPrefsPage() {
   document.getElementById('pref-counselor-freq').checked = _userPref_('counselorFreqMode', false);
   const clEl = document.getElementById('pref-confirm-leave');
   if (clEl) clEl.checked = _userPref_('confirmBeforeLeave', true);
+  const csEl = document.querySelector('input[name="pref-cursor-size"][value="' + _userPref_('cursorSize', 'std') + '"]');
+  if (csEl) csEl.checked = true;
 
   // 同步鎖定按鈕可見性
   const lockBtn = document.getElementById('header-lock-btn');
@@ -34092,6 +34151,13 @@ function saveLeaveConfirmPref() {
   const val = document.getElementById('pref-confirm-leave')?.checked ?? true;
   syncUserPref_({ confirmBeforeLeave: val });
   showToast(val ? '已啟用離開確認提示' : '已關閉離開確認提示');
+}
+
+// v240：游標大小偏好，radio 選擇即改即存（不掛在 PIN 儲存按鈕上）
+function _prefCursorSizeChange(v) {
+  _applyCursorSize(v);
+  syncUserPref_({ cursorSize: v });
+  showToast('游標大小已更新', 'success');
 }
 // Email 更改申請制（2026-07-17 定案，取代原 _prefChangeMyGmail 自助直改）：只通知管理者群
 // ＋記稽核，不動 users/cases、不全員廣播。原因：email＝內部身分主鍵（名冊 key／server 帳號
