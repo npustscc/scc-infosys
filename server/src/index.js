@@ -184,6 +184,11 @@ if (require.main === module) {
   const offboardSweep = require('./openmail/offboardSweep');
   setTimeout(() => offboardSweep.runSweep(db, config), 60 * 1000);
   setInterval(() => offboardSweep.runSweep(db, config), 12 * 3600 * 1000);
+
+  // v238：信箱未讀推播（見 openmail/unreadPush.js 檔頭）。無首跑必要——使用者連上 SSE 後最多
+  // 2 分鐘內就會收到第一筆推播，不像 offboardSweep 需要「開機後盡快跑一次」的急迫性。
+  const unreadPush = require('./openmail/unreadPush');
+  setInterval(() => unreadPush.tick(db, config), 2 * 60 * 1000);
 }
 
 module.exports = { server, db };

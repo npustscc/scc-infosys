@@ -1472,7 +1472,7 @@
     <div class="sidebar-section" data-section-id="tools">
       <h3 onclick="toggleSidebarSection('tools')">設定與工具<span class="sidebar-section-toggle">▾</span></h3>
       <div class="nav-item" data-nav-id="page-om" onclick="showPage('page-om', this); renderOmPage()">
-        <span class="icon">📧</span> 信箱 <span class="nav-drag-handle">⠿</span>
+        <span class="icon">📧</span> 信箱 <span id="nav-om-badge" style="display:none;background:#e53e3e;color:#fff;border-radius:10px;padding:0 4px;font-size:.72rem;margin-left:2px;" data-tip="屏科大信箱未讀數（信箱連結中才會更新）"></span> <span class="nav-drag-handle">⠿</span>
       </div>
       <div class="nav-item" data-nav-id="page-sms" onclick="showPage('page-sms', this); renderSmsPage()">
         <span class="icon">📱</span> 簡訊 <span class="nav-drag-handle">⠿</span>
@@ -23432,6 +23432,7 @@ function signOut() {
   // 自然清掉，這裡是前端主動收尾，行為更即時）。
   if (_sseRetryTimer) { clearTimeout(_sseRetryTimer); _sseRetryTimer = null; }
   if (_sse) { try { _sse.close(); } catch (_) {} _sse = null; }
+  try { if (typeof _omSetNavBadge === 'function') _omSetNavBadge(0); } catch (_) {} // v238：登出清空信箱未讀徽章
   try { localStorage.removeItem(_SESSION_LS_KEY); localStorage.removeItem(_USER_LS_KEY); } catch (_) {}
   // R5（資安）：登出清除個案個資快取，避免共用裝置殘留敏感資料。清除失敗不可阻斷登出。
   try {
@@ -28601,6 +28602,16 @@ function _sseConnect() {
       try { _issuesAutoRefreshTick(); } catch (_) {}
     }
   });
+  // v238：信箱未讀推播——個人化事件（見 server/src/openmail/unreadPush.js），只有本人連線會收到。
+  // 一律更新側邊選單徽章；若信箱頁正開著且已連結，順便立即刷新資料夾清單（不必等 2 分鐘輪詢）。
+  es.addEventListener('omUnread', (e) => {
+    let unseen = 0;
+    try { unseen = Number(JSON.parse(e.data || '{}').unseen) || 0; } catch (_) { return; }
+    _omSetNavBadge(unseen);
+    if (_om.connected && document.getElementById('page-om')?.classList.contains('active')) {
+      try { _omLoadFolders(); } catch (_) {}
+    }
+  });
   // EventSource 逾時/暫時斷線會自動重連，不需要自己處理；只有「連線被拒絕關閉」（如 token 過期
   // 401）才會落到 readyState===CLOSED 且不再自動重試，此時排 60 秒後重新取最新 token 再連一次。
   es.onerror = () => {
@@ -32202,6 +32213,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-21', v: 238, title: '信箱未讀即時推播：側邊選單顯示未讀徽章、不用開信箱頁也會更新', isProd: false, items: [
+      item('新功能', '側邊選單「信箱」新增紅色未讀數徽章：信箱連結中，伺服器每 2 分鐘檢查一次收件匣未讀並即時推播，不必開著信箱頁'),
+      item('新功能', '開著信箱頁時收到未讀變化推播會立即刷新資料夾清單，未讀數不再等 2 分鐘輪詢'),
+      item('說明', '未讀數屬個人資訊，走個人化推播（只推給本人連線）；檢查頻率與原本輪詢相同、共用既有連線，不增加郵件伺服器負擔'),
+    ]},
     { date: '2026-07-21', v: 237, title: '即時推播（SSE）：空間預約／通知／許願池他人異動秒級自動更新', isProd: false, items: [
       item('新功能', '伺服器新增 SSE 即時推播通道：他人新增/修改空間預約、發送通知、許願池／問題回報有新動態時，開著的頁面幾秒內自動更新，不必等輪詢或手動重新整理'),
       item('說明', '推播事件只含「哪個檔案變動了」的訊號，不含任何資料內容；連線同樣經過 session 驗證與授權閘'),
@@ -52521,6 +52537,10 @@ async function _omLoadFolders() {
   _om.folders = Array.isArray(data.folders) ? data.folders : [];
   _omRenderFolderTree();
   _omRenderMoveOptions();
+  // v238：信箱頁自己讀到的最新 INBOX 未讀數與側邊選單徽章同步，避免兩邊數字不一致（推播每 2
+  // 分鐘才跑一次，信箱頁手動重新整理/切資料夾時應立即反映）。
+  const inbox = _om.folders.find(f => f.path === 'INBOX');
+  if (inbox) _omSetNavBadge(inbox.unseen);
 }
 
 function _omRenderFolderTree() {
@@ -53267,6 +53287,16 @@ async function omSendSubmit() {
     _omSending = false;
     if (btn) { btn.disabled = false; btn.innerHTML = origHtml || '寄出'; }
   }
+}
+
+// v238：側邊選單信箱未讀徽章。unseen<=0 隱藏；>99 顯示 99+。
+function _omSetNavBadge(unseen) {
+  const el = document.getElementById('nav-om-badge');
+  if (!el) return;
+  const n = Number(unseen) || 0;
+  if (n <= 0) { el.style.display = 'none'; el.textContent = ''; return; }
+  el.textContent = n > 99 ? '99+' : String(n);
+  el.style.display = '';
 }
 
 // ── 輪詢（僅信箱頁開著時，每 2 分鐘刷新未讀數；離開頁面由 showPage 呼叫 _omStopPoll） ──

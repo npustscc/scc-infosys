@@ -182,9 +182,16 @@ function sendTo(email, eventName, dataObj) {
   }
 }
 
+// connectedEmails：目前有至少一條 SSE 連線的 email 清單。v238 信箱未讀推播排程用它決定「只對
+// 誰做 IMAP STATUS 檢查」（未連線的人不檢查，避免無謂的 IMAP 連線）。
+function connectedEmails() {
+  return [...clients.keys()];
+}
+
 module.exports = {
   handleEventsRequest,
   broadcast,
   sendTo,
+  connectedEmails,
   _clientCount,
 };
