@@ -98,6 +98,9 @@ const OPENMAIL_SMTP_PORT = Number(process.env.OPENMAIL_SMTP_PORT || 465);
 // fail-closed（credPersist.keyFromConfig 回 null，不落地、不 hydrate，前端不顯示「記住密碼」
 // 勾選框），故不可用 required()，多數部署情境不需要啟用此 opt-in 例外。
 const OPENMAIL_CRED_KEY = process.env.OPENMAIL_CRED_KEY || '';
+// v236：學諮系統資料夾（openmail archive）離職清理寬限天數，見 openmail/offboardSweep.js 檔頭與
+// migrations/010_omsv_offboard_grace.sql。非機密設定值，缺值用預設 90 即可安全啟動，不用 required()。
+const OMSV_OFFBOARD_GRACE_DAYS = Number(process.env.OMSV_OFFBOARD_GRACE_DAYS || 90);
 // 簡訊發送（三竹 Mitake／Every8D，見 src/sms/）連線設定——帳密只在 server .env，前端永不經手
 // （見 src/sms/actions.js getMitakeConfig/getE8dConfig，比照 openmail 帳密的「機密永不進 repo」
 // 資安原則）。全部選填：任一平台缺帳密即視為「未設定此平台」（smsStatus 據此回報，smsSend/
@@ -155,6 +158,7 @@ module.exports = {
   OPENMAIL_SMTP_HOST,
   OPENMAIL_SMTP_PORT,
   OPENMAIL_CRED_KEY,
+  OMSV_OFFBOARD_GRACE_DAYS,
   SMS_MITAKE_HOST,
   SMS_MITAKE_BASE_PATH,
   SMS_MITAKE_USERNAME,

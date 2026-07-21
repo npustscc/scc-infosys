@@ -167,6 +167,14 @@ if (require.main === module) {
   server.listen(config.PORT, () => {
     console.log(`SCC Drive Proxy (Node/local) 已啟動：http://localhost:${config.PORT}（ROOT_FOLDER_ID=${config.ROOT_FOLDER_ID}）`);
   });
+
+  // v236：學諮系統資料夾（openmail archive）離職清理排程——本專案目前唯一的 in-process 排程器
+  // （見 openmail/offboardSweep.js 檔頭）。只在直接執行本檔（node index.js）時啟動；require.main
+  // !== module（例如測試檔 require('../src/index')）不會觸發，避免每次跑測試都意外啟動背景計時器。
+  // 開機 60 秒後先跑一次（讓 db/routes 完全就緒），之後每 12 小時跑一次。
+  const offboardSweep = require('./openmail/offboardSweep');
+  setTimeout(() => offboardSweep.runSweep(db, config), 60 * 1000);
+  setInterval(() => offboardSweep.runSweep(db, config), 12 * 3600 * 1000);
 }
 
 module.exports = { server, db };
