@@ -11,6 +11,7 @@ const config = require('./config');
 const { openDb } = require('./db');
 const { handleRequest } = require('./dispatch');
 const cookies = require('./util/cookies');
+const sse = require('./sse');
 
 const db = openDb(config.DB_PATH);
 
@@ -112,6 +113,14 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(html);
     });
+    return;
+  }
+
+  // v237：SSE 即時推播（見 src/sse.js 檔頭）——CORS headers 已在本函式最上方統一加過，這裡
+  // 不需要重複設定。獨立於下面 GET 靜態檔案 fallback 之外，放在其之前避免被當成一般靜態路徑
+  // 404（sse.handleEventsRequest 內部自行驗證 session 並在不通過時回 401）。
+  if (req.method === 'GET' && urlPath === '/events') {
+    sse.handleEventsRequest(db, config, req, res);
     return;
   }
 

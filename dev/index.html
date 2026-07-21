@@ -7242,6 +7242,7 @@ async function handleCredentialResponse(response) {
     _syslog?.('success', '今日登入憑證已換發（畫面資料保留，不需重新整理）');
     _hideReloginModal();
     _resolveTokenRefresh(true);
+    try { _sseConnect(); } catch (_) {} // v237：token 已換發，重連 SSE（沿用新 token）
     return;
   }
   _hideReloginModal();
@@ -7346,6 +7347,7 @@ function _applyHeaderAvatar_() {
 
 async function afterLogin() {
   showLoading('讀取使用者設定…', 0);
+  try { _sseConnect(); } catch (_) {} // v237：登入完成即建立 SSE 即時推播連線（best-effort，失敗不影響登入）
 
   // 更新 header（無論成功失敗都先顯示使用者資訊）
   _applyHeaderAvatar_(); // 此時 configData 未載入，先落在 Google 大頭貼或姓名首字；載入後再套自訂頭像
@@ -23426,6 +23428,10 @@ function signOut() {
   // 本地模式從未呼叫 google.accounts.id.initialize()，GSI 客戶端腳本（<head> 內 async 載入）
   // 也可能因校內網路無法連外而根本沒載入成功——防禦性略過，不可讓登出流程因此中斷。
   if (!IS_LOCAL_BACKEND) { try { google.accounts.id.disableAutoSelect(); } catch (_) {} }
+  // v237：登出即關閉 SSE 連線，避免舊 token 殘留連線占用伺服器端連線名額（伺服器 401 後也會
+  // 自然清掉，這裡是前端主動收尾，行為更即時）。
+  if (_sseRetryTimer) { clearTimeout(_sseRetryTimer); _sseRetryTimer = null; }
+  if (_sse) { try { _sse.close(); } catch (_) {} _sse = null; }
   try { localStorage.removeItem(_SESSION_LS_KEY); localStorage.removeItem(_USER_LS_KEY); } catch (_) {}
   // R5（資安）：登出清除個案個資快取，避免共用裝置殘留敏感資料。清除失敗不可阻斷登出。
   try {
@@ -28563,6 +28569,48 @@ async function proxyCall(action, params = {}, _silent = false, _retry = 0, _auth
 }
 
 // ══════════════════════════════════════════════
+//  v237：SSE 即時推播——後端資料異動時收 fileChanged 事件，立即觸發對應重讀；輪詢保留為 fallback。
+//  只在本地帳密／TOTP 後端（IS_LOCAL_BACKEND）且已有 session token 時連線；GAS/Pages 環境
+//  完全不受影響（後端沒有 /events 路由，也不會呼叫 _sseConnect）。
+//  事件 payload 只含檔名（見 server/src/sse.js 檔頭），本檔收到後一律呼叫既有的重讀/輪詢入口，
+//  不另外實作一套讀檔邏輯：
+//    bookings.json     → _bkBgRereadTick()（沿用空間預約既有背景重讀判斷：頁面開著才讀）
+//    notifications.json → pollNotifications()（既有 5 分鐘輪詢的同一支函式）
+//    issues.json        → _issuesAutoRefreshTick()（既有 10 分鐘輪詢的同一支函式）
+// ══════════════════════════════════════════════
+let _sse = null, _sseRetryTimer = null;
+function _sseConnect() {
+  if (!IS_LOCAL_BACKEND) return;              // GAS/Pages 環境無 /events 路由，不連
+  if (typeof EventSource === 'undefined') return; // 極舊瀏覽器防呆
+  const sess = _getSession();
+  if (!sess || !sess.token) return;           // 尚未登入/session 已過期，交由既有重登流程處理
+  if (_sseRetryTimer) { clearTimeout(_sseRetryTimer); _sseRetryTimer = null; }
+  if (_sse) { try { _sse.close(); } catch (_) {} _sse = null; }
+  const url = APPS_SCRIPT_URL.replace(/\/exec$/, '/events') + '?token=' + encodeURIComponent(sess.token);
+  let es;
+  try { es = new EventSource(url); } catch (_) { return; }
+  _sse = es;
+  es.addEventListener('fileChanged', (e) => {
+    let path = '';
+    try { path = JSON.parse(e.data || '{}').path || ''; } catch (_) { return; }
+    if (path === 'bookings.json') {
+      try { _bkBgRereadTick(); } catch (_) {}
+    } else if (path === 'notifications.json') {
+      try { pollNotifications(); } catch (_) {}
+    } else if (path === 'issues.json') {
+      try { _issuesAutoRefreshTick(); } catch (_) {}
+    }
+  });
+  // EventSource 逾時/暫時斷線會自動重連，不需要自己處理；只有「連線被拒絕關閉」（如 token 過期
+  // 401）才會落到 readyState===CLOSED 且不再自動重試，此時排 60 秒後重新取最新 token 再連一次。
+  es.onerror = () => {
+    if (es.readyState === EventSource.CLOSED && !_sseRetryTimer) {
+      _sseRetryTimer = setTimeout(() => { _sseRetryTimer = null; _sseConnect(); }, 60 * 1000);
+    }
+  };
+}
+
+// ══════════════════════════════════════════════
 //  差勤系統
 // ══════════════════════════════════════════════
 
@@ -31784,16 +31832,9 @@ document.addEventListener('DOMContentLoaded', () => {
   checkForUpdate();
   setInterval(checkForUpdate, 5 * 60 * 1000);
   setInterval(pollNotifications, 5 * 60 * 1000); // 落地 server 無外部配額限制，15→5 分鐘更即時
-  // 空間預約背景重讀：頁面開著時每 5 分鐘靜默拉最新資料，讓他人新增/修改的預約及時出現。
-  // 條件：空間預約頁為目前作用頁＋分頁可見＋新增/編輯視窗未開啟（避免重繪清掉使用者輸入）＋無 in-flight 重讀。
-  setInterval(() => {
-    if (_bkBgRereadInFlight) return;
-    if (document.visibilityState !== 'visible') return;
-    if (!document.getElementById('page-bookings')?.classList.contains('active')) return;
-    if (document.getElementById('booking-modal')?.style.display === 'flex') return;
-    _bkBgRereadInFlight = true;
-    loadBookings().then(renderBookingsPage).catch(() => {}).finally(() => { _bkBgRereadInFlight = false; });
-  }, 5 * 60 * 1000);
+  // 空間預約背景重讀：頁面開著時每 5 分鐘靜默拉最新資料（邏輯見 _bkBgRereadTick，v237 起
+  // SSE fileChanged 事件也會呼叫同一函式，輪詢僅作 fallback）。
+  setInterval(_bkBgRereadTick, 5 * 60 * 1000);
 
   // AFK 偵測：任意操作重設計時器
   ['mousemove','keydown','click','scroll','touchstart'].forEach(evt =>
@@ -32161,6 +32202,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-21', v: 237, title: '即時推播（SSE）：空間預約／通知／許願池他人異動秒級自動更新', isProd: false, items: [
+      item('新功能', '伺服器新增 SSE 即時推播通道：他人新增/修改空間預約、發送通知、許願池／問題回報有新動態時，開著的頁面幾秒內自動更新，不必等輪詢或手動重新整理'),
+      item('說明', '推播事件只含「哪個檔案變動了」的訊號，不含任何資料內容；連線同樣經過 session 驗證與授權閘'),
+      item('說明', '既有輪詢全數保留作為備援，SSE 連不上時行為與以往完全相同'),
+    ]},
     { date: '2026-07-21', v: 236, title: '信箱封存離職清理：帳號停用滿 90 天自動刪除個人封存（含歸入個案提醒）', isProd: false, items: [
       item('新功能', '學諮系統資料夾定位為個人工作副本：帳號停用後，已儲存的「記住密碼」立即刪除；封存信件保留 90 天寬限期後由伺服器自動刪除，全程留稽核紀錄'),
       item('新功能', '重新啟用帳號會取消寬限倒數；寬限從系統首次發現停用時起算（保守設計，只會更晚不會更早刪）'),
@@ -35680,6 +35726,18 @@ async function loadBookings() {
 async function refreshBookings() {
   await loadBookings();
   renderBookingsPage();
+}
+
+// 空間預約背景重讀（v172 起沿用的既有邏輯，v237 抽成具名函式，供 setInterval 輪詢與 SSE
+// fileChanged 事件共用同一份判斷：頁面開著時靜默拉最新資料，讓他人新增/修改的預約及時出現。
+// 條件：空間預約頁為目前作用頁＋分頁可見＋新增/編輯視窗未開啟（避免重繪清掉使用者輸入）＋無 in-flight 重讀。
+function _bkBgRereadTick() {
+  if (_bkBgRereadInFlight) return;
+  if (document.visibilityState !== 'visible') return;
+  if (!document.getElementById('page-bookings')?.classList.contains('active')) return;
+  if (document.getElementById('booking-modal')?.style.display === 'flex') return;
+  _bkBgRereadInFlight = true;
+  loadBookings().then(renderBookingsPage).catch(() => {}).finally(() => { _bkBgRereadInFlight = false; });
 }
 
 // nav 進入空間預約頁：showPage/renderBookingsPage 行為不變；若距上次讀取已超過 2 分鐘，
@@ -58050,24 +58108,26 @@ async function loadIssues() {
   if (typeof renderIssuesBadge === 'function') renderIssuesBadge();
 }
 // 每 30 分鐘自動輪詢一次許願池；分頁隱藏時跳過，回到前景後立即補一次
+// v237：抽成具名頂層函式 _issuesAutoRefreshTick，供 setInterval／visibilitychange／SSE
+// fileChanged 事件共用同一份「讀取＋比較＋條件重繪」邏輯，不另寫第二套讀檔判斷。
 let _issuesPollTimer = null;
+async function _issuesAutoRefreshTick() {
+  if (document.visibilityState !== 'visible') return;
+  if (!currentUser?.email) return;
+  const _prevJson = JSON.stringify(issuesData);
+  await loadIssues();
+  await _checkAutoIssueReplies?.().catch(() => {});
+  // 若 issues 有異動且目前正在許願池頁面，重繪
+  if (_prevJson !== JSON.stringify(issuesData)
+      && document.getElementById('page-issues')?.classList.contains('active')
+      && typeof renderIssuesPage === 'function') {
+    renderIssuesPage();
+  }
+}
 function scheduleIssuesAutoRefresh() {
   if (_issuesPollTimer) return;
-  const _tick = async () => {
-    if (document.visibilityState !== 'visible') return;
-    if (!currentUser?.email) return;
-    const _prevJson = JSON.stringify(issuesData);
-    await loadIssues();
-    await _checkAutoIssueReplies?.().catch(() => {});
-    // 若 issues 有異動且目前正在許願池頁面，重繪
-    if (_prevJson !== JSON.stringify(issuesData)
-        && document.getElementById('page-issues')?.classList.contains('active')
-        && typeof renderIssuesPage === 'function') {
-      renderIssuesPage();
-    }
-  };
-  _issuesPollTimer = setInterval(_tick, 10 * 60 * 1000); // 落地 server 後 30→10 分鐘更即時
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') _tick(); });
+  _issuesPollTimer = setInterval(_issuesAutoRefreshTick, 10 * 60 * 1000); // 落地 server 後 30→10 分鐘更即時
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') _issuesAutoRefreshTick(); });
 }
 
 async function _saveIssuesFallback() {

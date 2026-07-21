@@ -51,6 +51,7 @@ const systemHealthActions = require('./actions/systemHealth');
 const passwordActions = require('./actions/password');
 const configActions = require('./actions/config');
 const sharedIssuesDb = require('./storage/sharedIssuesDb');
+const sse = require('./sse');
 
 // npust5 Gmail 網頁 OAuth 授權流程在 Node 版已被伺服器端憑證檔（GMAIL_SYNC_CREDS）取代，
 // getNpust5AuthUrl／exchangeNpust5OAuthCode 一律回這則固定業務錯誤（不再導向 Google 同意頁）。
@@ -532,6 +533,18 @@ async function handleRequest(db, config, payload) {
         return envelope.bizError(`Not implemented on node backend: ${action}`);
       }
     }
+
+    // v237：資料異動 SSE 廣播——只送「哪個檔案變了」，不含內容（見 src/sse.js 檔頭）。失敗不影響回應。
+    try {
+      if (result && !result.error) {
+        let changedPath = null;
+        if (action === 'bookingsCommit') changedPath = 'bookings.json';
+        else if (action === 'notifCommit') changedPath = 'notifications.json';
+        else if (action === 'listCommit' && params && params.file === 'issues.json') changedPath = 'issues.json';
+        else if ((action === 'updateJson' && params && params.path === 'issues.json') || (action === 'createJson' && params && params.name === 'issues.json')) changedPath = 'issues.json';
+        if (changedPath) sse.broadcast('fileChanged', { path: changedPath });
+      }
+    } catch (_e) { /* 廣播失敗不影響主流程 */ }
 
     return envelope.ok(result);
   } catch (err) {
