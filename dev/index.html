@@ -122,6 +122,10 @@
     @media (max-width: 767px) { #bg-job-banner { display: none !important; } }
     #notif-bell { position:relative; cursor:pointer; padding:4px 8px; border-radius:6px; transition:background .15s; display:flex; align-items:center; }
     #notif-bell:hover { background:rgba(255,255,255,.15); }
+    #toast-history-btn:hover { background:rgba(255,255,255,.15); }
+    #toast-history-panel { display:none; position:fixed; width:320px; max-height:400px; overflow-y:auto;
+      background:#fff; border:1px solid #e2e8f0; border-radius:8px;
+      box-shadow:0 4px 20px rgba(0,0,0,.18); z-index:2000; }
     #notif-badge { position:absolute; top:-2px; right:-2px; background:#e53e3e; color:#fff;
       border-radius:50%; min-width:16px; height:16px; font-size:.65rem; font-weight:700;
       display:none; align-items:center; justify-content:center; padding:0 3px; line-height:1; }
@@ -1147,6 +1151,8 @@
     /* 紀錄儲存後返回個案詳細頁：捲動至該筆並背景閃爍 2 秒（#22） */
     @keyframes _recSavedFlash { 0%,100%{background:#fff9db;} 50%{background:#ffe066;} }
     .rec-just-saved { animation:_recSavedFlash .5s ease-in-out 4; border-radius:8px; }
+    /* v239：error 提示全視窗紅框閃爍 3 次 */
+    @keyframes _toastFlash { 0%,100%{opacity:0} 25%,75%{opacity:1} 50%{opacity:.3} }
 
     /* ── Hover 說明 tooltip（由 JS #_tip_el 實作，position:fixed 確保不被 stacking context 遮蔽） ── */
     /* ── 轉銜評估 ── */
@@ -1221,6 +1227,9 @@
       <span style="font-size:1.25rem;line-height:1;">🔔</span>
       <span id="notif-badge"></span>
     </div>
+    <div id="toast-history-btn" onclick="toggleToastHistory()" title="提示訊息紀錄" data-tip="最近 20 則系統提示訊息（重新整理後清空）" style="display:none;position:relative;cursor:pointer;padding:4px 8px;border-radius:6px;align-items:center;">
+      <span style="font-size:1.15rem;line-height:1;">📜</span>
+    </div>
     <img id="user-avatar" src="" alt="頭像" title="偏好設定" style="cursor:pointer;" onclick="showPage('page-prefs', null); renderPrefsPage()" />
     <div id="user-name-role" style="text-align:right;line-height:1.4;">
       <div style="font-size:.9rem;" id="user-name"></div>
@@ -1258,6 +1267,11 @@
   <div id="ntab-content-notifs"><div id="notif-list"></div></div>
   <div id="ntab-content-jobs" style="display:none;"><div id="notif-job-list"></div></div>
   <div id="ntab-content-autosave" style="display:none;"><div id="notif-autosave-list"></div></div>
+</div>
+<!-- v239：提示訊息紀錄面板（📜，純記憶體、最近 20 則） -->
+<div id="toast-history-panel">
+  <div style="border-bottom:1px solid #e2e8f0;padding:9px 14px;font-size:.88rem;font-weight:700;color:#2d3748;">提示訊息紀錄</div>
+  <div id="toast-history-list"></div>
 </div>
 
 <!-- ── Login Screen ── -->
@@ -5091,21 +5105,101 @@ function hideLoading() {
   }, 150);
 }
 
+// v239：提示訊息歷史——純記憶體（不落地，重新整理即清空），供 📜 面板顯示最近 20 則
+const _toastHistory = [];
+function _pushToastHistory(type, msg) {
+  _toastHistory.unshift({ time: new Date(), type, msg });
+  if (_toastHistory.length > 20) _toastHistory.pop();
+  if (document.getElementById('toast-history-panel')?.style.display === 'block') _renderToastHistory();
+}
+
 function showToast(msg, type = 'success', duration = 3500) {
-  let box = document.getElementById('_toast_box');
+  try {
+    _pushToastHistory(type, msg);
+    // v239：warn/error 保底拉長顯示時間（呼叫端明確給更長值時尊重之），錯誤/警告訊息不能一閃即逝
+    const eff = type === 'error' ? Math.max(duration, 8000) : type === 'warn' ? Math.max(duration, 6000) : duration;
+    if (type === 'warn' || type === 'error') {
+      _showTopBanner(msg, type, eff);
+      if (type === 'error') _flashErrorBorder();
+      return;
+    }
+    // info / success（含未知 type fallback）── 右下角，加大字級＋倒數條
+    let box = document.getElementById('_toast_box');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = '_toast_box';
+      box.style.cssText = 'position:fixed;bottom:28px;right:24px;z-index:10000;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
+      document.body.appendChild(box);
+    }
+    const t = document.createElement('div');
+    const bg = type === 'info' ? '#63b3ed' : '#68d391';
+    t.style.cssText = `background:${bg};color:#1a202c;padding:12px 20px 14px;border-radius:8px;font-size:.95rem;font-weight:500;box-shadow:0 2px 10px rgba(0,0,0,.18);opacity:0;transition:opacity .25s;max-width:400px;line-height:1.4;pointer-events:auto;position:relative;overflow:hidden;`;
+    const msgEl = document.createElement('div');
+    msgEl.textContent = msg;
+    t.appendChild(msgEl);
+    const bar = document.createElement('div');
+    bar.style.cssText = 'position:absolute;left:0;bottom:0;height:3px;width:100%;background:rgba(0,0,0,.25);';
+    t.appendChild(bar);
+    box.appendChild(t);
+    requestAnimationFrame(() => {
+      t.style.opacity = '1';
+      bar.style.transition = `width ${eff}ms linear`;
+      requestAnimationFrame(() => { bar.style.width = '0'; });
+    });
+    setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, eff);
+  } catch (_) { /* 提示函式絕不可炸掉呼叫端流程 */ }
+}
+
+// v239：warn/error 頂部置中橫幅（與 _showRetryNotice 各自獨立容器，可並存）
+function _showTopBanner(msg, type, duration) {
+  let box = document.getElementById('_toast_top_box');
   if (!box) {
     box = document.createElement('div');
-    box.id = '_toast_box';
-    box.style.cssText = 'position:fixed;bottom:28px;right:24px;z-index:10000;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
+    box.id = '_toast_top_box';
+    box.style.cssText = 'position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:100000;display:flex;flex-direction:column;gap:8px;align-items:center;';
     document.body.appendChild(box);
   }
   const t = document.createElement('div');
-  const bg = type === 'error' ? '#fc8181' : type === 'warn' ? '#f6ad55' : '#68d391';
-  t.style.cssText = `background:${bg};color:#1a202c;padding:10px 18px;border-radius:8px;font-size:.88rem;font-weight:500;box-shadow:0 2px 10px rgba(0,0,0,.18);opacity:0;transition:opacity .25s;max-width:340px;line-height:1.4;pointer-events:auto;`;
-  t.textContent = msg;
+  const isError = type === 'error';
+  const bg = isError ? '#fc8181' : '#f6ad55';
+  const fg = isError ? '#742a2a' : '#7b341e';
+  const border = isError ? 'border:2px solid #c53030;' : '';
+  t.style.cssText = `background:${bg};color:${fg};min-width:280px;max-width:min(680px,92vw);padding:12px 40px 14px 18px;border-radius:8px;font-size:.95rem;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.25);position:relative;opacity:0;transition:opacity .25s;line-height:1.4;${border}`;
+  const msgEl = document.createElement('div');
+  msgEl.textContent = msg;
+  t.appendChild(msgEl);
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '✕';
+  closeBtn.title = '關閉';
+  closeBtn.style.cssText = `position:absolute;top:6px;right:8px;border:none;background:none;color:${fg};font-size:1rem;cursor:pointer;line-height:1;padding:2px 4px;`;
+  const remove = () => { clearTimeout(timer); t.style.opacity = '0'; setTimeout(() => t.remove(), 300); };
+  closeBtn.onclick = remove;
+  t.appendChild(closeBtn);
+  const bar = document.createElement('div');
+  bar.style.cssText = 'position:absolute;left:0;bottom:0;height:3px;width:100%;background:rgba(0,0,0,.2);border-radius:0 0 8px 8px;';
+  t.appendChild(bar);
   box.appendChild(t);
-  requestAnimationFrame(() => { t.style.opacity = '1'; });
-  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, duration);
+  requestAnimationFrame(() => {
+    t.style.opacity = '1';
+    bar.style.transition = `width ${duration}ms linear`;
+    requestAnimationFrame(() => { bar.style.width = '0'; });
+  });
+  const timer = setTimeout(remove, duration);
+}
+
+// v239：error 時全視窗紅框閃爍 3 次提醒（約 1.2 秒），lazy 建立
+function _flashErrorBorder() {
+  let el = document.getElementById('_toast_flash');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = '_toast_flash';
+    el.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:99999;box-shadow:inset 0 0 0 4px rgba(229,62,62,.85);opacity:0;';
+    document.body.appendChild(el);
+  }
+  el.style.animation = 'none';
+  void el.offsetWidth; // 強制 reflow 讓重複觸發能重新播放
+  el.style.animation = '_toastFlash .4s ease 3';
+  el.onanimationend = () => { el.style.animation = ''; el.style.opacity = '0'; };
 }
 
 // ── 重試提示橫幅（登入頁與載入過程皆可見，z-index 高於 dev banner 與 loading overlay）──
@@ -7356,6 +7450,7 @@ async function afterLogin() {
   document.getElementById('user-email').textContent = currentUser.loginName || currentUser.email;
   document.getElementById('user-info').style.display  = 'flex';
   document.getElementById('notif-bell').style.display = 'flex';
+  document.getElementById('toast-history-btn').style.display = 'flex';
   document.getElementById('header-lock-btn').style.display = 'flex';
 
   try {
@@ -9633,6 +9728,8 @@ function _syncBellBadge() {
   const bell   = document.getElementById('notif-bell');
   if (!badge) return;
   if (bell) bell.style.display = 'flex';
+  const historyBtn = document.getElementById('toast-history-btn');
+  if (historyBtn) historyBtn.style.display = 'flex';
   const notifs  = _myNotifs();
   const unread  = notifs.filter(n => !n.read).length + (_updateAvailable ? 1 : 0);
   const failed  = _bgJobs.filter(j => j.state === 'failed').length;
@@ -9727,6 +9824,8 @@ function _notifPanelAction() {
 function renderNotifBell() {
   const bell = document.getElementById('notif-bell');
   if (bell) bell.style.display = 'flex';
+  const historyBtn = document.getElementById('toast-history-btn');
+  if (historyBtn) historyBtn.style.display = 'flex';
   _syncBellBadge();
 }
 
@@ -9746,6 +9845,43 @@ function toggleNotifPanel() {
   else if (_failed > 0 || _running > 0) setNotifTab('jobs');
   else if (_todoUnread > 0) setNotifTab('autosave');
   else setNotifTab('notifs');
+}
+
+// v239：📜 提示訊息紀錄面板——絕對定位在按鈕下方，比照通知面板點外關閉慣例
+function toggleToastHistory() {
+  const panel = document.getElementById('toast-history-panel');
+  const btn = document.getElementById('toast-history-btn');
+  if (!panel || !btn) return;
+  const open = panel.style.display === 'block';
+  if (open) { panel.style.display = 'none'; return; }
+  const r = btn.getBoundingClientRect();
+  panel.style.top = `${r.bottom + 6}px`;
+  panel.style.right = `${window.innerWidth - r.right}px`;
+  panel.style.display = 'block';
+  _renderToastHistory();
+}
+
+function _renderToastHistory() {
+  const list = document.getElementById('toast-history-list');
+  if (!list) return;
+  if (!_toastHistory.length) {
+    list.innerHTML = `<div style="padding:20px 16px;text-align:center;color:#a0aec0;font-size:.85rem;">尚無訊息</div>`;
+    return;
+  }
+  const icon = { success: '✅', info: 'ℹ️', warn: '⚠️', error: '❌' };
+  const color = { warn: '#c05621', error: '#c53030' };
+  list.innerHTML = _toastHistory.map(h => {
+    const hh = String(h.time.getHours()).padStart(2, '0');
+    const mm = String(h.time.getMinutes()).padStart(2, '0');
+    const c = color[h.type] || '#2d3748';
+    return `<div class="notif-item" style="cursor:default;">
+      <div style="display:flex;gap:8px;align-items:flex-start;">
+        <span style="font-size:.72rem;color:#a0aec0;flex-shrink:0;white-space:nowrap;">${hh}:${mm}</span>
+        <span style="flex-shrink:0;">${icon[h.type] || 'ℹ️'}</span>
+        <span style="font-size:.85rem;color:${c};line-height:1.4;word-break:break-word;">${escHtml(h.msg)}</span>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 function renderNotifList() {
@@ -23451,8 +23587,10 @@ function signOut() {
   document.getElementById('lock-overlay').style.display    = 'none';
   document.getElementById('user-info').style.display   = 'none';
   document.getElementById('notif-bell').style.display       = 'none';
+  document.getElementById('toast-history-btn').style.display = 'none';
   document.getElementById('header-lock-btn').style.display  = 'none';
   document.getElementById('notif-panel').style.display = 'none';
+  document.getElementById('toast-history-panel').style.display = 'none';
   document.getElementById('main-layout').style.display = 'none';
   document.getElementById('init-screen').style.display = 'none';
   document.getElementById('login-screen').style.display = '';
@@ -31836,6 +31974,13 @@ document.addEventListener('DOMContentLoaded', () => {
         && !panel.contains(e.target) && !bell.contains(e.target)) {
       panel.style.display = 'none';
     }
+    // v239：📜 提示訊息紀錄面板點外關閉
+    const thPanel = document.getElementById('toast-history-panel');
+    const thBtn   = document.getElementById('toast-history-btn');
+    if (thPanel && thBtn && thPanel.style.display === 'block'
+        && !thPanel.contains(e.target) && !thBtn.contains(e.target)) {
+      thPanel.style.display = 'none';
+    }
   });
   // v103：自訂時間輸入即時遮罩（空間預約自填時間、晤談紀錄「預約下次諮商空間」自填時間）
   ['bk-start', 'bk-end', 'rec-next-bk-start', 'rec-next-bk-end'].forEach(id => _attachTimeMask(document.getElementById(id)));
@@ -32213,6 +32358,10 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-21', v: 239, title: '系統提示全面分級：錯誤/警告改頂部橫幅＋紅框閃爍，新增 📜 提示歷史', isProd: false, items: [
+      item('改善', '成功/一般提示維持右下角但加大字級並加上倒數條；警告與錯誤改為頂部置中橫幅（可手動 ✕ 關閉、顯示更久），錯誤另有全畫面紅框閃爍提醒，重要訊息不再容易被忽略'),
+      item('新功能', 'header 通知鈴鐺旁新增 📜 提示訊息紀錄：保留最近 20 則系統提示，剛剛沒看清楚的提示可以回頭查（重新整理後清空）'),
+    ]},
     { date: '2026-07-21', v: 238, title: '信箱未讀即時推播：側邊選單顯示未讀徽章、不用開信箱頁也會更新', isProd: false, items: [
       item('新功能', '側邊選單「信箱」新增紅色未讀數徽章：信箱連結中，伺服器每 2 分鐘檢查一次收件匣未讀並即時推播，不必開著信箱頁'),
       item('新功能', '開著信箱頁時收到未讀變化推播會立即刷新資料夾清單，未讀數不再等 2 分鐘輪詢'),
