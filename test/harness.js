@@ -25,6 +25,9 @@
 // v254：心理測驗匯入與批次清理模組（handleImportPsychCSV／importPsychTestFromExcel／
 // renderRecycleBin／searchTransferRefill 等）再拆到 dev/psych-import.js，插入
 // initial-interview.js 與 index.html 之間（符合實際 <script> 載入順序）。
+// v255：畢業/離校生評估模組（_gradFilterChange／setGradTransferDecision／renderTransferPage／
+// _renderWithdrawTab 等）再拆到 dev/grad-eval.js，插入 psych-import.js 與 index.html 之間
+// （符合實際 <script> 載入順序）。
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -37,6 +40,7 @@ const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'case-import.js'),
   path.join(__dirname, '..', 'dev', 'initial-interview.js'),
   path.join(__dirname, '..', 'dev', 'psych-import.js'),
+  path.join(__dirname, '..', 'dev', 'grad-eval.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
 ];
 

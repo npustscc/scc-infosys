@@ -53,6 +53,8 @@ const SRC_CASE_IMPORT = path.join(__dirname, '..', '..', 'dev', 'case-import.js'
 const SRC_INITIAL_INTERVIEW = path.join(__dirname, '..', '..', 'dev', 'initial-interview.js');
 // v254：心理測驗匯入區塊拆到獨立檔案，同上理由——唯一來源固定為 dev/psych-import.js。
 const SRC_PSYCH_IMPORT = path.join(__dirname, '..', '..', 'dev', 'psych-import.js');
+// v255：畢業/離校生評估區塊拆到獨立檔案，同上理由——唯一來源固定為 dev/grad-eval.js。
+const SRC_GRAD_EVAL = path.join(__dirname, '..', '..', 'dev', 'grad-eval.js');
 const OUT_DIR = path.join(__dirname, '..', 'public');
 const OUT_HTML = path.join(OUT_DIR, 'index.html');
 const OUT_CHANGELOG = path.join(OUT_DIR, 'changelog.js');
@@ -64,6 +66,7 @@ const OUT_CASE_DETAIL = path.join(OUT_DIR, 'case-detail.js');
 const OUT_CASE_IMPORT = path.join(OUT_DIR, 'case-import.js');
 const OUT_INITIAL_INTERVIEW = path.join(OUT_DIR, 'initial-interview.js');
 const OUT_PSYCH_IMPORT = path.join(OUT_DIR, 'psych-import.js');
+const OUT_GRAD_EVAL = path.join(OUT_DIR, 'grad-eval.js');
 
 function main() {
   const targetUrl = urlArg || `http://localhost:${config.PORT}/exec`;
@@ -107,6 +110,10 @@ function main() {
     console.error(`找不到 ${SRC_PSYCH_IMPORT}`);
     process.exit(1);
   }
+  if (!fs.existsSync(SRC_GRAD_EVAL)) {
+    console.error(`找不到 ${SRC_GRAD_EVAL}`);
+    process.exit(1);
+  }
   const html = fs.readFileSync(SRC_HTML, 'utf8');
   const changelogJs = fs.readFileSync(SRC_CHANGELOG, 'utf8');
   const stylesCss = fs.readFileSync(SRC_STYLES, 'utf8');
@@ -117,6 +124,7 @@ function main() {
   const caseImportJs = fs.readFileSync(SRC_CASE_IMPORT, 'utf8');
   const initialInterviewJs = fs.readFileSync(SRC_INITIAL_INTERVIEW, 'utf8');
   const psychImportJs = fs.readFileSync(SRC_PSYCH_IMPORT, 'utf8');
+  const gradEvalJs = fs.readFileSync(SRC_GRAD_EVAL, 'utf8');
 
   const RE_URL = /^const APPS_SCRIPT_URL = '([^']*)';$/m;
   const mUrl = RE_URL.exec(html);
@@ -166,6 +174,7 @@ function main() {
   fs.writeFileSync(OUT_CASE_IMPORT, caseImportJs, 'utf8'); // v252：原樣複製，case-import.js 無需置換常數
   fs.writeFileSync(OUT_INITIAL_INTERVIEW, initialInterviewJs, 'utf8'); // v253：原樣複製，initial-interview.js 無需置換常數
   fs.writeFileSync(OUT_PSYCH_IMPORT, psychImportJs, 'utf8'); // v254：原樣複製，psych-import.js 無需置換常數
+  fs.writeFileSync(OUT_GRAD_EVAL, gradEvalJs, 'utf8'); // v255：原樣複製，grad-eval.js 無需置換常數
 
   // v242：強制重新整理機制——寫出 version.json 供前端 checkForUpdate() 輪詢比對。buildId 用
   // patched 後 html 內容的 sha256 前 16 碼（內容雜湊，不用時間戳／build 序號）：這樣「只改
@@ -184,7 +193,8 @@ function main() {
   // v252：再納入 case-import.js——同理，只改個案資料表單匯入區塊也要能觸發強制重整。
   // v253：再納入 initial-interview.js——同理，只改初次晤談模組也要能觸發強制重整。
   // v254：再納入 psych-import.js——同理，只改心理測驗匯入區塊也要能觸發強制重整。
-  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').update(utilsJs, 'utf8').update(ftCoreJs, 'utf8').update(caseDetailJs, 'utf8').update(caseImportJs, 'utf8').update(initialInterviewJs, 'utf8').update(psychImportJs, 'utf8').digest('hex').slice(0, 16);
+  // v255：再納入 grad-eval.js——同理，只改畢業/離校生評估區塊也要能觸發強制重整。
+  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').update(utilsJs, 'utf8').update(ftCoreJs, 'utf8').update(caseDetailJs, 'utf8').update(caseImportJs, 'utf8').update(initialInterviewJs, 'utf8').update(psychImportJs, 'utf8').update(gradEvalJs, 'utf8').digest('hex').slice(0, 16);
   const versionJson = { buildId, mode, builtAt: new Date().toISOString() };
   fs.writeFileSync(path.join(OUT_DIR, 'version.json'), JSON.stringify(versionJson, null, 2), 'utf8');
 
@@ -198,6 +208,7 @@ function main() {
   console.log(`已複製 ${OUT_CASE_IMPORT}`);
   console.log(`已複製 ${OUT_INITIAL_INTERVIEW}`);
   console.log(`已複製 ${OUT_PSYCH_IMPORT}`);
+  console.log(`已複製 ${OUT_GRAD_EVAL}`);
   console.log(`APPS_SCRIPT_URL：${mUrl[1]} → ${targetUrl}`);
   console.log(folderMsg + '。');
   console.log(`version.json buildId：${buildId}`);
