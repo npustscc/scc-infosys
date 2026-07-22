@@ -37,6 +37,8 @@ const SENTINELS = [
   ['mental-leave.js', 'openMlAssessmentModal', 'function'],
   ['genogram.js', 'GenogramEditor', 'object'],
   ['genogram.js', 'openGenogramEditor', 'function'],
+  ['booking.js', 'renderBookingsPage', 'function'],
+  ['booking.js', 'saveBooking', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],

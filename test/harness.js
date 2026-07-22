@@ -72,6 +72,10 @@ const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'draft-engine.js'),
   path.join(__dirname, '..', 'dev', 'record-form.js'),
   path.join(__dirname, '..', 'dev', 'mental-leave.js'),
+  // v266/v267：家系圖模組與空間預約模組再拆到 dev/genogram.js、dev/booking.js（刀法①，
+  // 排在主 inline script 之前載入）；插入 SRC_FILES 讓 harness 抽得到函式。
+  path.join(__dirname, '..', 'dev', 'genogram.js'),
+  path.join(__dirname, '..', 'dev', 'booking.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
   path.join(__dirname, '..', 'dev', 'openmail.js'),
   path.join(__dirname, '..', 'dev', 'sms.js'),

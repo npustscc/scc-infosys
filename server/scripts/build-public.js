@@ -67,6 +67,8 @@ const SRC_RECORD_FORM = path.join(__dirname, '..', '..', 'dev', 'record-form.js'
 const SRC_MENTAL_LEAVE = path.join(__dirname, '..', '..', 'dev', 'mental-leave.js');
 // v266：GenogramEditor 家系圖模組拆到獨立檔案，同上理由——唯一來源固定為 dev/genogram.js。
 const SRC_GENOGRAM = path.join(__dirname, '..', '..', 'dev', 'genogram.js');
+// v267：空間預約模組拆到獨立檔案，同上理由——唯一來源固定為 dev/booking.js。
+const SRC_BOOKING = path.join(__dirname, '..', '..', 'dev', 'booking.js');
 // v261：openmail 信箱模組（原地外部化，inline script 區塊原樣搬出）拆到獨立檔案，
 // 同上理由——唯一來源固定為 dev/openmail.js。
 const SRC_OPENMAIL = path.join(__dirname, '..', '..', 'dev', 'openmail.js');
@@ -99,6 +101,7 @@ const OUT_DRAFT_ENGINE = path.join(OUT_DIR, 'draft-engine.js');
 const OUT_RECORD_FORM = path.join(OUT_DIR, 'record-form.js');
 const OUT_MENTAL_LEAVE = path.join(OUT_DIR, 'mental-leave.js');
 const OUT_GENOGRAM = path.join(OUT_DIR, 'genogram.js');
+const OUT_BOOKING = path.join(OUT_DIR, 'booking.js');
 const OUT_OPENMAIL = path.join(OUT_DIR, 'openmail.js');
 const OUT_FT_UI = path.join(OUT_DIR, 'ft-ui.js');
 const OUT_SMS = path.join(OUT_DIR, 'sms.js');
@@ -176,6 +179,10 @@ function main() {
     console.error(`找不到 ${SRC_GENOGRAM}`);
     process.exit(1);
   }
+  if (!fs.existsSync(SRC_BOOKING)) {
+    console.error(`找不到 ${SRC_BOOKING}`);
+    process.exit(1);
+  }
   if (!fs.existsSync(SRC_OPENMAIL)) {
     console.error(`找不到 ${SRC_OPENMAIL}`);
     process.exit(1);
@@ -217,6 +224,7 @@ function main() {
   const recordFormJs = fs.readFileSync(SRC_RECORD_FORM, 'utf8');
   const mentalLeaveJs = fs.readFileSync(SRC_MENTAL_LEAVE, 'utf8');
   const genogramJs = fs.readFileSync(SRC_GENOGRAM, 'utf8');
+  const bookingJs = fs.readFileSync(SRC_BOOKING, 'utf8');
   const openmailJs = fs.readFileSync(SRC_OPENMAIL, 'utf8');
   const ftUiJs = fs.readFileSync(SRC_FT_UI, 'utf8');
   const smsJs = fs.readFileSync(SRC_SMS, 'utf8');
@@ -279,6 +287,7 @@ function main() {
   fs.writeFileSync(OUT_RECORD_FORM, recordFormJs, 'utf8'); // v259：原樣複製，record-form.js 無需置換常數
   fs.writeFileSync(OUT_MENTAL_LEAVE, mentalLeaveJs, 'utf8'); // v260：原樣複製，mental-leave.js 無需置換常數
   fs.writeFileSync(OUT_GENOGRAM, genogramJs, 'utf8'); // v266：原樣複製，genogram.js 無需置換常數
+  fs.writeFileSync(OUT_BOOKING, bookingJs, 'utf8'); // v267：原樣複製，booking.js 無需置換常數
   fs.writeFileSync(OUT_OPENMAIL, openmailJs, 'utf8'); // v261：原樣複製，openmail.js 無需置換常數
   fs.writeFileSync(OUT_FT_UI, ftUiJs, 'utf8'); // v262：原樣複製，ft-ui.js 無需置換常數
   fs.writeFileSync(OUT_SMS, smsJs, 'utf8'); // v263：原樣複製，sms.js 無需置換常數
@@ -314,7 +323,8 @@ function main() {
   // v263：再納入 sms.js、issues-ui.js——同理，只改簡訊發送模組或問題回報/許願池模組也要能
   // 觸發強制重整。
   // v266：再納入 genogram.js——同理，只改家系圖模組也要能觸發強制重整。
-  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').update(utilsJs, 'utf8').update(ftCoreJs, 'utf8').update(caseDetailJs, 'utf8').update(caseImportJs, 'utf8').update(initialInterviewJs, 'utf8').update(psychImportJs, 'utf8').update(gradEvalJs, 'utf8').update(closureEvalJs, 'utf8').update(eventRecordsJs, 'utf8').update(draftEngineJs, 'utf8').update(recordFormJs, 'utf8').update(mentalLeaveJs, 'utf8').update(genogramJs, 'utf8').update(openmailJs, 'utf8').update(ftUiJs, 'utf8').update(smsJs, 'utf8').update(issuesUiJs, 'utf8').update(tooltipJs, 'utf8').update(qrcodeLibJs, 'utf8').digest('hex').slice(0, 16);
+  // v267：再納入 booking.js——同理，只改空間預約模組也要能觸發強制重整。
+  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').update(utilsJs, 'utf8').update(ftCoreJs, 'utf8').update(caseDetailJs, 'utf8').update(caseImportJs, 'utf8').update(initialInterviewJs, 'utf8').update(psychImportJs, 'utf8').update(gradEvalJs, 'utf8').update(closureEvalJs, 'utf8').update(eventRecordsJs, 'utf8').update(draftEngineJs, 'utf8').update(recordFormJs, 'utf8').update(mentalLeaveJs, 'utf8').update(genogramJs, 'utf8').update(bookingJs, 'utf8').update(openmailJs, 'utf8').update(ftUiJs, 'utf8').update(smsJs, 'utf8').update(issuesUiJs, 'utf8').update(tooltipJs, 'utf8').update(qrcodeLibJs, 'utf8').digest('hex').slice(0, 16);
   const versionJson = { buildId, mode, builtAt: new Date().toISOString() };
   fs.writeFileSync(path.join(OUT_DIR, 'version.json'), JSON.stringify(versionJson, null, 2), 'utf8');
 
@@ -335,6 +345,7 @@ function main() {
   console.log(`已複製 ${OUT_RECORD_FORM}`);
   console.log(`已複製 ${OUT_MENTAL_LEAVE}`);
   console.log(`已複製 ${OUT_GENOGRAM}`);
+  console.log(`已複製 ${OUT_BOOKING}`);
   console.log(`已複製 ${OUT_OPENMAIL}`);
   console.log(`已複製 ${OUT_FT_UI}`);
   console.log(`已複製 ${OUT_SMS}`);
