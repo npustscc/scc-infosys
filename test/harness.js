@@ -77,6 +77,8 @@ const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'sms.js'),
   path.join(__dirname, '..', 'dev', 'ft-ui.js'),
   path.join(__dirname, '..', 'dev', 'issues-ui.js'),
+  path.join(__dirname, '..', 'dev', 'tooltip.js'),
+  path.join(__dirname, '..', 'dev', 'qrcode-lib.js'),
 ];
 
 function readHtml() {

@@ -77,6 +77,8 @@ const SRC_SMS = path.join(__dirname, '..', '..', 'dev', 'sms.js');
 // v263：問題回報/許願池模組（原地外部化，inline script 區塊原樣搬出）拆到獨立檔案，
 // 同上理由——唯一來源固定為 dev/issues-ui.js。
 const SRC_ISSUES_UI = path.join(__dirname, '..', '..', 'dev', 'issues-ui.js');
+const SRC_TOOLTIP = path.join(__dirname, '..', '..', 'dev', 'tooltip.js');
+const SRC_QRCODE_LIB = path.join(__dirname, '..', '..', 'dev', 'qrcode-lib.js');
 const OUT_DIR = path.join(__dirname, '..', 'public');
 const OUT_HTML = path.join(OUT_DIR, 'index.html');
 const OUT_CHANGELOG = path.join(OUT_DIR, 'changelog.js');
@@ -98,6 +100,8 @@ const OUT_OPENMAIL = path.join(OUT_DIR, 'openmail.js');
 const OUT_FT_UI = path.join(OUT_DIR, 'ft-ui.js');
 const OUT_SMS = path.join(OUT_DIR, 'sms.js');
 const OUT_ISSUES_UI = path.join(OUT_DIR, 'issues-ui.js');
+const OUT_TOOLTIP = path.join(OUT_DIR, 'tooltip.js');
+const OUT_QRCODE_LIB = path.join(OUT_DIR, 'qrcode-lib.js');
 
 function main() {
   const targetUrl = urlArg || `http://localhost:${config.PORT}/exec`;
@@ -181,6 +185,14 @@ function main() {
     console.error(`找不到 ${SRC_ISSUES_UI}`);
     process.exit(1);
   }
+  if (!fs.existsSync(SRC_TOOLTIP)) {
+    console.error(`找不到 `);
+    process.exit(1);
+  }
+  if (!fs.existsSync(SRC_QRCODE_LIB)) {
+    console.error(`找不到 `);
+    process.exit(1);
+  }
   const html = fs.readFileSync(SRC_HTML, 'utf8');
   const changelogJs = fs.readFileSync(SRC_CHANGELOG, 'utf8');
   const stylesCss = fs.readFileSync(SRC_STYLES, 'utf8');
@@ -201,6 +213,8 @@ function main() {
   const ftUiJs = fs.readFileSync(SRC_FT_UI, 'utf8');
   const smsJs = fs.readFileSync(SRC_SMS, 'utf8');
   const issuesUiJs = fs.readFileSync(SRC_ISSUES_UI, 'utf8');
+  const tooltipJs = fs.readFileSync(SRC_TOOLTIP, 'utf8');
+  const qrcodeLibJs = fs.readFileSync(SRC_QRCODE_LIB, 'utf8');
 
   const RE_URL = /^const APPS_SCRIPT_URL = '([^']*)';$/m;
   const mUrl = RE_URL.exec(html);
@@ -260,6 +274,8 @@ function main() {
   fs.writeFileSync(OUT_FT_UI, ftUiJs, 'utf8'); // v262：原樣複製，ft-ui.js 無需置換常數
   fs.writeFileSync(OUT_SMS, smsJs, 'utf8'); // v263：原樣複製，sms.js 無需置換常數
   fs.writeFileSync(OUT_ISSUES_UI, issuesUiJs, 'utf8'); // v263：原樣複製，issues-ui.js 無需置換常數
+  fs.writeFileSync(OUT_TOOLTIP, tooltipJs, 'utf8'); // v264：原樣複製，tooltip.js 無需置換常數
+  fs.writeFileSync(OUT_QRCODE_LIB, qrcodeLibJs, 'utf8'); // v264：原樣複製，qrcode-lib.js 無需置換常數
 
   // v242：強制重新整理機制——寫出 version.json 供前端 checkForUpdate() 輪詢比對。buildId 用
   // patched 後 html 內容的 sha256 前 16 碼（內容雜湊，不用時間戳／build 序號）：這樣「只改
@@ -288,7 +304,7 @@ function main() {
   // v262：再納入 ft-ui.js——同理，只改新生心理測驗 UI 模組也要能觸發強制重整。
   // v263：再納入 sms.js、issues-ui.js——同理，只改簡訊發送模組或問題回報/許願池模組也要能
   // 觸發強制重整。
-  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').update(utilsJs, 'utf8').update(ftCoreJs, 'utf8').update(caseDetailJs, 'utf8').update(caseImportJs, 'utf8').update(initialInterviewJs, 'utf8').update(psychImportJs, 'utf8').update(gradEvalJs, 'utf8').update(closureEvalJs, 'utf8').update(eventRecordsJs, 'utf8').update(draftEngineJs, 'utf8').update(recordFormJs, 'utf8').update(mentalLeaveJs, 'utf8').update(openmailJs, 'utf8').update(ftUiJs, 'utf8').update(smsJs, 'utf8').update(issuesUiJs, 'utf8').digest('hex').slice(0, 16);
+  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').update(utilsJs, 'utf8').update(ftCoreJs, 'utf8').update(caseDetailJs, 'utf8').update(caseImportJs, 'utf8').update(initialInterviewJs, 'utf8').update(psychImportJs, 'utf8').update(gradEvalJs, 'utf8').update(closureEvalJs, 'utf8').update(eventRecordsJs, 'utf8').update(draftEngineJs, 'utf8').update(recordFormJs, 'utf8').update(mentalLeaveJs, 'utf8').update(openmailJs, 'utf8').update(ftUiJs, 'utf8').update(smsJs, 'utf8').update(issuesUiJs, 'utf8').update(tooltipJs, 'utf8').update(qrcodeLibJs, 'utf8').digest('hex').slice(0, 16);
   const versionJson = { buildId, mode, builtAt: new Date().toISOString() };
   fs.writeFileSync(path.join(OUT_DIR, 'version.json'), JSON.stringify(versionJson, null, 2), 'utf8');
 
@@ -312,6 +328,8 @@ function main() {
   console.log(`已複製 ${OUT_FT_UI}`);
   console.log(`已複製 ${OUT_SMS}`);
   console.log(`已複製 ${OUT_ISSUES_UI}`);
+  console.log(`已複製 ${OUT_TOOLTIP}`);
+  console.log(`已複製 ${OUT_QRCODE_LIB}`);
   console.log(`APPS_SCRIPT_URL：${mUrl[1]} → ${targetUrl}`);
   console.log(folderMsg + '。');
   console.log(`version.json buildId：${buildId}`);

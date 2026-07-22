@@ -3,6 +3,9 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-22', v: 264, title: '系統架構：拆 index.html 第十八刀——tooltip 與 QR code 編碼器原地外部化', isProd: false, items: [
+    ['說明', '內部重構：data-tip 自訂 tooltip 模組（71 行）與手刻 QR code 編碼器（641 行）自 index.html 原地外部化為 tooltip.js、qrcode-lib.js，載入時機不變，使用者無感'],
+  ]},
   { date: '2026-07-22', v: 263, title: '系統架構：拆 index.html 第十七刀——簡訊發送模組拆到 sms.js＋問題回報/許願池模組拆到 issues-ui.js', isProd: false, items: [
     ['說明', '主程式（index.html）內簡訊發送模組（三竹/Every8D 兩家供應商、GSM 字集判斷與則數估算、收訊人與排程、發送記錄查詢，約 484 行）改用「inline script 區塊原地外部化」拆到獨立的 sms.js——原本就是獨立一段 <script>，搬到外部檔後標籤位置不變，載入與執行順序完全不變，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '同一版再把問題回報/許願池模組（含尾端一併打包的 PDF 小工具頁、系統除錯日誌面板，約 1,436 行）改用同一刀法拆到獨立的 issues-ui.js，同樣原地外部化、行為不變'],
