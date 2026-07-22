@@ -22,6 +22,9 @@
 // v253：初次晤談模組（_iiChipData 系列／openInitialInterviewPage／saveInitialInterview／
 // printInitialInterview 等）再拆到 dev/initial-interview.js，插入 case-import.js 與 index.html
 // 之間（符合實際 <script> 載入順序）。
+// v254：心理測驗匯入與批次清理模組（handleImportPsychCSV／importPsychTestFromExcel／
+// renderRecycleBin／searchTransferRefill 等）再拆到 dev/psych-import.js，插入
+// initial-interview.js 與 index.html 之間（符合實際 <script> 載入順序）。
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -33,6 +36,7 @@ const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'case-detail.js'),
   path.join(__dirname, '..', 'dev', 'case-import.js'),
   path.join(__dirname, '..', 'dev', 'initial-interview.js'),
+  path.join(__dirname, '..', 'dev', 'psych-import.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
 ];
 
