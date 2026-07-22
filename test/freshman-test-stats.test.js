@@ -7,13 +7,13 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { extractFunction } = require('./harness');
-const fs = require('node:fs');
-const path = require('node:path');
+const { extractFunction, readHtml } = require('./harness');
 const vm = require('node:vm');
 
 function loadStats() {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'dev', 'index.html'), 'utf8');
+  // v250 起：抽取來源改用 harness.readHtml()（utils.js＋ft-core.js＋index.html 串接），
+  // 因為本函式用到的常數/函式部分已隨拆檔搬到 dev/ft-core.js。
+  const src = readHtml();
   const prIdsMatch = /const FT_MERGED_PR_IDS = \[[\s\S]*?\];/.exec(src);
   const issueIdsMatch = /const FT_ISSUE_S_IDS = \[[\s\S]*?\];/.exec(src);
   const issueLabelsMatch = /const FT_ISSUE_LABELS = \{[\s\S]*?\};/.exec(src);

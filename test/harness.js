@@ -1,4 +1,4 @@
-// 測試載入器：從 dev/index.html（＋v249 起 dev/utils.js）就地抽出指定的純函式，在隔離的
+// 測試載入器：從 dev/ 底下的原始碼檔案（見 SRC_FILES）就地抽出指定的純函式，在隔離的
 // vm context 中執行。完全不修改來源檔 —— 測試檔讀的是同一份正式碼，改壞邏輯測試就會紅燈。
 //
 // 用法：
@@ -10,18 +10,23 @@
 // 若函式字串字面量內含不成對的大括號（本專案目前沒有），需改用更完整的解析器。
 //
 // v249：純函式工具區絞殺者拆檔起，部分純函式（如 escHtml／semesterLabel／_bkSeriesReplan 等）
-// 已搬到 dev/utils.js。readHtml() 改為兩檔案串接（utils.js 在前，符合實際載入順序），
-// 讓既有測試不論函式目前落在哪個檔案都抽得到，呼叫端無需改動。
+// 已搬到 dev/utils.js。
+// v250：新生心理測驗純函式層（_ft* 系列）再拆到 dev/ft-core.js。SRC_FILES 改為可維護的陣列，
+// 依實際 <script> 載入順序串接（utils.js → ft-core.js → index.html），讓既有測試不論函式
+// 目前落在哪個檔案都抽得到，呼叫端無需改動；未來再拆檔只需在陣列中新增一筆。
 
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const HTML_PATH = path.join(__dirname, '..', 'dev', 'index.html');
-const UTILS_PATH = path.join(__dirname, '..', 'dev', 'utils.js');
+const SRC_FILES = [
+  path.join(__dirname, '..', 'dev', 'utils.js'),
+  path.join(__dirname, '..', 'dev', 'ft-core.js'),
+  path.join(__dirname, '..', 'dev', 'index.html'),
+];
 
 function readHtml() {
-  return fs.readFileSync(UTILS_PATH, 'utf8') + '\n' + fs.readFileSync(HTML_PATH, 'utf8');
+  return SRC_FILES.map((p) => fs.readFileSync(p, 'utf8')).join('\n');
 }
 
 // 從 src 中，以 openBraceIdx（指向 '{'）為起點，做「字串/註解感知」的括號配對，回傳結束 '}' 的索引。
@@ -86,4 +91,4 @@ function makeFixedDate(fixed) {
   return FixedDate;
 }
 
-module.exports = { load, extractFunction, matchBrace, makeFixedDate, HTML_PATH };
+module.exports = { load, extractFunction, matchBrace, makeFixedDate, readHtml, HTML_PATH: SRC_FILES[SRC_FILES.length - 1] };

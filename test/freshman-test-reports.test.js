@@ -9,13 +9,13 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
-const { extractFunction } = require('./harness');
+const { extractFunction, readHtml } = require('./harness');
 
 function loadReports() {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'dev', 'index.html'), 'utf8');
+  // v250 起：抽取來源改用 harness.readHtml()（utils.js＋ft-core.js＋index.html 串接），
+  // 因為部分常數/函式已隨拆檔搬到 dev/ft-core.js。
+  const src = readHtml();
   // 陣列常數用 \[...\]，物件常數用 \{...\}——照 test/freshman-test-stats.test.js 已驗證過的抽取寫法。
   const constPatterns = [
     ['FT_MERGED_PR_IDS', /const FT_MERGED_PR_IDS = \[[\s\S]*?\];/],

@@ -19,13 +19,13 @@ const MERGED_ROW_FNS = [
 
 // harness.load 目前只抽「函式宣告」；FT_MERGED_PR_IDS 是 const 陣列常數，需另外用 extractFunction
 // 之外的方式帶入。這裡直接用 loadWithConst 包一層：把常數宣告也當作一段程式碼一併塞進 sandbox。
-const { extractFunction, matchBrace } = require('./harness');
-const fs = require('node:fs');
-const path = require('node:path');
+const { extractFunction, matchBrace, readHtml } = require('./harness');
 const vm = require('node:vm');
 
 function loadMerged() {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'dev', 'index.html'), 'utf8');
+  // v250 起：抽取來源改用 harness.readHtml()（utils.js＋ft-core.js＋index.html 串接），
+  // 因為 FT_MERGED_PR_IDS 等常數/函式已隨拆檔搬到 dev/ft-core.js。
+  const src = readHtml();
   const constMatch = /const FT_MERGED_PR_IDS = \[[\s\S]*?\];/.exec(src);
   if (!constMatch) throw new Error('找不到 FT_MERGED_PR_IDS 常數宣告');
   const fnNames = ['_ftTrimCell', '_ftParsePrValue', '_ftPrDotDisplay', '_ftIsHighConcern', '_ftGformConsentFromText',

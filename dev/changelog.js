@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-22', v: 250, title: '系統架構：拆 index.html 第四刀——新生心理測驗純函式層拆到 ft-core.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內新生心理測驗模組的網格/資料處理純函式（約 1,300 行）拆到獨立的 ft-core.js，純粹搬移、沒有改動任何行為，使用者無感'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-22', v: 249, title: '系統架構：拆 index.html 第三刀——純函式工具區拆到 utils.js', isProd: false, items: [
     ['說明', '主程式（index.html）內部分無畫面依賴的純函式（如文字逸出、學期換算、空間預約系列日期換算等，約 200 行）拆到獨立的 utils.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
