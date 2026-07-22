@@ -479,6 +479,10 @@ function openInitialInterviewPage(caseId) {
   setAlert('initial-interview-alert', '', '');
   showPage('page-initial-interview', null);
 
+  // v265：清空上一份表單殘留的草稿備援時間顯示
+  const _iiDraftStatusEl = document.getElementById('_ii-draft-status');
+  if (_iiDraftStatusEl) _iiDraftStatusEl.textContent = '';
+
   stopIIDraftAutosave();
   if (!(existing && !existing.deleted && existing.type !== 'continuation' && existing.type !== 'linkedRecord')) {
     _iiDraftKey = `scc_draft_ii_${currentUser?.email||''}_${caseId}`;
@@ -799,6 +803,12 @@ async function saveInitialInterview() {
 
 function cancelInitialInterview() { exitIIForm(); }
 
+// 純函式：初談表草稿快照是否有使用者實際輸入內容（v265）——供 autosave 判斷是否寫入、以及
+// 側選單/banner 切頁守門判斷 dirty 共用，避免雙實作。
+function _iiDraftHasContent(snap) {
+  return !!(snap.family || snap.mainIssue || snap.summary || snap.plan || (snap.problemsMain||[]).length);
+}
+
 function startIIDraftAutosave() {
   stopIIDraftAutosave();
   if (!_iiDraftKey) return;
@@ -809,8 +819,12 @@ function startIIDraftAutosave() {
       const snap = snapshotInitialInterview();
       delete snap.familyImage; // skip base64 image to avoid quota issues
       snap._savedAt = new Date().toISOString();
-      if (snap.family || snap.mainIssue || snap.summary || snap.plan || (snap.problemsMain||[]).length)
+      if (_iiDraftHasContent(snap)) {
         localStorage.setItem(_iiDraftKey, JSON.stringify(snap));
+        // v265：初談表原本完全沒有草稿備援的視覺回饋，補上標題列旁的狀態小字（比照晤談記錄）
+        const ds = document.getElementById('_ii-draft-status');
+        if (ds) { const t = new Date(); ds.textContent = `草稿備援 ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`; }
+      }
     } catch(e) { console.warn('ii draft autosave failed', e); }
   }, 5000);
 }

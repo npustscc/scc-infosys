@@ -2181,6 +2181,7 @@
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:20px;flex-wrap:wrap;">
         <button class="btn btn-secondary" onclick="exitRecordForm()">← 返回</button>
         <div class="page-title" style="margin:0;border:none;padding:0;" id="new-record-page-title">新增晤談紀錄</div>
+        <span id="_draft-autosave-status-top" style="font-size:.78rem;color:#718096;"></span>
         <button onclick="exitRecordForm()" title="離開" style="margin-left:auto;background:none;border:none;font-size:1.5rem;cursor:pointer;color:#a0aec0;line-height:1;padding:0 4px;">×</button>
       </div>
       <div style="font-size:.78rem;color:#718096;margin-bottom:12px;"><span class="req">*</span> 為必填欄位</div>
@@ -2680,7 +2681,7 @@
     <!-- 初次晤談紀錄表頁面 -->
     <div id="page-initial-interview" class="page">
       <div style="display:flex;align-items:center;margin-bottom:8px;">
-        <div class="page-title" id="initial-interview-title" style="flex:1;margin:0;border:none;padding:0;">初次晤談紀錄表</div>
+        <div class="page-title" id="initial-interview-title" style="flex:1;margin:0;border:none;padding:0;">初次晤談紀錄表<span id="_ii-draft-status" style="font-size:.78rem;font-weight:400;color:#718096;margin-left:12px;"></span></div>
         <button onclick="exitIIForm()" title="離開" style="background:none;border:none;font-size:1.5rem;cursor:pointer;color:#a0aec0;line-height:1;padding:0 4px;">×</button>
       </div>
       <div style="font-size:.78rem;color:#718096;margin-bottom:12px;"><span class="req">*</span> 為必填欄位</div>
@@ -4174,7 +4175,22 @@ function _upgradeFromClockMode() {
   loadPendingUsers().catch(() => {});
 }
 
+// v265：表單頁離開守門——晤談記錄/初談表/事件處理記錄在有未儲存輸入時，攔下側選單切頁改走各自的離開對話框
+// （原本只有 banner 返回鈕接了各表單自己的離開防護，側選單完全沒守門，繞過草稿備援與離開詢問）。
+// dirty 判定＝該表單 autosave timer 還在跑＋快照有實際內容；各離開/儲存流程都會先 stop autosave
+// （timer 歸 null，見 stopRecordDraftAutosave／stopIIDraftAutosave／_stopEvrAutosave 各自呼叫點的
+// stop-before-navigate 追查），所以完成儲存/捨棄後的程式化導頁天然放行，不需額外的 bypass 旗標。
+const EXIT_GUARDS = {
+  'page-new-record':        { dirty: () => _draftTimer   !== null && _recordDraftHasContent(snapshotRecordDraft()), exit: () => exitRecordForm() },
+  'page-initial-interview': { dirty: () => _iiDraftTimer  !== null && _iiDraftHasContent(snapshotInitialInterview()), exit: () => exitIIForm() },
+  'page-event-records':     { dirty: () => _evrDraftTimer !== null && _evrHasUnsavedInput(), exit: () => exitEventRecordForm() },
+};
+
 function showPage(pageId, navEl) {
+  // v265：離開表單頁守門優先於下方 v207 新生測驗守門（兩者針對的頁面互斥，順序無影響）。
+  const _curPageId = document.querySelector('.page.active')?.id;
+  const _exitGuard = _curPageId && _curPageId !== pageId ? EXIT_GUARDS[_curPageId] : null;
+  if (_exitGuard && _exitGuard.dirty()) { _exitGuard.exit(); return; }
   // v207：新生心理測驗頁的試算表編輯中有未儲存變更時，離開頁面（含側邊欄導航）先確認——此頁自管
   // dirty（window._ftDirty），不掛全域 _gd 草稿引擎（見 _ftEnterEdit／_ftSaveEdit 檔頭說明）。
   // beforeunload（整頁關閉/重整）另外在下方事件監聽處理，本處只管站內導頁。
@@ -4757,22 +4773,14 @@ function scrollToTop() {
 function handleFloatingBack() {
   const fab = document.getElementById('header-back-btn');
   const from = fab?.dataset?.fromPage;
-  const caseId = (typeof _recordCaseId !== 'undefined' && _recordCaseId)
-    || (typeof _closureCaseId !== 'undefined' && _closureCaseId)
-    || (typeof _teFormCaseId !== 'undefined' && _teFormCaseId)
-    || (typeof _initialInterviewCaseId !== 'undefined' && _initialInterviewCaseId);
   if (from === 'page-event-records') { exitEventRecordForm(); return; }
   if (from === 'page-transfer-eval') { cancelTransferEvalForm(); return; }
   // v185：結案評估／個案資料表單改走各自的離開防護（原本這裡直接導頁，繞過草稿備援與離開詢問）
   if (from === 'page-closure-eval') { cancelClosureEval(); return; }
-  if (from === 'page-new-record' || from === 'page-initial-interview') {
-    if (caseId) {
-      showCaseDetail(caseId);
-    } else {
-      showPage('page-cases', document.querySelector('[data-nav-id="page-cases"]'));
-    }
-    return;
-  }
+  // v265：晤談記錄／初次晤談表 banner 返回鈕比照 v185 教訓，改走各自的離開防護——
+  // 原本直接導頁（見上），會在有未儲存輸入時繞過草稿備援與離開詢問
+  if (from === 'page-new-record') { exitRecordForm(); return; }
+  if (from === 'page-initial-interview') { exitIIForm(); return; }
   // #7：從「新增個案」按「查看現有案號」進入詳細頁時，banner 返回也要走專屬動線回新增個案頁
   // （與頁內 btn-detail-back 一致，見 _renderDetailBackBtn），先前一律回列表導致回不去新增個案。
   if (from === 'page-case-detail' && typeof _detailReturnToNewCase !== 'undefined' && _detailReturnToNewCase) {

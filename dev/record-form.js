@@ -482,6 +482,9 @@ function openNewRecordPage(caseId, recordId = null, recordKind = '晤談記錄',
   _checkRecBkConflict();
   _checkRecNextBkRealtime();
 
+  // v265：清空上一份表單殘留的草稿備援時間顯示（兩處小字都清）
+  _setRecordDraftStatusText('');
+
   // 啟動自動儲存（crash recovery；草稿還原改由登入時 _migrateLocalStorageDrafts 處理）
   startRecordDraftAutosave();
 }
@@ -975,6 +978,22 @@ function restoreRecordDraft(d) {
   }
 }
 
+// 純函式：草稿快照是否有使用者實際輸入內容（v265）——供 autosave 判斷是否寫入、以及
+// 側選單/banner 切頁守門判斷 dirty 共用，避免雙實作。
+function _recordDraftHasContent(draft) {
+  return !!(draft.summary || draft.assessment || draft.nextPlan || draft.notes ||
+    draft.topics.length || draft.services.length || (draft.attachments||[]).length);
+}
+
+// v265：底部按鈕列（_draft-autosave-status）與標題列旁（_draft-autosave-status-top）兩處
+// 「草稿備援 HH:MM」小字同步更新／清空的共用 helper（原本只有底部一處，標題列不顯眼常被忽略）。
+function _setRecordDraftStatusText(text) {
+  ['_draft-autosave-status', '_draft-autosave-status-top'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  });
+}
+
 function startRecordDraftAutosave() {
   stopRecordDraftAutosave();
   if (!_draftKey) return;
@@ -984,10 +1003,10 @@ function startRecordDraftAutosave() {
       if (!page?.classList.contains('active')) return;
       const draft = snapshotRecordDraft();
       // 只在使用者有實際輸入時儲存
-      if (draft.summary || draft.assessment || draft.nextPlan || draft.notes || draft.topics.length || draft.services.length || (draft.attachments||[]).length) {
+      if (_recordDraftHasContent(draft)) {
         localStorage.setItem(_draftKey, JSON.stringify(draft));
-        const ds = document.getElementById('_draft-autosave-status');
-        if (ds) { const t = new Date(); ds.textContent = `草稿備援 ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`; }
+        const t = new Date();
+        _setRecordDraftStatusText(`草稿備援 ${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`);
       }
     } catch (e) { console.warn('draft autosave failed', e); }
   }, 5000);

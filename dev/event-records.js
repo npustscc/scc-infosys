@@ -1704,15 +1704,28 @@ function _evrRemoveRecord(idx) {
 
 // ── 退出 / 暫存 / 儲存 ──
 
-function exitEventRecordForm() {
-  if (!_evrCaseId) { renderEventRecordsPage(); return; }
-  _evrSyncFromDom();
-  const isEmpty = _evrRecords.every(r => {
+// 純函式：一組事件處理記錄快照是否「全部空白」（v265 抽出，原本內嵌於 exitEventRecordForm）——
+// 供離開表單判斷捨棄 vs 詢問、以及側選單/banner 切頁守門判斷 dirty 共用，避免雙實作。
+function _evrRecordsAllEmpty(records) {
+  return (records || []).every(r => {
     const _rtE = v => !(v||'').replace(/<[^>]*>/g,'').trim();
     return !r.date && !r.time && !r.room && !r.counselors.length && !r.interviewees.length &&
            !r.topics.length && !r.serviceItems.length && _rtE(r.summary);
   });
-  if (isEmpty) { discardEventRecords(); return; }
+}
+
+// v265：目前 evr 表單是否有未儲存輸入（供側選單/banner 切頁守門用）——先把 DOM 同步進 _evrRecords
+// 再比對，與 exitEventRecordForm 的判斷邏輯一致。未開表單（_evrCaseId 為 null）一律視為不 dirty。
+function _evrHasUnsavedInput() {
+  if (!_evrCaseId) return false;
+  _evrSyncFromDom();
+  return !_evrRecordsAllEmpty(_evrRecords);
+}
+
+function exitEventRecordForm() {
+  if (!_evrCaseId) { renderEventRecordsPage(); return; }
+  _evrSyncFromDom();
+  if (_evrRecordsAllEmpty(_evrRecords)) { discardEventRecords(); return; }
   _showExitDialog('離開事件處理記錄表',
     () => saveEventRecords(),
     () => draftEventRecords(),
