@@ -47,6 +47,8 @@ const SRC_UTILS = path.join(__dirname, '..', '..', 'dev', 'utils.js');
 const SRC_FT_CORE = path.join(__dirname, '..', '..', 'dev', 'ft-core.js');
 // v251：個案詳細頁區塊拆到獨立檔案，同上理由——唯一來源固定為 dev/case-detail.js。
 const SRC_CASE_DETAIL = path.join(__dirname, '..', '..', 'dev', 'case-detail.js');
+// v252：個案資料表單匯入區塊拆到獨立檔案，同上理由——唯一來源固定為 dev/case-import.js。
+const SRC_CASE_IMPORT = path.join(__dirname, '..', '..', 'dev', 'case-import.js');
 const OUT_DIR = path.join(__dirname, '..', 'public');
 const OUT_HTML = path.join(OUT_DIR, 'index.html');
 const OUT_CHANGELOG = path.join(OUT_DIR, 'changelog.js');
@@ -55,6 +57,7 @@ const OUT_HINTS = path.join(OUT_DIR, 'hints.js');
 const OUT_UTILS = path.join(OUT_DIR, 'utils.js');
 const OUT_FT_CORE = path.join(OUT_DIR, 'ft-core.js');
 const OUT_CASE_DETAIL = path.join(OUT_DIR, 'case-detail.js');
+const OUT_CASE_IMPORT = path.join(OUT_DIR, 'case-import.js');
 
 function main() {
   const targetUrl = urlArg || `http://localhost:${config.PORT}/exec`;
@@ -86,6 +89,10 @@ function main() {
     console.error(`找不到 ${SRC_CASE_DETAIL}`);
     process.exit(1);
   }
+  if (!fs.existsSync(SRC_CASE_IMPORT)) {
+    console.error(`找不到 ${SRC_CASE_IMPORT}`);
+    process.exit(1);
+  }
   const html = fs.readFileSync(SRC_HTML, 'utf8');
   const changelogJs = fs.readFileSync(SRC_CHANGELOG, 'utf8');
   const stylesCss = fs.readFileSync(SRC_STYLES, 'utf8');
@@ -93,6 +100,7 @@ function main() {
   const utilsJs = fs.readFileSync(SRC_UTILS, 'utf8');
   const ftCoreJs = fs.readFileSync(SRC_FT_CORE, 'utf8');
   const caseDetailJs = fs.readFileSync(SRC_CASE_DETAIL, 'utf8');
+  const caseImportJs = fs.readFileSync(SRC_CASE_IMPORT, 'utf8');
 
   const RE_URL = /^const APPS_SCRIPT_URL = '([^']*)';$/m;
   const mUrl = RE_URL.exec(html);
@@ -139,6 +147,7 @@ function main() {
   fs.writeFileSync(OUT_UTILS, utilsJs, 'utf8'); // v249：原樣複製，utils.js 無需置換常數
   fs.writeFileSync(OUT_FT_CORE, ftCoreJs, 'utf8'); // v250：原樣複製，ft-core.js 無需置換常數
   fs.writeFileSync(OUT_CASE_DETAIL, caseDetailJs, 'utf8'); // v251：原樣複製，case-detail.js 無需置換常數
+  fs.writeFileSync(OUT_CASE_IMPORT, caseImportJs, 'utf8'); // v252：原樣複製，case-import.js 無需置換常數
 
   // v242：強制重新整理機制——寫出 version.json 供前端 checkForUpdate() 輪詢比對。buildId 用
   // patched 後 html 內容的 sha256 前 16 碼（內容雜湊，不用時間戳／build 序號）：這樣「只改
@@ -154,7 +163,8 @@ function main() {
   // v249：再納入 utils.js——同理，只改純函式工具區也要能觸發強制重整。
   // v250：再納入 ft-core.js——同理，只改新生心理測驗純函式層也要能觸發強制重整。
   // v251：再納入 case-detail.js——同理，只改個案詳細頁區塊也要能觸發強制重整。
-  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').update(utilsJs, 'utf8').update(ftCoreJs, 'utf8').update(caseDetailJs, 'utf8').digest('hex').slice(0, 16);
+  // v252：再納入 case-import.js——同理，只改個案資料表單匯入區塊也要能觸發強制重整。
+  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').update(utilsJs, 'utf8').update(ftCoreJs, 'utf8').update(caseDetailJs, 'utf8').update(caseImportJs, 'utf8').digest('hex').slice(0, 16);
   const versionJson = { buildId, mode, builtAt: new Date().toISOString() };
   fs.writeFileSync(path.join(OUT_DIR, 'version.json'), JSON.stringify(versionJson, null, 2), 'utf8');
 
@@ -165,6 +175,7 @@ function main() {
   console.log(`已複製 ${OUT_UTILS}`);
   console.log(`已複製 ${OUT_FT_CORE}`);
   console.log(`已複製 ${OUT_CASE_DETAIL}`);
+  console.log(`已複製 ${OUT_CASE_IMPORT}`);
   console.log(`APPS_SCRIPT_URL：${mUrl[1]} → ${targetUrl}`);
   console.log(folderMsg + '。');
   console.log(`version.json buildId：${buildId}`);
