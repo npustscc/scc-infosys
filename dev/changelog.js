@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-22', v: 259, title: '系統架構：拆 index.html 第十三刀——晤談紀錄表單模組拆到 record-form.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內晤談紀錄表單模組（開啟表單、伴侶諮商連動、角色色、下次預約前綴、草稿自存/自動備援、服務項目與主題選項、即時重複紀錄檢核與儲存，約 2,000 行）拆到獨立的 record-form.js，純粹搬移、沒有改動任何行為，使用者無感'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-22', v: 258, title: '系統架構：拆 index.html 第十二刀——草稿引擎＋雲端備援＋待派案 todo 區塊拆到 draft-engine.js', isProd: false, items: [
     ['說明', '主程式（index.html）內草稿引擎相關區塊（全站表單草稿共用引擎、草稿雲端備援 v2、晤談紀錄/初次晤談表/精神科評估的離開表單暫存/捨棄、管理者查看他人待辦、待派案 todo 渲染與確認派案/轉案，約 790 行）拆到獨立的 draft-engine.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
