@@ -19,6 +19,9 @@
 // v252：個案資料表單匯入區塊（confirmClearAllCases／batchImportServiceTables／
 // importCasesFromExcel／showImportReviewModal／finalizeImport 等）再拆到 dev/case-import.js，
 // 插入 case-detail.js 與 index.html 之間（符合實際 <script> 載入順序）。
+// v253：初次晤談模組（_iiChipData 系列／openInitialInterviewPage／saveInitialInterview／
+// printInitialInterview 等）再拆到 dev/initial-interview.js，插入 case-import.js 與 index.html
+// 之間（符合實際 <script> 載入順序）。
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -29,6 +32,7 @@ const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'ft-core.js'),
   path.join(__dirname, '..', 'dev', 'case-detail.js'),
   path.join(__dirname, '..', 'dev', 'case-import.js'),
+  path.join(__dirname, '..', 'dev', 'initial-interview.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
 ];
 

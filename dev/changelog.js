@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-22', v: 253, title: '系統架構：拆 index.html 第七刀——初次晤談模組拆到 initial-interview.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內初次晤談模組（初次晤談 chip 系統、服務項目輔助函式、初談表填寫/暫存草稿/儲存/舊案延續/刪除復原/列印，約 1,200 行）拆到獨立的 initial-interview.js，純粹搬移、沒有改動任何行為，使用者無感'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-22', v: 252, title: '系統架構：拆 index.html 第六刀——個案資料表單匯入區塊拆到 case-import.js', isProd: false, items: [
     ['說明', '主程式（index.html）內個案資料表單匯入區塊（服務總表 Excel／CSV 批次匯入、匯入預覽與合併/歷史學期結案勾選、寫入 Drive，約 1,500 行）拆到獨立的 case-import.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
