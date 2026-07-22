@@ -33,6 +33,9 @@
 // v257：待辦分類純函式＋事件處理記錄表模組（_todoCategoryOf／_todoCategoryCounts／
 // renderEventRecordsPage／saveEventRecords 等）再拆到 dev/event-records.js，插入 closure-eval.js
 // 與 index.html 之間（符合實際 <script> 載入順序）。
+// v258：草稿引擎＋雲端備援＋待派案 todo 模組（_parseDraftKeyType／_isDraftSnapshotDirty／
+// _cloudDraftDiff／_renderAssignmentTodos 等）再拆到 dev/draft-engine.js，插入 event-records.js
+// 與 index.html 之間（符合實際 <script> 載入順序）。
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -48,6 +51,7 @@ const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'grad-eval.js'),
   path.join(__dirname, '..', 'dev', 'closure-eval.js'),
   path.join(__dirname, '..', 'dev', 'event-records.js'),
+  path.join(__dirname, '..', 'dev', 'draft-engine.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
 ];
 

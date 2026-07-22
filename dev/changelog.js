@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-22', v: 258, title: '系統架構：拆 index.html 第十二刀——草稿引擎＋雲端備援＋待派案 todo 區塊拆到 draft-engine.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內草稿引擎相關區塊（全站表單草稿共用引擎、草稿雲端備援 v2、晤談紀錄/初次晤談表/精神科評估的離開表單暫存/捨棄、管理者查看他人待辦、待派案 todo 渲染與確認派案/轉案，約 790 行）拆到獨立的 draft-engine.js，純粹搬移、沒有改動任何行為，使用者無感'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-22', v: 257, title: '系統架構：拆 index.html 第十一刀——待辦分類＋事件處理記錄表區塊拆到 event-records.js', isProd: false, items: [
     ['說明', '主程式（index.html）內待辦事項六分類 tab 純函式（分類對照表、tab 徽章統計、方塊/卡片檢視排序）與事件處理記錄表（開啟/搜尋/表單填寫/服務項目/儲存/草稿自動備援，約 1,840 行）拆到獨立的 event-records.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
