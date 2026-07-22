@@ -49,6 +49,11 @@
 // v262：新生心理測驗 UI 模組（_ftEnterEdit／_ftSaveEdit／_ftLoadStatsView 等）同樣改用
 // 「inline script 區塊原地外部化」拆到 dev/ft-ui.js——原本是 index.html 尾端另一段獨立
 // <script>，位置排在 openmail.js 之後；同上理由插入 SRC_FILES 只為讓 harness 抽得到函式。
+// v263：簡訊發送模組（_smsIsGsmMessage／_smsSegmentInfo／_smsValidatePhone 等）與問題回報/
+// 許願池模組（_issueDraftKey／submitIssue／_parseIssueMentions 等）同樣改用「inline script
+// 區塊原地外部化」，一版拆兩塊：分別拆到 dev/sms.js（原本排在 openmail.js 之後、ft-ui.js 之前）
+// 與 dev/issues-ui.js（原本排在 ft-ui.js 之後）；同上理由插入 SRC_FILES 只為讓 harness 抽得到
+// 函式，前後順序不影響測試結果。
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -69,7 +74,9 @@ const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'mental-leave.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
   path.join(__dirname, '..', 'dev', 'openmail.js'),
+  path.join(__dirname, '..', 'dev', 'sms.js'),
   path.join(__dirname, '..', 'dev', 'ft-ui.js'),
+  path.join(__dirname, '..', 'dev', 'issues-ui.js'),
 ];
 
 function readHtml() {
