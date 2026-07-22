@@ -63,6 +63,8 @@ const SRC_EVENT_RECORDS = path.join(__dirname, '..', '..', 'dev', 'event-records
 const SRC_DRAFT_ENGINE = path.join(__dirname, '..', '..', 'dev', 'draft-engine.js');
 // v259：晤談紀錄表單模組拆到獨立檔案，同上理由——唯一來源固定為 dev/record-form.js。
 const SRC_RECORD_FORM = path.join(__dirname, '..', '..', 'dev', 'record-form.js');
+// v260：身心調適假渲染段拆到獨立檔案，同上理由——唯一來源固定為 dev/mental-leave.js。
+const SRC_MENTAL_LEAVE = path.join(__dirname, '..', '..', 'dev', 'mental-leave.js');
 const OUT_DIR = path.join(__dirname, '..', 'public');
 const OUT_HTML = path.join(OUT_DIR, 'index.html');
 const OUT_CHANGELOG = path.join(OUT_DIR, 'changelog.js');
@@ -79,6 +81,7 @@ const OUT_CLOSURE_EVAL = path.join(OUT_DIR, 'closure-eval.js');
 const OUT_EVENT_RECORDS = path.join(OUT_DIR, 'event-records.js');
 const OUT_DRAFT_ENGINE = path.join(OUT_DIR, 'draft-engine.js');
 const OUT_RECORD_FORM = path.join(OUT_DIR, 'record-form.js');
+const OUT_MENTAL_LEAVE = path.join(OUT_DIR, 'mental-leave.js');
 
 function main() {
   const targetUrl = urlArg || `http://localhost:${config.PORT}/exec`;
@@ -142,6 +145,10 @@ function main() {
     console.error(`找不到 ${SRC_RECORD_FORM}`);
     process.exit(1);
   }
+  if (!fs.existsSync(SRC_MENTAL_LEAVE)) {
+    console.error(`找不到 ${SRC_MENTAL_LEAVE}`);
+    process.exit(1);
+  }
   const html = fs.readFileSync(SRC_HTML, 'utf8');
   const changelogJs = fs.readFileSync(SRC_CHANGELOG, 'utf8');
   const stylesCss = fs.readFileSync(SRC_STYLES, 'utf8');
@@ -157,6 +164,7 @@ function main() {
   const eventRecordsJs = fs.readFileSync(SRC_EVENT_RECORDS, 'utf8');
   const draftEngineJs = fs.readFileSync(SRC_DRAFT_ENGINE, 'utf8');
   const recordFormJs = fs.readFileSync(SRC_RECORD_FORM, 'utf8');
+  const mentalLeaveJs = fs.readFileSync(SRC_MENTAL_LEAVE, 'utf8');
 
   const RE_URL = /^const APPS_SCRIPT_URL = '([^']*)';$/m;
   const mUrl = RE_URL.exec(html);
@@ -211,6 +219,7 @@ function main() {
   fs.writeFileSync(OUT_EVENT_RECORDS, eventRecordsJs, 'utf8'); // v257：原樣複製，event-records.js 無需置換常數
   fs.writeFileSync(OUT_DRAFT_ENGINE, draftEngineJs, 'utf8'); // v258：原樣複製，draft-engine.js 無需置換常數
   fs.writeFileSync(OUT_RECORD_FORM, recordFormJs, 'utf8'); // v259：原樣複製，record-form.js 無需置換常數
+  fs.writeFileSync(OUT_MENTAL_LEAVE, mentalLeaveJs, 'utf8'); // v260：原樣複製，mental-leave.js 無需置換常數
 
   // v242：強制重新整理機制——寫出 version.json 供前端 checkForUpdate() 輪詢比對。buildId 用
   // patched 後 html 內容的 sha256 前 16 碼（內容雜湊，不用時間戳／build 序號）：這樣「只改
@@ -234,7 +243,8 @@ function main() {
   // v257：再納入 event-records.js——同理，只改待辦分類／事件處理記錄表區塊也要能觸發強制重整。
   // v258：再納入 draft-engine.js——同理，只改草稿引擎／雲端備援／待派案 todo 區塊也要能觸發強制重整。
   // v259：再納入 record-form.js——同理，只改晤談紀錄表單模組也要能觸發強制重整。
-  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').update(utilsJs, 'utf8').update(ftCoreJs, 'utf8').update(caseDetailJs, 'utf8').update(caseImportJs, 'utf8').update(initialInterviewJs, 'utf8').update(psychImportJs, 'utf8').update(gradEvalJs, 'utf8').update(closureEvalJs, 'utf8').update(eventRecordsJs, 'utf8').update(draftEngineJs, 'utf8').update(recordFormJs, 'utf8').digest('hex').slice(0, 16);
+  // v260：再納入 mental-leave.js——同理，只改身心調適假渲染段也要能觸發強制重整。
+  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').update(utilsJs, 'utf8').update(ftCoreJs, 'utf8').update(caseDetailJs, 'utf8').update(caseImportJs, 'utf8').update(initialInterviewJs, 'utf8').update(psychImportJs, 'utf8').update(gradEvalJs, 'utf8').update(closureEvalJs, 'utf8').update(eventRecordsJs, 'utf8').update(draftEngineJs, 'utf8').update(recordFormJs, 'utf8').update(mentalLeaveJs, 'utf8').digest('hex').slice(0, 16);
   const versionJson = { buildId, mode, builtAt: new Date().toISOString() };
   fs.writeFileSync(path.join(OUT_DIR, 'version.json'), JSON.stringify(versionJson, null, 2), 'utf8');
 
@@ -253,6 +263,7 @@ function main() {
   console.log(`已複製 ${OUT_EVENT_RECORDS}`);
   console.log(`已複製 ${OUT_DRAFT_ENGINE}`);
   console.log(`已複製 ${OUT_RECORD_FORM}`);
+  console.log(`已複製 ${OUT_MENTAL_LEAVE}`);
   console.log(`APPS_SCRIPT_URL：${mUrl[1]} → ${targetUrl}`);
   console.log(folderMsg + '。');
   console.log(`version.json buildId：${buildId}`);
