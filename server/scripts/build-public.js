@@ -32,8 +32,13 @@ const urlArg = mode === 'dev' ? process.argv[2] : process.argv[3];
 const SRC_HTML = mode === 'prod'
   ? path.join(__dirname, '..', '..', 'index.html')
   : path.join(__dirname, '..', '..', 'dev', 'index.html');
+// v243：更新紀錄資料拆到獨立檔案，唯一來源固定為 dev/changelog.js（三種模式共用，
+// 因為只有 dev/index.html 已改成讀 window.CHANGELOG_ENTRIES；root index.html 仍是舊版
+// legacy Pages 公告頁建置來源，多複製這檔不影響它）。
+const SRC_CHANGELOG = path.join(__dirname, '..', '..', 'dev', 'changelog.js');
 const OUT_DIR = path.join(__dirname, '..', 'public');
 const OUT_HTML = path.join(OUT_DIR, 'index.html');
+const OUT_CHANGELOG = path.join(OUT_DIR, 'changelog.js');
 
 function main() {
   const targetUrl = urlArg || `http://localhost:${config.PORT}/exec`;
@@ -41,7 +46,12 @@ function main() {
     console.error(`找不到 ${SRC_HTML}`);
     process.exit(1);
   }
+  if (!fs.existsSync(SRC_CHANGELOG)) {
+    console.error(`找不到 ${SRC_CHANGELOG}`);
+    process.exit(1);
+  }
   const html = fs.readFileSync(SRC_HTML, 'utf8');
+  const changelogJs = fs.readFileSync(SRC_CHANGELOG, 'utf8');
 
   const RE_URL = /^const APPS_SCRIPT_URL = '([^']*)';$/m;
   const mUrl = RE_URL.exec(html);
@@ -82,17 +92,22 @@ function main() {
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
   fs.writeFileSync(OUT_HTML, patched, 'utf8');
+  fs.writeFileSync(OUT_CHANGELOG, changelogJs, 'utf8'); // v243：原樣複製，changelog.js 無需置換常數
 
   // v242：強制重新整理機制——寫出 version.json 供前端 checkForUpdate() 輪詢比對。buildId 用
   // patched 後 html 內容的 sha256 前 16 碼（內容雜湊，不用時間戳／build 序號）：這樣「只改
   // server/ 沒改前端」的 deploy（例如純後端 bug 修復）雜湊不變，不會逼所有正在使用的分頁
   // 平白無故被強制重整；只有 dev/index.html 真的變動時 buildId 才會跟著變，觸發前端偵測到
   // 新版並倒數重整（見 dev/index.html checkForUpdate/_forceUpdateReload）。
-  const buildId = crypto.createHash('sha256').update(patched, 'utf8').digest('hex').slice(0, 16);
+  // v243：buildId 改納入 changelog.js 內容一併雜湊——拆檔後前端由兩個檔案組成，任一檔變動
+  // （例如只改 changelog.js 新增版本條目、沒動 index.html）都要能觸發強制重整，否則使用中
+  // 分頁會繼續看到舊的更新紀錄內容而不自知。
+  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').digest('hex').slice(0, 16);
   const versionJson = { buildId, mode, builtAt: new Date().toISOString() };
   fs.writeFileSync(path.join(OUT_DIR, 'version.json'), JSON.stringify(versionJson, null, 2), 'utf8');
 
   console.log(`已產生 ${OUT_HTML}（模式：${mode}）`);
+  console.log(`已複製 ${OUT_CHANGELOG}`);
   console.log(`APPS_SCRIPT_URL：${mUrl[1]} → ${targetUrl}`);
   console.log(folderMsg + '。');
   console.log(`version.json buildId：${buildId}`);
