@@ -3,68 +3,68 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
-  { date: '2026-07-22', v: 264, title: '系統架構：拆 index.html 第十八刀——tooltip 與 QR code 編碼器原地外部化', isProd: false, items: [
+  { date: '2026-07-22', v: 264, title: '系統架構：拆 index.html 第十八刀——tooltip 與 QR code 編碼器原地外部化', isProd: true, items: [
     ['說明', '內部重構：data-tip 自訂 tooltip 模組（71 行）與手刻 QR code 編碼器（641 行）自 index.html 原地外部化為 tooltip.js、qrcode-lib.js，載入時機不變，使用者無感'],
   ]},
-  { date: '2026-07-22', v: 263, title: '系統架構：拆 index.html 第十七刀——簡訊發送模組拆到 sms.js＋問題回報/許願池模組拆到 issues-ui.js', isProd: false, items: [
+  { date: '2026-07-22', v: 263, title: '系統架構：拆 index.html 第十七刀——簡訊發送模組拆到 sms.js＋問題回報/許願池模組拆到 issues-ui.js', isProd: true, items: [
     ['說明', '主程式（index.html）內簡訊發送模組（三竹/Every8D 兩家供應商、GSM 字集判斷與則數估算、收訊人與排程、發送記錄查詢，約 484 行）改用「inline script 區塊原地外部化」拆到獨立的 sms.js——原本就是獨立一段 <script>，搬到外部檔後標籤位置不變，載入與執行順序完全不變，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '同一版再把問題回報/許願池模組（含尾端一併打包的 PDF 小工具頁、系統除錯日誌面板，約 1,436 行）改用同一刀法拆到獨立的 issues-ui.js，同樣原地外部化、行為不變'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋兩個新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
-  { date: '2026-07-22', v: 262, title: '系統架構：拆 index.html 第十六刀——新生心理測驗 UI 模組拆到 ft-ui.js', isProd: false, items: [
+  { date: '2026-07-22', v: 262, title: '系統架構：拆 index.html 第十六刀——新生心理測驗 UI 模組拆到 ft-ui.js', isProd: true, items: [
     ['說明', '主程式（index.html）內新生心理測驗 UI 模組（資料表格編輯/虛擬化捲動渲染、tab 與學期切換、Excel/CSV 匯入匯出、統計報表列印等，約 2,660 行）改用「inline script 區塊原地外部化」拆到獨立的 ft-ui.js——原本就是獨立一段 <script>，搬到外部檔後標籤位置不變，載入與執行順序完全不變，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
-  { date: '2026-07-22', v: 261, title: '系統架構：拆 index.html 第十五刀——openmail 校內信箱模組拆到 openmail.js', isProd: false, items: [
+  { date: '2026-07-22', v: 261, title: '系統架構：拆 index.html 第十五刀——openmail 校內信箱模組拆到 openmail.js', isProd: true, items: [
     ['說明', '主程式（index.html）內校內 openmail 收發信模組（連線/收發信、離線草稿寄件匣自動補寄、寫信視窗開啟與送出、資料夾樹狀渲染與封存，約 1,640 行）改用「inline script 區塊原地外部化」拆到獨立的 openmail.js——原本就是獨立一段 <script>，搬到外部檔後標籤位置不變，載入與執行順序完全不變，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
-  { date: '2026-07-22', v: 260, title: '系統架構：拆 index.html 第十四刀（本批最後一刀）——身心調適假渲染段拆到 mental-leave.js', isProd: false, items: [
+  { date: '2026-07-22', v: 260, title: '系統架構：拆 index.html 第十四刀（本批最後一刀）——身心調適假渲染段拆到 mental-leave.js', isProd: true, items: [
     ['說明', '主程式（index.html）內身心調適假渲染段（身心狀態評估表渲染/開啟/儲存/列印、身心調適假管理列表主渲染，共 6 個函式、約 780 行）拆到獨立的 mental-leave.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
     ['說明', '本批拆檔工作（第一刀 v243 起，本刀為第十四刀）至此告一段落，後續視需要再另行安排'],
   ]},
-  { date: '2026-07-22', v: 259, title: '系統架構：拆 index.html 第十三刀——晤談紀錄表單模組拆到 record-form.js', isProd: false, items: [
+  { date: '2026-07-22', v: 259, title: '系統架構：拆 index.html 第十三刀——晤談紀錄表單模組拆到 record-form.js', isProd: true, items: [
     ['說明', '主程式（index.html）內晤談紀錄表單模組（開啟表單、伴侶諮商連動、角色色、下次預約前綴、草稿自存/自動備援、服務項目與主題選項、即時重複紀錄檢核與儲存，約 2,000 行）拆到獨立的 record-form.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
-  { date: '2026-07-22', v: 258, title: '系統架構：拆 index.html 第十二刀——草稿引擎＋雲端備援＋待派案 todo 區塊拆到 draft-engine.js', isProd: false, items: [
+  { date: '2026-07-22', v: 258, title: '系統架構：拆 index.html 第十二刀——草稿引擎＋雲端備援＋待派案 todo 區塊拆到 draft-engine.js', isProd: true, items: [
     ['說明', '主程式（index.html）內草稿引擎相關區塊（全站表單草稿共用引擎、草稿雲端備援 v2、晤談紀錄/初次晤談表/精神科評估的離開表單暫存/捨棄、管理者查看他人待辦、待派案 todo 渲染與確認派案/轉案，約 790 行）拆到獨立的 draft-engine.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
-  { date: '2026-07-22', v: 257, title: '系統架構：拆 index.html 第十一刀——待辦分類＋事件處理記錄表區塊拆到 event-records.js', isProd: false, items: [
+  { date: '2026-07-22', v: 257, title: '系統架構：拆 index.html 第十一刀——待辦分類＋事件處理記錄表區塊拆到 event-records.js', isProd: true, items: [
     ['說明', '主程式（index.html）內待辦事項六分類 tab 純函式（分類對照表、tab 徽章統計、方塊/卡片檢視排序）與事件處理記錄表（開啟/搜尋/表單填寫/服務項目/儲存/草稿自動備援，約 1,840 行）拆到獨立的 event-records.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
-  { date: '2026-07-22', v: 256, title: '系統架構：拆 index.html 第十刀——結案評估區塊拆到 closure-eval.js', isProd: false, items: [
+  { date: '2026-07-22', v: 256, title: '系統架構：拆 index.html 第十刀——結案評估區塊拆到 closure-eval.js', isProd: true, items: [
     ['說明', '主程式（index.html）內結案評估區塊（結案原因/燈號/後續安排 chips、評估表開啟/預填/儲存/列印、學期新增與取消結案、未結案提醒，約 1,350 行）拆到獨立的 closure-eval.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
-  { date: '2026-07-22', v: 255, title: '系統架構：拆 index.html 第九刀——畢業/離校生評估區塊拆到 grad-eval.js', isProd: false, items: [
+  { date: '2026-07-22', v: 255, title: '系統架構：拆 index.html 第九刀——畢業/離校生評估區塊拆到 grad-eval.js', isProd: true, items: [
     ['說明', '主程式（index.html）內畢業/離校生評估區塊（畢業轉銜篩選/決議/批次、校級評估結果匯入、未歸屬轉銜紀錄管理、轉銜總頁與離校生評估頁籤/名單維護，約 1,450 行）拆到獨立的 grad-eval.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
-  { date: '2026-07-22', v: 254, title: '系統架構：拆 index.html 第八刀——心理測驗匯入區塊拆到 psych-import.js', isProd: false, items: [
+  { date: '2026-07-22', v: 254, title: '系統架構：拆 index.html 第八刀——心理測驗匯入區塊拆到 psych-import.js', isProd: true, items: [
     ['說明', '主程式（index.html）內心理測驗匯入區塊（心理測驗 CSV／Excel 匯入與預覽、學期批次刪除、資源回收桶、轉銜管理，約 1,130 行）拆到獨立的 psych-import.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
-  { date: '2026-07-22', v: 253, title: '系統架構：拆 index.html 第七刀——初次晤談模組拆到 initial-interview.js', isProd: false, items: [
+  { date: '2026-07-22', v: 253, title: '系統架構：拆 index.html 第七刀——初次晤談模組拆到 initial-interview.js', isProd: true, items: [
     ['說明', '主程式（index.html）內初次晤談模組（初次晤談 chip 系統、服務項目輔助函式、初談表填寫/暫存草稿/儲存/舊案延續/刪除復原/列印，約 1,200 行）拆到獨立的 initial-interview.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
-  { date: '2026-07-22', v: 252, title: '系統架構：拆 index.html 第六刀——個案資料表單匯入區塊拆到 case-import.js', isProd: false, items: [
+  { date: '2026-07-22', v: 252, title: '系統架構：拆 index.html 第六刀——個案資料表單匯入區塊拆到 case-import.js', isProd: true, items: [
     ['說明', '主程式（index.html）內個案資料表單匯入區塊（服務總表 Excel／CSV 批次匯入、匯入預覽與合併/歷史學期結案勾選、寫入 Drive，約 1,500 行）拆到獨立的 case-import.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
-  { date: '2026-07-22', v: 251, title: '系統架構：拆 index.html 第五刀——個案詳細頁區塊拆到 case-detail.js', isProd: false, items: [
+  { date: '2026-07-22', v: 251, title: '系統架構：拆 index.html 第五刀——個案詳細頁區塊拆到 case-detail.js', isProd: true, items: [
     ['說明', '主程式（index.html）內個案詳細頁區塊（含詳細頁渲染、心測報告、個案合併/學號遷移引擎、個案管理員增刪，約 2,300 行）拆到獨立的 case-detail.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
-  { date: '2026-07-22', v: 250, title: '系統架構：拆 index.html 第四刀——新生心理測驗純函式層拆到 ft-core.js', isProd: false, items: [
+  { date: '2026-07-22', v: 250, title: '系統架構：拆 index.html 第四刀——新生心理測驗純函式層拆到 ft-core.js', isProd: true, items: [
     ['說明', '主程式（index.html）內新生心理測驗模組的網格/資料處理純函式（約 1,300 行）拆到獨立的 ft-core.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
-  { date: '2026-07-22', v: 249, title: '系統架構：拆 index.html 第三刀——純函式工具區拆到 utils.js', isProd: false, items: [
+  { date: '2026-07-22', v: 249, title: '系統架構：拆 index.html 第三刀——純函式工具區拆到 utils.js', isProd: true, items: [
     ['說明', '主程式（index.html）內部分無畫面依賴的純函式（如文字逸出、學期換算、空間預約系列日期換算等，約 200 行）拆到獨立的 utils.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
   ]},
