@@ -35,6 +35,8 @@ const SENTINELS = [
   ['draft-engine.js', '_gdStartAutosave', 'function'],
   ['record-form.js', 'saveRecord', 'function'],
   ['mental-leave.js', 'openMlAssessmentModal', 'function'],
+  ['genogram.js', 'GenogramEditor', 'object'],
+  ['genogram.js', 'openGenogramEditor', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],

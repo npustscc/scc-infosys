@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-23', v: 266, title: '系統架構：拆 index.html 第十九刀——GenogramEditor 家系圖模組拆到 genogram.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內 GenogramEditor 家系圖繪製工具（Bowen 家族圖編輯器全頁面版＋入口函式，約 1,030 行）拆到獨立檔案 genogram.js，內容逐字搬移、功能完全不變，使用者無感；index.html 再減約 1,000 行'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-22', v: 265, title: '草稿備援可見性＋離開防護補強——初談表補顯示、banner 返回與側選單切頁接離開詢問', isProd: true, items: [
     ['改善', '初次晤談表原本完全沒有草稿備援的視覺回饋（自動每 5 秒默默寫入，畫面上看不出來），補上標題列旁「草稿備援 HH:MM」小字；晤談記錄的草稿備援小字原本只在底部按鈕列不顯眼，同步加到標題列旁'],
     ['改善', 'banner 返回鈕對晤談記錄／初次晤談表原本直接導頁繞過離開防護（自 v185 起如此），改接各自的離開詢問對話框（存草稿/捨棄/取消），有未儲存內容時不再悄悄跳走'],
