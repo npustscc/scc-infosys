@@ -28,6 +28,8 @@
 // v255：畢業/離校生評估模組（_gradFilterChange／setGradTransferDecision／renderTransferPage／
 // _renderWithdrawTab 等）再拆到 dev/grad-eval.js，插入 psych-import.js 與 index.html 之間
 // （符合實際 <script> 載入順序）。
+// v256：結案評估模組（openClosureEvalPage／saveClosureEval／_clReasonRender／reopenCase 等）
+// 再拆到 dev/closure-eval.js，插入 grad-eval.js 與 index.html 之間（符合實際 <script> 載入順序）。
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -41,6 +43,7 @@ const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'initial-interview.js'),
   path.join(__dirname, '..', 'dev', 'psych-import.js'),
   path.join(__dirname, '..', 'dev', 'grad-eval.js'),
+  path.join(__dirname, '..', 'dev', 'closure-eval.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
 ];
 

@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-22', v: 256, title: '系統架構：拆 index.html 第十刀——結案評估區塊拆到 closure-eval.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內結案評估區塊（結案原因/燈號/後續安排 chips、評估表開啟/預填/儲存/列印、學期新增與取消結案、未結案提醒，約 1,350 行）拆到獨立的 closure-eval.js，純粹搬移、沒有改動任何行為，使用者無感'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-22', v: 255, title: '系統架構：拆 index.html 第九刀——畢業/離校生評估區塊拆到 grad-eval.js', isProd: false, items: [
     ['說明', '主程式（index.html）內畢業/離校生評估區塊（畢業轉銜篩選/決議/批次、校級評估結果匯入、未歸屬轉銜紀錄管理、轉銜總頁與離校生評估頁籤/名單維護，約 1,450 行）拆到獨立的 grad-eval.js，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
