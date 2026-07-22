@@ -39,10 +39,13 @@ const SRC_CHANGELOG = path.join(__dirname, '..', '..', 'dev', 'changelog.js');
 // v244：主樣式表拆到獨立檔案，同 SRC_CHANGELOG 理由——唯一來源固定為 dev/styles.css，
 // 三種建置模式共用（root index.html 是舊版 legacy Pages 公告頁來源，不受影響）。
 const SRC_STYLES = path.join(__dirname, '..', '..', 'dev', 'styles.css');
+// v245：小技巧輪播模組拆到獨立檔案，同上理由——唯一來源固定為 dev/hints.js。
+const SRC_HINTS = path.join(__dirname, '..', '..', 'dev', 'hints.js');
 const OUT_DIR = path.join(__dirname, '..', 'public');
 const OUT_HTML = path.join(OUT_DIR, 'index.html');
 const OUT_CHANGELOG = path.join(OUT_DIR, 'changelog.js');
 const OUT_STYLES = path.join(OUT_DIR, 'styles.css');
+const OUT_HINTS = path.join(OUT_DIR, 'hints.js');
 
 function main() {
   const targetUrl = urlArg || `http://localhost:${config.PORT}/exec`;
@@ -58,9 +61,14 @@ function main() {
     console.error(`找不到 ${SRC_STYLES}`);
     process.exit(1);
   }
+  if (!fs.existsSync(SRC_HINTS)) {
+    console.error(`找不到 ${SRC_HINTS}`);
+    process.exit(1);
+  }
   const html = fs.readFileSync(SRC_HTML, 'utf8');
   const changelogJs = fs.readFileSync(SRC_CHANGELOG, 'utf8');
   const stylesCss = fs.readFileSync(SRC_STYLES, 'utf8');
+  const hintsJs = fs.readFileSync(SRC_HINTS, 'utf8');
 
   const RE_URL = /^const APPS_SCRIPT_URL = '([^']*)';$/m;
   const mUrl = RE_URL.exec(html);
@@ -103,6 +111,7 @@ function main() {
   fs.writeFileSync(OUT_HTML, patched, 'utf8');
   fs.writeFileSync(OUT_CHANGELOG, changelogJs, 'utf8'); // v243：原樣複製，changelog.js 無需置換常數
   fs.writeFileSync(OUT_STYLES, stylesCss, 'utf8'); // v244：原樣複製，styles.css 無需置換常數
+  fs.writeFileSync(OUT_HINTS, hintsJs, 'utf8'); // v245：原樣複製，hints.js 無需置換常數
 
   // v242：強制重新整理機制——寫出 version.json 供前端 checkForUpdate() 輪詢比對。buildId 用
   // patched 後 html 內容的 sha256 前 16 碼（內容雜湊，不用時間戳／build 序號）：這樣「只改
@@ -114,13 +123,15 @@ function main() {
   // 分頁會繼續看到舊的更新紀錄內容而不自知。
   // v244：同理再納入 styles.css——拆檔後前端變成三個檔案，只改樣式表（沒動 index.html／
   // changelog.js）一樣要能觸發強制重整，否則使用中分頁會看到版面跟正式版對不上而不自知。
-  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').digest('hex').slice(0, 16);
+  // v245：再納入 hints.js——同理，只改小技巧模組也要能觸發強制重整。
+  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').digest('hex').slice(0, 16);
   const versionJson = { buildId, mode, builtAt: new Date().toISOString() };
   fs.writeFileSync(path.join(OUT_DIR, 'version.json'), JSON.stringify(versionJson, null, 2), 'utf8');
 
   console.log(`已產生 ${OUT_HTML}（模式：${mode}）`);
   console.log(`已複製 ${OUT_CHANGELOG}`);
   console.log(`已複製 ${OUT_STYLES}`);
+  console.log(`已複製 ${OUT_HINTS}`);
   console.log(`APPS_SCRIPT_URL：${mUrl[1]} → ${targetUrl}`);
   console.log(folderMsg + '。');
   console.log(`version.json buildId：${buildId}`);

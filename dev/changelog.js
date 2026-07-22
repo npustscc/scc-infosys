@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-22', v: 245, title: '系統架構：拆 index.html 第二刀（2/2）——小技巧模組拆到 hints.js', isProd: false, items: [
+    ['改善', '登入畫面／PIN 解鎖畫面的小技巧輪播模組（含四語言切換、全覽 Modal）拆到獨立的 hints.js，純粹搬移、沒有改動任何行為，畫面顯示與操作都不變'],
+    ['說明', '拆 index.html 工程第二刀完成（1/2 主樣式表、2/2 小技巧模組），主程式進一步精簡'],
+  ]},
   { date: '2026-07-22', v: 244, title: '系統架構：拆 index.html 第二刀（1/2）——主樣式表拆到 styles.css', isProd: false, items: [
     ['改善', '主程式（index.html）內的主要樣式表（CSS）拆到獨立的 styles.css，純粹搬移、沒有改動任何樣式內容，畫面顯示與操作都不變'],
     ['說明', '延續拆檔工程：只是把程式碼搬到別的檔案讓主程式更精簡好維護，不是新功能也不影響任何既有功能'],
