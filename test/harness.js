@@ -14,6 +14,8 @@
 // v250：新生心理測驗純函式層（_ft* 系列）再拆到 dev/ft-core.js。SRC_FILES 改為可維護的陣列，
 // 依實際 <script> 載入順序串接（utils.js → ft-core.js → index.html），讓既有測試不論函式
 // 目前落在哪個檔案都抽得到，呼叫端無需改動；未來再拆檔只需在陣列中新增一筆。
+// v251：個案詳細頁區塊＋合併/遷移引擎（_buildMergePlan／_mergeCaseGroup 等）再拆到
+// dev/case-detail.js，插入 ft-core.js 與 index.html 之間（符合實際 <script> 載入順序）。
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -22,6 +24,7 @@ const vm = require('node:vm');
 const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'utils.js'),
   path.join(__dirname, '..', 'dev', 'ft-core.js'),
+  path.join(__dirname, '..', 'dev', 'case-detail.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
 ];
 
