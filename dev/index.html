@@ -2130,6 +2130,19 @@
         </div>
       </div>
 
+      <!-- v241 修正：小技巧語言偏好入口（同步存帳號，跨裝置；登入畫面的輪播卡語言鈕也是同一份偏好） -->
+      <div class="card">
+        <div class="card-header"><h3>💡 小技巧語言</h3></div>
+        <div style="padding:16px 20px;">
+          <p style="font-size:.82rem;color:#718096;margin-bottom:10px;">小技巧輪播與全覽的顯示語言；「輪流」＝每則輪流用華→台→客→英呈現。選擇後立即生效並記在帳號、跨裝置同步。</p>
+          <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;"><input type="radio" name="pref-tc-lang" value="zh" onchange="_prefTcLangChange(this.value)"> 華語（小技巧）</label>
+          <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;"><input type="radio" name="pref-tc-lang" value="tw" onchange="_prefTcLangChange(this.value)"> 台語（小撇步）</label>
+          <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;"><input type="radio" name="pref-tc-lang" value="hk" onchange="_prefTcLangChange(this.value)"> 客語（好步數）</label>
+          <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;"><input type="radio" name="pref-tc-lang" value="en" onchange="_prefTcLangChange(this.value)"> English（Tips）</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="radio" name="pref-tc-lang" value="mix" onchange="_prefTcLangChange(this.value)"> 輪流（每則換語言）</label>
+        </div>
+      </div>
+
       </div><!-- /prefs-grid -->
     </div>
 
@@ -4750,6 +4763,13 @@ function applyDrivePrefs() {
   if (usd) { try { localStorage.setItem('scc_unassigned_scan', usd); } catch(_) {} }
   // v240：游標大小（標準／大／特大），登入即套用
   _applyCursorSize(_userPref_('cursorSize', 'std'));
+  // v241 修正：小技巧語言以帳號偏好為準（跨裝置）；有設定就回寫本機 localStorage 並重繪輪播卡。
+  // 帳號沒設定時維持本機值（登入前在登入畫面選的語言不會被清掉）。
+  const tcl = _userPref_('tcLang');
+  if (tcl && typeof TC_LANG_ORDER !== 'undefined' && TC_LANG_ORDER.includes(tcl) && tcl !== _tcLangGet()) {
+    _tcLangSet(tcl);
+    Object.keys(_tcState).forEach(id => tcRenderMount(id));
+  }
 }
 
 // ── v240 游標大小美化 ─────────────────────────────────────────────
@@ -32196,6 +32216,18 @@ function _tcLangGet() {
   try { const v = localStorage.getItem('scc_tc_lang'); return TC_LANG_ORDER.includes(v) ? v : 'zh'; } catch (_) { return 'zh'; }
 }
 function _tcLangSet(v) { try { localStorage.setItem('scc_tc_lang', v); } catch (_) {} }
+// v241 修正：語言偏好除了 localStorage（裝置層級，登入前的登入/PIN 畫面用），登入後同步寫進
+// 帳號偏好（syncUserPref_ tcLang），跨裝置記住；登入時 applyDrivePrefs 以帳號值為準回寫本機。
+// 所有切換入口（輪播卡 chip／全覽 modal 語言列／偏好設定 radio）一律走本函式。
+function tcSetLang(v) {
+  if (!TC_LANG_ORDER.includes(v)) return;
+  _tcLangSet(v);
+  try { if (typeof syncUserPref_ === 'function' && currentUser?.email) syncUserPref_({ tcLang: v }); } catch (_) {}
+  Object.keys(_tcState).forEach(id => tcRenderMount(id));
+  if (document.getElementById('tc-modal')?.style.display === 'flex') tcOpenModal();
+  const radio = document.querySelector('input[name="pref-tc-lang"][value="' + v + '"]');
+  if (radio) radio.checked = true;
+}
 // 取得某一則在目前語言設定下要顯示的 { t, d }。mix 模式依該則索引輪流（同一畫面前後則語言不同，
 // 輪播時語言也跟著換，符合「輪流」的趣味）；tw/hk/en 缺譯時回落華語。
 function tcHintText(h, idx) {
@@ -32208,9 +32240,7 @@ function tcHintText(h, idx) {
 function tcCycleLang(mountId) {
   const cur = _tcLangGet();
   const next = TC_LANG_ORDER[(TC_LANG_ORDER.indexOf(cur) + 1) % TC_LANG_ORDER.length];
-  _tcLangSet(next);
-  Object.keys(_tcState).forEach(id => tcRenderMount(id));
-  if (document.getElementById('tc-modal')?.style.display === 'flex') tcOpenModal();
+  tcSetLang(next);
   const st = mountId && _tcState[mountId];
   if (st) st.countdown = TC_INTERVAL_SEC; // 使用者正在互動，重設倒數避免馬上被輪播走
 }
@@ -32287,7 +32317,7 @@ function tcOpenModal() {
   const langsEl = document.getElementById('tc-modal-langs');
   if (langsEl) {
     langsEl.innerHTML = TC_LANG_ORDER.map(l => `
-      <button type="button" onclick="_tcLangSet('${l}');tcOpenModal();Object.keys(_tcState).forEach(id=>tcRenderMount(id));"
+      <button type="button" onclick="tcSetLang('${l}');tcOpenModal();"
         style="border:1px solid ${l === lang ? '#3182ce' : '#e2e8f0'};background:${l === lang ? '#ebf8ff' : '#fff'};color:${l === lang ? '#2b6cb0' : '#718096'};border-radius:6px;padding:2px 8px;font-size:.74rem;cursor:pointer;${l === lang ? 'font-weight:700;' : ''}">${TC_LANG_META[l].name}</button>`).join('');
   }
   const list = document.getElementById('tc-modal-list');
@@ -32526,6 +32556,7 @@ function renderChangelogPage() {
     { date: '2026-07-21', v: 241, title: '小技巧多語：台語小撇步／客語好步數／English Tips＋輪流模式', isProd: false, items: [
       item('新功能', '登入畫面與 💡 全覽的小技巧支援四種語言：華語／台語（小撇步）／客語（好步數）／English，輪播卡右下角的語言小圓鈕點一下即切換，選擇會記在這台裝置'),
       item('新功能', '「輪流」模式：每一則輪流用不同語言呈現（華→台→客→英），增添趣味也讓大家看看彼此的語言'),
+      item('新功能', '偏好設定新增「💡 小技巧語言」卡片；語言選擇記在帳號、跨裝置同步（登入前在登入畫面選的語言仍記在該台裝置）'),
       item('說明', '翻譯以親切易讀為主，技術詞（Ctrl+V、PDF、Excel…）保留原文；台語採台文漢字、客語以四縣腔用字為主，若有更道地的寫法歡迎回報'),
     ]},
     { date: '2026-07-21', v: 240, title: '偏好設定新增「游標大小」：可放大並美化滑鼠游標（標準／大／特大）', isProd: true, items: [
@@ -33979,6 +34010,9 @@ function renderPrefsPage() {
   if (clEl) clEl.checked = _userPref_('confirmBeforeLeave', true);
   const csEl = document.querySelector('input[name="pref-cursor-size"][value="' + _userPref_('cursorSize', 'std') + '"]');
   if (csEl) csEl.checked = true;
+  // v241 修正：小技巧語言 radio——以目前生效值為準（帳號偏好已在 applyDrivePrefs 回寫本機）
+  const tlEl = document.querySelector('input[name="pref-tc-lang"][value="' + _tcLangGet() + '"]');
+  if (tlEl) tlEl.checked = true;
 
   // 同步鎖定按鈕可見性
   const lockBtn = document.getElementById('header-lock-btn');
@@ -34275,6 +34309,12 @@ function _prefCursorSizeChange(v) {
   _applyCursorSize(v);
   syncUserPref_({ cursorSize: v });
   showToast('游標大小已更新', 'success');
+}
+
+// v241 修正：小技巧語言偏好（偏好設定入口）。tcSetLang 內含 localStorage＋syncUserPref_ 雙寫。
+function _prefTcLangChange(v) {
+  tcSetLang(v);
+  showToast('小技巧語言已更新：' + (TC_LANG_META[v]?.name || v), 'success');
 }
 // Email 更改申請制（2026-07-17 定案，取代原 _prefChangeMyGmail 自助直改）：只通知管理者群
 // ＋記稽核，不動 users/cases、不全員廣播。原因：email＝內部身分主鍵（名冊 key／server 帳號
