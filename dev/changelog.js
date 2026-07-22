@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-22', v: 262, title: '系統架構：拆 index.html 第十六刀——新生心理測驗 UI 模組拆到 ft-ui.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內新生心理測驗 UI 模組（資料表格編輯/虛擬化捲動渲染、tab 與學期切換、Excel/CSV 匯入匯出、統計報表列印等，約 2,660 行）改用「inline script 區塊原地外部化」拆到獨立的 ft-ui.js——原本就是獨立一段 <script>，搬到外部檔後標籤位置不變，載入與執行順序完全不變，純粹搬移、沒有改動任何行為，使用者無感'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-22', v: 261, title: '系統架構：拆 index.html 第十五刀——openmail 校內信箱模組拆到 openmail.js', isProd: false, items: [
     ['說明', '主程式（index.html）內校內 openmail 收發信模組（連線/收發信、離線草稿寄件匣自動補寄、寫信視窗開啟與送出、資料夾樹狀渲染與封存，約 1,640 行）改用「inline script 區塊原地外部化」拆到獨立的 openmail.js——原本就是獨立一段 <script>，搬到外部檔後標籤位置不變，載入與執行順序完全不變，純粹搬移、沒有改動任何行為，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],

@@ -36,6 +36,7 @@ const SENTINELS = [
   ['record-form.js', 'saveRecord', 'function'],
   ['mental-leave.js', 'openMlAssessmentModal', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
+  ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['hints.js', 'TC_HINTS', 'object'],
   ['changelog.js', 'CHANGELOG_ENTRIES', 'object'],
   ['index.html 主 script', 'proxyCall', 'function'],
