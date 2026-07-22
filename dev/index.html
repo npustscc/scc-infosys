@@ -9219,7 +9219,7 @@ function _forceUpdateReload() {
   ov.innerHTML = `
     <div style="background:#fff;border-radius:12px;max-width:420px;width:100%;padding:28px 26px;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.35);">
       <div style="font-size:1.15rem;font-weight:700;color:#2d3748;margin-bottom:10px;">🔄 系統已更新</div>
-      <div style="font-size:.9rem;color:#4a5568;line-height:1.7;margin-bottom:16px;">系統剛發布了新版本，為避免繼續使用舊版造成不一致，將於 <span id="_force-update-countdown">${seconds}</span> 秒後自動重新整理。頁面重整後會自動回到登入狀態；表單草稿會自動暫存。</div>
+      <div style="font-size:.9rem;color:#4a5568;line-height:1.7;margin-bottom:16px;">系統剛發布了新版本，為避免繼續使用舊版造成不一致，將於 <span id="_force-update-countdown">${seconds}</span> 秒後自動重新整理。頁面重整後會自動回到登入狀態。<strong>正在填寫的表單內容系統每 5 秒會自動暫存在本機</strong>，重整後重新開啟該表單即可還原，請放心。</div>
       <button onclick="location.reload()" style="padding:9px 28px;background:#2b6cb0;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:600;">立即重新整理</button>
     </div>`;
   document.body.appendChild(ov);
@@ -46583,6 +46583,67 @@ async function showTransferImportPreview(rows, type) {
   };
 }
 
+// v247：轉銜學生初評草稿備援。key 刻意不用 scc_draft_ 前綴，避免被 _migrateLocalStorageDrafts() 掃到
+// 誤產生一筆待辦事項——modal 為 insertAdjacentHTML 動態產生、無獨立資料模型，比照家系圖
+// _genoDraftKey() 的做法，走「重開表單時本機偵測詢問還原」，不進 todo 清單。
+function _taDraftKey(transferId, type) {
+  return `scc_ta_draft_${currentUser?.email || ''}_${transferId || 'new'}_${type}`;
+}
+// 收集目前表單所有欄位（含八向度指標），存空字串/null 代表元素不存在或未填。
+function _taFormSnapshot() {
+  const gV = id => document.getElementById(id)?.value?.trim() || '';
+  const gR = n => document.querySelector(`[name="${n}"]:checked`)?.value || '';
+  const indicators = {};
+  TRANSFER_INDICATORS.forEach(ind => {
+    indicators[ind.key] = {
+      degree: gR(`ind_deg_${ind.key}`),
+      riskScore: gR(`ind_rsk_${ind.key}`),
+      notApplicable: document.querySelector(`[name="ind_na_${ind.key}"]`)?.checked || false,
+    };
+  });
+  return {
+    caseId: gV('ta-case-id'), name: gV('ta-name'), dept: gV('ta-dept'), birthday: gV('ta-birthday'),
+    gender: gV('ta-gender'), idNumber: gV('ta-id'), sid: gV('ta-sid'),
+    from: gV('ta-from'), to: gV('ta-to'),
+    cs: gR('ta_cs'), ni: gR('ta_ni'), niOther: gV('ta-ni-other'),
+    sc: gR('ta_sc'), gc: gR('ta_gc'),
+    indicators,
+    issue: gV('ta-issue'), interv: gV('ta-interv'), ta: gV('ta-ta'),
+    by: gV('ta-by'), date: gV('ta-date'), rec: gR('ta_rec'),
+  };
+}
+// 逐欄回填草稿快照（radio 用 querySelector 勾選；還原後同步 ta_cs 顯示/隱藏邏輯）。
+function _taRestoreDraft(d) {
+  const sV = (id, v) => { const el = document.getElementById(id); if (el && v != null) el.value = v; };
+  const sR = (n, v) => { if (!v) return; const el = document.querySelector(`[name="${n}"][value="${CSS.escape(v)}"]`); if (el) el.checked = true; };
+  sV('ta-case-id', d.caseId); sV('ta-name', d.name); sV('ta-dept', d.dept); sV('ta-birthday', d.birthday);
+  sV('ta-gender', d.gender); sV('ta-id', d.idNumber); sV('ta-sid', d.sid);
+  sV('ta-from', d.from); sV('ta-to', d.to);
+  sR('ta_cs', d.cs); sR('ta_ni', d.ni); sV('ta-ni-other', d.niOther);
+  sR('ta_sc', d.sc); sR('ta_gc', d.gc);
+  TRANSFER_INDICATORS.forEach(ind => {
+    const iv = d.indicators?.[ind.key];
+    if (!iv) return;
+    sR(`ind_deg_${ind.key}`, iv.degree);
+    sR(`ind_rsk_${ind.key}`, iv.riskScore);
+    const naEl = document.querySelector(`[name="ind_na_${ind.key}"]`);
+    if (naEl) naEl.checked = !!iv.notApplicable;
+  });
+  sV('ta-issue', d.issue); sV('ta-interv', d.interv); sV('ta-ta', d.ta);
+  sV('ta-by', d.by); sV('ta-date', d.date); sR('ta_rec', d.rec);
+  if (d.cs) {
+    const niSec = document.getElementById('ta-ni-sec');
+    const infSec = document.getElementById('ta-inf-sec');
+    if (niSec) niSec.style.display = d.cs === 'notInformed' ? '' : 'none';
+    if (infSec) infSec.style.display = d.cs === 'informed' ? '' : 'none';
+  }
+}
+// v247：關閉 modal 統一入口（× 與取消按鈕共用）——停自動暫存、不清草稿（誤關可還原，見 openTransferAssessmentModal）。
+function closeTransferAssessmentModal() {
+  _gdStopAutosave('taAssess');
+  document.getElementById('transfer-assessment-modal')?.remove();
+}
+
 function openTransferAssessmentModal(transferId, type) {
   const rec = transferId ? transferData.find(r => r.id === transferId) : null;
   const t = type || rec?.type || 'outgoing';
@@ -46623,7 +46684,7 @@ function openTransferAssessmentModal(transferId, type) {
       <div style="background:#fff;border-radius:12px;padding:28px;width:95%;max-width:800px;margin:auto;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
           <h3 style="font-size:1.1rem;">${isNew?'新增':'編輯'}轉銜學生初評（${t==='outgoing'?'轉出':'轉入'}）</h3>
-          <button onclick="document.getElementById('transfer-assessment-modal').remove()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
+          <button onclick="closeTransferAssessmentModal()" style="background:none;border:none;font-size:1.4rem;cursor:pointer;color:#718096;">&times;</button>
         </div>
         ${isNew && t === 'incoming' ? `
         <div style="background:#f0f9ff;border:1px solid #bee3f8;border-radius:8px;padding:14px;margin-bottom:18px;">
@@ -46679,10 +46740,11 @@ function openTransferAssessmentModal(transferId, type) {
           <div><label class="field-label">填表人</label><select class="field-input" id="ta-by">${_counselorByOpts}</select></div>
           <div><label class="field-label">填表日期</label><input type="date" class="field-input" id="ta-date" value="${r.filledDate || new Date().toISOString().slice(0,10)}"></div>
         </div>
-        <div style="display:flex;gap:10px;">
+        <div style="display:flex;gap:10px;align-items:center;">
           <button class="btn btn-primary" onclick="saveTransferAssessment('${isNew?'__new__':escHtml(r.id)}','${t}')">儲存</button>
           ${!isNew && r.recommendation ? `<button class="btn btn-secondary" onclick="printTransferAssessment('${escHtml(r.id)}')">列印</button>` : ''}
-          <button class="btn btn-secondary" onclick="document.getElementById('transfer-assessment-modal').remove()">取消</button>
+          <button class="btn btn-secondary" onclick="closeTransferAssessmentModal()">取消</button>
+          <span id="_ta-draft-status" style="font-size:.78rem;color:#718096;"></span>
         </div>
       </div>
     </div>`);
@@ -46692,6 +46754,23 @@ function openTransferAssessmentModal(transferId, type) {
       document.getElementById('ta-inf-sec').style.display = el.value==='informed' ? '' : 'none';
     }));
   }
+  // v247：modal 建好後偵測本機是否有殘留的草稿，詢問是否還原
+  const _taKey = _taDraftKey(transferId, t);
+  try {
+    const _taRaw = localStorage.getItem(_taKey);
+    if (_taRaw) {
+      const _taDraft = JSON.parse(_taRaw);
+      if (_taDraft && typeof _taDraft === 'object') {
+        if (confirm('偵測到此筆轉銜學生初評有尚未儲存的草稿（可能因頁面重新整理而保留）。\n\n是否還原草稿內容？（會覆蓋目前帶入的內容）\n選擇「取消」則捨棄草稿。')) {
+          _taRestoreDraft(_taDraft);
+        } else {
+          try { localStorage.removeItem(_taKey); } catch (_) {}
+        }
+      }
+    }
+  } catch (_) {}
+  _gdSetBaseline('taAssess', _taFormSnapshot());
+  _gdStartAutosave('taAssess', _taKey, _taFormSnapshot, '_ta-draft-status');
 }
 
 async function saveTransferAssessment(idOrNew, type) {
@@ -46720,6 +46799,9 @@ async function saveTransferAssessment(idOrNew, type) {
     recommendation:gR('ta_rec'), updatedAt:now,
   };
   if (!data.name) { alert('請填寫學生姓名'); return; }
+  // v247：儲存成功，草稿已無留存必要
+  try { localStorage.removeItem(_taDraftKey(idOrNew === '__new__' ? null : idOrNew, type)); } catch (_) {}
+  _gdStopAutosave('taAssess');
   if (idOrNew === '__new__') {
     data.id = 'tr_'+Date.now()+'_'+Math.random().toString(36).slice(2);
     data.createdAt = now; data.createdBy = currentUser?.email; data.createdByName = currentUser?.name;
@@ -49754,7 +49836,8 @@ function toggleNavPin(navId) {
       <div id="om-compose-attach-list" style="margin-top:8px;display:flex;flex-direction:column;gap:4px;"></div>
       <div id="om-compose-fwd-progress" style="display:none;font-size:.8rem;color:#718096;margin-top:6px;"></div>
     </div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;">
+    <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:16px;">
+      <span id="_om-compose-draft-status" style="font-size:.78rem;color:#718096;flex:1;"></span>
       <button class="btn btn-secondary" type="button" onclick="_omCloseCompose()">取消</button>
       <button class="btn btn-primary" type="button" id="om-compose-send-btn" onclick="omSendSubmit()">寄出</button>
     </div>
@@ -50840,6 +50923,23 @@ function _omQuoteBlock(refMsg) {
   return `<br><br><div>--- 原始郵件 ---</div><div style="color:#718096;font-size:.85em;">${header}</div><blockquote style="border-left:2px solid #cbd5e0;margin:8px 0 0;padding-left:10px;color:#4a5568;">${body}</blockquote>`;
 }
 
+// v247：寫信草稿備援。key 刻意不用 scc_draft_ 前綴，避免被 _migrateLocalStorageDrafts() 掃到
+// 誤產生一筆待辦事項——寫信草稿走「重開撰寫視窗時本機偵測詢問還原」，比照家系圖 _genoDraftKey() 的做法，
+// 不適合走 todo 清單（附件無法還原，語意跟一般表單草稿不同）。
+function _omComposeDraftKey() {
+  return `scc_om_compose_draft_${currentUser?.email || ''}`;
+}
+// 不含附件（base64 太大，_gdStartAutosave 有 200KB 上限，附件需寄出前重新附加）。
+function _omComposeSnapshot() {
+  return {
+    to: document.getElementById('om-compose-to')?.value || '',
+    cc: document.getElementById('om-compose-cc')?.value || '',
+    bcc: document.getElementById('om-compose-bcc')?.value || '',
+    subject: document.getElementById('om-compose-subject')?.value || '',
+    bodyHtml: getRichTextValue('om-compose-body'),
+  };
+}
+
 function openOmCompose(mode, refMsgOverride) {
   const refMsg = refMsgOverride || _om.currentMsg;
   if ((mode === 'reply' || mode === 'replyAll' || mode === 'fwd') && !refMsg) return;
@@ -50878,6 +50978,28 @@ function openOmCompose(mode, refMsgOverride) {
   } else {
     if (titleEl) titleEl.textContent = '寫信';
   }
+  // v247：欄位填完初始值後，偵測本機是否有殘留的寫信草稿，詢問是否還原
+  const _omKey = _omComposeDraftKey();
+  try {
+    const _omRaw = localStorage.getItem(_omKey);
+    if (_omRaw) {
+      const _omDraft = JSON.parse(_omRaw);
+      if (_omDraft && typeof _omDraft === 'object') {
+        if (confirm('偵測到上次未寄出的信件草稿（可能因頁面重新整理而保留）。\n\n是否還原草稿內容？（會覆蓋目前帶入的內容；附件無法還原，需重新附加）\n選擇「取消」則捨棄草稿。')) {
+          document.getElementById('om-compose-to').value = _omDraft.to || '';
+          document.getElementById('om-compose-cc').value = _omDraft.cc || '';
+          document.getElementById('om-compose-bcc').value = _omDraft.bcc || '';
+          document.getElementById('om-compose-subject').value = _omDraft.subject || '';
+          setRichTextValue('om-compose-body', _omDraft.bodyHtml || '');
+          if (_omDraft.cc || _omDraft.bcc) document.getElementById('om-cc-bcc-wrap').style.display = '';
+        } else {
+          try { localStorage.removeItem(_omKey); } catch (_) {}
+        }
+      }
+    }
+  } catch (_) {}
+  _gdSetBaseline('omCompose', _omComposeSnapshot());
+  _gdStartAutosave('omCompose', _omKey, _omComposeSnapshot, '_om-compose-draft-status');
   document.getElementById('om-compose-modal').style.display = 'flex';
   setTimeout(() => document.getElementById('om-compose-to').focus(), 50);
 }
@@ -50943,6 +51065,8 @@ function _omRemoveComposeAttachment(idx) {
   _omRenderComposeAttachList();
 }
 function _omCloseCompose() {
+  // v247：關閉（取消）不清草稿——誤關可還原，重開時偵測詢問、拒絕才清（見 openOmCompose）
+  _gdStopAutosave('omCompose');
   document.getElementById('om-compose-modal').style.display = 'none';
 }
 
@@ -50980,6 +51104,8 @@ async function omSendSubmit() {
   }
   try {
     await _omCall('omSend', params);
+    // v247：寄出成功，草稿已無留存必要
+    try { localStorage.removeItem(_omComposeDraftKey()); } catch (_) {}
     _omCloseCompose();
     showToast('已寄出信件', 'success');
     // v220：寄出信件會 best-effort 備份一份到 \Sent（見 openmail/actions.js omSend），該資料夾的
@@ -50992,6 +51118,8 @@ async function omSendSubmit() {
     if (_omIsConnErr(e.message)) {
       if (confirm('寄送失敗（信箱連線問題）：' + _omErrMsg(e.message) + '\n\n要把這封信存入「寄件匣」嗎？連線恢復後會自動寄出（也可在信箱頁手動立即寄出）。')) {
         if (_omQueueOutbox(params)) {
+          // v247：已妥善存入寄件匣，草稿已無留存必要
+          try { localStorage.removeItem(_omComposeDraftKey()); } catch (_) {}
           _omCloseCompose();
           showToast('已存入寄件匣，連線恢復後會自動寄出', 'info');
         }
