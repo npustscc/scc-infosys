@@ -27,7 +27,7 @@ const TC_ICONS = {
   dblimg:     '<rect x="7" y="8" width="28" height="22" rx="2"/><circle cx="14" cy="15" r="2.6"/><polyline points="9,27 20,19 26,24 33,15"/><circle cx="44" cy="44" r="3"/><circle cx="44" cy="44" r="8" stroke-dasharray="3 4"/><circle cx="44" cy="44" r="13" stroke-dasharray="3 5"/>',
 };
 
-// 20 則（順序固定；輪播起始位置隨機挑選，但播放順序照本陣列順序前進/後退）。
+// 21 則（順序固定；輪播起始位置隨機挑選，但播放順序照本陣列順序前進/後退）。
 // v241 多語：title/desc＝華語（預設）；tw＝台語（台文漢字）、hk＝客語（四縣腔用字）、en＝English，
 // 各為 { t, d }。翻譯由 Claude 撰寫、供親切感與趣味用途；技術詞（Ctrl+V、PDF、Excel…）保留原文。
 const TC_HINTS = [
@@ -111,6 +111,10 @@ const TC_HINTS = [
     tw: { t: '心測報告', d: '個人／導師／系主任／院長四種報告，攏會當規批印＋匯出 Excel。' },
     hk: { t: '心測報告', d: '個人／導師／系主任／院長四種報告，全做得歸批印＋匯出 Excel。' },
     en: { t: 'Test reports', d: 'Four report types (student, tutor, chair, dean) support batch printing and Excel export.' } },
+  { id: 21, icon: 'dblcal',     title: '差勤總覽查打卡',  desc: '我的差勤 → 差勤總覽可用日期區間查詢自己的所有打卡紀錄，快捷鈕一鍵切今天/本週/本月。',
+    tw: { t: '差勤總覽揣打卡', d: '我的差勤 → 差勤總覽會當用日期區間揣家己所有的打卡紀錄，快捷鈕一鍵就會當切今仔日/本禮拜/本月。' },
+    hk: { t: '差勤總覽尋打卡', d: '我的差勤 → 差勤總覽做得用日期區間尋自家所有个打卡紀錄，快捷鈕一鍵就做得切今仔日/本禮拜/本月。' },
+    en: { t: 'Attendance overview lookup', d: 'My Attendance → Attendance Overview lets you query your own punch records by date range; quick buttons switch to Today/This week/This month in one click.' } },
 ];
 
 // ── v241 小技巧多語 ──────────────────────────────────────────────

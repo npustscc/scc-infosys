@@ -28557,7 +28557,7 @@ function _safeIdKey(email) { return String(email || '').replace(/[^a-zA-Z0-9]/g,
 let _myAttTab = 'week';
 let _myAttTabRestored = false;
 const _MYATT_TABS = [
-  { id: 'week',   label: '本週差勤' },
+  { id: 'week',   label: '差勤總覽' },
   { id: 'apply',  label: '請假申請' },
   { id: 'report', label: '月報表' },
 ];
@@ -28598,10 +28598,82 @@ function _myAttRenderTab() {
   else _myAttRenderReportTab(el);
 }
 
-// ── 本週差勤 tab：與差勤管理共用 renderWeekAttendanceOverview，只傳入自己的 email ──
+// ── 差勤總覽 tab（原「本週差勤」，v246 改版）：本週概況（與差勤管理共用 renderWeekAttendanceOverview，
+//    只傳入自己的 email）＋下方新增「我的打卡紀錄」查詢——可自選日期區間，嚴格只列自己的紀錄 ──
 function _myAttRenderWeekTab(el) {
-  el.innerHTML = `<div id="myatt-week-overview"></div>`;
+  el.innerHTML = `
+    <div id="myatt-week-overview"></div>
+    <div class="card" style="margin-top:20px;">
+      <div class="card-header"><h3>我的打卡紀錄</h3></div>
+      <div style="padding:16px 20px;">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px;">
+          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">起日</label>
+            <input id="myatt-punch-from" type="date" class="field-input" onchange="_myAttRenderPunchList()"></div>
+          <div><label style="font-size:.82rem;color:#718096;display:block;margin-bottom:4px;">迄日</label>
+            <input id="myatt-punch-to" type="date" class="field-input" onchange="_myAttRenderPunchList()"></div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-secondary btn-sm" onclick="_myAttPunchQuick('today')">今天</button>
+            <button class="btn btn-secondary btn-sm" onclick="_myAttPunchQuick('week')">本週</button>
+            <button class="btn btn-secondary btn-sm" onclick="_myAttPunchQuick('month')">本月</button>
+            <button class="btn btn-secondary btn-sm" onclick="_myAttPunchQuick('all')">全部</button>
+          </div>
+        </div>
+        <div id="myatt-punch-list"></div>
+      </div>
+    </div>`;
   renderWeekAttendanceOverview('myatt-week-overview', [currentUser.email]);
+  // 預設區間＝本週（週一~今日），比照上方「本週概況」的週期一致
+  const wk = _myAttPunchQuickRange('week', _fmtDate(new Date()));
+  const fromEl = document.getElementById('myatt-punch-from');
+  const toEl   = document.getElementById('myatt-punch-to');
+  if (fromEl) fromEl.value = wk.from;
+  if (toEl)   toEl.value   = wk.to;
+  _myAttRenderPunchList();
+}
+// 快捷鈕：today／week／month／all（全部＝清空起訖不限制），切換後即重繪並把值塞回 input
+function _myAttPunchQuick(kind) {
+  const range = _myAttPunchQuickRange(kind, _fmtDate(new Date()));
+  const fromEl = document.getElementById('myatt-punch-from');
+  const toEl   = document.getElementById('myatt-punch-to');
+  if (fromEl) fromEl.value = range.from;
+  if (toEl)   toEl.value   = range.to;
+  _myAttRenderPunchList();
+}
+// 依目前 from/to 輸入值重繪「我的打卡紀錄」表格。安全注意：即使呼叫端傳錯 email 也無妨——
+// 這裡永遠以 currentUser.email 過濾，絕不可能列出他人打卡紀錄。
+function _myAttRenderPunchList() {
+  const listEl = document.getElementById('myatt-punch-list');
+  if (!listEl) return;
+  const from = document.getElementById('myatt-punch-from')?.value || '';
+  const to   = document.getElementById('myatt-punch-to')?.value   || '';
+  if (from && to && from > to) {
+    listEl.innerHTML = '<div class="alert alert-info">迄日不可早於起日，請重新選擇日期區間。</div>';
+    return;
+  }
+  const allRecords = attendanceData?.records || [];
+  // 供 _punchLabel 判斷簽到/簽退用：取本人「全部」紀錄（不受畫面篩選區間影響），避免區間邊界誤判
+  const myAllRecords = allRecords.filter(r => r.email === currentUser.email);
+  const rows = _myAttFilterPunchRecords(myAllRecords, currentUser.email, from, to);
+  listEl.innerHTML = `
+    <div style="font-size:.82rem;color:#718096;margin-bottom:8px;">共 ${rows.length} 筆</div>
+    <div style="overflow-x:auto;">
+      <table class="data-table" style="min-width:440px;">
+        <thead><tr><th>日期</th><th>類型</th><th>時間</th><th>定位</th></tr></thead>
+        <tbody>
+          ${rows.length === 0
+            ? '<tr><td colspan="4" style="text-align:center;color:#a0aec0;padding:20px;">此區間無打卡紀錄</td></tr>'
+            : rows.map(r => {
+                const { icon, text, color } = _punchLabel(r, myAllRecords);
+                return `<tr>
+                  <td>${escHtml(r.date || '')}</td>
+                  <td><span style="font-weight:600;color:${color}">${icon} ${text}</span>${r.manual ? ' <span style="font-size:.7rem;color:#6b46c1;background:#e9d8fd;border-radius:4px;padding:0 5px;" title="手動補登">手動</span>' : ''}</td>
+                  <td>${new Date(r.timestamp).toLocaleString('zh-TW')}</td>
+                  <td>${_attLocBadgeHtml(r)}${_attManualBadgeHtml(r)}${(r.manual && r.manualNote) ? `<div style="font-size:.72rem;color:#6b46c1;margin-top:2px;">備註：${escHtml(r.manualNote)}</div>` : ''}</td>
+                </tr>`;
+              }).join('')}
+        </tbody>
+      </table>
+    </div>`;
 }
 
 // ── 請假申請 tab：新增差勤申請表單＋我的申請紀錄（原「差勤申請」頁內容，只搬位置不改行為）──
@@ -29347,6 +29419,25 @@ function _weekMondayOf(dateStr) {
   d.setDate(d.getDate() + diff);
   return _fmtDate(d);
 }
+
+// ── 「我的打卡紀錄」查詢（我的差勤／差勤總覽 tab 用）：純函式，方便單元測試 ──
+// 依 email＋起訖日期（皆含）篩選＋依 timestamp 降冪排序；from/to 為空字串＝不限制該端。
+// 嚴格以 email 參數過濾（呼叫端固定傳 currentUser.email），確保絕不列出他人紀錄。
+function _myAttFilterPunchRecords(records, email, from, to) {
+  return (records || [])
+    .filter(r => r && r.email === email)
+    .filter(r => !from || (r.date || '') >= from)
+    .filter(r => !to   || (r.date || '') <= to)
+    .sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+}
+// 快捷區間：today/week/month → {from,to}（皆含今日）；其餘（如 'all'）→ 清空起訖＝不限制
+function _myAttPunchQuickRange(kind, today) {
+  if (kind === 'today') return { from: today, to: today };
+  if (kind === 'week')  return { from: _weekMondayOf(today), to: today };
+  if (kind === 'month') return { from: today.slice(0, 7) + '-01', to: today };
+  return { from: '', to: '' };
+}
+
 // 將本週（週一~週日）每人的打卡概況＋今日打卡情形＋本週請假中，渲染進 containerId
 function renderWeekAttendanceOverview(containerId, emails) {
   const el = document.getElementById(containerId);
