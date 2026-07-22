@@ -26,6 +26,7 @@ function summarizeParams(params, action) {
   if (action && /^om[A-Z]/.test(action)) return summarizeOpenmailParams(params);
   if (action && /^sms[A-Z]/.test(action)) return summarizeSmsParams(params);
   if (action && /^ft[A-Z]/.test(action)) return summarizeFtParams(params);
+  if (action === 'draftCloudSync') return summarizeDraftsParams(params);
   return Object.keys(params).filter((k) => !CONFIDENTIAL_KEYS.has(k)).map((k) => {
     const v = params[k];
     const len = typeof v === 'string' ? v.length : (v && typeof v === 'object' ? JSON.stringify(v).length : String(v).length);
@@ -126,6 +127,18 @@ function summarizeOmsvParams(params) {
     const len = typeof v === 'string' ? v.length : (v && typeof v === 'object' ? JSON.stringify(v).length : String(v).length);
     return `${k}_len=${len}`;
   }).join(',');
+}
+
+// v248：草稿雲端備援 v2（draftCloudSync，見 actions/drafts.js）專用摘要——upserts/deletes 內的
+// draft key 字串本身含使用者 email（見 dev/index.html 各表單 _xxxDraftKey 組法）、payload 更是
+// 表單填寫中的個資內容本身，兩者一律不落地，只記筆數與 payload 總位元組數（CLAUDE.md 資安原則 3：
+// 草稿 payload 內容絕不可進 audit_log，只記筆數/位元組數）。draftCloudList 無參數，不需要專用摘要
+// （交由 summarizeParams 開頭的空物件短路處理）。
+function summarizeDraftsParams(params) {
+  const upserts = Array.isArray(params.upserts) ? params.upserts : [];
+  const deletes = Array.isArray(params.deletes) ? params.deletes : [];
+  const bytes = upserts.reduce((sum, u) => sum + (u && typeof u.payload === 'string' ? Buffer.byteLength(u.payload, 'utf8') : 0), 0);
+  return `upserts=${upserts.length},deletes=${deletes.length},bytes=${bytes}`;
 }
 
 module.exports = { appendAuditLog, summarizeParams };

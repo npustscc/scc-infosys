@@ -14,7 +14,8 @@
 //      伺服器資料夾（信件封存）action 已接線（見 openmail/archive.js，同樣走一般授權閘）；v203 起
 //      6 個 sms* 簡訊發送 action 已接線（見 sms/actions.js，三竹 Mitake／Every8D，同樣走一般授權閘）；
 //      v207 起 5 個 ft* 新生心理測驗 action 已接線（見 freshmanTest/actions.js，另外過 4a-3
-//      freshmanTestDecision 角色閘——管理者或 isFreshmenTestContact 主責）；
+//      freshmanTestDecision 角色閘——管理者或 isFreshmenTestContact 主責）；v248 起草稿雲端備援 v2
+//      的 draftCloudSync/draftCloudList 已接線（見 actions/drafts.js，同樣走一般授權閘）；
 //      其餘未實作 action → 明確業務錯誤（deleteFile/moveFile＝刻意不移植的純攻擊面死碼，
 //      clockContext/clockPunch＝依定案留在 GAS）；decryptOfficeFile 已接線（見
 //      actions/officeDecrypt.js，前端 Excel 匯入／附件上傳解密有密碼的 Office 檔用，走一般授權閘）
@@ -46,6 +47,7 @@ const smsActions = require('./sms/actions');
 const freshmanTestActions = require('./freshmanTest/actions');
 const gcSync = require('./sync/gcSync');
 const clockBridge = require('./actions/clockBridge');
+const draftsActions = require('./actions/drafts');
 const adminUsersActions = require('./actions/adminUsers');
 const systemHealthActions = require('./actions/systemHealth');
 const passwordActions = require('./actions/password');
@@ -491,6 +493,11 @@ async function handleRequest(db, config, payload) {
       // freshmanTest/tutorsysSync.js 白名單），未設定 TUTORSYS_STORE_DIR 時直接讓錯誤往上拋，
       // 走一般 catch 區塊變成業務錯誤（前端據此顯示「未設定」）。
       case 'ftTutorSyncFetch': result = freshmanTestActions.ftTutorSyncFetch(config.TUTORSYS_STORE_DIR); break;
+      // ── v248：草稿雲端備援 v2（見 actions/drafts.js 檔頭）。走一般授權閘（不在
+      //    gate.AUTHZ_EXEMPT），ownerEmail 皆來自已驗證 session（同 omsv* 既有原則，不吃 params
+      //    裡的身分欄位）。payload 內容絕不進 audit_log（見下方 finally 區塊與 audit.js 對應分支）。
+      case 'draftCloudSync': result = draftsActions.draftCloudSync(db, userEmail, params); break;
+      case 'draftCloudList': result = draftsActions.draftCloudList(db, userEmail); break;
       case 'configSelfPatch': result = configActions.configSelfPatch(db, params, ctx, userEmail); break;
       case 'configCasesPatch': result = configActions.configCasesPatch(db, params, ctx, userEmail, config.CASES_PATCH_AUTHZ_MODE); break;
       case 'casesUpsert': result = commitActions.casesUpsert(db, params, ctx); break;

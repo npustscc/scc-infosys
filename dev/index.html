@@ -4184,7 +4184,7 @@ function _upgradeFromClockMode() {
   loadCases().then(() => {
     loadPsychTestDB().catch(() => {});
     scanUnassignedRecords().catch(() => {});
-    _migrateLocalStorageDrafts();
+    _restoreCloudDraftsThenMigrate().catch(() => {}); // v248：雲端拉回＋既有本機還原，fire-and-forget 不擋登入流程
     _syncPendingRecordsToTodos();
     _checkMlCumulativeTodos();
     _checkMlNewLeaveTodos().catch(() => {});
@@ -6504,7 +6504,7 @@ async function afterLogin() {
     loadCases().then(() => {
       loadPsychTestDB().catch(() => {});
       scanUnassignedRecords().catch(() => {});
-      _migrateLocalStorageDrafts();
+      _restoreCloudDraftsThenMigrate().catch(() => {}); // v248：雲端拉回＋既有本機還原，fire-and-forget 不擋登入流程
       _syncPendingRecordsToTodos();
       _checkMlCumulativeTodos();
       _checkMlNewLeaveTodos().catch(() => {});
@@ -9219,7 +9219,7 @@ function _forceUpdateReload() {
   ov.innerHTML = `
     <div style="background:#fff;border-radius:12px;max-width:420px;width:100%;padding:28px 26px;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.35);">
       <div style="font-size:1.15rem;font-weight:700;color:#2d3748;margin-bottom:10px;">🔄 系統已更新</div>
-      <div style="font-size:.9rem;color:#4a5568;line-height:1.7;margin-bottom:16px;">系統剛發布了新版本，為避免繼續使用舊版造成不一致，將於 <span id="_force-update-countdown">${seconds}</span> 秒後自動重新整理。頁面重整後會自動回到登入狀態。<strong>正在填寫的表單內容系統每 5 秒會自動暫存在本機</strong>，重整後重新開啟該表單即可還原，請放心。</div>
+      <div style="font-size:.9rem;color:#4a5568;line-height:1.7;margin-bottom:16px;">系統剛發布了新版本，為避免繼續使用舊版造成不一致，將於 <span id="_force-update-countdown">${seconds}</span> 秒後自動重新整理。頁面重整後會自動回到登入狀態。<strong>正在填寫的表單內容系統每 5 秒會自動暫存在本機，並定期同步到伺服器</strong>，重整後重新開啟該表單即可還原，請放心。</div>
       <button onclick="location.reload()" style="padding:9px 28px;background:#2b6cb0;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:600;">立即重新整理</button>
     </div>`;
   document.body.appendChild(ov);
@@ -23510,6 +23510,108 @@ function _gdStartAutosave(name, key, snapshotFn, statusElId) {
 }
 function _gdStopAutosave(name) {
   if (_genericDraftState[name]?.timer) { clearInterval(_genericDraftState[name].timer); _genericDraftState[name].timer = null; }
+}
+
+// ── v248：草稿雲端備援 v2 ──────────────────────────────────────────────
+// 本機草稿（localStorage，上方既有每 5 秒機制）之外，額外每 30 秒把有變動的草稿同步一份到伺服器
+// （sqlite，存自己帳號底下，見 server/src/actions/drafts.js），登入時拉回（見
+// _restoreCloudDraftsThenMigrate），達成跨裝置還原與兜底（換電腦、清瀏覽器資料不至於整份遺失）。
+// 衝突規則：**本機存在同 key 草稿時本機贏**——sweeper 只會把本機值往上傳，絕不會用伺服器值覆蓋
+// 正在使用中的本機草稿；本機沒有該 key 時才從伺服器 materialize 到 localStorage，之後接手既有
+// 各表單「重開詢問還原」流程，本引擎不涉入還原 UI。刪除傳播：不改任何既有 removeItem 呼叫點，
+// 純粹靠比對「上次已同步集合」與目前 localStorage 偵測本機消失的 key，順帶請伺服器一併刪除。
+
+// 涵蓋的 localStorage key 前綴（5 類會落地的表單草稿；家系圖／evr／om 撰寫／轉銜初評皆刻意不用
+// scc_draft_ 前綴，見各自 _xxxDraftKey 檔頭註解，但都已逐一確認 key 字串含 currentUser.email）。
+const CLOUD_DRAFT_KEY_PREFIXES = ['scc_draft_', 'scc_geno_draft_', 'evr_draft_', 'scc_om_compose_draft_', 'scc_ta_draft_'];
+
+// 掃 localStorage，收集屬於目前登入者、符合上述前綴的草稿 key/payload（key 字串須含 email，防同機
+// 多帳號互洩）；單筆 >200KB 跳過（同 _gdStartAutosave 既有上限，這類草稿本就不該同步）。
+// 回傳 { key: payloadJson, ... }。
+function _collectLocalDrafts() {
+  const email = currentUser?.email || '';
+  const out = {};
+  if (!email) return out;
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.includes(email)) continue;
+      if (!CLOUD_DRAFT_KEY_PREFIXES.some(p => k.startsWith(p))) continue;
+      const raw = localStorage.getItem(k);
+      if (raw == null || raw.length > 200 * 1024) continue;
+      out[k] = raw;
+    }
+  } catch (_) {}
+  return out;
+}
+
+// 純函式：比對「目前本機草稿」與「上次已同步到伺服器的集合」，算出這次要 upsert／delete 的 key。
+// localMap 有、且與 syncedMap 不同（新增或內容變動）→ upsert；syncedMap 有而 localMap 沒有
+// （本機已刪除，走既有各表單 removeItem 呼叫點）→ delete。可測試的純函式，見 test/cloud-draft-diff.test.js。
+function _cloudDraftDiff(localMap, syncedMap) {
+  const lm = localMap || {};
+  const sm = syncedMap || {};
+  const upserts = [];
+  for (const key of Object.keys(lm)) {
+    if (lm[key] !== sm[key]) upserts.push({ key, payload: lm[key] });
+  }
+  const deletes = [];
+  for (const key of Object.keys(sm)) {
+    if (!(key in lm)) deletes.push(key);
+  }
+  return { upserts, deletes };
+}
+
+// key -> 上次已成功同步到伺服器的 payload 字串（登入時由 _restoreCloudDraftsThenMigrate 初始化）。
+let _cloudSyncedMap = {};
+let _cloudSyncTimerStarted = false;
+
+async function _cloudDraftTick() {
+  if (!currentUser?.email || !_getSession()) return; // 未登入/session 已過期，什麼都不做
+  const localMap = _collectLocalDrafts();
+  const { upserts, deletes } = _cloudDraftDiff(localMap, _cloudSyncedMap);
+  if (!upserts.length && !deletes.length) return; // 沒有變動，不打 API
+  try {
+    const r = await proxyCall('draftCloudSync', { upserts, deletes }, true);
+    const skippedKeys = new Set((r?.skipped || []).map(s => s.key));
+    for (const u of upserts) {
+      if (skippedKeys.has(u.key)) continue; // 被伺服器跳過（過大/超過每人上限）的不記入已同步
+      _cloudSyncedMap[u.key] = u.payload;
+    }
+    for (const k of deletes) delete _cloudSyncedMap[k];
+  } catch (e) {
+    console.warn('_cloudDraftTick: draftCloudSync 失敗，留待下一輪重試：', e.message);
+  }
+}
+
+// 登入成功後呼叫一次即可（旗標防重複啟動多個 interval）。
+function _startCloudDraftSync() {
+  if (_cloudSyncTimerStarted) return;
+  _cloudSyncTimerStarted = true;
+  setInterval(_cloudDraftTick, 30000);
+}
+
+// 登入時拉回：伺服器有、本機沒有的 key → materialize 到 localStorage（記入已同步集合，之後接手
+// 既有「重開詢問還原」流程）；本機已有的 key → 本機贏，把**本機值**記入已同步集合（下一輪 tick
+// 會自然把較新的本機版本推回伺服器，不會被舊的伺服器值覆蓋）。無論成敗最後都呼叫既有的
+// _migrateLocalStorageDrafts()（不可讓雲端拉回失敗擋住既有本機還原），並啟動 30 秒 sweeper。
+async function _restoreCloudDraftsThenMigrate() {
+  try {
+    const r = await proxyCall('draftCloudList', {}, true);
+    const localMap = _collectLocalDrafts();
+    for (const d of (r?.drafts || [])) {
+      if (d.key in localMap) {
+        _cloudSyncedMap[d.key] = localMap[d.key]; // 本機贏
+      } else {
+        try { localStorage.setItem(d.key, d.payload); } catch (_) { continue; }
+        _cloudSyncedMap[d.key] = d.payload;
+      }
+    }
+  } catch (e) {
+    console.warn('_restoreCloudDraftsThenMigrate: draftCloudList 失敗，僅還原本機草稿：', e.message);
+  }
+  _migrateLocalStorageDrafts();
+  _startCloudDraftSync();
 }
 
 // v185：家系圖編輯器專用離開對話框（存回表單／留草稿離開／捨棄離開／取消）。家系圖草稿走獨立
