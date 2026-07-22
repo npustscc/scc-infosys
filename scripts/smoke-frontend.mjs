@@ -35,6 +35,7 @@ const SENTINELS = [
   ['draft-engine.js', '_gdStartAutosave', 'function'],
   ['record-form.js', 'saveRecord', 'function'],
   ['mental-leave.js', 'openMlAssessmentModal', 'function'],
+  ['openmail.js', 'openOmCompose', 'function'],
   ['hints.js', 'TC_HINTS', 'object'],
   ['changelog.js', 'CHANGELOG_ENTRIES', 'object'],
   ['index.html 主 script', 'proxyCall', 'function'],

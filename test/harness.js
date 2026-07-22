@@ -42,6 +42,10 @@
 // v260：身心調適假渲染段（_mlaRenderPageBody／openMlAssessmentModal／saveMlAssessment／
 // printMlAssessment／_mlRenderRecordsTab 等）再拆到 dev/mental-leave.js，插入 record-form.js
 // 與 index.html 之間（符合實際 <script> 載入順序）。
+// v261：信箱（openmail）模組（openOmCompose／omSendSubmit／_omsvRenderFolderTree 等）改用
+// 「inline script 區塊原地外部化」拆到 dev/openmail.js——原本就是 index.html 尾端一段獨立
+// <script>，位置排在 index.html 之後、其他尾端區塊（sms 等）之前；此處加進 SRC_FILES 只是
+// 為了讓 harness 抽得到函式，前後順序不影響測試結果（純函式抽取無關實際載入序）。
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -61,6 +65,7 @@ const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'record-form.js'),
   path.join(__dirname, '..', 'dev', 'mental-leave.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
+  path.join(__dirname, '..', 'dev', 'openmail.js'),
 ];
 
 function readHtml() {
