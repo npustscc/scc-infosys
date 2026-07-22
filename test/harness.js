@@ -1,5 +1,5 @@
-// 測試載入器：從 dev/index.html 就地抽出指定的純函式，在隔離的 vm context 中執行。
-// 完全不修改 index.html —— 測試檔讀的是同一份正式碼，改壞邏輯測試就會紅燈。
+// 測試載入器：從 dev/index.html（＋v249 起 dev/utils.js）就地抽出指定的純函式，在隔離的
+// vm context 中執行。完全不修改來源檔 —— 測試檔讀的是同一份正式碼，改壞邏輯測試就會紅燈。
 //
 // 用法：
 //   const { load } = require('./harness');
@@ -8,15 +8,20 @@
 //
 // 限制：以「跳過字串/註解的括號配對」抽出函式主體，適用本專案這類無 DOM 依賴的純函式；
 // 若函式字串字面量內含不成對的大括號（本專案目前沒有），需改用更完整的解析器。
+//
+// v249：純函式工具區絞殺者拆檔起，部分純函式（如 escHtml／semesterLabel／_bkSeriesReplan 等）
+// 已搬到 dev/utils.js。readHtml() 改為兩檔案串接（utils.js 在前，符合實際載入順序），
+// 讓既有測試不論函式目前落在哪個檔案都抽得到，呼叫端無需改動。
 
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
 const HTML_PATH = path.join(__dirname, '..', 'dev', 'index.html');
+const UTILS_PATH = path.join(__dirname, '..', 'dev', 'utils.js');
 
 function readHtml() {
-  return fs.readFileSync(HTML_PATH, 'utf8');
+  return fs.readFileSync(UTILS_PATH, 'utf8') + '\n' + fs.readFileSync(HTML_PATH, 'utf8');
 }
 
 // 從 src 中，以 openBraceIdx（指向 '{'）為起點，做「字串/註解感知」的括號配對，回傳結束 '}' 的索引。

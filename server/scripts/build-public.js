@@ -41,11 +41,14 @@ const SRC_CHANGELOG = path.join(__dirname, '..', '..', 'dev', 'changelog.js');
 const SRC_STYLES = path.join(__dirname, '..', '..', 'dev', 'styles.css');
 // v245：小技巧輪播模組拆到獨立檔案，同上理由——唯一來源固定為 dev/hints.js。
 const SRC_HINTS = path.join(__dirname, '..', '..', 'dev', 'hints.js');
+// v249：純函式工具區拆到獨立檔案，同上理由——唯一來源固定為 dev/utils.js。
+const SRC_UTILS = path.join(__dirname, '..', '..', 'dev', 'utils.js');
 const OUT_DIR = path.join(__dirname, '..', 'public');
 const OUT_HTML = path.join(OUT_DIR, 'index.html');
 const OUT_CHANGELOG = path.join(OUT_DIR, 'changelog.js');
 const OUT_STYLES = path.join(OUT_DIR, 'styles.css');
 const OUT_HINTS = path.join(OUT_DIR, 'hints.js');
+const OUT_UTILS = path.join(OUT_DIR, 'utils.js');
 
 function main() {
   const targetUrl = urlArg || `http://localhost:${config.PORT}/exec`;
@@ -65,10 +68,15 @@ function main() {
     console.error(`找不到 ${SRC_HINTS}`);
     process.exit(1);
   }
+  if (!fs.existsSync(SRC_UTILS)) {
+    console.error(`找不到 ${SRC_UTILS}`);
+    process.exit(1);
+  }
   const html = fs.readFileSync(SRC_HTML, 'utf8');
   const changelogJs = fs.readFileSync(SRC_CHANGELOG, 'utf8');
   const stylesCss = fs.readFileSync(SRC_STYLES, 'utf8');
   const hintsJs = fs.readFileSync(SRC_HINTS, 'utf8');
+  const utilsJs = fs.readFileSync(SRC_UTILS, 'utf8');
 
   const RE_URL = /^const APPS_SCRIPT_URL = '([^']*)';$/m;
   const mUrl = RE_URL.exec(html);
@@ -112,6 +120,7 @@ function main() {
   fs.writeFileSync(OUT_CHANGELOG, changelogJs, 'utf8'); // v243：原樣複製，changelog.js 無需置換常數
   fs.writeFileSync(OUT_STYLES, stylesCss, 'utf8'); // v244：原樣複製，styles.css 無需置換常數
   fs.writeFileSync(OUT_HINTS, hintsJs, 'utf8'); // v245：原樣複製，hints.js 無需置換常數
+  fs.writeFileSync(OUT_UTILS, utilsJs, 'utf8'); // v249：原樣複製，utils.js 無需置換常數
 
   // v242：強制重新整理機制——寫出 version.json 供前端 checkForUpdate() 輪詢比對。buildId 用
   // patched 後 html 內容的 sha256 前 16 碼（內容雜湊，不用時間戳／build 序號）：這樣「只改
@@ -124,7 +133,8 @@ function main() {
   // v244：同理再納入 styles.css——拆檔後前端變成三個檔案，只改樣式表（沒動 index.html／
   // changelog.js）一樣要能觸發強制重整，否則使用中分頁會看到版面跟正式版對不上而不自知。
   // v245：再納入 hints.js——同理，只改小技巧模組也要能觸發強制重整。
-  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').digest('hex').slice(0, 16);
+  // v249：再納入 utils.js——同理，只改純函式工具區也要能觸發強制重整。
+  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').update(utilsJs, 'utf8').digest('hex').slice(0, 16);
   const versionJson = { buildId, mode, builtAt: new Date().toISOString() };
   fs.writeFileSync(path.join(OUT_DIR, 'version.json'), JSON.stringify(versionJson, null, 2), 'utf8');
 
@@ -132,6 +142,7 @@ function main() {
   console.log(`已複製 ${OUT_CHANGELOG}`);
   console.log(`已複製 ${OUT_STYLES}`);
   console.log(`已複製 ${OUT_HINTS}`);
+  console.log(`已複製 ${OUT_UTILS}`);
   console.log(`APPS_SCRIPT_URL：${mUrl[1]} → ${targetUrl}`);
   console.log(folderMsg + '。');
   console.log(`version.json buildId：${buildId}`);
