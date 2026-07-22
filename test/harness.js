@@ -30,6 +30,9 @@
 // （符合實際 <script> 載入順序）。
 // v256：結案評估模組（openClosureEvalPage／saveClosureEval／_clReasonRender／reopenCase 等）
 // 再拆到 dev/closure-eval.js，插入 grad-eval.js 與 index.html 之間（符合實際 <script> 載入順序）。
+// v257：待辦分類純函式＋事件處理記錄表模組（_todoCategoryOf／_todoCategoryCounts／
+// renderEventRecordsPage／saveEventRecords 等）再拆到 dev/event-records.js，插入 closure-eval.js
+// 與 index.html 之間（符合實際 <script> 載入順序）。
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -44,6 +47,7 @@ const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'psych-import.js'),
   path.join(__dirname, '..', 'dev', 'grad-eval.js'),
   path.join(__dirname, '..', 'dev', 'closure-eval.js'),
+  path.join(__dirname, '..', 'dev', 'event-records.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
 ];
 
