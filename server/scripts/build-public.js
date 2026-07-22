@@ -18,6 +18,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const config = require('../src/config');
 
 const DEV_DRIVE_FOLDER_ID = '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx';
@@ -82,9 +83,19 @@ function main() {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   fs.writeFileSync(OUT_HTML, patched, 'utf8');
 
+  // v242：強制重新整理機制——寫出 version.json 供前端 checkForUpdate() 輪詢比對。buildId 用
+  // patched 後 html 內容的 sha256 前 16 碼（內容雜湊，不用時間戳／build 序號）：這樣「只改
+  // server/ 沒改前端」的 deploy（例如純後端 bug 修復）雜湊不變，不會逼所有正在使用的分頁
+  // 平白無故被強制重整；只有 dev/index.html 真的變動時 buildId 才會跟著變，觸發前端偵測到
+  // 新版並倒數重整（見 dev/index.html checkForUpdate/_forceUpdateReload）。
+  const buildId = crypto.createHash('sha256').update(patched, 'utf8').digest('hex').slice(0, 16);
+  const versionJson = { buildId, mode, builtAt: new Date().toISOString() };
+  fs.writeFileSync(path.join(OUT_DIR, 'version.json'), JSON.stringify(versionJson, null, 2), 'utf8');
+
   console.log(`已產生 ${OUT_HTML}（模式：${mode}）`);
   console.log(`APPS_SCRIPT_URL：${mUrl[1]} → ${targetUrl}`);
   console.log(folderMsg + '。');
+  console.log(`version.json buildId：${buildId}`);
 }
 
 main();

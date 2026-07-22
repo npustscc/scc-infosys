@@ -5129,7 +5129,11 @@ let _casesMyOnly = false;      // 個案列表：僅顯示主責/個管個案
 let _mlTabRestored = false;    // 身心調適假 tab：是否已從 config 還原偏好
 let caseSort = { col: null, dir: 1 };
 let _updateAvailable = false;
-let _versionEtag = null;
+// v242：強制重新整理機制——見 checkForUpdate()／_forceUpdateReload()。_appBuildId 記住第一次
+// 拿到的 version.json buildId（seed），之後偵測到不同值即視為已有新版部署；_updateReloadShown
+// 防止倒數覆蓋層重複疊加（輪詢與 SSE onopen 都可能觸發偵測）。
+let _appBuildId = null;
+let _updateReloadShown = false;
 let caseFilters = {
   q: '',
   semester: localStorage.getItem('scc_semester_pref') || currentSemesterPrefix(),
@@ -10329,23 +10333,56 @@ async function pollNotifications() {
   } catch (_) {}
 }
 
+// v242：版本更新偵測——落地 Node 後端每次 deploy 會重寫 server/public/version.json（buildId＝
+// 前端內容 sha256，見 build-public.js），與舊 GitHub Pages 時代靠 HTTP last-modified 偵測的做法
+// 不同（cutover 後 Node 靜態供應不送 last-modified，該手法早已失效）。GAS/Pages 環境沒有
+// version.json 這條路由，直接略過；測試版（8788）與正式版都要偵測——deploy 後兩邊都可能還有
+// 舊分頁開著，不再像舊版排除測試版。
 async function checkForUpdate() {
-  // 測試版不偵測更新（避免 GitHub Pages 批次 ETag 失效時誤報到正式版）
-  if (window.location.pathname.includes('/dev/') || window.location.port === '8788') return;
+  if (!IS_LOCAL_BACKEND) return;
   try {
-    const resp = await fetch(location.href, { method: 'HEAD', cache: 'no-store' });
-    // 優先用 last-modified（per-file 準確），避免 GitHub Pages ETag 在任何 push 後全部重置
-    const tag = resp.headers.get('last-modified');
-    if (!tag) return; // 若無 last-modified 則不偵測（GitHub Pages ETag 每次 push 都重置）
-    if (_versionEtag === null) {
-      _versionEtag = tag;
-    } else if (tag && tag !== _versionEtag && !_updateAvailable) {
+    const base = APPS_SCRIPT_URL.replace(/\/exec$/, '');
+    const resp = await fetch(base + '/version.json', { cache: 'no-store' });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (!data || !data.buildId) return;
+    if (_appBuildId === null) {
+      _appBuildId = data.buildId; // 第一次拿到：記住當下版本，不視為「有更新」
+    } else if (data.buildId !== _appBuildId) {
       _updateAvailable = true;
       renderNotifBell();
       const panel = document.getElementById('notif-panel');
       if (panel && panel.style.display !== 'none') renderNotifList();
+      _forceUpdateReload();
     }
   } catch (_) {}
+}
+
+// v242：偵測到新版後，全螢幕蓋板強制倒數 30 秒自動重新整理——避免有人繼續在已被伺服器換新的
+// 舊前端上工作（欄位/流程對不上新版後端，可能造成資料不一致）。刻意不提供「稍後再說」：
+// session／PIN 解鎖與表單草稿本來就存在 localStorage，重整後會自動恢復，延後只會拖長舊版
+// 曝險時間，沒有對應的好處。_updateReloadShown 防重入——輪詢（setInterval）與 SSE onopen
+// 都可能在短時間內各自呼叫到 checkForUpdate，避免疊加出兩層蓋板。
+function _forceUpdateReload() {
+  if (_updateReloadShown) return;
+  _updateReloadShown = true;
+  let seconds = 30;
+  const ov = document.createElement('div');
+  ov.id = '_force-update-overlay';
+  ov.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(15,23,42,.82);display:flex;align-items:center;justify-content:center;padding:20px;';
+  ov.innerHTML = `
+    <div style="background:#fff;border-radius:12px;max-width:420px;width:100%;padding:28px 26px;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.35);">
+      <div style="font-size:1.15rem;font-weight:700;color:#2d3748;margin-bottom:10px;">🔄 系統已更新</div>
+      <div style="font-size:.9rem;color:#4a5568;line-height:1.7;margin-bottom:16px;">系統剛發布了新版本，為避免繼續使用舊版造成不一致，將於 <span id="_force-update-countdown">${seconds}</span> 秒後自動重新整理。頁面重整後會自動回到登入狀態；表單草稿會自動暫存。</div>
+      <button onclick="location.reload()" style="padding:9px 28px;background:#2b6cb0;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.9rem;font-weight:600;">立即重新整理</button>
+    </div>`;
+  document.body.appendChild(ov);
+  const countdownEl = document.getElementById('_force-update-countdown');
+  const timer = setInterval(() => {
+    seconds -= 1;
+    if (countdownEl) countdownEl.textContent = String(Math.max(seconds, 0));
+    if (seconds <= 0) { clearInterval(timer); location.reload(); }
+  }, 1000);
 }
 
 function toggleRecordExpand(rid) {
@@ -28802,6 +28839,10 @@ function _sseConnect() {
   let es;
   try { es = new EventSource(url); } catch (_) { return; }
   _sse = es;
+  // v242：連線／重連即順便偵測一次版本更新——伺服器 deploy 時會 systemctl restart，所有既有
+  // SSE 連線斷線後自動重連，onopen 觸發的瞬間就是「秒級」得知新版部署的最佳時機，不必乾等
+  // 5 分鐘輪詢週期。
+  es.onopen = () => { try { checkForUpdate(); } catch (_) {} };
   es.addEventListener('fileChanged', (e) => {
     let path = '';
     try { path = JSON.parse(e.data || '{}').path || ''; } catch (_) { return; }
@@ -32553,6 +32594,11 @@ function renderChangelogPage() {
 
   // ── 所有版本條目（isProd: true 表示已推行到正式版）──
   const allEntries = [
+    { date: '2026-07-22', v: 242, title: '系統更新自動重整：發布新版後所有使用中的畫面會倒數 30 秒自動重新整理', isProd: false, items: [
+      item('新功能', '伺服器每次發布新版（deploy）後，所有還開著舊前端的分頁會在數秒內（透過既有即時推播連線重連時偵測）自動跳出「系統已更新」提示，倒數 30 秒後自動重新整理，避免繼續用舊版工作與新版後端對不上'),
+      item('說明', '重新整理不需要再手動操作；登入狀態（session／PIN 解鎖）與表單草稿都會照常保留，重整後直接回到原本畫面，不會被登出'),
+      item('說明', '只有前端內容真的變動時才會觸發（依內容雜湊判斷）；純後端調整、沒有動到前端的部署不會逼大家重整'),
+    ]},
     { date: '2026-07-21', v: 241, title: '小技巧多語：台語小撇步／客語好步數／English Tips＋輪流模式', isProd: true, items: [
       item('新功能', '登入畫面與 💡 全覽的小技巧支援四種語言：華語／台語（小撇步）／客語（好步數）／English，輪播卡右下角的語言小圓鈕點一下即切換，選擇會記在這台裝置'),
       item('新功能', '「輪流」模式：每一則輪流用不同語言呈現（華→台→客→英），增添趣味也讓大家看看彼此的語言'),

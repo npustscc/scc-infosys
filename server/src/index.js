@@ -74,7 +74,11 @@ function serveStatic(req, res, urlPath) {
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404).end('Not found'); return; }
     const ext = path.extname(filePath);
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    // v242：一律 no-store——區網環境、檔案小，換取「重整必拿最新版」的確定性。若瀏覽器/中間
+    // 代理快取住舊的 index.html 或 version.json，強制重整機制（見 build-public.js buildId＋
+    // dev/index.html checkForUpdate）就會失效（重整了還是跑舊碼、或拿不到新 buildId），
+    // 兩者必須搭配一致的 no-store 才有效。
+    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-store' });
     res.end(data);
   });
 }
