@@ -58,6 +58,7 @@ const EXTRA_FILES = [
   'pin-lock.js',
   'import-export.js',
   'ui-helpers.js',
+  'filter-panel.js',
   'openmail.js',
   'ft-ui.js',
   'sms.js',

@@ -60,6 +60,8 @@ const SENTINELS = [
   ['import-export.js', 'exportCasesCSV', 'function'],
   ['ui-helpers.js', 'showToast', 'function'],
   ['ui-helpers.js', 'sanitizeRichHtml', 'function'],
+  ['filter-panel.js', '_fpPanelHtml', 'function'],
+  ['filter-panel.js', 'resetCaseFilters', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],
