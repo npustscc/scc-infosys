@@ -636,8 +636,12 @@ async function markAllNotifRead() {
 
 // ── 列印/PDF 共用 helper ──────────────────────────────────────────────────
 function _stripPrintScript(html) {
+  // 先整句移除 window.addEventListener('load',()=>window.print()); 這類包裹寫法——
+  // 若只挖掉 window.print() 會留下 ()=>) 的殘句，在 srcdoc iframe 裡拋 SyntaxError（cosmetic 但吵）
   return html.replace(/<script>([\s\S]*?)<\/script>/g, (m, body) => {
-    const nb = body.replace(/window\.print\(\);?\s*/g, '');
+    const nb = body
+      .replace(/window\.addEventListener\(\s*['"]load['"]\s*,\s*\(\)\s*=>\s*window\.print\(\)\s*\)\s*;?\s*/g, '')
+      .replace(/window\.print\(\);?\s*/g, '');
     return nb.trim() ? `<script>${nb}<\/script>` : '';
   });
 }
