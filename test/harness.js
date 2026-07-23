@@ -80,6 +80,7 @@ const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'transfer.js'),
   path.join(__dirname, '..', 'dev', 'psychiatrist-eval.js'),
   path.join(__dirname, '..', 'dev', 'attachments.js'),
+  path.join(__dirname, '..', 'dev', 'ml-mgmt.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
   path.join(__dirname, '..', 'dev', 'openmail.js'),
   path.join(__dirname, '..', 'dev', 'sms.js'),

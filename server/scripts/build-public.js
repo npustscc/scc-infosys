@@ -51,6 +51,7 @@ const EXTRA_FILES = [
   'transfer.js',
   'psychiatrist-eval.js',
   'attachments.js',
+  'ml-mgmt.js',
   'openmail.js',
   'ft-ui.js',
   'sms.js',
