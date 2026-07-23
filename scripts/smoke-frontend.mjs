@@ -68,6 +68,8 @@ const SENTINELS = [
   ['drive-json.js', 'driveUpdateJsonFile', 'function'],
   ['audit-log.js', 'auditLog', 'function'],
   ['audit-log.js', 'renderAuditLog', 'function'],
+  ['stats.js', 'renderStats', 'function'],
+  ['stats.js', '_statsTab', 'string'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],

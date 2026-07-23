@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-23', v: 283, title: '系統架構：拆 index.html 第三十六刀——統計分析拆到 stats.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內統計分析頁（renderStats 與各統計 tab，約 403 行）拆到獨立檔案 stats.js，內容逐字搬移、功能完全不變，使用者無感'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-23', v: 282, title: '系統架構：拆 index.html 第三十五刀——稽核日誌拆到 audit-log.js', isProd: false, items: [
     ['說明', '主程式（index.html）內稽核日誌模組（寫入、稽核頁渲染/篩選/欄寬調整/列展開，約 333 行）拆到獨立檔案 audit-log.js，內容逐字搬移、功能完全不變，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
