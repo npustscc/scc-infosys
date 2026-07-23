@@ -59,6 +59,7 @@ const EXTRA_FILES = [
   'import-export.js',
   'ui-helpers.js',
   'filter-panel.js',
+  'todos.js',
   'openmail.js',
   'ft-ui.js',
   'sms.js',

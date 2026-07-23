@@ -88,6 +88,7 @@ const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'import-export.js'),
   path.join(__dirname, '..', 'dev', 'ui-helpers.js'),
   path.join(__dirname, '..', 'dev', 'filter-panel.js'),
+  path.join(__dirname, '..', 'dev', 'todos.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
   path.join(__dirname, '..', 'dev', 'openmail.js'),
   path.join(__dirname, '..', 'dev', 'sms.js'),

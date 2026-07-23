@@ -62,6 +62,8 @@ const SENTINELS = [
   ['ui-helpers.js', 'sanitizeRichHtml', 'function'],
   ['filter-panel.js', '_fpPanelHtml', 'function'],
   ['filter-panel.js', 'resetCaseFilters', 'function'],
+  ['todos.js', 'loadUserTodos', 'function'],
+  ['todos.js', 'saveUserTodos', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],
