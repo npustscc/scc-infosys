@@ -56,6 +56,8 @@ const SENTINELS = [
   ['case-mgmt.js', 'generateCaseId', 'function'],
   ['pin-lock.js', 'lockScreen', 'function'],
   ['pin-lock.js', 'checkPinSetup', 'function'],
+  ['import-export.js', 'handleImportRecordsFile', 'function'],
+  ['import-export.js', 'exportCasesCSV', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],

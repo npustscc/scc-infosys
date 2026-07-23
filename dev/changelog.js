@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-23', v: 277, title: '系統架構：拆 index.html 第三十刀——匯入/匯出/批次列印拆到 import-export.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內匯入輔導服務記錄（Excel 解析與確認）、匯出個案 CSV、記錄批次列印（含事件處理記錄表列印樣板，約 870 行）拆到獨立檔案 import-export.js，內容逐字搬移、功能完全不變，使用者無感'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-23', v: 276, title: '系統架構：拆 index.html 第二十九刀——PIN 鎖定系統拆到 pin-lock.js', isProd: false, items: [
     ['說明', '主程式（index.html）內 PIN 鎖定系統（設定/解鎖/閒置偵測，含偏好設定頁尾段與頭像編輯拖曳，約 849 行）拆到獨立檔案 pin-lock.js，內容逐字搬移、功能完全不變，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
