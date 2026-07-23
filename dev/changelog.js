@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-23', v: 273, title: '系統架構：拆 index.html 第二十六刀——通知系統拆到 notifications.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內通知系統（推播佇列/鈴鐺/通知面板、背景工作追蹤與進度 banner、個案紀錄表列印樣板，約 975 行）拆到獨立檔案 notifications.js，內容逐字搬移、功能完全不變，使用者無感'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-23', v: 272, title: '系統架構：拆 index.html 第二十五刀——身心調適假管理群拆到 ml-mgmt.js', isProd: false, items: [
     ['說明', '主程式（index.html）內身心調適假管理（列表/篩選/批次/封存/信件擷取/關鍵字設定）、身心狀態評估表管理端整合與通知單列印（約 1,999 行）拆到獨立檔案 ml-mgmt.js，內容逐字搬移、功能完全不變，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],

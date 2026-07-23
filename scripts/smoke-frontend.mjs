@@ -48,6 +48,8 @@ const SENTINELS = [
   ['attachments.js', '_imgEdOpen', 'function'],
   ['ml-mgmt.js', 'renderMentalLeavePage', 'function'],
   ['ml-mgmt.js', 'mlPrintNotices', 'function'],
+  ['notifications.js', 'addNotificationToUser', 'function'],
+  ['notifications.js', 'pollNotifications', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],
