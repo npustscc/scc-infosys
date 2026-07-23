@@ -61,6 +61,7 @@ const EXTRA_FILES = [
   'filter-panel.js',
   'todos.js',
   'drive-json.js',
+  'audit-log.js',
   'openmail.js',
   'ft-ui.js',
   'sms.js',

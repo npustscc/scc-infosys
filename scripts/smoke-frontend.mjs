@@ -66,6 +66,8 @@ const SENTINELS = [
   ['todos.js', 'saveUserTodos', 'function'],
   ['drive-json.js', '_withRetry', 'function'],
   ['drive-json.js', 'driveUpdateJsonFile', 'function'],
+  ['audit-log.js', 'auditLog', 'function'],
+  ['audit-log.js', 'renderAuditLog', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],
