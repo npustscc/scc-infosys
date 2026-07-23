@@ -50,6 +50,8 @@ const SENTINELS = [
   ['ml-mgmt.js', 'mlPrintNotices', 'function'],
   ['notifications.js', 'addNotificationToUser', 'function'],
   ['notifications.js', 'pollNotifications', 'function'],
+  ['admin-users.js', 'renderAdminUsers', 'function'],
+  ['admin-users.js', 'openUserModal', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],

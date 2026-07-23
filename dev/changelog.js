@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-23', v: 274, title: '系統架構：拆 index.html 第二十七刀——使用者管理群拆到 admin-users.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內使用者管理群（列表渲染/使用者 Modal/帳號安全/批次建立與修改帳號/登入紀錄/磁碟健康，約 1,628 行）拆到獨立檔案 admin-users.js，內容逐字搬移、功能完全不變，使用者無感'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-23', v: 273, title: '系統架構：拆 index.html 第二十六刀——通知系統拆到 notifications.js', isProd: false, items: [
     ['說明', '主程式（index.html）內通知系統（推播佇列/鈴鐺/通知面板、背景工作追蹤與進度 banner、個案紀錄表列印樣板，約 975 行）拆到獨立檔案 notifications.js，內容逐字搬移、功能完全不變，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
