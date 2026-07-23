@@ -64,6 +64,7 @@ const EXTRA_FILES = [
   'audit-log.js',
   'stats.js',
   'gc-validation.js',
+  'psych-test-db.js',
   'openmail.js',
   'ft-ui.js',
   'sms.js',

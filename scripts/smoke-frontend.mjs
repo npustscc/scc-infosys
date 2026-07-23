@@ -72,6 +72,8 @@ const SENTINELS = [
   ['stats.js', '_statsTab', 'string'],
   ['gc-validation.js', 'loadGcErrorsCache', 'function'],
   ['gc-validation.js', 'loadPsychTestDB', 'function'],
+  ['psych-test-db.js', 'renderPsychTestDBPage', 'function'],
+  ['psych-test-db.js', 'showPsychTestDBDetail', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],

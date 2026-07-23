@@ -3,6 +3,11 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-23', v: 285, title: '系統架構：拆 index.html 第三十八刀——心理測驗資料庫拆到 psych-test-db.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內心理測驗資料庫頁面＋詳細報告 modal＋轉銜儲存/待轉銜比對 helper（約 576 行）拆到獨立檔案 psych-test-db.js，內容逐字搬移、功能完全不變，使用者無感'],
+    ['說明', '拆檔絞殺者系列至此告一段落：index.html 自 58,245 行降至約 8,500 行（-85%），主檔僅保留登入/設定/proxyCall/SSE/系統初始化等核心基建'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-23', v: 284, title: '系統架構：拆 index.html 第三十七刀——GC 事件驗證拆到 gc-validation.js', isProd: false, items: [
     ['說明', '主程式（index.html）內 GC 事件驗證（六類錯誤檢核＋自動補註＋廣播）與心理測驗資料庫載入/儲存 helper（約 395 行）拆到獨立檔案 gc-validation.js，內容逐字搬移、功能完全不變，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
