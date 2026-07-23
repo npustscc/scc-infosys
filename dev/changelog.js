@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-23', v: 269, title: '系統架構：拆 index.html 第二十二刀——畢業轉銜管理模組拆到 transfer.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內畢業轉銜管理模組（轉銜評估表開啟/儲存/列印、Excel 匯入、評估人指派與變更、決議歷史、快速開案，約 3,827 行）拆到獨立檔案 transfer.js，內容逐字搬移、功能完全不變，使用者無感'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-23', v: 268, title: '系統架構：拆 index.html 第二十一刀——差勤系統群拆到 attendance.js', isProd: false, items: [
     ['說明', '主程式（index.html）內差勤系統群（差勤申請/審核後台/我的差勤/打卡頁與打卡權杖/差勤總覽/差勤匯總/出勤月報表列印，約 2,287 行）拆到獨立檔案 attendance.js，內容逐字搬移、功能完全不變，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],

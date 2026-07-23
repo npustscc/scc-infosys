@@ -48,6 +48,7 @@ const EXTRA_FILES = [
   'genogram.js',
   'booking.js',
   'attendance.js',
+  'transfer.js',
   'openmail.js',
   'ft-ui.js',
   'sms.js',

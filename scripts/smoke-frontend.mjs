@@ -41,6 +41,8 @@ const SENTINELS = [
   ['booking.js', 'saveBooking', 'function'],
   ['attendance.js', 'renderAttendancePage', 'function'],
   ['attendance.js', 'renderClockPage', 'function'],
+  ['transfer.js', 'openTransferEvalForm', 'function'],
+  ['transfer.js', 'saveTransferEval', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],
