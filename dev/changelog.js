@@ -3,7 +3,7 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
-  { date: '2026-07-23', v: 286, title: '修復：隱藏列印 iframe 的 console 語法錯誤', isProd: false, items: [
+  { date: '2026-07-23', v: 286, title: '修復：隱藏列印 iframe 的 console 語法錯誤', isProd: true, items: [
     ['修復', '透過隱藏 iframe 列印（個人報告/班級報告等）時，列印樣板內建的自動列印指令碼被移除後會留下不完整的殘句，在瀏覽器 console 產生一則 SyntaxError 紅字；列印功能本身不受影響，本次將殘句一併清除，console 恢復乾淨'],
   ]},
   { date: '2026-07-23', v: 285, title: '系統架構：拆 index.html 第三十八刀——心理測驗資料庫拆到 psych-test-db.js', isProd: true, items: [
