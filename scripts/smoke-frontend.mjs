@@ -39,6 +39,8 @@ const SENTINELS = [
   ['genogram.js', 'openGenogramEditor', 'function'],
   ['booking.js', 'renderBookingsPage', 'function'],
   ['booking.js', 'saveBooking', 'function'],
+  ['attendance.js', 'renderAttendancePage', 'function'],
+  ['attendance.js', 'renderClockPage', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],

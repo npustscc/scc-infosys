@@ -76,6 +76,7 @@ const SRC_FILES = [
   // 排在主 inline script 之前載入）；插入 SRC_FILES 讓 harness 抽得到函式。
   path.join(__dirname, '..', 'dev', 'genogram.js'),
   path.join(__dirname, '..', 'dev', 'booking.js'),
+  path.join(__dirname, '..', 'dev', 'attendance.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
   path.join(__dirname, '..', 'dev', 'openmail.js'),
   path.join(__dirname, '..', 'dev', 'sms.js'),

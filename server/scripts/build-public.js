@@ -47,6 +47,7 @@ const EXTRA_FILES = [
   'mental-leave.js',
   'genogram.js',
   'booking.js',
+  'attendance.js',
   'openmail.js',
   'ft-ui.js',
   'sms.js',
