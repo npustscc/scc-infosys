@@ -43,6 +43,7 @@ const SENTINELS = [
   ['attendance.js', 'renderClockPage', 'function'],
   ['transfer.js', 'openTransferEvalForm', 'function'],
   ['transfer.js', 'saveTransferEval', 'function'],
+  ['psychiatrist-eval.js', 'renderPsychiatryPage', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],

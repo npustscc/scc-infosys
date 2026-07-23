@@ -49,6 +49,7 @@ const EXTRA_FILES = [
   'booking.js',
   'attendance.js',
   'transfer.js',
+  'psychiatrist-eval.js',
   'openmail.js',
   'ft-ui.js',
   'sms.js',
