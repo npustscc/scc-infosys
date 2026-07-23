@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-23', v: 278, title: '系統架構：拆 index.html 第三十一刀——全站 UI 工具拆到 ui-helpers.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內全站 UI 工具（載入進度/Toast 與歷史、富文字編輯器全套、批次勾選全選/Shift 機制、頁面切換與浮動返回鍵，約 832 行）拆到獨立檔案 ui-helpers.js，內容逐字搬移、功能完全不變，使用者無感'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-23', v: 277, title: '系統架構：拆 index.html 第三十刀——匯入/匯出/批次列印拆到 import-export.js', isProd: false, items: [
     ['說明', '主程式（index.html）內匯入輔導服務記錄（Excel 解析與確認）、匯出個案 CSV、記錄批次列印（含事件處理記錄表列印樣板，約 870 行）拆到獨立檔案 import-export.js，內容逐字搬移、功能完全不變，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],

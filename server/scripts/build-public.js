@@ -57,6 +57,7 @@ const EXTRA_FILES = [
   'case-mgmt.js',
   'pin-lock.js',
   'import-export.js',
+  'ui-helpers.js',
   'openmail.js',
   'ft-ui.js',
   'sms.js',
