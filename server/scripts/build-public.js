@@ -24,6 +24,37 @@ const config = require('../src/config');
 const DEV_DRIVE_FOLDER_ID = '1rZuVUhpHwrSYc2E0yJRvf7NaqS1lGcdx';
 const PROD_DRIVE_FOLDER_ID = '1IlqLzSewVYj-qXb6Cg65YFUiMpT22WhP';
 
+// 絞殺者拆檔系列（v243~）自 dev/ 原樣複製到 public/ 的檔案清單，順序即 buildId 雜湊順序
+// （index.html patched 內容永遠排第一）。任一檔變動都要能觸發前端強制重整（v242 機制），
+// 所以新增拆出檔時在此加一行即可——雜湊、存在性檢查、複製、輸出訊息都會自動涵蓋。
+// 各檔的拆出沿革見 git log（v243 changelog / v244 styles / v245 hints / v249~v264 十六連刀 /
+// v266 genogram / v267 booking / …）。
+const EXTRA_FILES = [
+  'changelog.js',
+  'styles.css',
+  'hints.js',
+  'utils.js',
+  'ft-core.js',
+  'case-detail.js',
+  'case-import.js',
+  'initial-interview.js',
+  'psych-import.js',
+  'grad-eval.js',
+  'closure-eval.js',
+  'event-records.js',
+  'draft-engine.js',
+  'record-form.js',
+  'mental-leave.js',
+  'genogram.js',
+  'booking.js',
+  'openmail.js',
+  'ft-ui.js',
+  'sms.js',
+  'issues-ui.js',
+  'tooltip.js',
+  'qrcode-lib.js',
+];
+
 const mode = process.argv[2] === '--prod' ? 'prod'
   : process.argv[2] === '--prod-from-dev' ? 'prod-from-dev'
   : 'dev';
@@ -32,82 +63,9 @@ const urlArg = mode === 'dev' ? process.argv[2] : process.argv[3];
 const SRC_HTML = mode === 'prod'
   ? path.join(__dirname, '..', '..', 'index.html')
   : path.join(__dirname, '..', '..', 'dev', 'index.html');
-// v243：更新紀錄資料拆到獨立檔案，唯一來源固定為 dev/changelog.js（三種模式共用，
-// 因為只有 dev/index.html 已改成讀 window.CHANGELOG_ENTRIES；root index.html 仍是舊版
-// legacy Pages 公告頁建置來源，多複製這檔不影響它）。
-const SRC_CHANGELOG = path.join(__dirname, '..', '..', 'dev', 'changelog.js');
-// v244：主樣式表拆到獨立檔案，同 SRC_CHANGELOG 理由——唯一來源固定為 dev/styles.css，
-// 三種建置模式共用（root index.html 是舊版 legacy Pages 公告頁來源，不受影響）。
-const SRC_STYLES = path.join(__dirname, '..', '..', 'dev', 'styles.css');
-// v245：小技巧輪播模組拆到獨立檔案，同上理由——唯一來源固定為 dev/hints.js。
-const SRC_HINTS = path.join(__dirname, '..', '..', 'dev', 'hints.js');
-// v249：純函式工具區拆到獨立檔案，同上理由——唯一來源固定為 dev/utils.js。
-const SRC_UTILS = path.join(__dirname, '..', '..', 'dev', 'utils.js');
-// v250：新生心理測驗純函式層拆到獨立檔案，同上理由——唯一來源固定為 dev/ft-core.js。
-const SRC_FT_CORE = path.join(__dirname, '..', '..', 'dev', 'ft-core.js');
-// v251：個案詳細頁區塊拆到獨立檔案，同上理由——唯一來源固定為 dev/case-detail.js。
-const SRC_CASE_DETAIL = path.join(__dirname, '..', '..', 'dev', 'case-detail.js');
-// v252：個案資料表單匯入區塊拆到獨立檔案，同上理由——唯一來源固定為 dev/case-import.js。
-const SRC_CASE_IMPORT = path.join(__dirname, '..', '..', 'dev', 'case-import.js');
-// v253：初次晤談模組拆到獨立檔案，同上理由——唯一來源固定為 dev/initial-interview.js。
-const SRC_INITIAL_INTERVIEW = path.join(__dirname, '..', '..', 'dev', 'initial-interview.js');
-// v254：心理測驗匯入區塊拆到獨立檔案，同上理由——唯一來源固定為 dev/psych-import.js。
-const SRC_PSYCH_IMPORT = path.join(__dirname, '..', '..', 'dev', 'psych-import.js');
-// v255：畢業/離校生評估區塊拆到獨立檔案，同上理由——唯一來源固定為 dev/grad-eval.js。
-const SRC_GRAD_EVAL = path.join(__dirname, '..', '..', 'dev', 'grad-eval.js');
-// v256：結案評估區塊拆到獨立檔案，同上理由——唯一來源固定為 dev/closure-eval.js。
-const SRC_CLOSURE_EVAL = path.join(__dirname, '..', '..', 'dev', 'closure-eval.js');
-// v257：待辦分類＋事件處理記錄表區塊拆到獨立檔案，同上理由——唯一來源固定為 dev/event-records.js。
-const SRC_EVENT_RECORDS = path.join(__dirname, '..', '..', 'dev', 'event-records.js');
-// v258：草稿引擎＋雲端備援＋待派案 todo 區塊拆到獨立檔案，同上理由——唯一來源固定為 dev/draft-engine.js。
-const SRC_DRAFT_ENGINE = path.join(__dirname, '..', '..', 'dev', 'draft-engine.js');
-// v259：晤談紀錄表單模組拆到獨立檔案，同上理由——唯一來源固定為 dev/record-form.js。
-const SRC_RECORD_FORM = path.join(__dirname, '..', '..', 'dev', 'record-form.js');
-// v260：身心調適假渲染段拆到獨立檔案，同上理由——唯一來源固定為 dev/mental-leave.js。
-const SRC_MENTAL_LEAVE = path.join(__dirname, '..', '..', 'dev', 'mental-leave.js');
-// v266：GenogramEditor 家系圖模組拆到獨立檔案，同上理由——唯一來源固定為 dev/genogram.js。
-const SRC_GENOGRAM = path.join(__dirname, '..', '..', 'dev', 'genogram.js');
-// v267：空間預約模組拆到獨立檔案，同上理由——唯一來源固定為 dev/booking.js。
-const SRC_BOOKING = path.join(__dirname, '..', '..', 'dev', 'booking.js');
-// v261：openmail 信箱模組（原地外部化，inline script 區塊原樣搬出）拆到獨立檔案，
-// 同上理由——唯一來源固定為 dev/openmail.js。
-const SRC_OPENMAIL = path.join(__dirname, '..', '..', 'dev', 'openmail.js');
-// v262：新生心理測驗 UI 模組（原地外部化，inline script 區塊原樣搬出）拆到獨立檔案，
-// 同上理由——唯一來源固定為 dev/ft-ui.js。
-const SRC_FT_UI = path.join(__dirname, '..', '..', 'dev', 'ft-ui.js');
-// v263：簡訊發送模組（原地外部化，inline script 區塊原樣搬出）拆到獨立檔案，
-// 同上理由——唯一來源固定為 dev/sms.js。
-const SRC_SMS = path.join(__dirname, '..', '..', 'dev', 'sms.js');
-// v263：問題回報/許願池模組（原地外部化，inline script 區塊原樣搬出）拆到獨立檔案，
-// 同上理由——唯一來源固定為 dev/issues-ui.js。
-const SRC_ISSUES_UI = path.join(__dirname, '..', '..', 'dev', 'issues-ui.js');
-const SRC_TOOLTIP = path.join(__dirname, '..', '..', 'dev', 'tooltip.js');
-const SRC_QRCODE_LIB = path.join(__dirname, '..', '..', 'dev', 'qrcode-lib.js');
+const DEV_DIR = path.join(__dirname, '..', '..', 'dev');
 const OUT_DIR = path.join(__dirname, '..', 'public');
 const OUT_HTML = path.join(OUT_DIR, 'index.html');
-const OUT_CHANGELOG = path.join(OUT_DIR, 'changelog.js');
-const OUT_STYLES = path.join(OUT_DIR, 'styles.css');
-const OUT_HINTS = path.join(OUT_DIR, 'hints.js');
-const OUT_UTILS = path.join(OUT_DIR, 'utils.js');
-const OUT_FT_CORE = path.join(OUT_DIR, 'ft-core.js');
-const OUT_CASE_DETAIL = path.join(OUT_DIR, 'case-detail.js');
-const OUT_CASE_IMPORT = path.join(OUT_DIR, 'case-import.js');
-const OUT_INITIAL_INTERVIEW = path.join(OUT_DIR, 'initial-interview.js');
-const OUT_PSYCH_IMPORT = path.join(OUT_DIR, 'psych-import.js');
-const OUT_GRAD_EVAL = path.join(OUT_DIR, 'grad-eval.js');
-const OUT_CLOSURE_EVAL = path.join(OUT_DIR, 'closure-eval.js');
-const OUT_EVENT_RECORDS = path.join(OUT_DIR, 'event-records.js');
-const OUT_DRAFT_ENGINE = path.join(OUT_DIR, 'draft-engine.js');
-const OUT_RECORD_FORM = path.join(OUT_DIR, 'record-form.js');
-const OUT_MENTAL_LEAVE = path.join(OUT_DIR, 'mental-leave.js');
-const OUT_GENOGRAM = path.join(OUT_DIR, 'genogram.js');
-const OUT_BOOKING = path.join(OUT_DIR, 'booking.js');
-const OUT_OPENMAIL = path.join(OUT_DIR, 'openmail.js');
-const OUT_FT_UI = path.join(OUT_DIR, 'ft-ui.js');
-const OUT_SMS = path.join(OUT_DIR, 'sms.js');
-const OUT_ISSUES_UI = path.join(OUT_DIR, 'issues-ui.js');
-const OUT_TOOLTIP = path.join(OUT_DIR, 'tooltip.js');
-const OUT_QRCODE_LIB = path.join(OUT_DIR, 'qrcode-lib.js');
 
 function main() {
   const targetUrl = urlArg || `http://localhost:${config.PORT}/exec`;
@@ -115,122 +73,14 @@ function main() {
     console.error(`找不到 ${SRC_HTML}`);
     process.exit(1);
   }
-  if (!fs.existsSync(SRC_CHANGELOG)) {
-    console.error(`找不到 ${SRC_CHANGELOG}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_STYLES)) {
-    console.error(`找不到 ${SRC_STYLES}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_HINTS)) {
-    console.error(`找不到 ${SRC_HINTS}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_UTILS)) {
-    console.error(`找不到 ${SRC_UTILS}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_FT_CORE)) {
-    console.error(`找不到 ${SRC_FT_CORE}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_CASE_DETAIL)) {
-    console.error(`找不到 ${SRC_CASE_DETAIL}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_CASE_IMPORT)) {
-    console.error(`找不到 ${SRC_CASE_IMPORT}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_INITIAL_INTERVIEW)) {
-    console.error(`找不到 ${SRC_INITIAL_INTERVIEW}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_PSYCH_IMPORT)) {
-    console.error(`找不到 ${SRC_PSYCH_IMPORT}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_GRAD_EVAL)) {
-    console.error(`找不到 ${SRC_GRAD_EVAL}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_CLOSURE_EVAL)) {
-    console.error(`找不到 ${SRC_CLOSURE_EVAL}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_EVENT_RECORDS)) {
-    console.error(`找不到 ${SRC_EVENT_RECORDS}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_DRAFT_ENGINE)) {
-    console.error(`找不到 ${SRC_DRAFT_ENGINE}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_RECORD_FORM)) {
-    console.error(`找不到 ${SRC_RECORD_FORM}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_MENTAL_LEAVE)) {
-    console.error(`找不到 ${SRC_MENTAL_LEAVE}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_GENOGRAM)) {
-    console.error(`找不到 ${SRC_GENOGRAM}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_BOOKING)) {
-    console.error(`找不到 ${SRC_BOOKING}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_OPENMAIL)) {
-    console.error(`找不到 ${SRC_OPENMAIL}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_FT_UI)) {
-    console.error(`找不到 ${SRC_FT_UI}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_SMS)) {
-    console.error(`找不到 ${SRC_SMS}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_ISSUES_UI)) {
-    console.error(`找不到 ${SRC_ISSUES_UI}`);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_TOOLTIP)) {
-    console.error(`找不到 `);
-    process.exit(1);
-  }
-  if (!fs.existsSync(SRC_QRCODE_LIB)) {
-    console.error(`找不到 `);
-    process.exit(1);
+  for (const f of EXTRA_FILES) {
+    if (!fs.existsSync(path.join(DEV_DIR, f))) {
+      console.error(`找不到 ${path.join(DEV_DIR, f)}`);
+      process.exit(1);
+    }
   }
   const html = fs.readFileSync(SRC_HTML, 'utf8');
-  const changelogJs = fs.readFileSync(SRC_CHANGELOG, 'utf8');
-  const stylesCss = fs.readFileSync(SRC_STYLES, 'utf8');
-  const hintsJs = fs.readFileSync(SRC_HINTS, 'utf8');
-  const utilsJs = fs.readFileSync(SRC_UTILS, 'utf8');
-  const ftCoreJs = fs.readFileSync(SRC_FT_CORE, 'utf8');
-  const caseDetailJs = fs.readFileSync(SRC_CASE_DETAIL, 'utf8');
-  const caseImportJs = fs.readFileSync(SRC_CASE_IMPORT, 'utf8');
-  const initialInterviewJs = fs.readFileSync(SRC_INITIAL_INTERVIEW, 'utf8');
-  const psychImportJs = fs.readFileSync(SRC_PSYCH_IMPORT, 'utf8');
-  const gradEvalJs = fs.readFileSync(SRC_GRAD_EVAL, 'utf8');
-  const closureEvalJs = fs.readFileSync(SRC_CLOSURE_EVAL, 'utf8');
-  const eventRecordsJs = fs.readFileSync(SRC_EVENT_RECORDS, 'utf8');
-  const draftEngineJs = fs.readFileSync(SRC_DRAFT_ENGINE, 'utf8');
-  const recordFormJs = fs.readFileSync(SRC_RECORD_FORM, 'utf8');
-  const mentalLeaveJs = fs.readFileSync(SRC_MENTAL_LEAVE, 'utf8');
-  const genogramJs = fs.readFileSync(SRC_GENOGRAM, 'utf8');
-  const bookingJs = fs.readFileSync(SRC_BOOKING, 'utf8');
-  const openmailJs = fs.readFileSync(SRC_OPENMAIL, 'utf8');
-  const ftUiJs = fs.readFileSync(SRC_FT_UI, 'utf8');
-  const smsJs = fs.readFileSync(SRC_SMS, 'utf8');
-  const issuesUiJs = fs.readFileSync(SRC_ISSUES_UI, 'utf8');
-  const tooltipJs = fs.readFileSync(SRC_TOOLTIP, 'utf8');
-  const qrcodeLibJs = fs.readFileSync(SRC_QRCODE_LIB, 'utf8');
+  const extras = EXTRA_FILES.map((f) => ({ name: f, content: fs.readFileSync(path.join(DEV_DIR, f), 'utf8') }));
 
   const RE_URL = /^const APPS_SCRIPT_URL = '([^']*)';$/m;
   const mUrl = RE_URL.exec(html);
@@ -271,87 +121,21 @@ function main() {
 
   fs.mkdirSync(OUT_DIR, { recursive: true });
   fs.writeFileSync(OUT_HTML, patched, 'utf8');
-  fs.writeFileSync(OUT_CHANGELOG, changelogJs, 'utf8'); // v243：原樣複製，changelog.js 無需置換常數
-  fs.writeFileSync(OUT_STYLES, stylesCss, 'utf8'); // v244：原樣複製，styles.css 無需置換常數
-  fs.writeFileSync(OUT_HINTS, hintsJs, 'utf8'); // v245：原樣複製，hints.js 無需置換常數
-  fs.writeFileSync(OUT_UTILS, utilsJs, 'utf8'); // v249：原樣複製，utils.js 無需置換常數
-  fs.writeFileSync(OUT_FT_CORE, ftCoreJs, 'utf8'); // v250：原樣複製，ft-core.js 無需置換常數
-  fs.writeFileSync(OUT_CASE_DETAIL, caseDetailJs, 'utf8'); // v251：原樣複製，case-detail.js 無需置換常數
-  fs.writeFileSync(OUT_CASE_IMPORT, caseImportJs, 'utf8'); // v252：原樣複製，case-import.js 無需置換常數
-  fs.writeFileSync(OUT_INITIAL_INTERVIEW, initialInterviewJs, 'utf8'); // v253：原樣複製，initial-interview.js 無需置換常數
-  fs.writeFileSync(OUT_PSYCH_IMPORT, psychImportJs, 'utf8'); // v254：原樣複製，psych-import.js 無需置換常數
-  fs.writeFileSync(OUT_GRAD_EVAL, gradEvalJs, 'utf8'); // v255：原樣複製，grad-eval.js 無需置換常數
-  fs.writeFileSync(OUT_CLOSURE_EVAL, closureEvalJs, 'utf8'); // v256：原樣複製，closure-eval.js 無需置換常數
-  fs.writeFileSync(OUT_EVENT_RECORDS, eventRecordsJs, 'utf8'); // v257：原樣複製，event-records.js 無需置換常數
-  fs.writeFileSync(OUT_DRAFT_ENGINE, draftEngineJs, 'utf8'); // v258：原樣複製，draft-engine.js 無需置換常數
-  fs.writeFileSync(OUT_RECORD_FORM, recordFormJs, 'utf8'); // v259：原樣複製，record-form.js 無需置換常數
-  fs.writeFileSync(OUT_MENTAL_LEAVE, mentalLeaveJs, 'utf8'); // v260：原樣複製，mental-leave.js 無需置換常數
-  fs.writeFileSync(OUT_GENOGRAM, genogramJs, 'utf8'); // v266：原樣複製，genogram.js 無需置換常數
-  fs.writeFileSync(OUT_BOOKING, bookingJs, 'utf8'); // v267：原樣複製，booking.js 無需置換常數
-  fs.writeFileSync(OUT_OPENMAIL, openmailJs, 'utf8'); // v261：原樣複製，openmail.js 無需置換常數
-  fs.writeFileSync(OUT_FT_UI, ftUiJs, 'utf8'); // v262：原樣複製，ft-ui.js 無需置換常數
-  fs.writeFileSync(OUT_SMS, smsJs, 'utf8'); // v263：原樣複製，sms.js 無需置換常數
-  fs.writeFileSync(OUT_ISSUES_UI, issuesUiJs, 'utf8'); // v263：原樣複製，issues-ui.js 無需置換常數
-  fs.writeFileSync(OUT_TOOLTIP, tooltipJs, 'utf8'); // v264：原樣複製，tooltip.js 無需置換常數
-  fs.writeFileSync(OUT_QRCODE_LIB, qrcodeLibJs, 'utf8'); // v264：原樣複製，qrcode-lib.js 無需置換常數
+  for (const e of extras) fs.writeFileSync(path.join(OUT_DIR, e.name), e.content, 'utf8'); // 原樣複製，無需置換常數
 
   // v242：強制重新整理機制——寫出 version.json 供前端 checkForUpdate() 輪詢比對。buildId 用
-  // patched 後 html 內容的 sha256 前 16 碼（內容雜湊，不用時間戳／build 序號）：這樣「只改
-  // server/ 沒改前端」的 deploy（例如純後端 bug 修復）雜湊不變，不會逼所有正在使用的分頁
-  // 平白無故被強制重整；只有 dev/index.html 真的變動時 buildId 才會跟著變，觸發前端偵測到
-  // 新版並倒數重整（見 dev/index.html checkForUpdate/_forceUpdateReload）。
-  // v243：buildId 改納入 changelog.js 內容一併雜湊——拆檔後前端由兩個檔案組成，任一檔變動
-  // （例如只改 changelog.js 新增版本條目、沒動 index.html）都要能觸發強制重整，否則使用中
-  // 分頁會繼續看到舊的更新紀錄內容而不自知。
-  // v244：同理再納入 styles.css——拆檔後前端變成三個檔案，只改樣式表（沒動 index.html／
-  // changelog.js）一樣要能觸發強制重整，否則使用中分頁會看到版面跟正式版對不上而不自知。
-  // v245：再納入 hints.js——同理，只改小技巧模組也要能觸發強制重整。
-  // v249：再納入 utils.js——同理，只改純函式工具區也要能觸發強制重整。
-  // v250：再納入 ft-core.js——同理，只改新生心理測驗純函式層也要能觸發強制重整。
-  // v251：再納入 case-detail.js——同理，只改個案詳細頁區塊也要能觸發強制重整。
-  // v252：再納入 case-import.js——同理，只改個案資料表單匯入區塊也要能觸發強制重整。
-  // v253：再納入 initial-interview.js——同理，只改初次晤談模組也要能觸發強制重整。
-  // v254：再納入 psych-import.js——同理，只改心理測驗匯入區塊也要能觸發強制重整。
-  // v255：再納入 grad-eval.js——同理，只改畢業/離校生評估區塊也要能觸發強制重整。
-  // v256：再納入 closure-eval.js——同理，只改結案評估區塊也要能觸發強制重整。
-  // v257：再納入 event-records.js——同理，只改待辦分類／事件處理記錄表區塊也要能觸發強制重整。
-  // v258：再納入 draft-engine.js——同理，只改草稿引擎／雲端備援／待派案 todo 區塊也要能觸發強制重整。
-  // v259：再納入 record-form.js——同理，只改晤談紀錄表單模組也要能觸發強制重整。
-  // v260：再納入 mental-leave.js——同理，只改身心調適假渲染段也要能觸發強制重整。
-  // v261：再納入 openmail.js——同理，只改信箱模組也要能觸發強制重整。
-  // v262：再納入 ft-ui.js——同理，只改新生心理測驗 UI 模組也要能觸發強制重整。
-  // v263：再納入 sms.js、issues-ui.js——同理，只改簡訊發送模組或問題回報/許願池模組也要能
-  // 觸發強制重整。
-  // v266：再納入 genogram.js——同理，只改家系圖模組也要能觸發強制重整。
-  // v267：再納入 booking.js——同理，只改空間預約模組也要能觸發強制重整。
-  const buildId = crypto.createHash('sha256').update(patched, 'utf8').update(changelogJs, 'utf8').update(stylesCss, 'utf8').update(hintsJs, 'utf8').update(utilsJs, 'utf8').update(ftCoreJs, 'utf8').update(caseDetailJs, 'utf8').update(caseImportJs, 'utf8').update(initialInterviewJs, 'utf8').update(psychImportJs, 'utf8').update(gradEvalJs, 'utf8').update(closureEvalJs, 'utf8').update(eventRecordsJs, 'utf8').update(draftEngineJs, 'utf8').update(recordFormJs, 'utf8').update(mentalLeaveJs, 'utf8').update(genogramJs, 'utf8').update(bookingJs, 'utf8').update(openmailJs, 'utf8').update(ftUiJs, 'utf8').update(smsJs, 'utf8').update(issuesUiJs, 'utf8').update(tooltipJs, 'utf8').update(qrcodeLibJs, 'utf8').digest('hex').slice(0, 16);
+  // patched 後 html＋所有拆出檔內容的 sha256 前 16 碼（內容雜湊，不用時間戳／build 序號）：
+  // 「只改 server/ 沒改前端」的 deploy 雜湊不變，不會逼使用中分頁平白被強制重整；任一前端
+  // 檔案真的變動時 buildId 才會變，觸發前端偵測到新版並倒數重整（見 dev/index.html
+  // checkForUpdate/_forceUpdateReload）。
+  const hash = crypto.createHash('sha256').update(patched, 'utf8');
+  for (const e of extras) hash.update(e.content, 'utf8');
+  const buildId = hash.digest('hex').slice(0, 16);
   const versionJson = { buildId, mode, builtAt: new Date().toISOString() };
   fs.writeFileSync(path.join(OUT_DIR, 'version.json'), JSON.stringify(versionJson, null, 2), 'utf8');
 
   console.log(`已產生 ${OUT_HTML}（模式：${mode}）`);
-  console.log(`已複製 ${OUT_CHANGELOG}`);
-  console.log(`已複製 ${OUT_STYLES}`);
-  console.log(`已複製 ${OUT_HINTS}`);
-  console.log(`已複製 ${OUT_UTILS}`);
-  console.log(`已複製 ${OUT_FT_CORE}`);
-  console.log(`已複製 ${OUT_CASE_DETAIL}`);
-  console.log(`已複製 ${OUT_CASE_IMPORT}`);
-  console.log(`已複製 ${OUT_INITIAL_INTERVIEW}`);
-  console.log(`已複製 ${OUT_PSYCH_IMPORT}`);
-  console.log(`已複製 ${OUT_GRAD_EVAL}`);
-  console.log(`已複製 ${OUT_CLOSURE_EVAL}`);
-  console.log(`已複製 ${OUT_EVENT_RECORDS}`);
-  console.log(`已複製 ${OUT_DRAFT_ENGINE}`);
-  console.log(`已複製 ${OUT_RECORD_FORM}`);
-  console.log(`已複製 ${OUT_MENTAL_LEAVE}`);
-  console.log(`已複製 ${OUT_GENOGRAM}`);
-  console.log(`已複製 ${OUT_BOOKING}`);
-  console.log(`已複製 ${OUT_OPENMAIL}`);
-  console.log(`已複製 ${OUT_FT_UI}`);
-  console.log(`已複製 ${OUT_SMS}`);
-  console.log(`已複製 ${OUT_ISSUES_UI}`);
-  console.log(`已複製 ${OUT_TOOLTIP}`);
-  console.log(`已複製 ${OUT_QRCODE_LIB}`);
+  for (const e of extras) console.log(`已複製 ${path.join(OUT_DIR, e.name)}`);
   console.log(`APPS_SCRIPT_URL：${mUrl[1]} → ${targetUrl}`);
   console.log(folderMsg + '。');
   console.log(`version.json buildId：${buildId}`);
