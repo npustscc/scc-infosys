@@ -3,6 +3,10 @@
 // renderChangelogPage() 的 item() 轉成 HTML。新版本條目一律加在陣列最上方；isProd 翻 true
 // 表示已推行到正式版（工作流程同以往，只是編輯目標從 index.html 改到本檔）。
 window.CHANGELOG_ENTRIES = [
+  { date: '2026-07-23', v: 271, title: '系統架構：拆 index.html 第二十四刀——附件功能＋圖片編輯器拆到 attachments.js', isProd: false, items: [
+    ['說明', '主程式（index.html）內附件功能（picker/上傳/縮圖/預覽）與 Fabric.js 圖片編輯器全套（約 1,710 行）拆到獨立檔案 attachments.js，內容逐字搬移、功能完全不變，使用者無感'],
+    ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],
+  ]},
   { date: '2026-07-23', v: 270, title: '系統架構：拆 index.html 第二十三刀——精神科醫師評估模組拆到 psychiatrist-eval.js', isProd: false, items: [
     ['說明', '主程式（index.html）內精神科醫師評估模組（評估表單/儲存/列印/草稿與列表渲染，約 602 行）拆到獨立檔案 psychiatrist-eval.js，內容逐字搬移、功能完全不變，使用者無感'],
     ['說明', '強制更新機制的 buildId 已一併涵蓋新檔案，部署後仍會正確觸發使用中分頁的重新整理'],

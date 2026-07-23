@@ -50,6 +50,7 @@ const EXTRA_FILES = [
   'attendance.js',
   'transfer.js',
   'psychiatrist-eval.js',
+  'attachments.js',
   'openmail.js',
   'ft-ui.js',
   'sms.js',
