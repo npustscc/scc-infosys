@@ -54,6 +54,7 @@ const EXTRA_FILES = [
   'ml-mgmt.js',
   'notifications.js',
   'admin-users.js',
+  'case-mgmt.js',
   'openmail.js',
   'ft-ui.js',
   'sms.js',
