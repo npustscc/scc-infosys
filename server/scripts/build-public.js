@@ -63,6 +63,7 @@ const EXTRA_FILES = [
   'drive-json.js',
   'audit-log.js',
   'stats.js',
+  'gc-validation.js',
   'openmail.js',
   'ft-ui.js',
   'sms.js',

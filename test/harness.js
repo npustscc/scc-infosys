@@ -92,6 +92,7 @@ const SRC_FILES = [
   path.join(__dirname, '..', 'dev', 'drive-json.js'),
   path.join(__dirname, '..', 'dev', 'audit-log.js'),
   path.join(__dirname, '..', 'dev', 'stats.js'),
+  path.join(__dirname, '..', 'dev', 'gc-validation.js'),
   path.join(__dirname, '..', 'dev', 'index.html'),
   path.join(__dirname, '..', 'dev', 'openmail.js'),
   path.join(__dirname, '..', 'dev', 'sms.js'),

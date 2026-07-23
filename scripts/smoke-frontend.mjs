@@ -70,6 +70,8 @@ const SENTINELS = [
   ['audit-log.js', 'renderAuditLog', 'function'],
   ['stats.js', 'renderStats', 'function'],
   ['stats.js', '_statsTab', 'string'],
+  ['gc-validation.js', 'loadGcErrorsCache', 'function'],
+  ['gc-validation.js', 'loadPsychTestDB', 'function'],
   ['openmail.js', 'openOmCompose', 'function'],
   ['ft-ui.js', '_ftEnterEdit', 'function'],
   ['sms.js', '_smsRefreshBalance', 'function'],
