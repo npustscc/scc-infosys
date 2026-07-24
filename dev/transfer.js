@@ -1481,6 +1481,7 @@ async function _createQuickCaseBg(fields, onDone, onFail) {
   _assignChunkForNewCase(id); // Slice 3：已重新分塊時分配 active chunk，否則不動作（legacy fallback）
   const jobId = bgJobAdd(`快速開案：${name}`, id);
   try {
+    await _unTombstoneNewCases([id]); // 重用曾永久刪除的案號時先清墓碑（2026-07-24 事故修補）
     await saveCasesChunks(id);
     bgJobDone(jobId);
     auditLog('快速開案', id, null, name);

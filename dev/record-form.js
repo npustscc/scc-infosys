@@ -740,6 +740,7 @@ async function quickOpenCoupleCase() {
 
   const jobId = bgJobAdd('快速開案（伴侶諮商）', name);
   try {
+    await _unTombstoneNewCases([newCaseId]); // 重用曾永久刪除的案號時先清墓碑（2026-07-24 事故修補）
     await saveCasesChunks(newCaseId);
     bgJobDone(jobId);
     _addCoupleTodos(newCaseId, name, existingCounselorEmail);

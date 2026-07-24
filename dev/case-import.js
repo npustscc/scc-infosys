@@ -506,9 +506,11 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
 
   const curSemForNew = currentSemesterPrefix();
   const existingIds = new Set(casesData.map(c => c.id));
+  const _newImportIds = [];
   allCases.filter(c => !existingIds.has(c.id)).forEach(c => {
     addedCases++;
     affectedIds.add(c.id);
+    _newImportIds.push(c.id);
     const sem = openDateToSemPrefix(c.openDate);
     const _fSem = c.fileSem || '';
     if (!Array.isArray(c.semesters) || !c.semesters.length) c.semesters = sem ? [sem] : [];
@@ -529,6 +531,7 @@ async function _applyBatchImport(allCases, allRecords, fileCount, prog) {
     casesData.push(c);
     _assignChunkForNewCase(c.id); // Slice 3：已重新分塊時分配 active chunk，否則不動作（legacy fallback）
   });
+  await _unTombstoneNewCases(_newImportIds); // 重用曾永久刪除的案號時先清墓碑（2026-07-24 事故修補）
 
   // 去重：同一 ID 可能出現在多個 Excel（跨學期繼續個案），合併 semesters 後只保留第一筆
   {
@@ -1441,6 +1444,9 @@ async function finalizeImport(imported, prog) {
   const updatedCount = sameNameDups.length + diffNameDups.filter(d => d.action === 'use-imported').length;
   const skippedCount = diffNameDups.filter(d => d.action === 'skip').length;
 
+  // 2026-07-24 補漏：新案先分配 active chunk 歸屬（已重新分塊時），否則 getCaseChunkName 落回
+  // legacy 推導，會把早已除名的舊式 chunk 檔重新掛回 manifest（與 _applyBatchImport L530 同一防護）
+  newCases.forEach(c => _assignChunkForNewCase(c.id));
   const changedIds = [
     ...newCases.map(c => c.id),
     ...sameNameDups.map(d => d.imp.id),

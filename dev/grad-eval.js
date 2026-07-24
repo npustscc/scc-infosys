@@ -943,6 +943,7 @@ async function _confirmLinkRecord(recId) {
     const jobId = bgJobAdd('建立新個案並連結轉銜紀錄');
     (async () => {
       try {
+        await _unTombstoneNewCases([newId]); // 重用曾永久刪除的案號時先清墓碑（2026-07-24 事故修補）
         await saveCasesChunks(newId);
         await saveTransfer();
         // 轉銜窗口自填新增輔導人員：nomail_ 佔位帳號（無 Gmail，僅作主責標記）改走 configCasesPatch

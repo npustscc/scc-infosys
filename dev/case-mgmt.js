@@ -2624,6 +2624,7 @@ async function saveCase() {
       }];
       casesData.push(newCase);
       _assignChunkForNewCase(newCase.id); // Slice 3：已重新分塊時分配 active chunk，否則不動作（legacy fallback）
+      await _unTombstoneNewCases([newCase.id]); // 重用曾永久刪除的案號時先清墓碑（2026-07-24 事故修補）
       await saveCasesChunks(newCase.id);
       let cfgChanged = syncManagersFromForm(newCase.id, null);
       if (counselorEmail && counselorEmail !== currentUser.email)

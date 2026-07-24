@@ -264,6 +264,21 @@ function _assignChunkForNewCase(caseId) {
   _caseChunkMap.set(caseId, chunkName);
 }
 
+// 2026-07-24 prod 事故修補：開新案（含匯入/快速開案）重用「曾被永久刪除的案號」（墓碑，
+// manifest.deletedIds）時，必須先清墓碑並回寫 manifest——否則 _chunkCommitPayload 會把同一
+// id 同時放進 upserts 與 removes，後端 casesUpsert 先 upsert 再 remove，新個案「存進去馬上
+// 被抹掉」且回 ok 完全無聲；索引/hot 亦因墓碑走 remove，並把 _caseChunkMap 歸屬刪掉，
+// 後續儲存落回 legacy chunk 路徑報錯。與 _renameCaseId 的墓碑清除（改案號重用舊號）同一
+// 精神：使用者明確以該案號建立活案＝墓碑失效。
+// 呼叫時機：casesData.push(新案) 之後、saveCasesChunks 之前（每個開新案流程呼叫點）。
+async function _unTombstoneNewCases(caseIds) {
+  if (!Array.isArray(casesManifest?.deletedIds) || !casesManifest.deletedIds.length) return;
+  const hit = new Set((caseIds || []).filter(id => id && casesManifest.deletedIds.includes(id)));
+  if (!hit.size) return;
+  casesManifest.deletedIds = casesManifest.deletedIds.filter(id => !hit.has(id));
+  await driveSaveJsonInCases('manifest.json', casesManifest);
+}
+
 // 從 cases-index.json 的 cases 陣列重建 _caseChunkMap（載入 / 全量重建 index 後呼叫，讓 getCaseChunkName
 // 立即反映最新歸屬）。缺 chunk 欄位的 entry（尚未重新分塊過的舊資料）不寫入，交由 legacy fallback 處理。
 function _syncCaseChunkMapFromIndex(indexCases) {
@@ -657,6 +672,13 @@ function _chunkCommitPayload(chunkName, modifiedIds, removeIds, deletedIds, getC
     ...(removeIds || []).filter(id => getChunkName(id) === chunkName),
     ...(deletedIds || []).filter(id => getChunkName(id) === chunkName),
   ])];
+  // 🔴 2026-07-24 事故防護：同一 id 同時在 upserts 與 removes ＝ 這筆「活案」的案號還掛著
+  // 墓碑（deletedIds）。後端 casesUpsert 先 upsert 再 remove，照送等於把剛存進去的個案馬上
+  // 抹掉且回 ok（無聲資料遺失）。fail-closed 丟錯：開新案流程應先走 _unTombstoneNewCases；
+  // 若是其他 session 正在儲存一個已被永久刪除的個案，也應收到明確錯誤而非無聲吞沒。
+  const upsertIds = new Set(upserts.map(c => c.id));
+  const clash = removes.find(id => upsertIds.has(id));
+  if (clash) throw new Error(`個案 ${clash} 的案號在「已永久刪除」清單（墓碑）中，已中止儲存以避免資料無聲消失；若要以此案號開新案，請重新整理頁面後再試一次`);
   return { upserts, removes };
 }
 

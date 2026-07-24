@@ -86,3 +86,31 @@ test('_chunkCommitPayload：全空輸入 → upserts/removes 皆空陣列', () =
   assert.deepEqual(upserts, []);
   assert.deepEqual(removes, []);
 });
+
+// 2026-07-24 prod 事故：開新案重用曾永久刪除的案號（墓碑）→ 同一 id 同時進 upserts（活案）與
+// removes（deletedIds 分流），後端 upsert 完馬上 remove，新個案無聲消失且回 ok。防護＝fail-closed 拋錯。
+test('_chunkCommitPayload：同一 id 同時在 upserts 與 deletedIds → 拋錯中止（2026-07-24 事故防護）', () => {
+  const S = load(['_chunkCommitPayload']);
+  const cases = { a01: { id: 'a01', name: '新案' } };
+  assert.throws(
+    () => S._chunkCommitPayload('a01chunk', ['a01'], [], ['a01'], id => cases[id], chunkNameOf),
+    /墓碑|已永久刪除/
+  );
+});
+
+test('_chunkCommitPayload：同一 id 同時在 upserts 與 removeIds → 同樣拋錯', () => {
+  const S = load(['_chunkCommitPayload']);
+  const cases = { a02: { id: 'a02' } };
+  assert.throws(
+    () => S._chunkCommitPayload('a02chunk', ['a02'], ['a02'], [], id => cases[id], chunkNameOf),
+    /墓碑|已永久刪除/
+  );
+});
+
+test('_chunkCommitPayload：墓碑 id 與 upsert id 不同 → 照常各自進 upserts/removes 不拋錯', () => {
+  const S = load(['_chunkCommitPayload']);
+  const cases = { a01: { id: 'a01' } };
+  const { upserts, removes } = S._chunkCommitPayload('a01chunk', ['a01'], [], ['a01-9'], id => cases[id], chunkNameOf);
+  assert.deepEqual(upserts, [{ id: 'a01' }]);
+  assert.deepEqual(removes, ['a01-9']);
+});
