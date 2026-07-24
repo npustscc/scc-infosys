@@ -1615,7 +1615,7 @@ async function showCaseDetail(caseId) {
         ${iiField('風險描述', ii.riskDesc)}
         ${iiField('服務計畫', ii.plan)}
         ${(ii.serviceItems||ii.services||[]).length ? `<div style="margin-bottom:8px;"><span style="font-size:.75rem;color:#a0aec0;">服務項目：</span>${(ii.serviceItems||ii.services||[]).map(s=>`<span class="badge badge-gray" style="margin-right:4px;">${escHtml(s)}</span>`).join('')}</div>` : ''}
-        ${iiField('主責輔導人員', ii.resultCounselor ? (formatCounselorLabel(ii.resultCounselor)||ii.resultCounselor) : [ii.resultSW,ii.resultFullTime,ii.resultPartTime,ii.resultVol].filter(Boolean).join('　'))}
+        ${iiField('主責輔導人員', ii.assignDecision === 'onetime' ? '一次性服務，不指派主責' : ii.assignDecision === 'defer' ? '暫不指派' : ii.resultCounselor ? (formatCounselorLabel(ii.resultCounselor)||ii.resultCounselor) : [ii.resultSW,ii.resultFullTime,ii.resultPartTime,ii.resultVol].filter(Boolean).join('　'))}
         ${iiField('備註', ii.notes || ii.attendees)}
         ${renderAttachChips(ii.attachments)}
         ${ii.updatedAt ? `<div style="font-size:.75rem;color:#a0aec0;margin-top:6px;">更新：${new Date(ii.updatedAt).toLocaleString('zh-TW')}</div>` : ''}

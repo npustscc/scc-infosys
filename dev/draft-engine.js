@@ -697,9 +697,38 @@ async function _onTodosUserFilterChange() {
 // ── 待辦事項頁面渲染 ──
 
 // ── 待派案 todo 渲染（req 2）───────────────────────────────────────────────
+// v288：自動校正「暫不指派」建立的待派案提醒（deferAssign:true）——若該案該學期已指派主責，
+// 或初談表決策已改成一次性服務，代表提醒的存在理由已消失，自動標記完成並解鎖（不必等使用者
+// 手動處理）。純資料校正，不觸發 renderTodosPage（避免呼叫端與本函式互相遞迴）。
+function _reconcileDeferAssignTodos() {
+  let changed = false;
+  const now = new Date().toISOString();
+  todosData.forEach(t => {
+    if (t.type !== 'case_assignment' || !t.deferAssign || t.done) return;
+    const c = casesData.find(x => x.id === t.caseId);
+    if (!c) return;
+    const targetSem = t.semester;
+    const _useCaseLevel = !targetSem || targetSem === _caseLatestSem(c);
+    const assignedEmail = c.basicInfoSnapshots?.[targetSem]?.counselorEmail
+      || (_useCaseLevel ? c.counselorEmail : '');
+    const decidedOnetime = (c.initialInterviews?.[targetSem] || c.initialInterview)?.assignDecision === 'onetime';
+    if (assignedEmail || decidedOnetime) {
+      t.done = true; t.doneAt = now; t.isLocked = false;
+      if (assignedEmail) {
+        t.assignedCounselor = assignedEmail;
+        t.assignedCounselorName = configData?.users?.[assignedEmail]?.name || assignedEmail;
+      }
+      changed = true;
+    }
+  });
+  if (changed) { _syncTodoBadge(); saveUserTodos().catch(() => {}); }
+  return changed;
+}
+
 function _renderAssignmentTodos() {
   const section = document.getElementById('todos-assignment-section');
   if (!section) return;
+  _reconcileDeferAssignTodos();
   const items = todosData.filter(t => (t.type === 'case_assignment' || t.type === 'internal_transfer') && !t.done);
   if (!items.length) { section.innerHTML = ''; return; }
   const unread = items.filter(t => !t.notifRead);
@@ -717,7 +746,7 @@ function _renderAssignmentTodos() {
       : `<span class="badge" style="background:#e9d8fd;color:#553c9a;font-size:.72rem;">初談派案</span>`;
     const subInfo = isTransfer
       ? `${t.semester ? `<div style="font-size:.82rem;color:#718096;margin-bottom:4px;">學期：${escHtml(semesterLabel(t.semester))}</div>` : ''}${t.fromCounselorName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">原主責：${escHtml(t.fromCounselorName)}</div>` : ''}`
-      : `${t.semester ? `<div style="font-size:.82rem;color:#718096;margin-bottom:4px;">學期：${escHtml(semesterLabel(t.semester))}</div>` : ''}${t.filledByName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">初談者：${escHtml(t.filledByName)}</div>` : ''}`;
+      : `${t.semester ? `<div style="font-size:.82rem;color:#718096;margin-bottom:4px;">學期：${escHtml(semesterLabel(t.semester))}</div>` : ''}${t.filledByName ? `<div style="font-size:.82rem;color:#718096;margin-bottom:8px;">初談者：${escHtml(t.filledByName)}</div>` : ''}${t.deferAssign ? `<div style="font-size:.78rem;color:#c53030;margin-bottom:6px;">初談時選擇「暫不指派」——此提醒無法封存，指派主責後自動消除</div>` : ''}`;
     const confirmFn = isTransfer ? '_confirmInternalTransfer' : '_confirmCaseAssignment';
     return `<div id="todo-card-${escHtml(t.id)}" style="background:${bgCol};border:1px solid ${borderCol};border-radius:8px;padding:12px 14px;margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">
@@ -775,7 +804,7 @@ async function _confirmInternalTransfer(todoId) {
   if (_cardEl) { _cardEl.style.background='#c6f6d5'; _cardEl.style.borderColor='#68d391'; _cardEl.style.opacity='.7'; const _b=_cardEl.querySelector('.btn-primary'); if(_b){_b.disabled=true;_b.textContent='確認中…';} }
   // 只寫目標學期快照；目標為最新學期才動全案層級（#023 第二輪：改舊學期不得影響其他學期）
   _applyCounselorChange(casesData[cidx], targetSem, counselorEmail, counselorName);
-  t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
+  t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName; t.isLocked = false;
   _syncTodoBadge();
   const jobId = bgJobAdd('確認內部轉案', casesData[cidx].name);
   try {
@@ -807,7 +836,7 @@ async function _confirmCaseAssignment(todoId) {
   // 更新個案主責：只寫目標學期快照；目標為最新學期才動全案層級（#023 第二輪）
   _applyCounselorChange(casesData[cidx], targetSem, counselorEmail, counselorName);
   // 標記 todo 完成
-  t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName;
+  t.done = true; t.doneAt = new Date().toISOString(); t.assignedCounselor = counselorEmail; t.assignedCounselorName = counselorName; t.isLocked = false;
   _syncTodoBadge();
   // 背景儲存
   const jobId = bgJobAdd('確認派案', casesData[cidx].name);

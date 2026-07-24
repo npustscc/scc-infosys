@@ -466,8 +466,10 @@ function openInitialInterviewPage(caseId) {
   // Populate counselor dropdowns /* COUNSELOR_SELECT_GROUP:ii-result/transfer/sup-old-counselor */
   const _COUNSELING_ROLES_II = new Set(['主任','專任社會工作師','專任諮商心理師','專任臨床心理師','兼任諮商心理師','兼任臨床心理師','駐校精神科醫師','實習諮商心理師','義務輔導老師']);
   const counselorOpts = buildCounselorOptgroups(([e, u]) => !!(u?.name) && _COUNSELING_ROLES_II.has(u?.role));
+  const _iiResultCounselorOpts = `<option value="__onetime__">一次性服務，不指派主責</option><option value="__defer__" selected>暫不指派</option>` + counselorOpts;
   ['ii-result-counselor','ii-transfer-counselor','ii-sup-old-counselor'].forEach(id => {
-    const sel = document.getElementById(id); if (sel) sel.innerHTML = counselorOpts;
+    const sel = document.getElementById(id);
+    if (sel) sel.innerHTML = (id === 'ii-result-counselor') ? _iiResultCounselorOpts : counselorOpts;
   });
   const _iiInterSel = document.getElementById('ii-interviewer-sel');
   if (_iiInterSel) { _iiInterSel.innerHTML = buildCounselorOptgroups(); _iiInterSel.value = currentUser?.email || ''; }
@@ -553,9 +555,14 @@ function _iiPopulateForm(d) {
   _restoreSup('sup-topic', 'ii-sup-topics-chips',  II_SUP_TOPICS,  d.supTopics || [], d.supTopicsCustom || []);
   _restoreSup('sup-skill', 'ii-sup-skills-chips',  II_SUP_SKILLS,  d.supSkills || [], d.supSkillsCustom || []);
 
-  // Restore counselor dropdown
+  // Restore counselor dropdown（正規化 assignDecision，legacy 空資料落回暫不指派）
   const sel = document.getElementById('ii-result-counselor');
-  if (sel && d.resultCounselor) sel.value = d.resultCounselor;
+  if (sel) {
+    if (d.assignDecision === 'onetime') sel.value = '__onetime__';
+    else if (d.assignDecision === 'defer') sel.value = '__defer__';
+    else if (d.resultCounselor) sel.value = d.resultCounselor;
+    else sel.value = '__defer__';
+  }
 
   // Restore interview date/time/interviewer
   const _iiD = document.getElementById('ii-interview-date'); if (_iiD && d.interviewDate) _iiD.value = d.interviewDate;
@@ -611,7 +618,16 @@ function snapshotInitialInterview() {
     vacancy: checked('ii-vacancy'),
     supOther: get('ii-sup-other'),
     oldMainCounselor: get('ii-sup-old-counselor'),
-    resultCounselor: get('ii-result-counselor'),
+    ...(() => {
+      // 舊案時第七項整段停用、select 停留在預設「暫不指派」——不得將該殘值當成決策存檔
+      // （否則每次儲存舊案都誤跳暫不指派確認視窗、待派案 todo 被誤鎖）
+      if (document.querySelector('input[name="ii-case-type"]:checked')?.value === '舊案')
+        return { assignDecision: '', resultCounselor: '' };
+      const raw = get('ii-result-counselor');
+      if (raw === '__onetime__') return { assignDecision: 'onetime', resultCounselor: '' };
+      if (raw === '__defer__')   return { assignDecision: 'defer',   resultCounselor: '' };
+      return { assignDecision: '', resultCounselor: raw };
+    })(),
     interviewDate: get('ii-interview-date'),
     interviewTime: (() => { const s = document.getElementById('ii-interview-time'); if (!s) return ''; if (s.value === '其他') return '其他：' + (document.getElementById('ii-interview-time-other')?.value || ''); return s.value; })(),
     interviewerEmail: get('ii-interviewer-sel'),
@@ -649,6 +665,35 @@ function _checkIIDuplicate() {
   _dupRenderAlert('ii-dup-alert', 'ii', match);
 }
 
+// 「暫不指派」儲存前確認 modal（Promise-based；樣式比照 index.html 既有 _pwPromptModal／
+// _officeEncryptedChoiceModal 全螢幕遮罩＋置中卡片慣例）。解析為 true＝確認儲存，false＝返回修正。
+function _iiConfirmDeferModal() {
+  return new Promise(resolve => {
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:100030;display:flex;align-items:center;justify-content:center;padding:20px;';
+    modal.innerHTML = `
+      <div style="background:#fff;border-radius:12px;max-width:420px;width:100%;padding:20px 22px;box-shadow:0 10px 40px rgba(0,0,0,.3);">
+        <h3 style="margin:0 0 8px;font-size:1rem;color:#1a202c;">確認暫不指派主責？</h3>
+        <p style="margin:0 0 14px;font-size:.85rem;color:#4a5568;">選擇「暫不指派」儲存後，待辦事項會出現一則「待派案」提醒。該提醒無法封存、也無法手動標記完成，直到此案被指派主責（或初談表改選一次性服務）才會自動消除。</p>
+        <label style="display:flex;align-items:center;gap:6px;font-size:.8rem;color:#4a5568;cursor:pointer;margin-bottom:14px;">
+          <input type="checkbox" id="_iicd-noremind" style="width:14px;height:14px;" />
+          以後不再提醒
+        </label>
+        <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;">
+          <button type="button" id="_iicd-back" class="btn btn-secondary btn-sm">返回修正</button>
+          <button type="button" id="_iicd-ok" class="btn btn-primary btn-sm">確認儲存</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    const close = (val) => { modal.remove(); resolve(val); };
+    modal.querySelector('#_iicd-back').onclick = () => close(false);
+    modal.querySelector('#_iicd-ok').onclick = () => {
+      if (modal.querySelector('#_iicd-noremind').checked) syncUserPref_({ iiDeferNoRemind: true });
+      close(true);
+    };
+  });
+}
+
 async function saveInitialInterview() {
   if (!_initialInterviewCaseId) return;
   setAlert('initial-interview-alert', '', '');
@@ -677,9 +722,15 @@ async function saveInitialInterview() {
     if (!(snap.supRisks || []).length)  errs.push('六-1. 風險評估（至少選一項）');
     if (!(snap.supTopics || []).length) errs.push('六-2. 主訴議題（至少選一項）');
     if (!(snap.supSkills || []).length) errs.push('六-3. 輔導人員專長（至少選一項）');
-    if (!snap.resultCounselor) errs.push('七、確認主責輔導人員（請選擇）');
+    if (!snap.resultCounselor && !snap.assignDecision) errs.push('七、確認主責輔導人員（請選擇）');
   }
   if (errs.length) { setAlert('initial-interview-alert', 'error', '請填寫必填項目：\n• ' + errs.join('\n• ')); document.getElementById('initial-interview-alert')?.scrollIntoView({behavior:'smooth',block:'center'}); return; }
+
+  // 「暫不指派」儲存前二次確認（除非使用者已勾選以後不再提醒）
+  if (snap.assignDecision === 'defer' && _userPref_('iiDeferNoRemind', false) !== true) {
+    const _confirmed = await _iiConfirmDeferModal();
+    if (!_confirmed) { document.getElementById('ii-section-seven')?.scrollIntoView({behavior:'smooth',block:'center'}); return; }
+  }
 
   const cidx = casesData.findIndex(c => c.id === _initialInterviewCaseId);
   if (cidx === -1) return;
@@ -753,7 +804,14 @@ async function saveInitialInterview() {
   // 建立/更新待派案 todo（若本學期已有主責輔導人員則跳過）
   const _semSnapII = casesData[cidx].basicInfoSnapshots?.[_iiSemKey];
   const _existingCounselor = _semSnapII?.counselorEmail || casesData[cidx].counselorEmail;
-  if (!_existingCounselor) {
+  if (snap.assignDecision === 'onetime') {
+    // 一次性服務不建待派案 todo；若先前（例如曾選「暫不指派」）已建立未完成的提醒，此處解除
+    const _oneTimeAssign = todosData.find(t => t.type === 'case_assignment' && t.caseId === _initialInterviewCaseId && !t.done);
+    if (_oneTimeAssign) {
+      _oneTimeAssign.done = true; _oneTimeAssign.doneAt = new Date().toISOString(); _oneTimeAssign.isLocked = false;
+      saveUserTodos().catch(() => {});
+    }
+  } else if (!_existingCounselor) {
     const _existAssign = todosData.find(t => t.type === 'case_assignment' && t.caseId === _initialInterviewCaseId && !t.done);
     const _caseName = casesData[cidx].name;
     const _assignItem = {
@@ -770,6 +828,7 @@ async function saveInitialInterview() {
       updatedAt: new Date().toISOString(),
       done: false, notifRead: false,
     };
+    if (snap.assignDecision === 'defer') { _assignItem.deferAssign = true; _assignItem.isLocked = true; }
     _putTodoItem(_assignItem);
     saveUserTodos().catch(() => {});
   }
@@ -1164,7 +1223,9 @@ function printInitialInterview(caseId, mode = 'print') {
 
   // 七: single counselor
   const resultEmail = d.resultCounselor || '';
-  const resultName = resultEmail ? (formatCounselorLabel(resultEmail) || resultEmail)
+  const resultName = d.assignDecision === 'onetime' ? '一次性服務，不指派主責'
+    : d.assignDecision === 'defer' ? '暫不指派'
+    : resultEmail ? (formatCounselorLabel(resultEmail) || resultEmail)
     : [d.resultSW, d.resultFullTime, d.resultPartTime, d.resultVol].filter(Boolean).join('　') || '（未指定）';
 
   const printTime = new Date().toLocaleString('zh-TW');

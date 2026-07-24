@@ -27,7 +27,7 @@ const TC_ICONS = {
   dblimg:     '<rect x="7" y="8" width="28" height="22" rx="2"/><circle cx="14" cy="15" r="2.6"/><polyline points="9,27 20,19 26,24 33,15"/><circle cx="44" cy="44" r="3"/><circle cx="44" cy="44" r="8" stroke-dasharray="3 4"/><circle cx="44" cy="44" r="13" stroke-dasharray="3 5"/>',
 };
 
-// 21 則（順序固定；輪播起始位置隨機挑選，但播放順序照本陣列順序前進/後退）。
+// 22 則（順序固定；輪播起始位置隨機挑選，但播放順序照本陣列順序前進/後退）。
 // v241 多語：title/desc＝華語（預設）；tw＝台語（台文漢字）、hk＝客語（四縣腔用字）、en＝English，
 // 各為 { t, d }。翻譯由 Claude 撰寫、供親切感與趣味用途；技術詞（Ctrl+V、PDF、Excel…）保留原文。
 const TC_HINTS = [
@@ -115,6 +115,10 @@ const TC_HINTS = [
     tw: { t: '差勤總覽揣打卡', d: '我的差勤 → 差勤總覽會當用日期區間揣家己所有的打卡紀錄，快捷鈕一鍵就會當切今仔日/本禮拜/本月。' },
     hk: { t: '差勤總覽尋打卡', d: '我的差勤 → 差勤總覽做得用日期區間尋自家所有个打卡紀錄，快捷鈕一鍵就做得切今仔日/本禮拜/本月。' },
     en: { t: 'Attendance overview lookup', d: 'My Attendance → Attendance Overview lets you query your own punch records by date range; quick buttons switch to Today/This week/This month in one click.' } },
+  { id: 22, emoji: '📌', title: '初談表暫不指派',    desc: '初談表第七項若尚無定案，可選「暫不指派」先存表單——會建立一則不可封存的「待派案」提醒，指派主責後自動消除；一次性服務個案選「一次性服務，不指派主責」即不需指派。',
+    tw: { t: '初談表且莫指派', d: '初談表第七項若猶未定案，會使揀「且莫指派」先共表單存起來——會有一則袂當封存的「待派案」提醒，等指派主責了後才會家己消掉；一擺性服務的個案揀「一擺性服務，免指派主責」就免指派。' },
+    hk: { t: '初談表暫毋指派', d: '初談表第七項若還吂定案，做得揀「暫毋指派」先將表單存起來——會有一則毋做得封存个「待派案」提醒，等指派主責以後正會自家消掉；一擺性服務个個案揀「一擺性服務，毋使指派主責」就毋使指派。' },
+    en: { t: 'Defer counselor assignment', d: 'If item 7 on the intake form isn\'t decided yet, pick "Defer assignment" to save the form now — this creates an unarchivable "assignment pending" reminder that clears automatically once a counselor is assigned. For one-time-service cases, pick "One-time service, no assignment needed" instead.' } },
 ];
 
 // ── v241 小技巧多語 ──────────────────────────────────────────────

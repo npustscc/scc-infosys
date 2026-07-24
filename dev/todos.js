@@ -81,6 +81,9 @@ async function loadUserTodos() {
       _todosSnapshot = [];
     }
     _cleanupOldTodos();
+    // v288：待派案提醒自動校正——此處呼叫時 casesData 已在既有登入流程中載入完成
+    // （loadUserTodos 僅由待辦頁「重新整理」按鈕呼叫，不在 afterLogin 早期批次載入路徑上）
+    try { _reconcileDeferAssignTodos(); } catch (_) {}
   } catch (e) {
     console.warn('loadUserTodos failed:', e);
     todosData = [];

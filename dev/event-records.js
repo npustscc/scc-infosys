@@ -497,9 +497,13 @@ function renderTodosPage() {
     const ownerBadge = t._ownerName ? `<span class="badge" style="background:#e9d8fd;color:#553c9a;font-size:.72rem;border:1px solid #d6bcfa;">${escHtml(t._ownerName)}</span>` : '';
 
     const _isLocked = !readOnly && !!t.isLocked && !t.done;
+    // v288：初談表選「暫不指派」建立的待派案提醒——不可封存/勾選/標記完成，指派主責後自動消除
+    const _isDeferAssign = !readOnly && !!t.deferAssign && !t.done;
     const checkBoxHtml = readOnly
       ? `<div style="width:16px;flex-shrink:0;"></div>`
-      : `<input type="checkbox" class="todo-select-cb" data-id="${t.id}" onchange="_updateTodoBatchBtn()" style="margin-top:3px;flex-shrink:0;">`;
+      : (_isDeferAssign
+        ? `<input type="checkbox" class="todo-select-cb" data-id="${t.id}" disabled data-tip="此提醒需指派主責後才會自動消除，無法封存或批次操作" style="margin-top:3px;flex-shrink:0;">`
+        : `<input type="checkbox" class="todo-select-cb" data-id="${t.id}" onchange="_updateTodoBatchBtn()" style="margin-top:3px;flex-shrink:0;">`);
     const _isTransferTodo = ['transfer_grad_counselor','transfer_grad_coord','transfer_closure_reminder','transfer_withdraw_coord'].includes(t.type);
     const _isMismatchTodo = t.type === 'transfer_withdraw_mismatch';
     const _isAdminUserTodo = t.type === 'admin_verify_new_user';
@@ -532,6 +536,7 @@ function renderTodosPage() {
           ? `<button class="btn btn-primary btn-sm" style="font-size:.78rem;" onclick="_markTransferClosureDone('${t.id}','${t.transferRecId||''}')">已完成結案會議</button>`
           : _isMismatchTodo ? '' // mismatch uses special confirm/ignore buttons
           : _isReassignInitiatorTodo ? '' // handled by reassignDetailHtml below
+          : _isDeferAssign ? '' // 待派案提醒：需指派主責才會自動消除，不提供手動完成
           : `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoDone('${t.id}')">完成</button>`)
         : `<button class="btn btn-secondary btn-sm" style="font-size:.78rem;" onclick="_markTodoUndone('${t.id}')">恢復</button>`)
       : '';
@@ -584,6 +589,7 @@ function renderTodosPage() {
           ${ownerBadge}
         </div>
         ${t.caseLabel ? `<div style="font-size:.82rem;color:#718096;margin-bottom:4px;">個案：${escHtml(t.caseLabel)}</div>` : ''}
+        ${_isDeferAssign ? `<div style="font-size:.78rem;color:#c53030;">⚠ 此提醒無法封存——指派主責後將自動消除</div>` : ''}
         ${t.done && t.type === 'case_assignment' && t.assignedCounselorName ? `<div style="font-size:.82rem;color:#276749;margin-bottom:4px;">已派案給：${escHtml(t.assignedCounselorName)}</div>` : ''}
         ${_isReassignNotifyTodo && t.fromName ? `<div style="font-size:.82rem;color:#276749;margin-bottom:4px;">由 ${escHtml(t.fromName)} 指派</div>` : ''}
         <div style="font-size:.78rem;color:#a0aec0;">${createdAt}${t.done && doneAt ? `　完成：${doneAt}` : ''}${!t.done && t.ackAt ? `　收到：${new Date(t.ackAt).toLocaleString('zh-TW', { dateStyle:'short', timeStyle:'short' })}` : ''}</div>
@@ -632,9 +638,16 @@ function _toggleTodosSelectAll(el) {
   _updateTodoBatchBtn();
 }
 
+// v288：待派案提醒（初談表選「暫不指派」建立，deferAssign:true）無法封存/批次操作，
+// 需指派主責（或初談表改選一次性服務）才會自動消除——批次操作 silently 濾掉這類項目。
+const _isDeferAssignLocked = (id) => { const t = todosData.find(x => x.id === id); return !!(t?.deferAssign && !t.done); };
+
 function _batchArchiveTodos() {
-  const ids = [...document.querySelectorAll('.todo-select-cb:checked')].map(cb => cb.dataset.id);
+  let ids = [...document.querySelectorAll('.todo-select-cb:checked')].map(cb => cb.dataset.id);
   if (!ids.length) return;
+  const _blockedCount = ids.filter(_isDeferAssignLocked).length;
+  ids = ids.filter(id => !_isDeferAssignLocked(id));
+  if (!ids.length) { showToast('此提醒需指派主責後才會自動消除，無法封存', 'error', 3000); return; }
   ids.forEach(id => {
     const t = todosData.find(x => x.id === id);
     if (t) t.archivedAt = new Date().toISOString();
@@ -644,13 +657,16 @@ function _batchArchiveTodos() {
   saveUserTodos()
     .then(() => { bgJobDone(_batchJobId); auditLog('批次封存待辦事項', null, null, `${ids.length} 個`); })
     .catch(err => bgJobFail(_batchJobId, err?.message || '儲存失敗'));
-  showToast(`已封存 ${ids.length} 個待辦事項`, 'success', 2500);
+  showToast(`已封存 ${ids.length} 個待辦事項${_blockedCount ? `（${_blockedCount} 個待派案提醒無法封存，已略過）` : ''}`, 'success', 2500);
   renderTodosPage();
 }
 
 function _batchDeleteTodos() {
-  const ids = [...document.querySelectorAll('.todo-select-cb:checked')].map(cb => cb.dataset.id);
+  let ids = [...document.querySelectorAll('.todo-select-cb:checked')].map(cb => cb.dataset.id);
   if (!ids.length) return;
+  const _blockedCount = ids.filter(_isDeferAssignLocked).length;
+  ids = ids.filter(id => !_isDeferAssignLocked(id));
+  if (!ids.length) { showToast('此提醒需指派主責後才會自動消除，無法刪除', 'error', 3000); return; }
   const incomplete = ids.filter(id => !todosData.find(t => t.id === id)?.done);
   const msg = incomplete.length
     ? `選取了 ${ids.length} 個待辦事項（其中 ${incomplete.length} 個未完成）。\n確定要全部刪除？`
@@ -666,13 +682,14 @@ function _batchDeleteTodos() {
   saveUserTodos()
     .then(() => { bgJobDone(_batchDelJobId); auditLog('批次刪除待辦事項', null, null, `${ids.length} 個`); })
     .catch(err => bgJobFail(_batchDelJobId, err?.message || '儲存失敗'));
-  showToast(`已刪除 ${ids.length} 個待辦事項`, 'success', 2500);
+  showToast(`已刪除 ${ids.length} 個待辦事項${_blockedCount ? `（${_blockedCount} 個待派案提醒無法刪除，已略過）` : ''}`, 'success', 2500);
   renderTodosPage();
 }
 
 function _archiveTodo(id) {
   const t = todosData.find(x => x.id === id);
   if (!t) return;
+  if (t.deferAssign && !t.done) { showToast('此提醒需指派主責後才會自動消除', 'error', 3000); return; }
   t.archivedAt = new Date().toISOString();
   _syncTodoBadge();
   const _jobLabel = t.caseLabel ? `封存「${t.label}」（${t.caseLabel}）` : `封存「${t.label}」`;
@@ -768,6 +785,7 @@ function _unackTodo(id) {
 function _markTodoDone(id) {
   const t = todosData.find(x => x.id === id);
   if (!t) return;
+  if (t.deferAssign && !t.done) { showToast('此提醒需指派主責後才會自動消除', 'error', 3000); return; }
   t.done = true;
   t.doneAt = new Date().toISOString();
   _syncTodoBadge();
